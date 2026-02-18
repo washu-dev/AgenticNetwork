@@ -114,9 +114,10 @@ class SatelliteClassifierAgent:
         content = [{"type": "text", "text": text_instruction}]
         if image_data:
             b64 = base64.b64encode(image_data).decode("utf-8")
+            mime = "image/png" if image_data[:4] == b'\x89PNG' else "image/jpeg"
             content.append({
                 "type": "image_url",
-                "image_url": {"url": f"data:image/jpeg;base64,{b64}"}
+                "image_url": {"url": f"data:{mime};base64,{b64}"}
             })
 
         try:

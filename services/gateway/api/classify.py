@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import asyncio
+import json
 import uuid
 from datetime import datetime
 from typing import Dict, Any
@@ -163,7 +164,7 @@ def create_classify_api(minio_client: MinIOClient, planner_url: str) -> APIRoute
             """Generate SSE events"""
             while True:
                 result = task_results.get(task_id, {})
-                yield f"data: {result}\n\n"
+                yield f"data: {json.dumps(result)}\n\n"
 
                 if result.get("status") in ["COMPLETED", "COMPLETED_WITH_WARNING", "FAILED"]:
                     break

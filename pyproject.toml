@@ -5,7 +5,7 @@ description = "Multi-organization image classification routing system"
 authors = [
     {name = "AGNTCY Contributors", email = "noreply@agntcy.io"}
 ]
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.109.0",
     "uvicorn[standard]>=0.27.0",

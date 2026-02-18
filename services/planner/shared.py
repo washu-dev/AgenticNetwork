@@ -4,7 +4,6 @@
 """
 Shared factory for A2A transport.
 
-Follows Lungo's pattern - single AgntcyFactory instance shared across modules.
 """
 
 from typing import Optional

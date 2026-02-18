@@ -4,7 +4,6 @@
 """
 A2A Communication Tools for Planner.
 
-Follows Lungo's pattern - using AgntcyFactory directly for A2A messaging.
 """
 
 import os

@@ -111,8 +111,24 @@ class MedicalClassifierAgent:
         # Check if MCP mode is enabled
         self.use_mcp = os.getenv("USE_MCP", "false").lower() in ("true", "1", "yes")
         self.mcp_topic = os.getenv("MCP_TOPIC", "medical_tools_service")
+        self._mcp_factory = None
+        self._mcp_transport = None
+        self._mcp_client_factory_args = None
         if self.use_mcp:
-            logger.info(f"Medical Agent MCP enabled, topic: {self.mcp_topic}")
+            try:
+                from agntcy_app_sdk.factory import AgntcyFactory
+                transport_type = os.getenv("DEFAULT_MESSAGE_TRANSPORT", "NATS")
+                endpoint = os.getenv("TRANSPORT_SERVER_ENDPOINT", "nats://localhost:4222")
+                self._mcp_factory = AgntcyFactory("agntcy_network.medical_mcp_client", enable_tracing=False)
+                self._mcp_transport = self._mcp_factory.create_transport(
+                    transport_type,
+                    endpoint=endpoint,
+                    name="default/default/medical_mcp_client"
+                )
+                logger.info(f"Medical Agent MCP enabled, topic: {self.mcp_topic}")
+            except Exception as e:
+                logger.warning(f"Failed to initialize MCP transport, disabling MCP: {e}")
+                self.use_mcp = False
 
         # Build the LangGraph ReAct workflow
         self.graph = self._build_graph()
@@ -418,21 +434,14 @@ class MedicalClassifierAgent:
 
     async def _call_mcp_tool(self, tool_name: str, arguments: dict) -> Optional[str]:
         """Call a single MCP tool via NATS/SLIM transport."""
-        from agntcy_app_sdk.factory import AgntcyFactory
+        if not self._mcp_factory or not self._mcp_transport:
+            logger.debug(f"MCP not initialized, skipping tool {tool_name}")
+            return None
 
-        transport_type = os.getenv("DEFAULT_MESSAGE_TRANSPORT", "NATS")
-        endpoint = os.getenv("TRANSPORT_SERVER_ENDPOINT", "nats://localhost:4222")
-
-        factory = AgntcyFactory("agntcy_network.medical_mcp_client", enable_tracing=False)
-        transport = factory.create_transport(
-            transport_type,
-            endpoint=endpoint,
-            name="default/default/medical_mcp_client"
-        )
-        mcp_client = factory.create_client(
+        mcp_client = self._mcp_factory.create_client(
             "MCP",
             agent_topic=self.mcp_topic,
-            transport=transport,
+            transport=self._mcp_transport,
             message_timeout=30
         )
 
@@ -511,9 +520,10 @@ class MedicalClassifierAgent:
         content = [{"type": "text", "text": text_instruction}]
         if image_data:
             b64 = base64.b64encode(image_data).decode("utf-8")
+            mime = "image/png" if image_data[:4] == b'\x89PNG' else "image/jpeg"
             content.append({
                 "type": "image_url",
-                "image_url": {"url": f"data:image/jpeg;base64,{b64}"}
+                "image_url": {"url": f"data:{mime};base64,{b64}"}
             })
 
         try:

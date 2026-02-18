@@ -220,10 +220,11 @@ class GeneralClassifierAgent:
 
         if image_data and len(image_data) > 0:
             b64 = base64.b64encode(image_data).decode("utf-8")
+            mime = "image/png" if image_data[:4] == b'\x89PNG' else "image/jpeg"
             logger.info(f"Sending image to LLM: {len(image_data)} bytes")
             content.append({
                 "type": "image_url",
-                "image_url": {"url": f"data:image/jpeg;base64,{b64}"}
+                "image_url": {"url": f"data:{mime};base64,{b64}"}
             })
         else:
             logger.warning("NO IMAGE DATA - LLM will only see text prompt!")

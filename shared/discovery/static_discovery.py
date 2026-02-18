@@ -61,7 +61,7 @@ class StaticAgentDiscovery(AgentDiscovery):
 
         # Satellite Agent (Org B)
         self.agents.append(AgentRecord(
-            agent_id="org-b-satellite-clf-001",
+            agent_id="org-b-satellite-clf-002",
             name="Satellite Image Classifier - Organization B",
             description="An AI agent specialized in classifying satellite and aerial imagery for landcover analysis, urban planning, and geospatial applications",
             organization="geo-analytics-b",
@@ -111,31 +111,6 @@ class StaticAgentDiscovery(AgentDiscovery):
             ttl_seconds=3600
         ))
 
-        # LangGraph Agent (Org D)
-        self.agents.append(AgentRecord(
-            agent_id="org-d-langgraph-clf-001",
-            name="LangGraph Classifier - Organization D",
-            description="LangGraph-based multi-step workflow for general image classification including animals, vehicles, food, and objects",
-            organization="ai-research-d",
-            url="http://localhost:9004",
-            capabilities=AgentCapabilities(
-                skills=[AgentSkill(
-                    id="image_classification",
-                    name="LangGraph Image Classification",
-                    description="LangGraph-based multi-step workflow for image classification",
-                    tags=["langgraph", "stateful", "workflow", "general", "animals", "vehicles", "food", "objects"],
-                    input_modes=["image/jpeg", "image/png"]
-                )]
-            ),
-            performance_metrics=AgentPerformanceMetrics(
-                avg_latency_ms=1800,
-                p95_latency_ms=3500,
-                success_rate=0.90,
-                throughput_rps=40
-            ),
-            last_heartbeat=datetime.utcnow(),
-            ttl_seconds=3600
-        ))
 
     async def discover(self, query: DiscoveryQuery) -> List[AgentRecord]:
         """

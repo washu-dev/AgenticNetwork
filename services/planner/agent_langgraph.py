@@ -925,6 +925,15 @@ Verifier: {verifier_status} - {verifier_notes}"""
                 "iterations": iteration,
                 "workflow_messages": [msg.content for msg in state["messages"]]
             }
+        else:
+            response = {
+                "status": "FAILED",
+                "error": "VERIFICATION_FAILED",
+                "intent": state.get("intent", {}),
+                "message": f"Verification status: {status}, iteration: {iteration}",
+                "iterations": iteration,
+                "workflow_messages": [msg.content for msg in state["messages"]]
+            }
 
         state["final_response"] = response
         state["messages"].append(AIMessage(content=f"Response finalized: {response['status']}"))
