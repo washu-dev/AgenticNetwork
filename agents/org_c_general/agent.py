@@ -2,12 +2,14 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-General-purpose image classification agent using LangGraph workflow.
+General-purpose image classification agent using LlamaIndex Workflow.
 
 Workflow Steps:
 1. Preprocess: Download and prepare image
 2. Classify: Run LLM Vision inference
 3. Postprocess: Rank and format results
+
+LlamaIndex Workflow: https://docs.llamaindex.ai/en/stable/module_guides/workflow/
 """
 
 import random
@@ -15,40 +17,142 @@ import logging
 import aiohttp
 import os
 import base64
-from typing import Dict, Any, TypedDict, Annotated
+from typing import Dict, Any
 from datetime import datetime
 
-from langgraph.graph import StateGraph, START, END
-from langgraph.graph.message import add_messages
-from langchain_core.messages import HumanMessage, AIMessage
+from llama_index.core.workflow import (
+    Workflow,
+    Event,
+    StartEvent,
+    StopEvent,
+    step,
+    Context,
+)
 
 from shared.schemas import ClassificationResult, TopKPrediction
 
 logger = logging.getLogger(__name__)
 
 
-class ClassificationState(TypedDict):
-    """State maintained throughout the classification workflow"""
+# ============================================================================
+# Workflow Events
+# ============================================================================
+
+class PreprocessDoneEvent(Event):
+    """Emitted after image download and preprocessing."""
     request_id: str
-    image_url: str
     prompt: str
+    image_data: bytes = b""
 
-    # Intermediate state
-    image_data: bytes
-    preprocessed: bool
 
-    # Classification result
+class ClassifyDoneEvent(Event):
+    """Emitted after classification (LLM or simulated)."""
+    request_id: str
     label: str
     confidence: float
-    top_k: list
+    llm_top_k: list = []
 
-    # Workflow messages
-    messages: Annotated[list, add_messages]
 
+# ============================================================================
+# LlamaIndex Classification Workflow
+# ============================================================================
+
+class ClassificationWorkflow(Workflow):
+    """
+    Sequential classification workflow: preprocess → classify → postprocess.
+
+    Uses LlamaIndex Workflow's event-driven step pattern where each step
+    receives an event and emits the next event in the chain.
+    """
+
+    def __init__(self, agent_ref, **kwargs):
+        super().__init__(**kwargs)
+        self.agent_ref = agent_ref
+
+    @step
+    async def preprocess(self, ctx: Context, ev: StartEvent) -> PreprocessDoneEvent:
+        """Step 1: Download and prepare image."""
+        request_id = ev.request_id
+        image_url = ev.image_url
+        prompt = ev.prompt
+
+        logger.info(f"[{request_id}] Preprocessing: downloading image...")
+
+        image_data = b""
+        if image_url and not image_url.startswith("simulated://"):
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(image_url) as response:
+                        image_data = await response.read()
+                        logger.info(f"[{request_id}] Downloaded image: {len(image_data)} bytes")
+            except Exception as e:
+                logger.error(f"[{request_id}] Failed to download image: {e}")
+
+        logger.info(f"[{request_id}] Image preprocessed: {len(image_data)} bytes")
+
+        return PreprocessDoneEvent(
+            request_id=request_id,
+            prompt=prompt,
+            image_data=image_data,
+        )
+
+    @step
+    async def classify(self, ctx: Context, ev: PreprocessDoneEvent) -> ClassifyDoneEvent:
+        """Step 2: Run classification (LLM Vision or simulated)."""
+        logger.info(f"[{ev.request_id}] Classifying image...")
+
+        llm_top_k = []
+        if self.agent_ref.use_llm and self.agent_ref.llm and ev.image_data:
+            label, confidence, llm_top_k = await self.agent_ref._classify_with_llm(ev.prompt, ev.image_data)
+        else:
+            label, confidence = self.agent_ref._classify_simulated(ev.prompt)
+
+        logger.info(f"[{ev.request_id}] Classification: {label} ({confidence:.2f})")
+
+        return ClassifyDoneEvent(
+            request_id=ev.request_id,
+            label=label,
+            confidence=confidence,
+            llm_top_k=llm_top_k,
+        )
+
+    @step
+    async def postprocess(self, ctx: Context, ev: ClassifyDoneEvent) -> StopEvent:
+        """Step 3: Generate top-k predictions and format results."""
+        logger.info(f"[{ev.request_id}] Postprocessing results...")
+
+        label = ev.label
+        confidence = ev.confidence
+
+        # Use LLM top-k if available, otherwise generate fallback predictions
+        if ev.llm_top_k:
+            top_k = [{"label": lbl, "confidence": conf, "rank": i + 1}
+                     for i, (lbl, conf) in enumerate(ev.llm_top_k)]
+        else:
+            top_k = [{"label": label, "confidence": confidence, "rank": 1}]
+            other_labels = [l for l in self.agent_ref.general_labels if l != label]
+            random.shuffle(other_labels)
+            remaining_confidence = 1.0 - confidence
+            for i, other_label in enumerate(other_labels[:2]):
+                conf = remaining_confidence * random.uniform(0.3, 0.7) if i == 0 else remaining_confidence * 0.3
+                top_k.append({"label": other_label, "confidence": round(conf, 3), "rank": i + 2})
+
+        logger.info(f"[{ev.request_id}] Results formatted: {len(top_k)} predictions")
+
+        return StopEvent(result={
+            "label": label,
+            "confidence": confidence,
+            "top_k": top_k,
+        })
+
+
+# ============================================================================
+# Agent Class
+# ============================================================================
 
 class GeneralClassifierAgent:
     """
-    General-purpose image classification agent using LangGraph workflow.
+    General-purpose image classification agent using LlamaIndex Workflow.
 
     Workflow: preprocess → classify → postprocess
 
@@ -67,107 +171,21 @@ class GeneralClassifierAgent:
         ]
 
         # Check if LLM mode is enabled
-        self.use_llm = os.getenv("USE_LLM", "false").lower() in ("true", "1", "yes")
+        self.use_llm = os.getenv("USE_LLM", "true").lower() in ("true", "1", "yes")
         self.llm = None
 
         if self.use_llm:
             try:
                 from config.llm_config import create_llm
                 self.llm = create_llm()
-                logger.info("General Agent initialized with LLM mode + LangGraph workflow")
+                logger.info("General Agent initialized with LLM mode + LlamaIndex Workflow")
             except Exception as e:
                 logger.warning(f"Failed to initialize LLM, falling back to simulated mode: {e}")
                 self.use_llm = False
 
-        # Build the LangGraph workflow
-        self.graph = self._build_graph()
-        logger.info(f"LangGraph workflow initialized: {self.agent_id}")
-
-    def _build_graph(self) -> StateGraph:
-        """Build the LangGraph workflow"""
-        workflow = StateGraph(ClassificationState)
-
-        # Add nodes
-        workflow.add_node("preprocess", self._preprocess_node)
-        workflow.add_node("classify", self._classify_node)
-        workflow.add_node("postprocess", self._postprocess_node)
-
-        # Define edges
-        workflow.add_edge(START, "preprocess")
-        workflow.add_edge("preprocess", "classify")
-        workflow.add_edge("classify", "postprocess")
-        workflow.add_edge("postprocess", END)
-
-        return workflow.compile()
-
-    async def _preprocess_node(self, state: ClassificationState) -> ClassificationState:
-        """Node 1: Download and prepare image"""
-        logger.info(f"[{state['request_id']}] Preprocessing: downloading image...")
-
-        image_data = b""
-        image_url = state.get("image_url", "")
-
-        if image_url and not image_url.startswith("simulated://"):
-            try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(image_url) as response:
-                        image_data = await response.read()
-                        logger.info(f"[{state['request_id']}] Downloaded image: {len(image_data)} bytes")
-            except Exception as e:
-                logger.error(f"[{state['request_id']}] Failed to download image: {e}")
-
-        state["image_data"] = image_data
-        state["preprocessed"] = True
-        state["messages"].append(
-            AIMessage(content=f"Image preprocessed: {len(image_data)} bytes")
-        )
-
-        return state
-
-    async def _classify_node(self, state: ClassificationState) -> ClassificationState:
-        """Node 2: Run classification (LLM Vision or simulated)"""
-        logger.info(f"[{state['request_id']}] Classifying image...")
-
-        image_data = state.get("image_data", b"")
-        prompt = state.get("prompt", "")
-
-        if self.use_llm and self.llm and image_data:
-            label, confidence = await self._classify_with_llm(prompt, image_data)
-        else:
-            label, confidence = self._classify_simulated(prompt)
-
-        state["label"] = label
-        state["confidence"] = confidence
-        state["messages"].append(
-            AIMessage(content=f"Classification: {label} ({confidence:.2f})")
-        )
-
-        return state
-
-    async def _postprocess_node(self, state: ClassificationState) -> ClassificationState:
-        """Node 3: Generate top-k predictions and format results"""
-        logger.info(f"[{state['request_id']}] Postprocessing results...")
-
-        label = state["label"]
-        confidence = state["confidence"]
-
-        # Generate top-k predictions
-        top_k = [{"label": label, "confidence": confidence, "rank": 1}]
-
-        other_labels = [l for l in self.general_labels if l != label]
-        random.shuffle(other_labels)
-
-        remaining_confidence = 1.0 - confidence
-        for i, other_label in enumerate(other_labels[:2]):
-            conf = remaining_confidence * random.uniform(0.3, 0.7) if i == 0 else remaining_confidence * 0.3
-            top_k.append({"label": other_label, "confidence": round(conf, 3), "rank": i + 2})
-
-        state["top_k"] = top_k
-        state["messages"].append(
-            AIMessage(content=f"Results formatted: {len(top_k)} predictions")
-        )
-
-        return state
+        # Build the LlamaIndex Workflow
+        self.workflow = ClassificationWorkflow(agent_ref=self)
+        logger.info(f"LlamaIndex Workflow initialized: {self.agent_id}")
 
     def _classify_simulated(self, prompt: str) -> tuple[str, float]:
         """Simulated classification (fast, for testing)"""
@@ -183,7 +201,7 @@ class GeneralClassifierAgent:
 
         return label, confidence
 
-    async def _classify_with_llm(self, prompt: str, image_data: bytes) -> tuple[str, float]:
+    async def _classify_with_llm(self, prompt: str, image_data: bytes) -> tuple[str, float, list]:
         """LLM Vision classification using litellm"""
         import litellm
         from config.llm_config import LLM_MODEL
@@ -193,8 +211,9 @@ class GeneralClassifierAgent:
             f"Analyze this image and classify what you see.\n"
             f"User request: {prompt}\n\n"
             f"Respond in this exact format (nothing else):\n"
-            f"LABEL: <a concise 1-3 word classification label, e.g. 'dog', 'sports car', 'beach sunset'>\n"
-            f"CONFIDENCE: <confidence score between 0.0 and 1.0>"
+            f"LABEL1: <most likely classification> | CONFIDENCE1: <score 0.0-1.0>\n"
+            f"LABEL2: <second most likely> | CONFIDENCE2: <score 0.0-1.0>\n"
+            f"LABEL3: <third most likely> | CONFIDENCE3: <score 0.0-1.0>"
         )
 
         content = [{"type": "text", "text": text_instruction}]
@@ -218,26 +237,40 @@ class GeneralClassifierAgent:
             llm_output = response.choices[0].message.content.strip()
             logger.info(f"LLM Vision Classification: {llm_output[:100]}")
 
-            # Parse response - free-form label
+            # Parse response - free-form label with top-k
             label = "unclassified"
             confidence = 0.5
+            top_k = []
 
             for line in llm_output.split("\n"):
-                if line.upper().startswith("LABEL:"):
+                line_upper = line.upper().strip()
+                if "|" in line and "LABEL" in line_upper and "CONFIDENCE" in line_upper:
+                    parts = line.split("|")
+                    try:
+                        lbl = parts[0].split(":", 1)[1].strip().lower()
+                        conf = float(parts[1].split(":", 1)[1].strip())
+                        top_k.append((lbl, conf))
+                    except Exception:
+                        pass
+                elif line_upper.startswith("LABEL:"):
                     label = line.split(":", 1)[1].strip().lower()
-                elif line.upper().startswith("CONFIDENCE:"):
+                elif line_upper.startswith("CONFIDENCE:"):
                     try:
                         confidence = float(line.split(":", 1)[1].strip())
                     except Exception:
                         pass
 
-            return label, confidence
+            if top_k:
+                label, confidence = top_k[0]
+
+            return label, confidence, top_k
         except Exception as e:
             logger.error(f"LLM vision classification failed: {e}, falling back to simulated")
-            return self._classify_simulated(prompt)
+            label, confidence = self._classify_simulated(prompt)
+            return label, confidence, []
 
     async def classify(self, request: Dict[str, Any]) -> ClassificationResult:
-        """Main entry point - runs the LangGraph workflow"""
+        """Main entry point - runs the LlamaIndex Workflow."""
         request_id = request.get("request_id", f"req-{datetime.utcnow().timestamp()}")
 
         # Get image URL
@@ -250,41 +283,29 @@ class GeneralClassifierAgent:
 
         prompt = request.get("prompt", "Classify this image")
 
-        logger.info(f"[{request_id}] Starting LangGraph classification workflow...")
+        logger.info(f"[{request_id}] Starting LlamaIndex classification workflow...")
 
-        # Initialize state
-        initial_state: ClassificationState = {
-            "request_id": request_id,
-            "image_url": image_url,
-            "prompt": prompt,
-            "image_data": b"",
-            "preprocessed": False,
-            "label": "",
-            "confidence": 0.0,
-            "top_k": [],
-            "messages": [HumanMessage(content=prompt)]
-        }
-
-        # Run the workflow
         start_time = datetime.utcnow()
-        final_state = await self.graph.ainvoke(initial_state)
-        end_time = datetime.utcnow()
 
+        # Run the LlamaIndex Workflow
+        result = await self.workflow.run(
+            request_id=request_id,
+            image_url=image_url,
+            prompt=prompt,
+        )
+
+        end_time = datetime.utcnow()
         latency_ms = int((end_time - start_time).total_seconds() * 1000)
 
-        # Log workflow steps
         logger.info(f"[{request_id}] Workflow completed in {latency_ms}ms")
-        for msg in final_state["messages"]:
-            if hasattr(msg, 'content'):
-                logger.debug(f"  - {msg.content}")
 
         # Return ClassificationResult
         return ClassificationResult(
             request_id=request_id,
             agent_id=self.agent_id,
-            label=final_state["label"],
-            confidence=final_state["confidence"],
-            top_k=[TopKPrediction(**pred) for pred in final_state["top_k"]],
+            label=result["label"],
+            confidence=result["confidence"],
+            top_k=[TopKPrediction(**pred) for pred in result["top_k"]],
             latency_ms=latency_ms,
             timestamp=datetime.utcnow()
         )

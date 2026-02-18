@@ -33,6 +33,7 @@ class ClassificationResult(BaseModel):
     # MCP enhancement fields
     mcp_enhanced: bool = Field(False, description="Whether MCP tools were used")
     reasoning: Optional[str] = Field(None, description="Diagnostic reasoning (with MCP)")
+    mcp_context: Optional[Dict[str, str]] = Field(None, description="MCP tool results (tool_name -> result text)")
 
     class Config:
         json_schema_extra = {

@@ -14,15 +14,20 @@ source .venv/bin/activate
 
 export PYTHONPATH=$(pwd)
 
-# Load environment variables
+# Save caller's overrides (e.g., from start_all.sh slim)
+_SAVED_TRANSPORT="${DEFAULT_MESSAGE_TRANSPORT}"
+_SAVED_ENDPOINT="${TRANSPORT_SERVER_ENDPOINT}"
+
+# Load environment variables as base defaults
 if [ -f .env ]; then
     set -a
     source .env
     set +a
 fi
 
-export DEFAULT_MESSAGE_TRANSPORT=${DEFAULT_MESSAGE_TRANSPORT:-NATS}
-export TRANSPORT_SERVER_ENDPOINT=${TRANSPORT_SERVER_ENDPOINT:-nats://localhost:4222}
+# Caller's overrides take priority over .env
+export DEFAULT_MESSAGE_TRANSPORT=${_SAVED_TRANSPORT:-${DEFAULT_MESSAGE_TRANSPORT:-NATS}}
+export TRANSPORT_SERVER_ENDPOINT=${_SAVED_ENDPOINT:-${TRANSPORT_SERVER_ENDPOINT:-nats://localhost:4222}}
 
 echo "=============================================="
 echo "Medical Tools MCP Server"

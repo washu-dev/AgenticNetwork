@@ -169,8 +169,19 @@ class MedicalAgentExecutor(AgentExecutor):
         output += f"Label: {result.label}\n"
         output += f"Confidence: {result.confidence:.2f}\n"
         output += f"Latency: {result.latency_ms}ms\n"
+        output += f"MCP Enhanced: {result.mcp_enhanced}\n"
+        if result.reasoning:
+            output += f"Reasoning: {result.reasoning}\n"
         output += f"\nTop-3 Predictions:\n"
         for pred in result.top_k[:3]:
             output += f"  {pred.rank}. {pred.label} ({pred.confidence:.2f})\n"
+
+        # Include MCP tool results
+        if result.mcp_context:
+            output += f"\nMCP Evidence:\n"
+            for tool_name, tool_result in result.mcp_context.items():
+                # Truncate long results for A2A text transport
+                truncated = tool_result[:2000] if tool_result else "no result"
+                output += f"[{tool_name}]\n{truncated}\n\n"
 
         return output

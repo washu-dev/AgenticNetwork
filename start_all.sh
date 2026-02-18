@@ -147,4 +147,7 @@ echo "  curl -X POST http://localhost:8080/v1/classify -F 'image=@test.jpg' -F '
 echo ""
 echo "Press Ctrl+C to stop all services"
 
+# Trap Ctrl+C to cleanly stop all services
+trap './stop_all.sh 2>/dev/null; exit 0' INT TERM
+
 wait

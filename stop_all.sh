@@ -54,15 +54,11 @@ if [ -d "$PROJECT_ROOT/infrastructure" ]; then
     docker-compose -f "$PROJECT_ROOT/infrastructure/docker-compose.yml" down 2>/dev/null
 fi
 
-# Stop ADS services if running
-echo ""
-echo "Stopping ADS services..."
-if [ -f "$PROJECT_ROOT/scripts/stop_ads.sh" ]; then
-    "$PROJECT_ROOT/scripts/stop_ads.sh" 2>/dev/null
-fi
+# NOTE: ADS is managed separately — not stopped here.
+# To stop ADS: ./scripts/stop_ads.sh
 
-# Also stop any stale containers by name pattern (including legacy names)
-for container in classify-nats classify-minio classify-slim classify-clickhouse classify-otel-collector classify-grafana nats classification-nats lungo-nats classification-zot classification-dir-api-server classification-dir-mcp-server classification-oasf-translation; do
+# Also stop any stale containers by name pattern (excluding ADS containers)
+for container in classify-nats classify-minio classify-slim classify-clickhouse classify-otel-collector classify-grafana nats classification-nats lungo-nats; do
     if docker ps -a --format '{{.Names}}' | grep -q "^${container}$" 2>/dev/null; then
         docker stop "$container" 2>/dev/null
         docker rm "$container" 2>/dev/null

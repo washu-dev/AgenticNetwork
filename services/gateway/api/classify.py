@@ -25,27 +25,21 @@ task_results: Dict[str, Dict[str, Any]] = {}
 # Suggested prompts for different classification domains
 SUGGESTED_PROMPTS = [
     {
-        "id": "medical-xray",
-        "prompt": "Analyze this chest X-ray image and identify any abnormalities or signs of disease",
-        "description": "Medical X-ray analysis",
+        "id": "medical-classify",
+        "prompt": "Classify this medical image and identify any abnormalities",
+        "description": "Simple medical classification",
         "domain": "medical"
     },
     {
-        "id": "medical-diagnosis",
-        "prompt": "Diagnose this medical image and provide potential findings",
-        "description": "Medical diagnosis",
+        "id": "medical-evidence",
+        "prompt": "Classify this medical image and provide supporting references and evidence for your diagnosis",
+        "description": "Classification with literature references",
         "domain": "medical"
     },
     {
         "id": "satellite-landuse",
         "prompt": "Identify the land use categories in this satellite image (urban, forest, water, agriculture)",
         "description": "Satellite land use classification",
-        "domain": "satellite"
-    },
-    {
-        "id": "satellite-urban",
-        "prompt": "Analyze this aerial image and identify urban development patterns",
-        "description": "Urban planning analysis",
         "domain": "satellite"
     },
     {

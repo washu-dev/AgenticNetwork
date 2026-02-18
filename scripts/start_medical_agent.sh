@@ -12,8 +12,8 @@ export DEFAULT_MESSAGE_TRANSPORT=${DEFAULT_MESSAGE_TRANSPORT:-NATS}
 export TRANSPORT_SERVER_ENDPOINT=${TRANSPORT_SERVER_ENDPOINT:-nats://localhost:4222}
 export FARM_BROADCAST_TOPIC=${FARM_BROADCAST_TOPIC:-agents.broadcast}
 
-# MCP settings (inherited from start_all.sh if mcp mode)
-export USE_MCP=${USE_MCP:-false}
+# MCP settings (Org A's decision: enable MCP tools by default)
+export USE_MCP=${USE_MCP:-true}
 export MCP_TOPIC=${MCP_TOPIC:-medical_tools_service}
 
 echo "=============================================="

@@ -1,31 +1,89 @@
 # Copyright AGNTCY Contributors
 # SPDX-License-Identifier: Apache-2.0
 
+"""
+Medical image classification agent using LangGraph ReAct workflow.
+
+ReAct (Reasoning + Acting) loop:
+  START → preprocess → reason ←──────────┐
+                         │                │
+              ┌──────────┼────────┐       │
+         "call_tool" "classify" "done"    │
+              │          │        │       │
+        [act_tool] [act_classify] [finalize]
+              │          │        │
+          [observe]  [observe]   END
+              │          │
+              └──────────┘ (loop back to reason)
+"""
+
+import json
 import random
 import time
 import logging
 import aiohttp
 import os
-from typing import Dict, Any, Optional
+import base64
+from typing import Dict, Any, Optional, List, TypedDict, Annotated
 from datetime import datetime
+
+from langgraph.graph import StateGraph, START, END
+from langgraph.graph.message import add_messages
+from langchain_core.messages import HumanMessage, AIMessage
 
 from shared.schemas import ClassificationResult, TopKPrediction
 
 logger = logging.getLogger(__name__)
 
 
+# ========== ReAct State ==========
+
+class MedicalReActState(TypedDict):
+    """State maintained throughout the ReAct workflow."""
+    # Input
+    request_id: str
+    prompt: str
+    image_url: str
+    image_data: bytes
+
+    # ReAct loop tracking
+    iteration: int
+    max_iterations: int
+
+    # MCP tool results
+    mcp_context: Dict[str, Any]
+    tool_calls_made: List[str]
+
+    # Classification result
+    label: str
+    confidence: float
+    top_k: list
+    reasoning: Optional[str]
+
+    # Decision state
+    next_action: str
+    pending_tool_name: str
+    pending_tool_args: Dict[str, Any]
+
+    # Flow control
+    classification_done: bool
+    mcp_enabled: bool
+    llm_enabled: bool
+
+    # Workflow messages
+    messages: Annotated[list, add_messages]
+
+
 class MedicalClassifierAgent:
     """
-    Medical image classification agent (Org A).
+    Medical image classification agent (Org A) using LangGraph ReAct workflow.
     Specializes in X-ray, CT scan, and medical diagnoses.
 
-    Supports three modes:
-    1. Simulated (default): Fast, deterministic classification for testing
-    2. LLM-powered: Uses litellm for intelligent classification
-    3. MCP-enhanced: Uses external tools via MCP protocol (Lungo style)
+    The agent reasons about which MCP tools to call, gathers context,
+    then classifies the image with accumulated knowledge.
 
     Environment variables:
-    - USE_LLM=true: Enable LLM classification
+    - USE_LLM=true: Enable LLM classification (default: true)
     - USE_MCP=true: Enable MCP tools (requires medical_tools_service running)
     - MCP_TOPIC=medical_tools_service: MCP server topic
     """
@@ -33,134 +91,344 @@ class MedicalClassifierAgent:
     def __init__(self, agent_id: str = "org-a-medical-clf-001"):
         self.agent_id = agent_id
         self.medical_labels = [
-            "pneumonia",
-            "tuberculosis",
-            "normal",
-            "lung_nodule",
-            "fracture",
-            "pleural_effusion"
+            "pneumonia", "tuberculosis", "normal",
+            "lung_nodule", "fracture", "pleural_effusion"
         ]
 
         # Check if LLM mode is enabled
-        self.use_llm = os.getenv("USE_LLM", "false").lower() in ("true", "1", "yes")
+        self.use_llm = os.getenv("USE_LLM", "true").lower() in ("true", "1", "yes")
         self.llm = None
 
         if self.use_llm:
             try:
                 from config.llm_config import create_llm
                 self.llm = create_llm()
-                logger.info(f"Medical Agent initialized with LLM mode")
+                logger.info("Medical Agent initialized with LLM + ReAct workflow")
             except Exception as e:
                 logger.warning(f"Failed to initialize LLM, falling back to simulated mode: {e}")
                 self.use_llm = False
 
-        # Check if MCP mode is enabled (Lungo style via NATS/SLIM)
+        # Check if MCP mode is enabled
         self.use_mcp = os.getenv("USE_MCP", "false").lower() in ("true", "1", "yes")
         self.mcp_topic = os.getenv("MCP_TOPIC", "medical_tools_service")
         if self.use_mcp:
             logger.info(f"Medical Agent MCP enabled, topic: {self.mcp_topic}")
 
-    async def classify(self, request: Dict[str, Any]) -> ClassificationResult:
-        """
-        Classify medical image.
+        # Build the LangGraph ReAct workflow
+        self.graph = self._build_graph()
+        logger.info(f"ReAct workflow initialized: {self.agent_id}")
 
-        Args:
-            request: Classification request with image and prompt
+    # ========== Graph Construction ==========
 
-        Returns:
-            ClassificationResult
-        """
-        start_time = time.time()
+    def _build_graph(self) -> StateGraph:
+        """Build the LangGraph ReAct workflow."""
+        workflow = StateGraph(MedicalReActState)
 
-        # Download image if needed (for augmentation tests)
-        image_data = await self._get_image(request["image"])
+        # Add nodes
+        workflow.add_node("preprocess", self._preprocess_node)
+        workflow.add_node("reason", self._reason_node)
+        workflow.add_node("act_tool", self._act_tool_node)
+        workflow.add_node("act_classify", self._act_classify_node)
+        workflow.add_node("observe", self._observe_node)
+        workflow.add_node("finalize", self._finalize_node)
 
-        # Optionally enhance with MCP tools (e.g., search medical literature)
-        mcp_context = None
-        if self.use_mcp:
-            mcp_context = await self._enhance_with_mcp(request["prompt"])
+        # Edges
+        workflow.add_edge(START, "preprocess")
+        workflow.add_edge("preprocess", "reason")
 
-        # Choose classification method
-        reasoning = None
-        if self.use_llm and self.llm:
-            label, confidence, reasoning = await self._classify_with_llm(request["prompt"], image_data, mcp_context)
-        else:
-            label, confidence = self._classify_simulated(request["prompt"])
-
-        # Generate top-k predictions
-        top_k = self._generate_top_k(label, confidence)
-
-        # Calculate latency
-        latency_ms = int((time.time() - start_time) * 1000)
-
-        # MCP enhancement adds reasoning to the result
-        mcp_enhanced = mcp_context is not None
-
-        return ClassificationResult(
-            request_id=request["request_id"],
-            agent_id=self.agent_id,
-            label=label,
-            confidence=confidence,
-            top_k=top_k,
-            latency_ms=latency_ms,
-            timestamp=datetime.utcnow(),
-            mcp_enhanced=mcp_enhanced,
-            reasoning=reasoning
+        # After reasoning: conditional dispatch
+        workflow.add_conditional_edges(
+            "reason",
+            self._route_after_reason,
+            {
+                "call_tool": "act_tool",
+                "classify": "act_classify",
+                "done": "finalize",
+            }
         )
 
-    def _classify_simulated(self, prompt: str) -> tuple[str, float]:
-        """Simulated classification (fast, deterministic)."""
-        prompt_lower = prompt.lower()
+        # After actions: observe then loop back to reason
+        workflow.add_edge("act_tool", "observe")
+        workflow.add_edge("act_classify", "observe")
+        workflow.add_edge("observe", "reason")
 
-        if "pneumonia" in prompt_lower:
-            return "pneumonia", random.uniform(0.75, 0.95)
-        elif "tuberculosis" in prompt_lower or "tb" in prompt_lower:
-            return "tuberculosis", random.uniform(0.70, 0.90)
-        elif "normal" in prompt_lower:
-            return "normal", random.uniform(0.80, 0.95)
+        # Terminal
+        workflow.add_edge("finalize", END)
+
+        return workflow.compile()
+
+    def _route_after_reason(self, state: MedicalReActState) -> str:
+        """Route based on the LLM's ReAct decision.
+
+        Minimal guards — trust the LLM to drive the flow.
+        Only intervene for safety (infinite loops, missing classification).
+        """
+        action = state.get("next_action", "done")
+        iteration = state.get("iteration", 0)
+        max_iter = state.get("max_iterations", 5)
+
+        # Safety: prevent infinite loops
+        if iteration >= max_iter:
+            if state.get("classification_done"):
+                return "done"
+            return "classify"
+
+        # Trust the LLM's decision
+        if action == "call_tool":
+            return "call_tool"
+        elif action == "classify":
+            # Already classified — no point re-classifying, treat as done
+            if state.get("classification_done"):
+                return "done"
+            return "classify"
+        elif action == "done":
+            # Safety: don't finalize without classification
+            if not state.get("classification_done"):
+                return "classify"
+            return "done"
+
+        # Unparseable action — fallback
+        if not state.get("classification_done"):
+            return "classify"
+        return "done"
+
+    # ========== Node Implementations ==========
+
+    async def _preprocess_node(self, state: MedicalReActState) -> dict:
+        """Download and prepare image."""
+        image_data = await self._get_image_from_url(state.get("image_url", ""))
+        return {
+            "image_data": image_data,
+            "messages": [AIMessage(content=f"Preprocessed image: {len(image_data)} bytes")]
+        }
+
+    async def _reason_node(self, state: MedicalReActState) -> dict:
+        """LLM reasons about what to do next (core of ReAct).
+
+        The LLM chooses different tool sequences based on the user's prompt:
+        - "Analyze/identify" → classify first, then validate with literature
+        - "Diagnose/findings" → search literature first, then classify with context
+        """
+
+        # If MCP disabled, use simple rule-based flow
+        if not state["mcp_enabled"]:
+            return self._rule_based_reasoning(state)
+
+        # If LLM disabled, also use rule-based
+        if not state["llm_enabled"]:
+            return self._rule_based_reasoning(state)
+
+        # LLM-based reasoning — let the LLM decide whether to continue or stop
+        # Safety nets: _route_after_reason prevents re-classification, max_iterations caps loops
+        import litellm
+        from config.llm_config import LLM_MODEL
+
+        system_prompt = (
+            "You are a medical image classification agent using ReAct (Reasoning + Acting).\n\n"
+            "Available tools:\n"
+            "1. search_medical_literature(query, max_results) - Search PubMed for relevant articles\n"
+            "2. get_medical_reference(condition) - Get condition summary from MedlinePlus (NIH)\n"
+            "3. classify_image - Run the image classifier (vision model)\n\n"
+            "Strategy — adapt your approach to what the user asks for:\n\n"
+            "SIMPLE classification (classify, analyze, identify, detect, diagnose):\n"
+            "  Step 1: classify_image\n"
+            "  Step 2: done\n\n"
+            "EVIDENCE-BACKED requests (user asks for references, evidence, proof, supporting literature, detailed findings):\n"
+            "  Step 1: classify_image — look at the image first\n"
+            "  Step 2: search_medical_literature — find supporting literature for the finding\n"
+            "  Step 3: get_medical_reference — get condition summary from MedlinePlus\n"
+            "  Step 4: done\n\n"
+            "Rules:\n"
+            "- Output EXACTLY ONE action per response. Do NOT plan ahead or list multiple actions.\n"
+            "- You MUST call classify_image before saying done\n"
+            "- Only use search_medical_literature / get_medical_reference if the user asks for evidence or references\n"
+            "- Don't call the same tool twice with the same arguments\n\n"
+            "Respond in EXACTLY this format (three lines only, nothing else):\n"
+            "ACTION: <tool_name or classify_image or done>\n"
+            "ARGS: <JSON args if tool, {} otherwise>\n"
+            "REASON: <brief explanation>"
+        )
+
+        context = self._build_context_summary(state)
+
+        try:
+            response = await litellm.acompletion(
+                model=LLM_MODEL,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": context}
+                ],
+                max_tokens=300,
+            )
+            llm_output = response.choices[0].message.content.strip()
+            logger.info(f"ReAct reasoning output: {llm_output}")
+            action, tool_name, tool_args, reason = self._parse_reason_output(llm_output)
+
+            return {
+                "next_action": action,
+                "pending_tool_name": tool_name,
+                "pending_tool_args": tool_args,
+                "iteration": state["iteration"] + 1,
+                "messages": [AIMessage(content=f"Reason (iter {state['iteration'] + 1}): {reason} -> {action}")]
+            }
+        except Exception as e:
+            logger.error(f"ReAct reasoning failed: {e}, falling back to rule-based")
+            return self._rule_based_reasoning(state)
+
+    async def _act_tool_node(self, state: MedicalReActState) -> dict:
+        """Execute an MCP tool call."""
+        tool_name = state["pending_tool_name"]
+        tool_args = state.get("pending_tool_args", {})
+
+        result = await self._call_mcp_tool(tool_name, tool_args)
+
+        updated_context = dict(state.get("mcp_context", {}))
+        updated_context[tool_name] = result
+
+        tool_calls = list(state.get("tool_calls_made", []))
+        tool_calls.append(tool_name)
+
+        return {
+            "mcp_context": updated_context,
+            "tool_calls_made": tool_calls,
+            "messages": [AIMessage(content=f"Tool {tool_name}: {str(result)[:200]}")]
+        }
+
+    async def _act_classify_node(self, state: MedicalReActState) -> dict:
+        """Run image classification with accumulated MCP context."""
+        mcp_context = state.get("mcp_context", {})
+
+        if self.use_llm and self.llm:
+            label, confidence, reasoning, llm_top_k = await self._classify_with_llm(
+                state["prompt"], state["image_data"],
+                mcp_context if mcp_context else None
+            )
         else:
-            return random.choice(self.medical_labels), random.uniform(0.65, 0.88)
+            label, confidence = self._classify_simulated(state["prompt"])
+            reasoning = None
+            llm_top_k = []
 
-    async def _enhance_with_mcp(self, prompt: str) -> Optional[Dict[str, Any]]:
+        return {
+            "label": label,
+            "confidence": confidence,
+            "reasoning": reasoning,
+            "top_k": llm_top_k,
+            "classification_done": True,
+            "messages": [AIMessage(content=f"Classified: {label} ({confidence:.2f})")]
+        }
+
+    async def _observe_node(self, state: MedicalReActState) -> dict:
+        """Observe results of last action."""
+        messages = []
+        if state.get("classification_done"):
+            messages.append(AIMessage(
+                content=f"Observation: Classification done - {state['label']} ({state['confidence']:.2f})"
+            ))
+        tool_calls = state.get("tool_calls_made", [])
+        if tool_calls:
+            messages.append(AIMessage(
+                content=f"Observation: {len(tool_calls)} tool(s) called so far"
+            ))
+        return {"messages": messages}
+
+    async def _finalize_node(self, state: MedicalReActState) -> dict:
+        """Terminal node."""
+        return {
+            "messages": [AIMessage(content=f"Finalized: {state['label']} ({state['confidence']:.2f})")]
+        }
+
+    # ========== ReAct Helpers ==========
+
+    def _rule_based_reasoning(self, state: MedicalReActState) -> dict:
+        """Fallback when MCP/LLM is disabled — simple linear flow."""
+        if not state.get("classification_done"):
+            return {
+                "next_action": "classify",
+                "pending_tool_name": "",
+                "pending_tool_args": {},
+                "iteration": state["iteration"] + 1,
+                "messages": [AIMessage(content="Rule-based: classify next")]
+            }
+        return {
+            "next_action": "done",
+            "pending_tool_name": "",
+            "pending_tool_args": {},
+            "iteration": state["iteration"] + 1,
+            "messages": [AIMessage(content="Rule-based: done")]
+        }
+
+    def _build_context_summary(self, state: MedicalReActState) -> str:
+        """Build context string for the reasoning LLM."""
+        parts = [f"User request: {state['prompt']}"]
+        parts.append(f"Image: {'available' if state.get('image_data') else 'none'} ({len(state.get('image_data', b''))} bytes)")
+        parts.append(f"Iteration: {state['iteration']}/{state['max_iterations']}")
+
+        if state.get("tool_calls_made"):
+            parts.append(f"\nTools called: {', '.join(state['tool_calls_made'])}")
+            for tool_name, result in state.get("mcp_context", {}).items():
+                preview = str(result)[:300] if result else "no result"
+                parts.append(f"  {tool_name}: {preview}")
+
+        if state.get("classification_done"):
+            parts.append(f"\nClassification: {state['label']} (confidence: {state['confidence']:.2f})")
+            if state.get("reasoning"):
+                parts.append(f"Reasoning: {state['reasoning']}")
+        else:
+            parts.append("\nClassification: NOT YET DONE")
+
+        return "\n".join(parts)
+
+    def _parse_reason_output(self, llm_output: str) -> tuple:
+        """Parse the LLM reasoning output into (action, tool_name, tool_args, reason).
+
+        Picks the FIRST ACTION line only — ignores any extra actions the LLM may have output.
         """
-        Use MCP tools to enhance classification with medical literature.
-        Uses AGNTCY/Lungo style MCP via NATS/SLIM transport.
+        action = "done"
+        tool_name = ""
+        tool_args = {}
+        reason = ""
+        action_found = False
 
-        Based on lungo's agents/farms/colombia/agent.py pattern:
-        - factory.create_transport() to create transport
-        - factory.create_client("MCP", ...) to create MCP client
+        mcp_tools = {"search_medical_literature", "get_medical_reference"}
 
-        Args:
-            prompt: User prompt
+        for line in llm_output.strip().split("\n"):
+            line = line.strip()
+            if line.upper().startswith("ACTION:") and not action_found:
+                raw = line.split(":", 1)[1].strip().lower()
+                if raw in mcp_tools:
+                    action = "call_tool"
+                    tool_name = raw
+                elif raw in ("classify_image", "classify"):
+                    action = "classify"
+                else:
+                    action = "done"
+                action_found = True
+            elif line.upper().startswith("ARGS:") and action_found and not tool_args:
+                try:
+                    tool_args = json.loads(line.split(":", 1)[1].strip())
+                except (json.JSONDecodeError, ValueError):
+                    tool_args = {}
+            elif line.upper().startswith("REASON:") and action_found and not reason:
+                reason = line.split(":", 1)[1].strip()
+                break  # Got all three fields for the first action, stop
 
-        Returns:
-            Enhanced context with MCP tool results, or None if failed
-        """
+        return action, tool_name, tool_args, reason
+
+    # ========== MCP Tool Calling ==========
+
+    async def _call_mcp_tool(self, tool_name: str, arguments: dict) -> Optional[str]:
+        """Call a single MCP tool via NATS/SLIM transport."""
         from agntcy_app_sdk.factory import AgntcyFactory
 
-        # Extract potential medical terms from prompt
-        medical_terms = []
-        for label in self.medical_labels:
-            if label.lower() in prompt.lower():
-                medical_terms.append(label)
-
-        if not medical_terms:
-            medical_terms = ["medical image"]
-
-        query = " ".join(medical_terms)
-
-        # Connect to MCP server via NATS/SLIM (Lungo style)
         transport_type = os.getenv("DEFAULT_MESSAGE_TRANSPORT", "NATS")
         endpoint = os.getenv("TRANSPORT_SERVER_ENDPOINT", "nats://localhost:4222")
 
         factory = AgntcyFactory("agntcy_network.medical_mcp_client", enable_tracing=False)
-
         transport = factory.create_transport(
             transport_type,
             endpoint=endpoint,
             name="default/default/medical_mcp_client"
         )
-
         mcp_client = factory.create_client(
             "MCP",
             agent_topic=self.mcp_topic,
@@ -170,41 +438,14 @@ class MedicalClassifierAgent:
 
         try:
             async with mcp_client as client:
-                # List available tools
-                response = await client.list_tools()
-                available_tools = [tool.name for tool in response.tools]
-                logger.info(f"MCP tools available: {available_tools}")
-
-                # Search medical literature
-                result = await client.call_tool(
-                    name="search_medical_literature",
-                    arguments={"query": query, "max_results": 3}
-                )
-
-                # Parse result (handle streamed or non-streamed response)
-                content = self._parse_mcp_result(result)
-                if content:
-                    logger.info(f"MCP enhanced with literature search for: {query}")
-                    return {"literature_context": content}
-
-                # Try to get reference if search returned empty
-                if medical_terms:
-                    ref_result = await client.call_tool(
-                        name="get_medical_reference",
-                        arguments={"condition": medical_terms[0]}
-                    )
-                    ref_content = self._parse_mcp_result(ref_result)
-                    if ref_content:
-                        logger.info(f"MCP enhanced with reference for: {medical_terms[0]}")
-                        return {"literature_context": ref_content}
-
+                result = await client.call_tool(name=tool_name, arguments=arguments)
+                return self._parse_mcp_result(result)
         except Exception as e:
-            logger.debug(f"MCP enhancement skipped: {e}")
-
-        return None
+            logger.debug(f"MCP tool {tool_name} failed: {e}")
+            return None
 
     def _parse_mcp_result(self, result) -> Optional[str]:
-        """Parse MCP tool result (handles both streamed and non-streamed responses)."""
+        """Parse MCP tool result."""
         try:
             if hasattr(result, "content"):
                 content_list = result.content
@@ -214,40 +455,58 @@ class MedicalClassifierAgent:
         except Exception:
             return None
 
-    async def _classify_with_llm(self, prompt: str, image_data: bytes = None, mcp_context: Dict = None) -> tuple[str, float, Optional[str]]:
-        """LLM-powered vision classification using litellm directly."""
-        import base64
+    # ========== Classification ==========
+
+    def _classify_simulated(self, prompt: str) -> tuple[str, float]:
+        """Simulated classification (fast, deterministic)."""
+        prompt_lower = prompt.lower()
+        if "pneumonia" in prompt_lower:
+            return "pneumonia", random.uniform(0.75, 0.95)
+        elif "tuberculosis" in prompt_lower or "tb" in prompt_lower:
+            return "tuberculosis", random.uniform(0.70, 0.90)
+        elif "normal" in prompt_lower:
+            return "normal", random.uniform(0.80, 0.95)
+        return random.choice(self.medical_labels), random.uniform(0.65, 0.88)
+
+    async def _classify_with_llm(self, prompt: str, image_data: bytes = None, mcp_context: Dict = None) -> tuple:
+        """LLM-powered vision classification using litellm."""
         import litellm
         from config.llm_config import LLM_MODEL
 
-        has_mcp = mcp_context and mcp_context.get("literature_context")
+        # Build MCP context text from accumulated tool results
+        has_mcp = mcp_context and any(v for v in mcp_context.values())
 
-        # Build instruction - different format when MCP is enabled
         if has_mcp:
-            # With MCP: Ask for reasoning based on medical literature
+            context_parts = []
+            for tool_name, result in mcp_context.items():
+                if result:
+                    context_parts.append(f"{tool_name}:\n{result}")
+            mcp_text = "\n\n".join(context_parts)
+
             text_instruction = (
                 f"You are a medical image classification expert with access to medical literature.\n"
                 f"Analyze this medical image and provide your diagnosis.\n"
                 f"User request: {prompt}\n\n"
-                f"Medical literature context:\n{mcp_context['literature_context']}\n\n"
-                f"Based on the image AND the medical literature above, provide your diagnosis.\n"
+                f"Medical context:\n{mcp_text}\n\n"
+                f"Based on the image AND the medical context above, provide your diagnosis.\n"
                 f"Respond in this exact format:\n"
-                f"LABEL: <a concise 1-3 word medical diagnosis label, e.g. 'pneumonia', 'bone fracture', 'brain tumor'>\n"
-                f"CONFIDENCE: <confidence score between 0.0 and 1.0>\n"
-                f"REASONING: <brief explanation citing the literature>"
+                f"LABEL1: <most likely diagnosis> | CONFIDENCE1: <score 0.0-1.0>\n"
+                f"LABEL2: <second most likely> | CONFIDENCE2: <score 0.0-1.0>\n"
+                f"LABEL3: <third most likely> | CONFIDENCE3: <score 0.0-1.0>\n"
+                f"REASONING: <brief explanation citing the medical context>"
             )
-            max_tokens = 300
+            max_tokens = 500
         else:
-            # Without MCP: Free-form classification
             text_instruction = (
                 f"You are a medical image classification expert.\n"
                 f"Analyze this medical image and provide your classification.\n"
                 f"User request: {prompt}\n\n"
                 f"Respond in this exact format (nothing else):\n"
-                f"LABEL: <a concise 1-3 word medical diagnosis label, e.g. 'pneumonia', 'bone fracture', 'brain tumor'>\n"
-                f"CONFIDENCE: <confidence score between 0.0 and 1.0>"
+                f"LABEL1: <most likely diagnosis> | CONFIDENCE1: <score 0.0-1.0>\n"
+                f"LABEL2: <second most likely> | CONFIDENCE2: <score 0.0-1.0>\n"
+                f"LABEL3: <third most likely> | CONFIDENCE3: <score 0.0-1.0>"
             )
-            max_tokens = 150
+            max_tokens = 200
 
         content = [{"type": "text", "text": text_instruction}]
         if image_data:
@@ -269,50 +528,152 @@ class MedicalClassifierAgent:
             label = "unclassified"
             confidence = 0.5
             reasoning = None
+            top_k = []
 
             for line in llm_output.split("\n"):
-                if line.upper().startswith("LABEL:"):
+                line_upper = line.upper().strip()
+                if line_upper.startswith("REASONING:"):
+                    reasoning = line.split(":", 1)[1].strip()
+                elif "|" in line and "LABEL" in line_upper and "CONFIDENCE" in line_upper:
+                    parts = line.split("|")
+                    try:
+                        lbl = parts[0].split(":", 1)[1].strip().lower()
+                        conf = float(parts[1].split(":", 1)[1].strip())
+                        top_k.append((lbl, conf))
+                    except Exception:
+                        pass
+                elif line_upper.startswith("LABEL:"):
                     label = line.split(":", 1)[1].strip().lower()
-                elif line.upper().startswith("CONFIDENCE:"):
+                elif line_upper.startswith("CONFIDENCE:"):
                     try:
                         confidence = float(line.split(":", 1)[1].strip())
                     except Exception:
                         pass
-                elif line.upper().startswith("REASONING:"):
-                    reasoning = line.split(":", 1)[1].strip()
 
-            return label, confidence, reasoning
+            if top_k:
+                label, confidence = top_k[0]
+
+            return label, confidence, reasoning, top_k
         except Exception as e:
             logger.error(f"LLM vision classification failed: {e}, falling back to simulated")
             label, confidence = self._classify_simulated(prompt)
-            return label, confidence, None
+            return label, confidence, None, []
 
-    async def _get_image(self, image_source: Dict[str, Any]) -> bytes:
-        """Download image from presigned URL, regular URL, or decode base64"""
-        # Try presigned_url first, then regular url
-        url = image_source.get("presigned_url") or image_source.get("url")
-        if url:
+    # ========== Image Handling ==========
+
+    async def _get_image_from_url(self, url: str) -> bytes:
+        """Download image from URL."""
+        if not url or url.startswith("simulated://"):
+            return b""
+        try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(url) as response:
                     return await response.read()
+        except Exception as e:
+            logger.error(f"Failed to download image: {e}")
+            return b""
+
+    async def _get_image(self, image_source: Dict[str, Any]) -> bytes:
+        """Download image from presigned URL, regular URL, or decode base64."""
+        url = image_source.get("presigned_url") or image_source.get("url")
+        if url:
+            return await self._get_image_from_url(url)
         elif image_source.get("bytes"):
-            import base64
             return base64.b64decode(image_source["bytes"])
         return b""
 
     def _generate_top_k(self, predicted_label: str, predicted_confidence: float) -> list:
-        """Generate top-k predictions"""
+        """Generate fallback top-k predictions from predefined labels."""
         top_k = [
             TopKPrediction(label=predicted_label, confidence=predicted_confidence, rank=1)
         ]
-
-        # Add other labels with decreasing confidence
         other_labels = [l for l in self.medical_labels if l != predicted_label]
         random.shuffle(other_labels)
-
         remaining_confidence = 1.0 - predicted_confidence
         for i, label in enumerate(other_labels[:2]):
             conf = remaining_confidence * random.uniform(0.3, 0.7) if i == 0 else remaining_confidence * 0.3
             top_k.append(TopKPrediction(label=label, confidence=round(conf, 3), rank=i + 2))
-
         return top_k
+
+    # ========== Entry Point ==========
+
+    async def classify(self, request: Dict[str, Any]) -> ClassificationResult:
+        """
+        Main entry point — runs the LangGraph ReAct workflow.
+
+        Args:
+            request: Classification request with image and prompt
+
+        Returns:
+            ClassificationResult
+        """
+        request_id = request.get("request_id", f"req-{datetime.utcnow().timestamp()}")
+        image_data = request.get("image", {})
+        image_url = (
+            image_data.get("presigned_url") or
+            image_data.get("url") or
+            ""
+        )
+        prompt = request.get("prompt", "Classify this medical image")
+
+        start_time = time.time()
+
+        # Initialize ReAct state
+        initial_state: MedicalReActState = {
+            "request_id": request_id,
+            "prompt": prompt,
+            "image_url": image_url,
+            "image_data": b"",
+            "iteration": 0,
+            "max_iterations": 5,
+            "mcp_context": {},
+            "tool_calls_made": [],
+            "label": "",
+            "confidence": 0.0,
+            "top_k": [],
+            "reasoning": None,
+            "next_action": "",
+            "pending_tool_name": "",
+            "pending_tool_args": {},
+            "classification_done": False,
+            "mcp_enabled": self.use_mcp,
+            "llm_enabled": self.use_llm and self.llm is not None,
+            "messages": [HumanMessage(content=prompt)]
+        }
+
+        # Run the ReAct workflow
+        final_state = await self.graph.ainvoke(initial_state)
+
+        latency_ms = int((time.time() - start_time) * 1000)
+
+        # Build top-k predictions
+        llm_top_k = final_state.get("top_k", [])
+        if llm_top_k and isinstance(llm_top_k[0], tuple):
+            top_k = [TopKPrediction(label=lbl, confidence=conf, rank=i + 1)
+                      for i, (lbl, conf) in enumerate(llm_top_k)]
+        else:
+            top_k = self._generate_top_k(final_state["label"], final_state["confidence"])
+
+        # Log workflow trace
+        for msg in final_state.get("messages", []):
+            if hasattr(msg, "content"):
+                logger.debug(f"  ReAct: {msg.content}")
+
+        # Build mcp_context: only include non-None results
+        mcp_context = None
+        raw_mcp = final_state.get("mcp_context", {})
+        if raw_mcp:
+            mcp_context = {k: v for k, v in raw_mcp.items() if v}
+
+        return ClassificationResult(
+            request_id=request_id,
+            agent_id=self.agent_id,
+            label=final_state["label"],
+            confidence=final_state["confidence"],
+            top_k=top_k,
+            latency_ms=latency_ms,
+            timestamp=datetime.utcnow(),
+            mcp_enhanced=bool(final_state.get("tool_calls_made")),
+            reasoning=final_state.get("reasoning"),
+            mcp_context=mcp_context if mcp_context else None
+        )

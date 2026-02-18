@@ -197,14 +197,13 @@ class LangGraphPlannerAgent:
         workflow.add_edge("execute_tasks", "reflection")
         workflow.add_edge("reflection", "check_status")
 
-        # Conditional: success vs replan vs human review
+        # Conditional: success vs replan vs max_replans
         workflow.add_conditional_edges(
             "check_status",
             self._decide_next_action,
             {
                 "success": "finalize_response",
                 "replan": "supervisor",  # Loop back for next iteration
-                "human_review": "finalize_response",
                 "max_replans": "finalize_response",
                 "error": "handle_error"
             }
@@ -658,8 +657,30 @@ INSTRUCTIONS:
                 label = response_text.strip()
                 confidence = 0.8
                 top_k = []
+                mcp_enhanced = False
+                reasoning = None
+                mcp_context = {}
 
-                for line in response_text.split("\n"):
+                # Split into main section and MCP Evidence section
+                main_text = response_text
+                if "\nMCP Evidence:" in response_text:
+                    main_text, evidence_text = response_text.split("\nMCP Evidence:", 1)
+                    # Parse MCP Evidence: [tool_name]\nresult\n\n[tool_name]\n...
+                    current_tool = None
+                    current_lines = []
+                    for eline in evidence_text.split("\n"):
+                        eline_stripped = eline.strip()
+                        if eline_stripped.startswith("[") and eline_stripped.endswith("]"):
+                            if current_tool and current_lines:
+                                mcp_context[current_tool] = "\n".join(current_lines)
+                            current_tool = eline_stripped[1:-1]
+                            current_lines = []
+                        elif current_tool:
+                            current_lines.append(eline_stripped)
+                    if current_tool and current_lines:
+                        mcp_context[current_tool] = "\n".join(current_lines)
+
+                for line in main_text.split("\n"):
                     line_stripped = line.strip()
                     if line_stripped.startswith("Label:"):
                         label = line_stripped.split(":", 1)[1].strip()
@@ -668,6 +689,10 @@ INSTRUCTIONS:
                             confidence = float(line_stripped.split(":", 1)[1].strip())
                         except ValueError:
                             pass
+                    elif line_stripped.startswith("MCP Enhanced:"):
+                        mcp_enhanced = line_stripped.split(":", 1)[1].strip().lower() == "true"
+                    elif line_stripped.startswith("Reasoning:"):
+                        reasoning = line_stripped.split(":", 1)[1].strip()
                     else:
                         # Parse "1. label text (0.95)" prediction lines
                         match = re.match(r"^\d+\.\s+(.+?)\s+\(([0-9.]+)\)\s*$", line_stripped)
@@ -687,7 +712,10 @@ INSTRUCTIONS:
                     label=label,
                     confidence=confidence,
                     top_k=top_k,
-                    latency_ms=0
+                    latency_ms=0,
+                    mcp_enhanced=mcp_enhanced,
+                    reasoning=reasoning,
+                    mcp_context=mcp_context if mcp_context else None
                 )
         except Exception as e:
             logger.error(f"Error parsing result: {e}")
@@ -744,11 +772,17 @@ INSTRUCTIONS:
                     ShouldContinue, strict=True
                 )
 
-                # Build concise context (Lungo style - simple and clear)
-                results_summary = "\n".join([
-                    f"- {r.agent_id}: {r.label} ({r.confidence:.2f})"
-                    for r in results
-                ])
+                # Build concise context with top-k distribution
+                result_lines = []
+                for r in results:
+                    top_k_str = ", ".join(
+                        f"{p.label}={p.confidence:.2f}" for p in r.top_k[:3]
+                    ) if r.top_k else ""
+                    line = f"- {r.agent_id}: {r.label} ({r.confidence:.2f})"
+                    if top_k_str:
+                        line += f"  [top-k: {top_k_str}]"
+                    result_lines.append(line)
+                results_summary = "\n".join(result_lines)
 
                 verifier_status = verification_report.status.value if verification_report else "N/A"
                 verifier_notes = verification_report.notes if verification_report else ""
@@ -763,12 +797,15 @@ Decision rules:
 - CONTINUE (should_continue=true): Results are poor (low confidence, errors) and retrying may help
 
 Mismatch detection:
-If agent results indicate the image does NOT match the domain in the prompt
-(e.g., a medical classifier labels it "non-medical", or a satellite classifier returns "unknown"
-for a medical image), this is a PROMPT-IMAGE MISMATCH.
+If agent results indicate the image does NOT match the domain in the prompt,
+this is a PROMPT-IMAGE MISMATCH. Signs of mismatch:
+- A classifier returns "non-medical", "unknown", or an out-of-domain label
+- Top-k predictions show near-uniform confidence (e.g., 0.25, 0.25, 0.25) — the classifier
+  cannot distinguish between classes, meaning the image is likely outside its domain
+- All classifiers have very low confidence (< 0.3) with similar scores across top-k
 In this case: set should_continue=false AND mismatch_detected=true.
 Retrying will NOT help — the image content genuinely does not match the request.
-Explain in 'reason' what the image appears to be vs what was requested."""
+Explain in 'reason' what the mismatch is (e.g., "image may not be a satellite image")."""
                 )
 
                 user_msg = HumanMessage(
@@ -833,13 +870,10 @@ Verifier: {verifier_status} - {verifier_notes}"""
         logger.info(f"[{state['request_id']}] Checking status...")
 
         status = state.get("verification_status", "FAIL")
-        recommendation = state.get("verification_recommendation", "replan")
         iteration = state["iteration"]
 
         if status == "PASS":
             state["messages"].append(AIMessage(content="Status: SUCCESS"))
-        elif recommendation == "human_review":
-            state["messages"].append(AIMessage(content="Status: NEEDS_HUMAN_REVIEW"))
         elif iteration >= MAX_REPLANS:
             state["messages"].append(AIMessage(content="Status: MAX_REPLANS_EXCEEDED"))
         else:
@@ -882,30 +916,12 @@ Verifier: {verifier_status} - {verifier_notes}"""
             if mismatch_warning:
                 response["mismatch_warning"] = mismatch_warning
                 response["status"] = "COMPLETED_WITH_WARNING"
-        elif state.get("verification_recommendation") == "human_review":
-            response = {
-                "status": "NEEDS_REVIEW",
-                "result": results[0].model_dump() if results else None,
-                "intent": state.get("intent", {}),
-                "verification": verification_report,
-                "iterations": iteration,
-                "message": "LLM reflection: Human review required.",
-                "workflow_messages": [msg.content for msg in state["messages"]]
-            }
         elif iteration >= MAX_REPLANS:
             response = {
                 "status": "INCONCLUSIVE",
                 "error": "MAX_REPLANS_EXCEEDED",
                 "intent": state.get("intent", {}),
                 "message": f"Failed to get verified result after {MAX_REPLANS} attempts",
-                "iterations": iteration,
-                "workflow_messages": [msg.content for msg in state["messages"]]
-            }
-        else:
-            response = {
-                "status": "FAILED",
-                "error": state.get("error", "UNKNOWN_ERROR"),
-                "intent": state.get("intent", {}),
                 "iterations": iteration,
                 "workflow_messages": [msg.content for msg in state["messages"]]
             }
@@ -972,20 +988,17 @@ Verifier: {verifier_status} - {verifier_notes}"""
 
         return "simple"
 
-    def _decide_next_action(self, state: PlannerState) -> Literal["success", "replan", "human_review", "max_replans", "error"]:
+    def _decide_next_action(self, state: PlannerState) -> Literal["success", "replan", "max_replans", "error"]:
         """Decide what to do after verification"""
 
         if state.get("error"):
             return "error"
 
         status = state.get("verification_status", "FAIL")
-        recommendation = state.get("verification_recommendation", "replan")
         iteration = state["iteration"]
 
         if status == "PASS":
             return "success"
-        elif recommendation == "human_review":
-            return "human_review"
         elif iteration >= MAX_REPLANS:
             return "max_replans"
         else:

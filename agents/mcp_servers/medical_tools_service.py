@@ -14,7 +14,11 @@ via NATS/SLIM transport.
 import asyncio
 import logging
 import os
-from typing import Any, Dict, List
+import re
+import xml.etree.ElementTree as ET
+from typing import List, Dict, Any, Optional
+
+import aiohttp
 
 from mcp.server.fastmcp import FastMCP
 from agntcy_app_sdk.factory import AgntcyFactory
@@ -28,6 +32,11 @@ DEFAULT_MESSAGE_TRANSPORT = os.getenv("DEFAULT_MESSAGE_TRANSPORT", "NATS")
 TRANSPORT_SERVER_ENDPOINT = os.getenv("TRANSPORT_SERVER_ENDPOINT", "nats://localhost:4222")
 SERVICE_TOPIC = "medical_tools_service"
 
+# PubMed E-utilities API
+PUBMED_SEARCH_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
+PUBMED_SUMMARY_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi"
+PUBMED_LINK_BASE = "https://pubmed.ncbi.nlm.nih.gov"
+
 # Initialize factory
 factory = AgntcyFactory("agntcy_network.medical_mcp", enable_tracing=False)
 
@@ -36,192 +45,210 @@ mcp = FastMCP()
 
 
 # ============================================
+# PubMed API Helpers
+# ============================================
+
+async def _search_pubmed(query: str, max_results: int = 5) -> List[Dict[str, str]]:
+    """Search PubMed via E-utilities and return structured results."""
+    timeout = aiohttp.ClientTimeout(total=15)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        # Step 1: ESearch — get PMIDs
+        search_params = {
+            "db": "pubmed",
+            "term": query,
+            "retmax": max_results,
+            "retmode": "json",
+            "sort": "relevance",
+        }
+        async with session.get(PUBMED_SEARCH_URL, params=search_params) as resp:
+            resp.raise_for_status()
+            search_data = await resp.json()
+
+        id_list = search_data.get("esearchresult", {}).get("idlist", [])
+        if not id_list:
+            return []
+
+        # Step 2: ESummary — get paper metadata
+        summary_params = {
+            "db": "pubmed",
+            "id": ",".join(id_list),
+            "retmode": "json",
+        }
+        async with session.get(PUBMED_SUMMARY_URL, params=summary_params) as resp:
+            resp.raise_for_status()
+            summary_data = await resp.json()
+
+        results = []
+        for pmid in id_list:
+            article = summary_data.get("result", {}).get(pmid, {})
+            if not article or "error" in article:
+                continue
+
+            authors_list = article.get("authors", [])
+            authors = ", ".join(a.get("name", "") for a in authors_list[:3])
+            if len(authors_list) > 3:
+                authors += " et al."
+
+            journal = article.get("fulljournalname", article.get("source", ""))
+            pub_date = article.get("pubdate", "")
+            year = pub_date[:4] if pub_date else ""
+
+            results.append({
+                "title": article.get("title", "Untitled"),
+                "authors": authors,
+                "journal": journal,
+                "year": year,
+                "url": f"{PUBMED_LINK_BASE}/{pmid}/",
+            })
+
+        return results
+
+
+# ============================================
 # MCP Tools
 # ============================================
+
+def _simplify_query(query: str) -> str:
+    """Simplify a long query for PubMed by keeping key medical terms."""
+    # Remove filler words
+    stopwords = {
+        "and", "or", "the", "a", "an", "for", "of", "in", "on", "with",
+        "to", "is", "are", "from", "by", "key", "evidence", "findings",
+        "imaging", "signs", "diagnostic", "criteria", "identified",
+        "suspected", "condition", "image", "medical", "radiograph",
+    }
+    words = query.replace("'", "").replace('"', "").split()
+    kept = [w for w in words if w.lower() not in stopwords]
+    # Keep at most 6 terms
+    return " ".join(kept[:6])
+
 
 @mcp.tool()
 async def search_medical_literature(query: str, max_results: int = 5) -> str:
     """
-    Search medical literature databases for relevant articles.
+    Search PubMed medical literature for relevant articles.
 
     Args:
         query: Search query (e.g., "pneumonia diagnosis")
         max_results: Maximum number of results to return
 
     Returns:
-        Formatted search results
+        Formatted search results with titles, authors, journal, and PubMed links
     """
-    logger.info(f"Searching medical literature for: {query}")
+    logger.info(f"Searching PubMed for: {query}")
 
-    query_lower = query.lower()
+    try:
+        results = await _search_pubmed(query, max_results)
 
-    # Condition-specific literature results
-    if "fracture" in query_lower or "bone" in query_lower:
-        mock_results = [
-            {
-                "title": "AI-Assisted Bone Fracture Detection in X-ray Images: A Systematic Review",
-                "authors": "Zhang Y, Roberts M, Anderson K",
-                "journal": "Journal of Orthopedic Radiology",
-                "year": 2024,
-                "abstract": "Deep learning models achieve 95%+ accuracy in detecting fractures. Key imaging signs include cortical disruption, fracture lines, and bone fragment displacement."
-            },
-            {
-                "title": "Radiographic Assessment of Bone Fractures: Best Practices",
-                "authors": "Williams J, Chen H",
-                "journal": "Radiology Today",
-                "year": 2024,
-                "abstract": "Standard X-ray views essential for fracture diagnosis. Look for: cortical breaks, trabecular disruption, soft tissue swelling, and periosteal reaction."
-            },
-            {
-                "title": "Classification and Management of Long Bone Fractures",
-                "authors": "Orthopedic Society Guidelines",
-                "journal": "Clinical Orthopedics",
-                "year": 2023,
-                "abstract": "Fracture classification systems (AO/OTA) guide treatment. Key factors: fracture location, displacement degree, comminution, and joint involvement."
-            }
-        ]
-    else:
-        # Generic medical literature results
-        mock_results = [
-            {
-                "title": f"Recent advances in {query} diagnosis",
-                "authors": "Smith J, Johnson K",
-                "journal": "Medical Imaging Journal",
-                "year": 2024,
-                "abstract": f"This study examines new techniques for {query} detection using AI."
-            },
-            {
-                "title": f"Machine learning approaches to {query}",
-                "authors": "Chen L, Wang M",
-                "journal": "AI in Medicine",
-                "year": 2024,
-                "abstract": f"A comprehensive review of ML methods for {query} classification."
-            },
-            {
-                "title": f"Clinical guidelines for {query}",
-                "authors": "Medical Association",
-                "journal": "Clinical Standards",
-                "year": 2023,
-                "abstract": f"Updated clinical guidelines for diagnosing and treating {query}."
-            }
-        ]
+        # Retry with simplified query if no results
+        if not results:
+            simplified = _simplify_query(query)
+            if simplified != query:
+                logger.info(f"No results, retrying with simplified query: {simplified}")
+                results = await _search_pubmed(simplified, max_results)
 
-    # Format results
-    output = f"Found {len(mock_results[:max_results])} results for '{query}':\n\n"
-    for i, result in enumerate(mock_results[:max_results], 1):
-        output += f"{i}. {result['title']}\n"
-        output += f"   Authors: {result['authors']}\n"
-        output += f"   Journal: {result['journal']} ({result['year']})\n"
-        output += f"   Abstract: {result['abstract'][:100]}...\n\n"
+        if not results:
+            return f"No results found on PubMed for '{query}'"
 
-    return output
+        output = f"Found {len(results)} results for '{query}':\n\n"
+        for i, r in enumerate(results, 1):
+            output += f"{i}. {r['title']}\n"
+            output += f"   Authors: {r['authors']}\n"
+            output += f"   Journal: {r['journal']} ({r['year']})\n"
+            output += f"   URL: {r['url']}\n\n"
+
+        return output
+
+    except Exception as e:
+        logger.warning(f"PubMed API failed ({e}), returning error")
+        return f"PubMed search failed for '{query}': {e}"
+
+
+# ============================================
+# MedlinePlus API Helpers
+# ============================================
+
+MEDLINEPLUS_SEARCH_URL = "https://wsearch.nlm.nih.gov/ws/query"
+
+
+def _strip_html(text: str) -> str:
+    """Remove HTML tags from text."""
+    return re.sub(r"<[^>]+>", "", text).strip()
+
+
+async def _search_medlineplus(condition: str) -> Optional[Dict[str, str]]:
+    """Search MedlinePlus Health Topics for a condition summary."""
+    timeout = aiohttp.ClientTimeout(total=10)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        params = {
+            "db": "healthTopics",
+            "term": condition,
+            "retmax": 1,
+        }
+        async with session.get(MEDLINEPLUS_SEARCH_URL, params=params) as resp:
+            if resp.status != 200:
+                return None
+            xml_text = await resp.text()
+
+    try:
+        root = ET.fromstring(xml_text)
+        doc = root.find(".//document")
+        if doc is None:
+            return None
+
+        url = doc.get("url", "")
+        title = ""
+        summary = ""
+
+        for content in doc.findall("content"):
+            name = content.get("name", "")
+            text = content.text or ""
+            if name == "title":
+                title = text.strip()
+            elif name == "FullSummary":
+                summary = _strip_html(text)
+            elif name == "snippet" and not summary:
+                summary = _strip_html(text)
+
+        if not title or not summary:
+            return None
+
+        return {"title": title, "summary": summary, "url": url}
+    except ET.ParseError:
+        return None
 
 
 @mcp.tool()
 async def get_medical_reference(condition: str) -> str:
     """
-    Get reference information about a medical condition.
+    Get reference information about a medical condition from MedlinePlus (NIH).
 
     Args:
-        condition: Medical condition name (e.g., "pneumonia", "tuberculosis")
+        condition: Medical condition name (e.g., "pneumonia", "fracture")
 
     Returns:
-        Reference information about the condition
+        Medical condition summary with description and MedlinePlus link
     """
-    logger.info(f"Getting reference for condition: {condition}")
+    logger.info(f"Getting MedlinePlus reference for: {condition}")
 
-    # Simulated reference data
-    references = {
-        "pneumonia": {
-            "description": "Infection that inflames air sacs in one or both lungs",
-            "symptoms": ["Cough", "Fever", "Difficulty breathing", "Chest pain"],
-            "imaging_signs": ["Consolidation", "Air bronchograms", "Ground-glass opacity"],
-            "common_causes": ["Bacteria", "Viruses", "Fungi"]
-        },
-        "tuberculosis": {
-            "description": "Bacterial infection primarily affecting the lungs",
-            "symptoms": ["Persistent cough", "Weight loss", "Night sweats", "Fever"],
-            "imaging_signs": ["Cavitation", "Upper lobe infiltrates", "Miliary pattern"],
-            "common_causes": ["Mycobacterium tuberculosis"]
-        },
-        "lung_nodule": {
-            "description": "Small rounded growth in the lung",
-            "symptoms": ["Often asymptomatic", "May cause cough if large"],
-            "imaging_signs": ["Well-defined rounded opacity", "Size < 3cm"],
-            "common_causes": ["Infection", "Inflammation", "Neoplasm"]
-        },
-        "fracture": {
-            "description": "A break or crack in a bone, commonly caused by trauma or stress",
-            "symptoms": ["Severe pain at injury site", "Swelling and bruising", "Deformity", "Limited mobility", "Tenderness"],
-            "imaging_signs": ["Cortical disruption", "Fracture line visible on X-ray", "Displacement of bone fragments", "Soft tissue swelling", "Periosteal reaction in healing fractures"],
-            "common_causes": ["Trauma (falls, accidents)", "Sports injuries", "Osteoporosis", "Stress/overuse", "Pathological conditions"]
-        },
-        "bone_fracture": {
-            "description": "A break or crack in a bone, commonly caused by trauma or stress",
-            "symptoms": ["Severe pain at injury site", "Swelling and bruising", "Deformity", "Limited mobility", "Tenderness"],
-            "imaging_signs": ["Cortical disruption", "Fracture line visible on X-ray", "Displacement of bone fragments", "Soft tissue swelling", "Periosteal reaction in healing fractures"],
-            "common_causes": ["Trauma (falls, accidents)", "Sports injuries", "Osteoporosis", "Stress/overuse", "Pathological conditions"]
-        }
-    }
+    try:
+        result = await _search_medlineplus(condition)
+        if not result:
+            return f"No MedlinePlus reference found for: {condition}"
 
-    condition_lower = condition.lower().replace(" ", "_")
-    if condition_lower in references:
-        ref = references[condition_lower]
-        output = f"Medical Reference: {condition.title()}\n\n"
-        output += f"Description: {ref['description']}\n\n"
-        output += f"Common Symptoms:\n"
-        for symptom in ref['symptoms']:
-            output += f"  - {symptom}\n"
-        output += f"\nImaging Signs:\n"
-        for sign in ref['imaging_signs']:
-            output += f"  - {sign}\n"
-        output += f"\nCommon Causes:\n"
-        for cause in ref['common_causes']:
-            output += f"  - {cause}\n"
+        # Truncate long summaries
+        summary = result["summary"]
+        if len(summary) > 1000:
+            summary = summary[:1000] + "..."
+
+        output = f"Medical Reference: {result['title']}\n\n"
+        output += f"Description: {summary}\n\n"
+        output += f"Source: {result['url']}"
         return output
-    else:
-        return f"No reference found for condition: {condition}"
 
-
-@mcp.tool()
-async def calculate_confidence_adjustment(
-    base_confidence: float,
-    image_quality: str = "good",
-    patient_history_available: bool = False
-) -> Dict[str, Any]:
-    """
-    Calculate adjusted confidence score based on clinical factors.
-
-    Args:
-        base_confidence: Initial confidence score (0-1)
-        image_quality: Quality of the medical image ("poor", "fair", "good", "excellent")
-        patient_history_available: Whether patient history is available
-
-    Returns:
-        Adjusted confidence and reasoning
-    """
-    logger.info(f"Calculating confidence adjustment: base={base_confidence}")
-
-    quality_factors = {
-        "poor": 0.7,
-        "fair": 0.85,
-        "good": 1.0,
-        "excellent": 1.1
-    }
-
-    quality_factor = quality_factors.get(image_quality.lower(), 1.0)
-    history_factor = 1.1 if patient_history_available else 1.0
-
-    adjusted = min(base_confidence * quality_factor * history_factor, 1.0)
-
-    return {
-        "original_confidence": base_confidence,
-        "adjusted_confidence": round(adjusted, 3),
-        "quality_factor": quality_factor,
-        "history_factor": history_factor,
-        "reasoning": f"Adjusted from {base_confidence:.2f} to {adjusted:.2f} "
-                    f"(image quality: {image_quality}, history: {patient_history_available})"
-    }
+    except Exception as e:
+        logger.warning(f"MedlinePlus API failed ({e}), returning error")
+        return f"MedlinePlus lookup failed for '{condition}': {e}"
 
 
 # ============================================
@@ -250,21 +277,13 @@ async def main():
     # Create app session with MCP server
     app_session = factory.create_app_session(max_sessions=1)
 
-    if DEFAULT_MESSAGE_TRANSPORT.upper() == "SLIM":
-        # SLIM mode: group session without explicit topic
-        app_container = AppContainer(
-            mcp._mcp_server,
-            transport=transport,
-        )
-        logger.info(f"MCP Server started in SLIM group mode")
-    else:
-        # NATS mode: topic-based routing
-        app_container = AppContainer(
-            mcp._mcp_server,
-            transport=transport,
-            topic=SERVICE_TOPIC,
-        )
-        logger.info(f"MCP Server started on topic: {SERVICE_TOPIC}")
+    # MCP server always requires a topic (unlike A2A agents in SLIM mode)
+    app_container = AppContainer(
+        mcp._mcp_server,
+        transport=transport,
+        topic=SERVICE_TOPIC,
+    )
+    logger.info(f"MCP Server started on topic: {SERVICE_TOPIC} (transport: {DEFAULT_MESSAGE_TRANSPORT})")
 
     app_session.add_app_container("default_session", app_container)
     await app_session.start_all_sessions(keep_alive=True)

@@ -21,7 +21,7 @@ interface ClassificationResult {
   mismatch_warning?: string
   // MCP enhancement fields
   mcp_enhanced?: boolean
-  reasoning?: string
+  mcp_context?: Record<string, string>
 }
 
 // Format raw agent ID to readable name
@@ -31,6 +31,55 @@ function formatAgentName(raw: string): string {
   const name = parts[0].split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
   const org = parts[1] ? ` (${parts[1].split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')})` : ''
   return name + org
+}
+
+// Parse MCP literature search results into structured entries
+function parseLiteratureResults(raw: string): Array<{ title: string; authors: string; journal: string; url: string }> {
+  const entries: Array<{ title: string; authors: string; journal: string; url: string }> = []
+  const lines = raw.split('\n')
+  let i = 0
+  while (i < lines.length) {
+    const line = lines[i].trim()
+    // Match numbered entries like "1. Title here"
+    const match = line.match(/^\d+\.\s+(.+)/)
+    if (match) {
+      const title = match[1]
+      let authors = ''
+      let journal = ''
+      let url = ''
+      // Look ahead for Authors, Journal, and URL lines
+      for (let j = i + 1; j < Math.min(i + 5, lines.length); j++) {
+        const next = lines[j].trim()
+        if (next.startsWith('Authors:')) authors = next.replace('Authors:', '').trim()
+        if (next.startsWith('Journal:')) journal = next.replace('Journal:', '').trim()
+        if (next.startsWith('URL:')) url = next.replace('URL:', '').trim()
+      }
+      entries.push({ title, authors, journal, url })
+    }
+    i++
+  }
+  return entries
+}
+
+// Parse MedlinePlus medical reference result
+function parseMedicalReference(raw: string): { title: string; description: string; source?: string } | null {
+  if (!raw.startsWith('Medical Reference:')) return null
+  const lines = raw.split('\n')
+  let title = ''
+  let description = ''
+  let source = ''
+  for (const line of lines) {
+    const trimmed = line.trim()
+    if (trimmed.startsWith('Medical Reference:')) {
+      title = trimmed.replace('Medical Reference:', '').trim()
+    } else if (trimmed.startsWith('Description:')) {
+      description = trimmed.replace('Description:', '').trim()
+    } else if (trimmed.startsWith('Source:')) {
+      source = trimmed.replace('Source:', '').trim()
+    }
+  }
+  if (!title || !description) return null
+  return { title, description, source: source || undefined }
 }
 
 // Get confidence color based on value
@@ -124,11 +173,11 @@ function App() {
             confidence: classificationResult.confidence,
             top_k: classificationResult.top_k,
             agent_name: classificationResult.agent_id,
-            error: data.error || plannerResult.error,
+            error: plannerResult.message || data.error || plannerResult.error,
             mismatch_warning: plannerResult.mismatch_warning,
             // MCP enhancement fields
             mcp_enhanced: classificationResult.mcp_enhanced,
-            reasoning: classificationResult.reasoning
+            mcp_context: classificationResult.mcp_context
           }
           setResult(normalized)
           setIsPolling(false)
@@ -353,6 +402,16 @@ function App() {
                   {result.status.toUpperCase()}
                 </div>
 
+                {/* Error Message (e.g., intent guard rejection) */}
+                {result.status === 'failed' && result.error && (
+                  <div className="bg-red-50 border border-red-200 rounded-xl p-4 flex items-start gap-3">
+                    <AlertCircle className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" />
+                    <div>
+                      <p className="text-red-700 text-sm">{result.error}</p>
+                    </div>
+                  </div>
+                )}
+
                 {/* Mismatch Warning */}
                 {result.mismatch_warning && (
                   <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 flex items-start gap-3">
@@ -396,11 +455,60 @@ function App() {
                   </div>
                 )}
 
-                {/* MCP Reasoning */}
-                {result.reasoning && (
-                  <div className="bg-purple-50 border border-purple-200 rounded-xl p-4">
-                    <p className="text-sm font-medium text-purple-800 mb-2">📚 Diagnostic Reasoning (MCP)</p>
-                    <p className="text-sm text-purple-700">{result.reasoning}</p>
+                {/* MCP Evidence */}
+                {result.mcp_context && Object.keys(result.mcp_context).length > 0 && (
+                  <div className="bg-indigo-50 border border-indigo-200 rounded-xl p-4 space-y-3 max-h-72 overflow-y-auto">
+                    <p className="text-sm font-medium text-indigo-800 sticky top-0 bg-indigo-50 pb-1">MCP Evidence</p>
+                    {Object.entries(result.mcp_context).map(([toolName, toolResult]) => {
+                      // Try to parse literature search results
+                      if (toolName === 'search_medical_literature') {
+                        const entries = parseLiteratureResults(toolResult)
+                        if (entries.length > 0) {
+                          return (
+                            <div key={toolName} className="space-y-2">
+                              <p className="text-xs font-semibold text-indigo-600 uppercase tracking-wide">Literature</p>
+                              {entries.map((entry, idx) => (
+                                <div key={idx} className="bg-white rounded-lg px-3 py-2 border border-indigo-100">
+                                  {entry.url ? (
+                                    <a href={entry.url} target="_blank" rel="noopener noreferrer" className="text-sm font-medium text-blue-700 hover:underline">{entry.title}</a>
+                                  ) : (
+                                    <p className="text-sm font-medium text-gray-800">{entry.title}</p>
+                                  )}
+                                  <p className="text-xs text-gray-500 mt-0.5">{entry.journal}{entry.authors ? ` · ${entry.authors}` : ''}</p>
+                                </div>
+                              ))}
+                            </div>
+                          )
+                        }
+                      }
+                      // Try to parse MedlinePlus medical reference
+                      if (toolName === 'get_medical_reference') {
+                        const ref = parseMedicalReference(toolResult)
+                        if (ref) {
+                          return (
+                            <div key={toolName} className="space-y-2">
+                              <p className="text-xs font-semibold text-indigo-600 uppercase tracking-wide">Medical Reference</p>
+                              <div className="bg-white rounded-lg px-3 py-2 border border-indigo-100">
+                                <p className="text-sm font-medium text-gray-800">{ref.title}</p>
+                                <p className="text-xs text-gray-600 mt-1 leading-relaxed">{ref.description}</p>
+                                {ref.source && (
+                                  <div className="mt-2 pt-2 border-t border-indigo-100">
+                                    <a href={ref.source} target="_blank" rel="noopener noreferrer" className="text-xs text-blue-600 hover:underline">MedlinePlus</a>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          )
+                        }
+                      }
+                      // Fallback: raw text in scrollable container
+                      return (
+                        <div key={toolName} className="bg-white rounded-lg p-3 border border-indigo-100">
+                          <p className="text-xs font-semibold text-indigo-600 mb-1 uppercase tracking-wide">{toolName.replace(/_/g, ' ')}</p>
+                          <pre className="text-xs text-gray-700 whitespace-pre-wrap font-mono leading-relaxed max-h-40 overflow-y-auto">{toolResult}</pre>
+                        </div>
+                      )
+                    })}
                   </div>
                 )}
 
