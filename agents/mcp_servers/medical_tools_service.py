@@ -37,6 +37,17 @@ PUBMED_SEARCH_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
 PUBMED_SUMMARY_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi"
 PUBMED_LINK_BASE = "https://pubmed.ncbi.nlm.nih.gov"
 
+# Initialize IOA Observe SDK
+try:
+    from ioa_observe.sdk import Observe
+    Observe.init(
+        app_name="medical-mcp-server",
+        api_endpoint=os.getenv("OTLP_HTTP_ENDPOINT", "http://localhost:4318"),
+    )
+    logger.info("IOA Observe SDK initialized for MCP Server")
+except ImportError:
+    logger.warning("ioa-observe-sdk not installed, observability disabled")
+
 # Initialize factory
 factory = AgntcyFactory("agntcy_network.medical_mcp", enable_tracing=False)
 

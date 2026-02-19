@@ -6,7 +6,7 @@ import os
 import sys
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 import uvicorn
 
 # Add parent directory to path for imports
@@ -20,6 +20,20 @@ from shared.discovery import AgentDiscovery, StaticAgentDiscovery, ADSAgentDisco
 from services.planner.agent_langgraph import LangGraphPlannerAgent
 
 logger = setup_logger("planner", level="INFO")
+
+# Initialize IOA Observe SDK
+try:
+    from ioa_observe.sdk import Observe
+    from ioa_observe.sdk.tracing.context_utils import set_context_from_headers
+    Observe.init(
+        app_name="classification-planner",
+        api_endpoint=os.getenv("OTLP_HTTP_ENDPOINT", "http://localhost:4318"),
+    )
+    _observe_available = True
+    logger.info("IOA Observe SDK initialized for Planner")
+except ImportError:
+    _observe_available = False
+    logger.warning("ioa-observe-sdk not installed, observability disabled")
 
 # Global planner agent
 planner = None
@@ -71,7 +85,7 @@ app = FastAPI(
 
 
 @app.post("/plan")
-async def plan_classification(request: ClassificationRequest):
+async def plan_classification(request: ClassificationRequest, raw_request: Request):
     """
     Plan and execute classification request.
 
@@ -80,6 +94,10 @@ async def plan_classification(request: ClassificationRequest):
     """
     if not planner:
         raise HTTPException(status_code=503, detail="Planner not initialized")
+
+    # Restore observe tracing context propagated from Gateway
+    if _observe_available:
+        set_context_from_headers(dict(raw_request.headers))
 
     try:
         result = await planner.plan_and_execute(request)

@@ -13,7 +13,9 @@ processors:
 
 exporters:
   clickhouse:
-    endpoint: tcp://clickhouse:9000
+    endpoint: tcp://classify-clickhouse:9000
+    username: default
+    password: "otel123"
     database: otel
     ttl: 72h
     traces_table_name: otel_traces
@@ -26,20 +28,20 @@ exporters:
       max_interval: 30s
       max_elapsed_time: 300s
 
-  logging:
-    loglevel: debug
+  debug:
+    verbosity: detailed
 
 service:
   pipelines:
     traces:
       receivers: [otlp]
       processors: [batch]
-      exporters: [clickhouse, logging]
+      exporters: [clickhouse, debug]
     metrics:
       receivers: [otlp]
       processors: [batch]
-      exporters: [clickhouse, logging]
+      exporters: [clickhouse, debug]
     logs:
       receivers: [otlp]
       processors: [batch]
-      exporters: [clickhouse, logging]
+      exporters: [clickhouse, debug]

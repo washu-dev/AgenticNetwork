@@ -18,6 +18,14 @@ from shared.schemas import (
 )
 from services.gateway.storage.minio_client import MinIOClient
 
+# IOA Observe: session management + context propagation
+try:
+    from ioa_observe.sdk.tracing import session_start
+    from ioa_observe.sdk.tracing.context_utils import get_current_context_headers
+    _observe_available = True
+except ImportError:
+    _observe_available = False
+
 router = APIRouter(prefix="/v1", tags=["classification"])
 
 # Global state for tasks
@@ -180,12 +188,19 @@ def create_classify_api(minio_client: MinIOClient, planner_url: str) -> APIRoute
 
 
 async def _send_to_planner(task_id: str, request: ClassificationRequest, planner_url: str):
-    """Send classification request to planner"""
+    """Send classification request to planner with observe context propagation"""
     try:
+        # Start observe session and propagate tracing context to planner
+        headers = {}
+        if _observe_available:
+            session_start()
+            headers = get_current_context_headers()
+
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 f"{planner_url}/plan",
                 json=request.model_dump(mode="json"),
+                headers=headers,
                 timeout=aiohttp.ClientTimeout(total=60)
             ) as response:
                 response.raise_for_status()

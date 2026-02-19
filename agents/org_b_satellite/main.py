@@ -48,6 +48,17 @@ security_config = None
 if SECURITY_CONFIG_AVAILABLE:
     security_config = get_security_config()
 
+# Initialize IOA Observe SDK
+try:
+    from ioa_observe.sdk import Observe
+    Observe.init(
+        app_name="satellite-agent",
+        api_endpoint=os.getenv("OTLP_HTTP_ENDPOINT", "http://localhost:4318"),
+    )
+    print("IOA Observe SDK initialized for Satellite Agent")
+except ImportError:
+    print("ioa-observe-sdk not installed, observability disabled")
+
 # Initialize Agntcy Factory (like lungo)
 factory = AgntcyFactory("agntcy_network.satellite_agent", enable_tracing=False)
 

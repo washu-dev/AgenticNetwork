@@ -101,11 +101,14 @@ class ADSAgentDiscovery(AgentDiscovery):
             # Search ADS for matching agents
             search_results = self._search_agents(search_tags, query.limit)
 
-            # Convert ADS records to AgentRecord format
+            # Convert ADS records to AgentRecord format, deduplicating by agent_id
+            # (ADS is append-only, so multiple publishes create duplicates)
+            seen_ids = set()
             agents = []
             for record in search_results:
                 agent = self._convert_to_agent_record(record)
-                if agent:
+                if agent and agent.agent_id not in seen_ids:
+                    seen_ids.add(agent.agent_id)
                     agents.append(agent)
 
             logger.info(f"ADS discovered {len(agents)} agents for tags: {search_tags}")

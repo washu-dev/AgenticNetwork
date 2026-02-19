@@ -11,6 +11,15 @@ from datetime import datetime
 
 from shared.schemas import ClassificationResult, TopKPrediction
 
+# IOA Observe decorators
+try:
+    from ioa_observe.sdk.decorators import agent as observe_agent
+    _observe_available = True
+except ImportError:
+    def observe_agent(*args, **kwargs):
+        return args[0] if args and callable(args[0]) else lambda f: f
+    _observe_available = False
+
 logger = logging.getLogger(__name__)
 
 
@@ -51,6 +60,7 @@ class SatelliteClassifierAgent:
                 logger.warning(f"Failed to initialize LLM, falling back to simulated mode: {e}")
                 self.use_llm = False
 
+    @observe_agent(name="satellite_classifier", description="Satellite/aerial image classification", protocol="A2A")
     async def classify(self, request: Dict[str, Any]) -> ClassificationResult:
         """Classify satellite/aerial image"""
         start_time = time.time()

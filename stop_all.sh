@@ -46,19 +46,21 @@ if command -v tmux &> /dev/null; then
     fi
 fi
 
-# Stop Docker infrastructure
+# Stop Docker infrastructure (only NATS/MinIO/SLIM, not observability)
 echo ""
 echo "Stopping Docker infrastructure..."
 
-if [ -d "$PROJECT_ROOT/infrastructure" ]; then
-    docker-compose -f "$PROJECT_ROOT/infrastructure/docker-compose.yml" down 2>/dev/null
-fi
+for container in classify-nats classify-minio classify-slim; do
+    docker stop "$container" 2>/dev/null
+    docker rm "$container" 2>/dev/null
+done
 
 # NOTE: ADS is managed separately — not stopped here.
 # To stop ADS: ./scripts/stop_ads.sh
 
-# Also stop any stale containers by name pattern (excluding ADS containers)
-for container in classify-nats classify-minio classify-slim classify-clickhouse classify-otel-collector classify-grafana nats classification-nats lungo-nats; do
+# Also stop any stale containers by name pattern
+# NOTE: Observability (clickhouse, otel-collector, grafana) and ADS are managed separately
+for container in classify-nats classify-minio classify-slim nats classification-nats lungo-nats; do
     if docker ps -a --format '{{.Names}}' | grep -q "^${container}$" 2>/dev/null; then
         docker stop "$container" 2>/dev/null
         docker rm "$container" 2>/dev/null

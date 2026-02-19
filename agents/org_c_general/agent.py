@@ -31,6 +31,15 @@ from llama_index.core.workflow import (
 
 from shared.schemas import ClassificationResult, TopKPrediction
 
+# IOA Observe decorators
+try:
+    from ioa_observe.sdk.decorators import agent as observe_agent
+    _observe_available = True
+except ImportError:
+    def observe_agent(*args, **kwargs):
+        return args[0] if args and callable(args[0]) else lambda f: f
+    _observe_available = False
+
 logger = logging.getLogger(__name__)
 
 
@@ -270,6 +279,7 @@ class GeneralClassifierAgent:
             label, confidence = self._classify_simulated(prompt)
             return label, confidence, []
 
+    @observe_agent(name="general_classifier", description="General image classification via LlamaIndex Workflow", protocol="A2A")
     async def classify(self, request: Dict[str, Any]) -> ClassificationResult:
         """Main entry point - runs the LlamaIndex Workflow."""
         request_id = request.get("request_id", f"req-{datetime.utcnow().timestamp()}")

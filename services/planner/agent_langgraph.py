@@ -41,6 +41,18 @@ from services.verifier.main import Verifier
 from services.planner.tools import send_message_to_agent, broadcast_message_to_agents, A2AAgentError
 from config.llm_config import create_llm, LLM_MODEL
 
+# IOA Observe decorators for semantic tracing
+try:
+    from ioa_observe.sdk.decorators import workflow, graph
+    _observe_available = True
+except ImportError:
+    # Fallback no-op decorators when SDK is not installed
+    def workflow(*args, **kwargs):
+        return args[0] if args and callable(args[0]) else lambda f: f
+    def graph(*args, **kwargs):
+        return args[0] if args and callable(args[0]) else lambda f: f
+    _observe_available = False
+
 logger = logging.getLogger(__name__)
 
 MAX_REPLANS = 3
@@ -149,6 +161,7 @@ class LangGraphPlannerAgent:
 
         logger.info("LangGraph Planner initialized with LLM + A2A")
 
+    @graph(name="planner_graph", description="LangGraph planning workflow with supervisor, routing, execution, and reflection")
     def _build_graph(self) -> StateGraph:
         """Build the planning workflow graph"""
 
@@ -1015,6 +1028,7 @@ Verifier: {verifier_status} - {verifier_notes}"""
 
     # ========== Public API ==========
 
+    @workflow(name="plan_and_execute", description="Plan and execute classification via LangGraph workflow")
     async def plan_and_execute(self, request: ClassificationRequest) -> Dict[str, Any]:
         """
         Main entry point: plan and execute classification request.

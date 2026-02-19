@@ -29,9 +29,20 @@ from datetime import datetime
 
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
-from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 
 from shared.schemas import ClassificationResult, TopKPrediction
+
+# IOA Observe decorators
+try:
+    from ioa_observe.sdk.decorators import agent as observe_agent, graph as observe_graph
+    _observe_available = True
+except ImportError:
+    def observe_agent(*args, **kwargs):
+        return args[0] if args and callable(args[0]) else lambda f: f
+    def observe_graph(*args, **kwargs):
+        return args[0] if args and callable(args[0]) else lambda f: f
+    _observe_available = False
 
 logger = logging.getLogger(__name__)
 
@@ -136,6 +147,7 @@ class MedicalClassifierAgent:
 
     # ========== Graph Construction ==========
 
+    @observe_graph(name="medical_react_graph", description="Medical ReAct workflow: reason → act → observe loop")
     def _build_graph(self) -> StateGraph:
         """Build the LangGraph ReAct workflow."""
         workflow = StateGraph(MedicalReActState)
@@ -236,9 +248,6 @@ class MedicalClassifierAgent:
 
         # LLM-based reasoning — let the LLM decide whether to continue or stop
         # Safety nets: _route_after_reason prevents re-classification, max_iterations caps loops
-        import litellm
-        from config.llm_config import LLM_MODEL
-
         system_prompt = (
             "You are a medical image classification agent using ReAct (Reasoning + Acting).\n\n"
             "Available tools:\n"
@@ -268,15 +277,14 @@ class MedicalClassifierAgent:
         context = self._build_context_summary(state)
 
         try:
-            response = await litellm.acompletion(
-                model=LLM_MODEL,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": context}
+            response = await self.llm.ainvoke(
+                [
+                    SystemMessage(content=system_prompt),
+                    HumanMessage(content=context),
                 ],
                 max_tokens=300,
             )
-            llm_output = response.choices[0].message.content.strip()
+            llm_output = response.content.strip()
             logger.info(f"ReAct reasoning output: {llm_output}")
             action, tool_name, tool_args, reason = self._parse_reason_output(llm_output)
 
@@ -478,10 +486,7 @@ class MedicalClassifierAgent:
         return random.choice(self.medical_labels), random.uniform(0.65, 0.88)
 
     async def _classify_with_llm(self, prompt: str, image_data: bytes = None, mcp_context: Dict = None) -> tuple:
-        """LLM-powered vision classification using litellm."""
-        import litellm
-        from config.llm_config import LLM_MODEL
-
+        """LLM-powered vision classification using LangChain ChatOpenAI."""
         # Build MCP context text from accumulated tool results
         has_mcp = mcp_context and any(v for v in mcp_context.values())
 
@@ -527,12 +532,11 @@ class MedicalClassifierAgent:
             })
 
         try:
-            response = await litellm.acompletion(
-                model=LLM_MODEL,
-                messages=[{"role": "user", "content": content}],
+            response = await self.llm.ainvoke(
+                [HumanMessage(content=content)],
                 max_tokens=max_tokens,
             )
-            llm_output = response.choices[0].message.content.strip()
+            llm_output = response.content.strip()
             logger.info(f"LLM Vision Classification: {llm_output[:200]}")
 
             label = "unclassified"
@@ -607,6 +611,7 @@ class MedicalClassifierAgent:
 
     # ========== Entry Point ==========
 
+    @observe_agent(name="medical_classifier", description="Medical image classification via LangGraph ReAct", protocol="A2A")
     async def classify(self, request: Dict[str, Any]) -> ClassificationResult:
         """
         Main entry point — runs the LangGraph ReAct workflow.

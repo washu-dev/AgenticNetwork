@@ -36,10 +36,20 @@ Each agent belongs to a different organization and independently decides whether
 | **MinIO** | 9010 | Object storage for images |
 | **ADS** | 8888 | Agent Directory Service (gRPC) |
 
+### Observability (Optional)
+
+| Service | Port | Description |
+|---------|------|-------------|
+| **ClickHouse** | 8123 | Trace/metrics storage |
+| **OTel Collector** | 4318 | Receives OTLP data from agents |
+| **Grafana** | 3001 | Visualization dashboard |
+
+All agents are instrumented with [IOA Observe SDK](https://github.com/agntcy/ioa-observe-sdk) for distributed tracing. When the observability stack is running, traces are automatically exported to ClickHouse via the OTel Collector and viewable in Grafana.
+
 ## Prerequisites
 
-- Python 3.10+
-- Docker & Docker Compose
+- Python 3.12+
+- Docker
 - OpenAI or Anthropic API key
 
 ## Installation
@@ -65,21 +75,30 @@ cp .env.example .env
 
 ## Running the System
 
-You will need **3 terminals**:
+### 1. Start Observability (optional, run once)
 
-### Terminal 1 — Start ADS (Agent Directory Service)
+```bash
+./scripts/start_observability.sh
+```
+
+This starts ClickHouse + OTel Collector + Grafana in Docker containers. These persist across `stop_all.sh` — only stopped explicitly with `./scripts/stop_observability.sh`.
+
+### 2. Start ADS (Agent Directory Service)
+
 ```bash
 ./scripts/start_ads.sh
 ./scripts/publish_agent_records.sh
 ```
 
-### Terminal 2 — Start backend services
+### 3. Start backend services
+
 ```bash
-./start_all.sh
+./start_all.sh          # NATS transport (default)
+./start_all.sh slim     # SLIM transport (alternative)
 ```
 
 This starts (in order):
-1. Infrastructure (NATS + MinIO)
+1. Infrastructure (NATS + MinIO, optionally SLIM)
 2. MCP Server (always on; agents decide individually whether to use)
 3. Medical Agent (Org A, MCP enabled)
 4. Satellite Agent (Org B)
@@ -87,22 +106,29 @@ This starts (in order):
 6. Planner (ADS discovery)
 7. Gateway
 
-### Terminal 3 — Start frontend
+### 4. Start frontend
+
 ```bash
 cd frontend
 npm install
 npm run dev
 ```
 
-### SLIM transport (alternative to NATS)
+### Stop services
+
 ```bash
-./start_all.sh slim
+./stop_all.sh                       # Stop agents + infrastructure (keeps observability)
+./scripts/stop_observability.sh     # Stop observability stack
+./scripts/stop_ads.sh               # Stop ADS
 ```
 
-### Stop all services
-```bash
-./stop_all.sh
-```
+### Observability UI
+
+After starting the observability stack and running the system:
+
+- Open **Grafana** at `http://localhost:3001` (login: `admin` / `admin`)
+- Go to **Explore** → select **ClickHouse** datasource
+- Query the `otel_traces` table to see agent call chains, latencies, and cross-service traces
 
 ## License
 

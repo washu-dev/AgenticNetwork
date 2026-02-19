@@ -19,6 +19,17 @@ from services.gateway.api.classify import create_classify_api
 
 logger = setup_logger("gateway", level="INFO")
 
+# Initialize IOA Observe SDK (activates auto-instrumentation for A2A, NATS, MCP, LLMs)
+try:
+    from ioa_observe.sdk import Observe
+    Observe.init(
+        app_name="classification-gateway",
+        api_endpoint=os.getenv("OTLP_HTTP_ENDPOINT", "http://localhost:4318"),
+    )
+    logger.info("IOA Observe SDK initialized for Gateway")
+except ImportError:
+    logger.warning("ioa-observe-sdk not installed, observability disabled")
+
 # Create FastAPI app
 app = FastAPI(
     title="Classification Gateway",
