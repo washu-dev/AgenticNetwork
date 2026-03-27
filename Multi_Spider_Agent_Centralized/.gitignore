@@ -1,0 +1,26 @@
+# Environment & secrets
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+
+# Model weights (large, download at setup)
+*.pt
+*.onnx
+
+# Runtime data
+*.db
+.pid
+face_data/*.npy
+face_data/*.pkl
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/

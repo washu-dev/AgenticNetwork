@@ -1,0 +1,12 @@
+INFO:     Started server process [2959636]
+INFO:     Waiting for application startup.
+2026-03-25 13:32:59,812 [INFO] Multi_Spider_Agent_Command_Center.infra.discovery: ADS discovered 1 agent(s): ['crawler-alpha-patrol-001']
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8080 (Press CTRL+C to quit)
+2026-03-25 13:32:59,890 [INFO] Multi_Spider_Agent_Command_Center.infra.robot_registry: Robot registered from discovery: crawler-alpha-patrol-001
+2026-03-25 13:32:59,890 [INFO] Multi_Spider_Agent_Command_Center.gateway: Initial discovery: 1 robot(s) found
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+2026-03-25 13:33:04,154 [INFO] Multi_Spider_Agent_Command_Center.detection.engine: Cancelled 0 active mission tasks
+INFO:     Application shutdown complete.
+INFO:     Finished server process [2959636]

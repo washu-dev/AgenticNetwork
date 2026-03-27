@@ -1,0 +1,200 @@
+"""
+PiCrawler capabilities: single source of truth.
+
+Every part of the system reads from here:
+- thin_client.py: maps action names to hardware methods
+- card.py: tells ADS what skills we have
+- Central: reads /capabilities to know what actions Pi supports
+"""
+
+from dataclasses import dataclass
+from typing import List
+
+
+@dataclass
+class Action:
+    """A single action the robot can perform."""
+    name: str
+    description: str
+    category: str  # "movement", "posture", "gesture", "look"
+    requires_standing: bool = True
+    parameters: str = ""  # human-readable parameter info
+
+
+# ── All actions the robot supports ──────────────────────────
+
+ACTIONS: List[Action] = [
+    # Posture
+    Action(
+        name="stand_up",
+        description="Stand up from sitting position. Required before any movement or gesture.",
+        category="posture",
+        requires_standing=False,
+    ),
+    Action(
+        name="sit_down",
+        description="Sit down. Safe resting position, reduces servo strain.",
+        category="posture",
+        requires_standing=False,
+    ),
+    Action(
+        name="stop",
+        description="Stop all movement and sit down.",
+        category="posture",
+        requires_standing=False,
+    ),
+
+    # Movement
+    Action(
+        name="forward",
+        description="Walk forward ~7.5cm (3 steps).",
+        category="movement",
+        parameters="3 steps, ~2.5cm each",
+    ),
+    Action(
+        name="backward",
+        description="Walk backward ~7.5cm (3 steps).",
+        category="movement",
+        parameters="3 steps, ~2.5cm each",
+    ),
+    Action(
+        name="turn_left",
+        description="Turn left ~80 degrees (stays in place, does not move forward).",
+        category="movement",
+        parameters="2 turn steps, ~38 degrees each",
+    ),
+    Action(
+        name="turn_right",
+        description="Turn right ~80 degrees (stays in place, does not move forward).",
+        category="movement",
+        parameters="2 turn steps, ~38 degrees each",
+    ),
+    Action(
+        name="turn_left_angle",
+        description="Turn left with body tilting (angular turn, more expressive than normal turn).",
+        category="movement",
+        parameters="2 turn steps, ~40 degrees each (angle=90), ~13 degrees each (angle=30 default)",
+    ),
+    Action(
+        name="turn_right_angle",
+        description="Turn right with body tilting (angular turn, more expressive than normal turn).",
+        category="movement",
+        parameters="2 turn steps, ~40 degrees each (angle=90), ~13 degrees each (angle=30 default)",
+    ),
+
+    # Gestures
+    Action(
+        name="wave",
+        description="Raise front-left leg and wave. Use as a greeting when you see a person.",
+        category="gesture",
+    ),
+    Action(
+        name="dance",
+        description="Perform a dance routine with body movements and rotation.",
+        category="gesture",
+    ),
+    Action(
+        name="push_up",
+        description="Do push-ups (lower and raise the body).",
+        category="gesture",
+    ),
+    Action(
+        name="nod",
+        description="Nod head up and down. Use to signal agreement or acknowledgement.",
+        category="gesture",
+    ),
+    Action(
+        name="shake_head",
+        description="Shake head side to side. Use to signal disagreement or 'no'.",
+        category="gesture",
+    ),
+    Action(
+        name="shake_hand",
+        description="Extend front leg for a handshake gesture.",
+        category="gesture",
+    ),
+    Action(
+        name="play_dead",
+        description="Flip over and play dead. A fun trick.",
+        category="gesture",
+        requires_standing=False,
+    ),
+
+    # Look (head/body tilt, does NOT move position)
+    Action(
+        name="look_left",
+        description="Tilt body to look left. Does NOT turn — use turn_left to change facing direction.",
+        category="look",
+    ),
+    Action(
+        name="look_right",
+        description="Tilt body to look right. Does NOT turn — use turn_right to change facing direction.",
+        category="look",
+    ),
+    Action(
+        name="look_up",
+        description="Tilt body to look upward.",
+        category="look",
+    ),
+    Action(
+        name="look_down",
+        description="Tilt body to look downward.",
+        category="look",
+    ),
+]
+
+# Just the names (for quick access)
+ACTION_NAMES = [a.name for a in ACTIONS]
+
+
+# ── Sensors and other capabilities ──────────────────────────
+
+SENSORS = [
+    {"name": "ultrasonic", "description": "Distance sensor (2-400cm), used for obstacle avoidance", "pins": "D2/D3"},
+    {"name": "camera", "description": "Raspberry Pi camera, MJPEG stream on port 9000", "resolution": "640x480"},
+]
+
+ABILITIES = [
+    {"name": "obstacle_avoidance", "description": "Reactive ultrasonic obstacle avoidance during walking"},
+    {"name": "tts", "description": "Text-to-speech via local TTS engine (configurable, default off)"},
+    {"name": "sound_effects", "description": "Play sound effects: mission_start, detection, mission_complete, error, obstacle, alert"},
+]
+
+ENDPOINTS = {
+    "capabilities": "/capabilities",
+    "health": "/health",
+    "status": "/status",
+    "video_stream": "http://localhost:9000/mjpg",
+}
+
+
+# ── Helper functions ────────────────────────────────────────
+
+def get_actions_description() -> str:
+    """Format all actions as a string for LLM prompts."""
+    lines = []
+    for a in ACTIONS:
+        line = f"- {a.name}: {a.description}"
+        if a.requires_standing:
+            line += " (requires standing)"
+        lines.append(line)
+    lines.append("- MISSION_COMPLETE: Signal that the task goal has been fully accomplished")
+    return "\n".join(lines)
+
+
+def get_capabilities_json() -> dict:
+    """Full capabilities payload for GET /capabilities endpoint."""
+    return {
+        "actions": [
+            {
+                "name": a.name,
+                "description": a.description,
+                "category": a.category,
+                "requires_standing": a.requires_standing,
+            }
+            for a in ACTIONS
+        ],
+        "sensors": SENSORS,
+        "abilities": ABILITIES,
+        "endpoints": ENDPOINTS,
+    }

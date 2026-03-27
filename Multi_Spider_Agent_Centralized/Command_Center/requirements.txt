@@ -1,0 +1,17 @@
+fastapi
+uvicorn
+httpx
+langgraph
+langchain-core
+langchain-anthropic
+langchain-openai
+python-dotenv
+numpy<2
+ultralytics
+insightface
+onnxruntime
+pydantic
+openai
+agntcy-dir
+a2a-sdk>=0.3.2
+nats-py>=2.6.0

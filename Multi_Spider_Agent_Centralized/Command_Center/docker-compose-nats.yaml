@@ -1,0 +1,22 @@
+# NATS server for A2A transport between Command Center and Pi agents.
+#
+# Usage:
+#   docker compose -f docker-compose-nats.yaml up -d
+#
+# Topics:
+#   agents.broadcast              — broadcast to all agents
+#   agents.direct.{agent_id}      — direct messages to specific agent
+
+services:
+  nats:
+    image: nats:2.10-alpine
+    container_name: multi-spider-nats
+    ports:
+      - "4222:4222"   # Client connections
+      - "8222:8222"   # HTTP monitoring
+    command: "--jetstream --http_port 8222"
+    healthcheck:
+      test: wget -qO- http://127.0.0.1:8222/varz > /dev/null 2>&1 || exit 1
+      interval: 5s
+      retries: 10
+      start_period: 3s
