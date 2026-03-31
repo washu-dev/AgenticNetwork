@@ -8,7 +8,7 @@ Non-blocking by default so it doesn't slow down execution.
 import logging
 import os
 
-from Multi_Spider_Agent_Thin_Client.config import SPEAKER_ENABLED
+from Thin_Client.config import SPEAKER_ENABLED
 
 logger = logging.getLogger(__name__)
 

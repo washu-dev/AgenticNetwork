@@ -12,7 +12,7 @@ from pathlib import Path
 
 from a2a.types import AgentCard, AgentCapabilities, AgentSkill
 
-from Multi_Spider_Agent_Thin_Client.config import AGENT_ID, AGENT_PORT, LOCAL_IP
+from Thin_Client.config import AGENT_ID, AGENT_PORT, LOCAL_IP
 
 logger = logging.getLogger(__name__)
 
