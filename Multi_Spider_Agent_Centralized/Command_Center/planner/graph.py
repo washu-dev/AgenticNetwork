@@ -56,7 +56,15 @@ class TaskIntent(BaseModel):
     rejection_reason: str = Field(default="", description="If is_valid_task=false, reason why")
     steps: List[Step] = Field(description="Task step (exactly one). Empty if is_valid_task=false")
     urgency: str = Field(description="low / medium / high")
-    multi_agent: bool = Field(description="Whether the task benefits from multiple robots")
+    multi_agent: bool = Field(description="Whether the task requires multiple robots")
+    target_robot_ids: List[str] = Field(
+        default_factory=list,
+        description="Specific robot IDs to use. Empty = auto-select based on multi_agent flag",
+    )
+    target_zone: str = Field(
+        default="",
+        description="Target zone letter (e.g. 'A', 'B'). Empty = no zone filter",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -105,7 +113,7 @@ _PARSE_PROMPT = (
     "  target_name: (optional, for finding a specific person)\n\n"
     "CRITICAL RULES:\n"
     "1. NEVER mix direct_control with agent.\n"
-    "2. Conditional logic (if/then/else) is NOT parsed - forwarded as task_goal.\n"
+    "2. Conditional logic ('if detected, wave') is VALID — classify as agent mode. The condition is handled at runtime.\n"
     "3. ALWAYS output exactly ONE step.\n"
     "4. report_all: true for observe/report only, false for conditional actions.\n"
     "5. 'person'/'people' -> target_type: 'object' (YOLO), NOT 'face'.\n"
@@ -220,7 +228,7 @@ def _try_fast_decompose(prompt: str) -> list | None:
 
 
 def _build_parse_prompt(online_robots: list[dict]) -> str:
-    """Build parse prompt, injecting capabilities from registered robots."""
+    """Build parse prompt, injecting capabilities and robot list for scope decisions."""
     all_actions = set()
     has_caps = False
 
@@ -234,20 +242,28 @@ def _build_parse_prompt(online_robots: list[dict]) -> str:
             if name:
                 all_actions.add(name)
 
-    if not has_caps:
-        return _PARSE_PROMPT
+    actions_str = ", ".join(sorted(all_actions)) if all_actions else ""
+    actions_line = f"  Supported actions: {actions_str}\n" if actions_str else ""
 
-    actions_str = ", ".join(sorted(all_actions))
-    logger.info(f"Building parse prompt with capabilities: actions=[{actions_str}]")
+    # Build robot list for scope decisions
+    robot_lines = []
+    for robot in online_robots:
+        rid = robot["id"]
+        zone = robot.get("zone", "")
+        zone_str = f", zone={zone}" if zone else ""
+        busy_str = ", busy" if robot.get("busy") else ""
+        robot_lines.append(f"  - {rid}{zone_str}{busy_str}")
+    robots_section = "\n".join(robot_lines) if robot_lines else "  (none)"
 
     return (
         "You are a task planner for a multi-robot spider (PiCrawler) system.\n\n"
         "FIRST: check if the request is related to robot control. If NOT,\n"
         "set is_valid_task=false with a rejection_reason and empty steps.\n\n"
+        f"AVAILABLE ROBOTS:\n{robots_section}\n\n"
         "If valid, classify into ONE step. There are TWO modes:\n\n"
         "MODE 1: EXECUTE MODE (task_type = direct_control)\n"
         "Pure movement / posture / gesture commands. No detection involved.\n"
-        f"  Supported actions: {actions_str}\n"
+        f"{actions_line}"
         "  action: 'none' (robot's LLM decides the actions)\n"
         "  target_type: none, search_pattern: stationary\n\n"
         "MODE 2: AGENT MODE (task_type = agent)\n"
@@ -255,18 +271,27 @@ def _build_parse_prompt(online_robots: list[dict]) -> str:
         "  target_type: face, object, color, qr_code, any\n"
         "  search_pattern: stationary or patrol\n"
         "  target_name: (optional, for finding a specific person)\n\n"
+        "SCOPE RULES (target_robot_ids, target_zone, multi_agent):\n"
+        "- If user names a specific robot → target_robot_ids=[that id], multi_agent=false\n"
+        "- If user mentions a zone (e.g. 'zone A') → target_zone='A'\n"
+        "- If user says 'all robots'/'both'/'everyone' → multi_agent=true, target_robot_ids=[]\n"
+        "- Detection/search tasks with no specific robot → multi_agent=true (more eyes = faster)\n"
+        "- Direct control with no specific robot → multi_agent=false (LLM picks best)\n"
+        "- target_robot_ids=[] means auto-select based on multi_agent and target_zone\n\n"
         "CRITICAL RULES:\n"
         "1. NEVER mix direct_control with agent.\n"
-        "2. Conditional logic (if/then/else) is NOT parsed - forwarded as task_goal.\n"
+        "2. Conditional logic ('if detected, wave') is VALID — classify as agent mode. The condition is handled at runtime.\n"
         "3. ALWAYS output exactly ONE step.\n"
         "4. report_all: true for observe/report only, false for conditional actions.\n"
         "5. 'person'/'people' -> target_type: 'object' (YOLO), NOT 'face'.\n"
         "   'face'/'faces' -> target_type: 'face' (face recognition).\n\n"
         "EXAMPLES:\n"
         "  Rejected: 'Write me a poem' -> is_valid_task=false, steps=[]\n"
-        "  Execute: 'Wave then dance' -> steps=[{task_type: 'direct_control', action: 'none'}]\n"
-        "  Agent: 'Detect person, if found wave' -> steps=[{task_type: 'agent', target_type: 'object', search_pattern: 'stationary', report_all: false}]\n"
-        "  Agent: 'Find John' -> steps=[{task_type: 'agent', target_type: 'face', target_name: 'John', search_pattern: 'patrol'}]"
+        "  Execute: 'Wave then dance' -> multi_agent=false, target_robot_ids=[], steps=[{task_type: 'direct_control'}]\n"
+        "  Execute: 'crawler-001 stand up' -> multi_agent=false, target_robot_ids=['crawler-001'], steps=[{task_type: 'direct_control'}]\n"
+        "  Agent: 'Detect person' -> multi_agent=true, target_robot_ids=[], steps=[{task_type: 'agent', target_type: 'object'}]\n"
+        "  Agent: 'Zone A detect person' -> multi_agent=true, target_zone='A', steps=[{task_type: 'agent', target_type: 'object'}]\n"
+        "  Agent: 'Find John' -> multi_agent=true, target_robot_ids=[], steps=[{task_type: 'agent', target_type: 'face', target_name: 'John'}]"
     )
 
 
@@ -286,19 +311,26 @@ async def parse_and_discover(state: PlannerState) -> dict:
     for agent_info in discovered:
         robot_registry.register_from_discovery(agent_info)
 
-    online_agents = [
-        {
-            "id": agent_info["id"],
+    # Build online_agents list — capabilities come from registry (via heartbeat),
+    # not from discovery. ADS provides id/host/port/tags for selection,
+    # heartbeat provides detailed capabilities for execution.
+    online_agents = []
+    for agent_info in discovered:
+        robot_id = agent_info["id"]
+        reg_robot = robot_registry.get_robot(robot_id)
+        caps = reg_robot.capabilities if reg_robot else {}
+        zone = (reg_robot.zone if reg_robot else "") or agent_info.get("zone", "")
+        online_agents.append({
+            "id": robot_id,
             "host": agent_info["host"],
             "port": agent_info["port"],
-            "camera_port": agent_info.get("camera_port", 9000),
-            "capabilities": agent_info.get("capabilities") or {},
-            "actions": [a["name"] for a in (agent_info.get("capabilities") or {}).get("actions", [])],
+            "camera_port": reg_robot.camera_port if reg_robot else agent_info.get("camera_port", 9000),
+            "capabilities": caps,
+            "actions": [a["name"] for a in caps.get("actions", [])],
+            "zone": zone,
             "status": "online",
             "busy": agent_info.get("busy", False),
-        }
-        for agent_info in discovered
-    ]
+        })
 
     if state.get("iteration", 1) > 1:
         # On replan, only refresh robot list
@@ -341,8 +373,15 @@ async def parse_and_discover(state: PlannerState) -> dict:
                 messages_log.append(AIMessage(content=f"Rejected: {reason}"))
                 return {"error": f"NOT_VALID_TASK: {reason}", "messages": messages_log}
             intent = parse_result.model_dump()
+            # LLM now handles scope directly via target_robot_ids / target_zone / multi_agent
+            scope_desc = []
+            if intent.get("target_robot_ids"):
+                scope_desc.append(f"robots={intent['target_robot_ids']}")
+            if intent.get("target_zone"):
+                scope_desc.append(f"zone={intent['target_zone']}")
+            scope_desc.append(f"multi={intent['multi_agent']}")
             step_descs = [f"{s['task_type']}:{s.get('action','') or s.get('target_type','')}" for s in intent['steps']]
-            messages_log.append(AIMessage(content=f"Parse: {', '.join(step_descs)}, multi={intent['multi_agent']}"))
+            messages_log.append(AIMessage(content=f"Parse: {', '.join(step_descs)}, {', '.join(scope_desc)}"))
             logger.info(f"Parsed intent: {intent}")
 
     if not online_agents:
@@ -352,6 +391,7 @@ async def parse_and_discover(state: PlannerState) -> dict:
     logger.info(f"Online robots: {[a['id'] for a in online_agents]}")
     messages_log.append(AIMessage(content=f"Discovery: {len(online_agents)} robots online"))
     return {"intent": intent, "online_agents": online_agents, "messages": messages_log}
+
 
 
 def _fallback_intent(prompt: str) -> dict:
@@ -416,56 +456,58 @@ async def route_task(state: PlannerState) -> dict:
     if not online:
         return {"selected_agents": [], "error": "No agents available", "messages": messages_log}
 
-    selected = online
-    if len(online) > 1:
-        try:
-            catalog = _build_agent_catalog(online)
-            if catalog:
-                selection_llm = create_llm().with_structured_output(AgentSelection, strict=True)
-                sys_msg = SystemMessage(content=f"""You are an intelligent agent router for a PiCrawler robot fleet.
-Select the most suitable robot(s) for the task.
+    # Scope resolution: LLM already decided target_robot_ids / target_zone / multi_agent
+    target_robot_ids = intent.get("target_robot_ids", [])
+    target_zone = intent.get("target_zone", "")
 
-Available Robots:
-{catalog}
+    if target_robot_ids:
+        # LLM picked specific robots
+        id_set = set(target_robot_ids)
+        selected = [a for a in online if a["id"] in id_set]
+        if not selected:
+            return {"selected_agents": [], "error": f"Robots {target_robot_ids} not online", "messages": messages_log}
+        strategy = "parallel" if len(selected) > 1 else "single"
+        messages_log.append(AIMessage(content=f"Target robots: {[a['id'] for a in selected]}"))
+    elif target_zone:
+        # LLM picked a zone — filter online robots by zone
+        zone_upper = target_zone.upper()
+        selected = [a for a in online if a.get("zone", "").upper() == zone_upper]
+        if not selected:
+            return {"selected_agents": [], "error": f"No robots in zone {target_zone}", "messages": messages_log}
+        strategy = "parallel" if len(selected) > 1 else "single"
+        messages_log.append(AIMessage(content=f"Zone {target_zone} robots: {[a['id'] for a in selected]}"))
+    else:
+        selected = online
 
-Select robots most relevant to the task. Order by relevance.""")
-                user_msg = HumanMessage(content=f"Task: {state['prompt']}\nTarget: {intent.get('target_type', 'unknown')}")
-                result = await selection_llm.ainvoke([sys_msg, user_msg])
+        steps_list = intent.get("steps", [])
+        has_direct_control = any(s.get("task_type") == "direct_control" for s in steps_list)
 
-                selected_ids = set(result.selected_agent_ids)
-                llm_selected = [a for a in online if a["id"] in selected_ids]
-                if llm_selected:
-                    selected = llm_selected
-                    messages_log.append(AIMessage(content=f"Selected {len(selected)} robots: {[a['id'] for a in selected]}"))
-        except Exception as e:
-            logger.warning(f"LLM agent selection failed: {e}, using all")
+        if not strategy:
+            if intent.get("multi_agent") and len(selected) > 1:
+                strategy = "parallel"
+            elif has_direct_control:
+                strategy = "single"
+            elif iteration > 1:
+                strategy = "parallel"
+            else:
+                strategy = "single"
 
-    steps_list = intent.get("steps", [])
-    has_direct_control = any(s.get("task_type") == "direct_control" for s in steps_list)
-
-    if not strategy:
-        if has_direct_control:
-            strategy = "single"
-        elif iteration > 1:
-            strategy = "parallel"
-        elif intent.get("multi_agent", True) and len(selected) > 1:
-            strategy = "parallel"
-        else:
-            strategy = "single"
-
-    if strategy == "single":
-        selected = [selected[0]]
+        if strategy == "single":
+            selected = [selected[0]]
 
     messages_log.append(AIMessage(content=f"Route: {strategy}, {len(selected)} robot(s)"))
     return {"selected_agents": selected, "strategy": strategy, "messages": messages_log}
 
 
 def _build_agent_catalog(agents: list[dict]) -> str:
+    from ..infra.robot_registry import robot_registry
     lines = []
     for agent in agents:
-        caps = agent.get("capabilities", {})
+        reg = robot_registry.get_robot(agent["id"])
         line = f"- robot_id: {agent['id']}\n"
         line += f"  host: {agent['host']}\n"
+        if reg and reg.zone:
+            line += f"  zone: {reg.zone}\n"
         line += f"  status: {agent.get('status', 'online')}\n"
         line += f"  busy: {agent.get('busy', False)}\n"
         actions = agent.get("actions", [])
@@ -497,7 +539,19 @@ async def execute_task(state: PlannerState) -> dict:
 
     # Agent Mode
     if "agent" in step_types:
-        return await _execute_agent(selected[0], steps, prompt, messages_log)
+        if len(selected) == 1:
+            return await _execute_agent(selected[0], steps, prompt, messages_log)
+        # Parallel: all selected robots run detection concurrently
+        # When one finds the target, _broadcast_target_found() cancels the others
+        results = await asyncio.gather(*[
+            _execute_agent(agent, steps, prompt, list(messages_log))
+            for agent in selected
+        ])
+        # Return the first successful result (the one that found the target)
+        for r in results:
+            if r.get("agent_results", [{}])[0].get("status") == "success":
+                return r
+        return results[0]
 
     # Direct Control Mode
     from ..pi_agents.base_agent import pi_agent_manager
@@ -532,27 +586,33 @@ async def execute_task(state: PlannerState) -> dict:
                 return {"agent_results": [agent_result], "messages": messages_log}
         return {"agent_results": [], "error": "All sequential agents failed", "messages": messages_log}
     else:
-        tasks = []
+        coros = []
+        agent_ids = []
         for agent_info in selected:
             robot = reg.get_robot(agent_info["id"])
             if not robot:
                 continue
             pi_agent = pi_agent_manager.get_or_create(robot)
+            agent_ids.append(agent_info["id"])
             if fast_actions:
                 logger.info(f"Fast decompose: '{prompt}' -> {fast_actions} (skipped Brain LLM)")
-                tasks.append((agent_info["id"], pi_agent.execute_steps(fast_actions)))
+                coros.append(pi_agent.execute_steps(fast_actions))
             else:
-                tasks.append((agent_info["id"], pi_agent.execute_steps_from_prompt(prompt)))
+                coros.append(pi_agent.execute_steps_from_prompt(prompt))
+
+        raw_results = await asyncio.gather(*coros, return_exceptions=True)
 
         results = []
-        for agent_id, coro in tasks:
-            result = await coro
-            results.append({
-                "agent_id": agent_id,
-                "status": "success" if result.get("mission_status") in ("completed", "partial") else "error",
-                "response": result.get("summary", ""),
-                "structured": result,
-            })
+        for agent_id, result in zip(agent_ids, raw_results):
+            if isinstance(result, Exception):
+                results.append({"agent_id": agent_id, "status": "error", "response": str(result), "structured": {}})
+            else:
+                results.append({
+                    "agent_id": agent_id,
+                    "status": "success" if result.get("mission_status") in ("completed", "partial") else "error",
+                    "response": result.get("summary", ""),
+                    "structured": result,
+                })
 
         success_count = sum(1 for r in results if r.get("status") == "success")
         messages_log.append(AIMessage(content=f"Execute: {success_count}/{len(results)} succeeded"))

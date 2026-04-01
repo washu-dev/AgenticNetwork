@@ -90,7 +90,8 @@ def detect_frame(image_bytes: bytes, conf_threshold: float = 0.25) -> dict:
     _, jpeg_buf = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 85])
     annotated_jpeg = jpeg_buf.tobytes()
 
-    logger.info(f"YOLO: {len(detections)} objects in {inference_ms:.0f}ms ({w}x{h})")
+    if detections:
+        logger.info(f"YOLO: {len(detections)} objects in {inference_ms:.0f}ms ({w}x{h})")
 
     return {
         "detections": detections,

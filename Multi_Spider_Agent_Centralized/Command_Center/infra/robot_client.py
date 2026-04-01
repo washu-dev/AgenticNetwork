@@ -113,7 +113,7 @@ class RobotClient:
         try:
             result = await self._a2a.send_task(robot_id, prompt, metadata)
             if result.get("status") != "error":
-                logger.info(f"Sent via transport to {robot_id}")
+                logger.debug(f"Sent via transport to {robot_id}")
                 return result
             logger.warning(f"Transport returned error for {robot_id}: {result.get('error')}, falling back to HTTP")
         except Exception as e:

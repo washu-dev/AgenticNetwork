@@ -16,7 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from openai import AsyncOpenAI
 from pydantic import BaseModel, Field
 
-from .detection.engine import SearchMission, run_search_mission, get_active_missions, has_active_mission, get_latest_annotated_frame, wait_for_new_frame, wait_for_new_detections, cancel_mission, cancel_all_missions
+from .detection.engine import SearchMission, run_search_mission, get_active_missions, has_active_mission, wait_for_new_detections, cancel_mission, cancel_all_missions
 from .infra.robot_registry import robot_registry
 from .infra.robot_client import robot_client
 from .detection.face_registry import face_registry
@@ -117,7 +117,7 @@ app.add_middleware(
 class SearchRequest(BaseModel):
     prompt: str
     target_type: Optional[str] = None
-    strategy: Optional[str] = Field(default="parallel", description="single/parallel/sequential")
+    strategy: Optional[str] = Field(default=None, description="single/parallel/sequential (None = auto)")
     agents: Optional[list[str]] = Field(default=None, description="Specific agent IDs to use")
 
 
@@ -164,28 +164,41 @@ async def health():
 
 @app.post("/api/robots/register")
 async def register_robot(request: FastAPIRequest):
-    """Register a new robot. Called by Pi on startup."""
+    """Register a new robot. Called by Pi on startup with full capabilities."""
     data = await request.json()
+    if not data.get("host") and request.client:
+        data["host"] = request.client.host
     result = await robot_registry.register(data)
     return result
 
 
 @app.post("/api/robots/{robot_id}/heartbeat")
 async def robot_heartbeat(robot_id: str, request: FastAPIRequest):
-    """Heartbeat from a robot. Called periodically by Pi.
+    """Lightweight heartbeat from a robot. Called every 10s by Pi.
 
-    If the robot is not yet registered, auto-register it from the heartbeat data.
+    Only carries state (standing). Capabilities are sent once via POST /api/robots/register.
+    If the robot is not yet registered, auto-register with capabilities fetched from the robot.
     """
     data = await request.json()
     result = await robot_registry.heartbeat(robot_id, data)
     if result.get("error") == "robot not registered":
-        # Auto-register: Pi sent heartbeat before discovery found it
+        # Auto-register: Pi sent heartbeat before register call arrived
+        host = request.client.host if request.client else ""
+        port = data.get("port", 9004)
+        caps = {}
+        try:
+            async with httpx.AsyncClient(timeout=5) as client:
+                resp = await client.get(f"http://{host}:{port}/capabilities")
+                if resp.status_code == 200:
+                    caps = resp.json()
+        except Exception:
+            pass
         reg_data = {
             "robot_id": robot_id,
-            "host": request.client.host if request.client else "",
-            "port": data.get("port", 9004),
+            "host": host,
+            "port": port,
             "camera_port": data.get("camera_port", 9000),
-            "capabilities": data.get("capabilities", {}),
+            "capabilities": caps,
         }
         result = await robot_registry.register(reg_data)
     return result
@@ -712,7 +725,7 @@ async def search(request: SearchRequest):
     try:
         result = await run_planner(
             prompt=request.prompt,
-            strategy=request.strategy or "parallel",
+            strategy=request.strategy or "",
             agents=request.agents,
         )
 

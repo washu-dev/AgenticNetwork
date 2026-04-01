@@ -24,7 +24,7 @@ DISCOVERY_MODE = os.getenv("DISCOVERY_MODE", "static")
 ADS_SERVER_ADDRESS = os.getenv("ADS_SERVER_ADDRESS", "localhost:8888")
 
 # Static agent list (used when DISCOVERY_MODE="static")
-# Format: [{"id": "agent-id", "host": "ip", "port": 9004}]
+# Format: [{"id": "agent-id", "host": "ip", "port": 9004, "zone": "A"}]
 _raw_agents = os.getenv("PI_AGENTS", "")
 if _raw_agents:
     import json as _json
@@ -33,6 +33,7 @@ else:
     PI_AGENTS = [
         {"id": "crawler-alpha-patrol-001", "host": "localhost", "port": 9004},
     ]
+
 
 # === Robot defaults ===
 DEFAULT_CAMERA_PORT = int(os.getenv("DEFAULT_CAMERA_PORT", "9000"))

@@ -63,18 +63,6 @@ class AgentDiscovery:
             logger.debug(f"Agent card fetch failed for {host}:{port}: {e}")
             return None
 
-    async def get_capabilities(self, host: str, port: int) -> Optional[dict]:
-        """Fetch capabilities from GET /capabilities."""
-        url = f"http://{host}:{port}/capabilities"
-        try:
-            async with httpx.AsyncClient(timeout=HEALTH_CHECK_TIMEOUT) as client:
-                resp = await client.get(url)
-                resp.raise_for_status()
-                return resp.json()
-        except Exception as e:
-            logger.debug(f"Capabilities fetch failed for {host}:{port}: {e}")
-            return None
-
     async def get_online_agents(self) -> list[dict]:
         """Health-check all agents, return those that are online.
 
@@ -95,20 +83,22 @@ class AgentDiscovery:
         return [r for r in results if r is not None]
 
     async def _check_agent(self, agent: dict) -> Optional[dict]:
-        """Check one agent and return enriched info if online."""
+        """Check one agent and return enriched info if online.
+
+        Capabilities are NOT fetched here — they come from heartbeat
+        registration and are stored in the RobotRegistry.
+        """
         health = await self.health_check(agent["host"], agent["port"])
         if health and health.get("status") == "ok":
-            # Fetch capabilities for LLM prompts
-            caps = await self.get_capabilities(agent["host"], agent["port"])
             return {
                 "id": agent["id"],
                 "host": agent["host"],
                 "port": agent["port"],
+                "zone": agent.get("zone", ""),
                 "agent_id": health.get("agent_id", agent["id"]),
                 "uptime_s": health.get("uptime_s"),
                 "busy": health.get("busy", False),
                 "current_task": health.get("current_task"),
-                "capabilities": caps,
                 "status": "online",
             }
         return None
@@ -183,10 +173,18 @@ class AgentDiscovery:
                     continue
                 seen_ids.add(agent_id)
 
+                # Extract zone from tags (e.g. "zone-a" → "A")
+                zone = ""
+                for t in tags:
+                    if t.startswith("zone-"):
+                        zone = t[5:].upper()
+                        break
+
                 agents.append({
                     "id": agent_id,
                     "host": host,
                     "port": port,
+                    "zone": zone,
                 })
 
             if agents:

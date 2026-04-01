@@ -17,7 +17,7 @@ from ..config import (
     DEFAULT_MESSAGE_TRANSPORT,
     A2A_TIMEOUT_SECONDS,
 )
-from .transport import agent_topic
+from .transport import agent_topic, broadcast_topic
 from .shared import ensure_connected
 
 logger = logging.getLogger(__name__)
@@ -170,3 +170,45 @@ class A2AClient:
             else:
                 processed.append(result)
         return processed
+
+    async def broadcast_notification(
+        self,
+        notification: dict,
+        exclude_robot_id: str = None,
+    ):
+        """Broadcast a notification to all robots.
+
+        Primary: publish to NATS broadcast topic (fire-and-forget).
+        Fallback: send individually to each online robot via transport.
+
+        Args:
+            notification: Notification metadata (notification_type, finder_id, etc.)
+            exclude_robot_id: Robot ID to exclude (e.g. the finder itself).
+        """
+        prompt = notification.get("text", "Notification from Central")
+        metadata = {**notification, "task_type": "notification"}
+        payload = _build_a2a_request(prompt, metadata)
+        payload_bytes = json.dumps(payload).encode()
+
+        try:
+            transport = await ensure_connected()
+
+            # NATS: fire-and-forget publish to broadcast topic
+            topic = broadcast_topic(DEFAULT_MESSAGE_TRANSPORT)
+            await transport.publish(topic, payload_bytes)
+            logger.info(f"Broadcast notification: {notification.get('notification_type')} via {topic}")
+
+        except Exception as e:
+            # Fallback: send individually to each online robot
+            logger.warning(f"Broadcast publish failed ({e}), falling back to individual sends")
+            try:
+                from .robot_registry import robot_registry
+                online = robot_registry.get_online_robots()
+                robot_ids = [
+                    r.robot_id for r in online
+                    if r.robot_id != exclude_robot_id
+                ]
+                if robot_ids:
+                    await self.send_task_to_multiple(robot_ids, prompt, metadata)
+            except Exception as fallback_err:
+                logger.error(f"Broadcast fallback also failed: {fallback_err}")

@@ -30,6 +30,13 @@ class BaseTransport(ABC):
     async def close(self):
         """Close the transport connection."""
 
+    async def publish(self, topic: str, payload: bytes):
+        """Fire-and-forget publish (no reply expected). Used for broadcasts.
+
+        Default implementation is a no-op. Override in transports that support it.
+        """
+        logger.warning(f"publish() not supported on {self.__class__.__name__}")
+
     @abstractmethod
     async def request(self, topic: str, payload: bytes, timeout: float = 30) -> bytes:
         """Send a message and wait for a reply (client-side request/reply pattern).
@@ -83,6 +90,12 @@ class NatsTransport(BaseTransport):
                 await sub.unsubscribe()
             await self._nc.close()
             logger.info("NATS disconnected")
+
+    async def publish(self, topic: str, payload: bytes):
+        """Fire-and-forget publish (no reply expected). Used for broadcasts."""
+        if not self._nc or not self._nc.is_connected:
+            raise ConnectionError("NATS not connected")
+        await self._nc.publish(topic, payload)
 
     async def request(self, topic: str, payload: bytes, timeout: float = 30) -> bytes:
         if not self._nc or not self._nc.is_connected:

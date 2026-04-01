@@ -93,14 +93,6 @@ class MissionState(TypedDict):
     outcome: str               # "acted", "setup", "completed", "ignored", "error"
 
 
-class ExecuteState(TypedDict):
-    """State for the execute graph."""
-    steps: List[Dict]
-    current_step: int
-    results: List[Dict]
-    status: str
-
-
 # ── Helper functions (from graph.py, unchanged) ───────────
 
 def _describe_bbox(bbox) -> str:
@@ -145,17 +137,6 @@ def _get_bbox_center_x(bbox) -> Optional[float]:
     else:
         return None
     return (x1 + x2) / 2
-
-
-def _get_target_horizontal_position(bbox) -> str:
-    cx = _get_bbox_center_x(bbox)
-    if cx is None:
-        return "center"
-    if cx < FRAME_WIDTH * 0.25:
-        return "left"
-    elif cx > FRAME_WIDTH * 0.75:
-        return "right"
-    return "center"
 
 
 def _estimate_turn_degrees(bbox) -> float:

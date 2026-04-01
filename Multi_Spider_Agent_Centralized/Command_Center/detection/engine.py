@@ -219,6 +219,39 @@ def _detect_in_frame(frame: bytes, target_type: str, target_name: str = "",
     return results
 
 
+async def _broadcast_target_found(mission: SearchMission):
+    """Broadcast 'target found' notification to all other robots and cancel their missions."""
+    # Cancel all other active missions on Central side
+    other_missions = [
+        m for m in _active_missions.values()
+        if m.mission_id != mission.mission_id
+    ]
+    for m in other_missions:
+        m.cancel()
+        logger.info(f"Cancelled mission {m.mission_id} on {m.agent_id} (target found by {mission.agent_id})")
+
+    # Broadcast notification to all Pi robots
+    try:
+        from ..infra.a2a_client import A2AClient
+        client = A2AClient()
+        match = mission.match_result or {}
+        target_label = mission.target_name or match.get("label", "target")
+        await client.broadcast_notification(
+            notification={
+                "notification_type": "target_found",
+                "finder_id": mission.agent_id,
+                "target_type": mission.target_type,
+                "target_name": target_label,
+                "mission_id": mission.mission_id,
+                "action": "sit_down",
+                "text": f"{mission.agent_id} found {target_label}",
+            },
+            exclude_robot_id=mission.agent_id,
+        )
+    except Exception as e:
+        logger.warning(f"Failed to broadcast target_found: {e}")
+
+
 async def run_search_mission(mission: SearchMission) -> dict:
     """Execute a search mission with Central-side detection and Central-side decision.
 
@@ -346,6 +379,8 @@ async def run_search_mission(mission: SearchMission) -> dict:
                                     f"'{target_hit['label']}' "
                                     f"(confidence={target_hit['confidence']})"
                                 )
+                                # Notify other robots immediately, don't wait for action to finish
+                                await _broadcast_target_found(mission)
 
                         # Dispatch to CentralPiAgent (throttled)
                         if mission.report_all:

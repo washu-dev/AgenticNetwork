@@ -43,6 +43,7 @@ class RegisteredRobot:
     registered_at: float = 0.0
     last_heartbeat: float = 0.0
     status: str = "online"                                # online / offline
+    zone: str = ""                                        # patrol zone (e.g. "A", "B")
     standing: bool = False
     busy: bool = False
     current_mission_id: Optional[str] = None
@@ -54,6 +55,7 @@ class RegisteredRobot:
             "host": self.host,
             "port": self.port,
             "camera_port": self.camera_port,
+            "zone": self.zone,
             "actions": self.actions,
             "status": self.status,
             "standing": self.standing,
@@ -91,6 +93,7 @@ class RobotRegistry:
                 capabilities=capabilities,
                 actions=actions,
                 actions_description=actions_description,
+                zone=data.get("zone", ""),
                 registered_at=now,
                 last_heartbeat=now,
                 status="online",
@@ -99,7 +102,7 @@ class RobotRegistry:
 
         logger.info(
             f"Robot registered: {robot_id} at {robot.host}:{robot.port} "
-            f"(camera={robot.camera_port}, {len(actions)} actions)"
+            f"(camera={robot.camera_port}, zone={robot.zone}, {len(actions)} actions)"
         )
         return {"status": "registered", "robot_id": robot_id}
 
@@ -107,6 +110,7 @@ class RobotRegistry:
         """Register/update a robot from discovery results (synchronous).
 
         Called after AgentDiscovery.get_online_agents() returns enriched agent info.
+        If no capabilities provided, they will be fetched asynchronously from the Pi.
         """
         robot_id = agent_info.get("id", agent_info.get("agent_id", ""))
         if not robot_id:
@@ -119,6 +123,8 @@ class RobotRegistry:
             actions = [a["name"] for a in capabilities.get("actions", [])]
             actions_description = _generate_actions_description(capabilities)
 
+        zone = agent_info.get("zone", "")
+
         now = time.time()
         existing = self._robots.get(robot_id)
         if existing:
@@ -127,12 +133,19 @@ class RobotRegistry:
             existing.port = agent_info.get("port", existing.port)
             existing.last_heartbeat = now
             existing.status = "online"
+            if zone:
+                existing.zone = zone
             if capabilities:
                 existing.capabilities = capabilities
                 existing.actions = actions
                 existing.actions_description = actions_description
+            elif not existing.actions:
+                # No capabilities yet — fetch from Pi asynchronously
+                asyncio.get_event_loop().create_task(
+                    self._fetch_capabilities(robot_id, existing.host, existing.port)
+                )
         else:
-            self._robots[robot_id] = RegisteredRobot(
+            robot = RegisteredRobot(
                 robot_id=robot_id,
                 host=agent_info.get("host", ""),
                 port=agent_info.get("port", 9004),
@@ -140,11 +153,34 @@ class RobotRegistry:
                 capabilities=capabilities,
                 actions=actions,
                 actions_description=actions_description,
+                zone=zone,
                 registered_at=now,
                 last_heartbeat=now,
                 status="online",
             )
-            logger.info(f"Robot registered from discovery: {robot_id}")
+            self._robots[robot_id] = robot
+            logger.info(f"Robot registered from discovery: {robot_id} (zone={zone})")
+            if not capabilities:
+                asyncio.get_event_loop().create_task(
+                    self._fetch_capabilities(robot_id, robot.host, robot.port)
+                )
+
+    async def _fetch_capabilities(self, robot_id: str, host: str, port: int):
+        """Fetch capabilities from Pi's /capabilities endpoint and update registry."""
+        import httpx
+        try:
+            async with httpx.AsyncClient(timeout=5) as client:
+                resp = await client.get(f"http://{host}:{port}/capabilities")
+                if resp.status_code == 200:
+                    caps = resp.json()
+                    robot = self._robots.get(robot_id)
+                    if robot:
+                        robot.capabilities = caps
+                        robot.actions = [a["name"] for a in caps.get("actions", [])]
+                        robot.actions_description = _generate_actions_description(caps)
+                        logger.info(f"Fetched capabilities for {robot_id}: {len(robot.actions)} actions")
+        except Exception as e:
+            logger.warning(f"Failed to fetch capabilities for {robot_id}: {e}")
 
     async def heartbeat(self, robot_id: str, data: dict = None) -> dict:
         """Update heartbeat. Called by Pi every 10s."""

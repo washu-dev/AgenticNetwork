@@ -30,10 +30,7 @@ services:
     depends_on:
       - zot
     healthcheck:
-      test: wget --no-verbose --tries=1 --spider http://127.0.0.1:8889/healthz/ready || exit 1
-      interval: 10s
-      retries: 60
-      start_period: 10s
+      disable: true
 
   zot:
     image: ghcr.io/project-zot/zot:v2.1.10
