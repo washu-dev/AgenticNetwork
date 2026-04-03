@@ -55,8 +55,8 @@ async def startup_event():
         logger.warning(f"Transport connection failed (will use HTTP fallback): {e}")
     # Initial discovery: populate registry from ADS/static config
     _background_tasks.append(asyncio.create_task(_initial_discovery()))
-    # Periodic cleanup: mark offline robots whose heartbeat timed out
-    _background_tasks.append(asyncio.create_task(_heartbeat_cleanup_loop()))
+    # Periodic health check: actively check robot health + re-discover from ADS
+    _background_tasks.append(asyncio.create_task(_periodic_health_check_loop()))
 
 
 @app.on_event("shutdown")
@@ -90,16 +90,37 @@ async def _initial_discovery():
         logger.warning(f"Initial discovery failed: {e}")
 
 
-async def _heartbeat_cleanup_loop():
-    """Periodically mark robots offline if heartbeat timed out."""
-    from .config import CLEANUP_INTERVAL, HEARTBEAT_TIMEOUT
+async def _periodic_health_check_loop():
+    """Periodically health-check all robots and re-discover from ADS.
+
+    Replaces heartbeat-based online detection. Central actively checks
+    each robot's /health endpoint every HEALTH_CHECK_INTERVAL seconds.
+    Also re-runs ADS discovery to pick up newly registered robots.
+    """
+    from .config import HEALTH_CHECK_INTERVAL
+    from .infra.discovery import AgentDiscovery
     import time
+
     while True:
-        await asyncio.sleep(CLEANUP_INTERVAL)
-        now = time.time()
-        for robot in robot_registry.get_all_robots():
-            if robot.status == "online" and (now - robot.last_heartbeat) > HEARTBEAT_TIMEOUT:
-                robot_registry.mark_offline(robot.robot_id)
+        await asyncio.sleep(HEALTH_CHECK_INTERVAL)
+        try:
+            # Re-discover from ADS (picks up new robots)
+            discovery = AgentDiscovery()
+            agents = await discovery.get_online_agents()
+
+            # Update registry with discovered agents
+            seen_ids = set()
+            for agent_info in agents:
+                robot_registry.register_from_discovery(agent_info)
+                seen_ids.add(agent_info.get("id", agent_info.get("agent_id", "")))
+
+            # Mark robots offline if not found in discovery
+            for robot in robot_registry.get_all_robots():
+                if robot.robot_id not in seen_ids and robot.status == "online":
+                    robot_registry.mark_offline(robot.robot_id)
+
+        except Exception as e:
+            logger.warning(f"Periodic health check failed: {e}")
 
 
 app.add_middleware(
@@ -439,36 +460,31 @@ async def detection_overlay_stream(agent_id: str):
 
 
 @app.get("/api/stream/{agent_id}")
-async def annotated_stream(agent_id: str):
-    """MJPEG stream — shows YOLO-annotated frames from detection engine when a
-    mission is active, otherwise proxies raw camera feed."""
+async def video_stream(agent_id: str):
+    """MJPEG stream — connects to Robot Agent's WebSocket, converts to MJPEG for browser."""
     from fastapi.responses import StreamingResponse
-    from .detection.yolo_detector import grab_mjpeg_frame
-    import asyncio
+    from .robot_agent import _ws_port_for
 
     robot = robot_registry.get_robot(agent_id)
     if not robot:
         return {"error": f"Robot not found: {agent_id}"}
 
-    host = robot.host
-    camera_port = robot.camera_port
+    ws_port = _ws_port_for(agent_id)
+    ws_url = f"ws://localhost:{ws_port}"
 
-    async def mjpeg_generator():
+    async def mjpeg_from_ws():
         boundary = b"--frame\r\n"
+        try:
+            import websockets
+        except ImportError:
+            logger.error("websockets not installed for video proxy")
+            return
+
         while True:
             try:
-                async with httpx.AsyncClient(timeout=5) as client:
-                    async with client.stream("GET", f"http://{host}:{camera_port}/mjpg") as resp:
-                        buf = b""
-                        async for chunk in resp.aiter_bytes(8192):
-                            buf += chunk
-                            frame = grab_mjpeg_frame(buf)
-                            if frame is None:
-                                if len(buf) > 500_000:
-                                    buf = buf[-100_000:]
-                                continue
-                            buf = buf[buf.find(b'\xff\xd9') + 2:]
-
+                async with websockets.connect(ws_url) as ws:
+                    async for frame in ws:
+                        if isinstance(frame, bytes):
                             yield (
                                 boundary
                                 + b"Content-Type: image/jpeg\r\n"
@@ -480,7 +496,7 @@ async def annotated_stream(agent_id: str):
                 await asyncio.sleep(1)
 
     return StreamingResponse(
-        mjpeg_generator(),
+        mjpeg_from_ws(),
         media_type="multipart/x-mixed-replace; boundary=frame",
     )
 

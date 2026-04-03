@@ -1,8 +1,8 @@
 """
-Robot Client: sends commands to Pi robots via A2A protocol.
+Robot Client: sends commands to Physical Pi via HTTP POST /command.
 
-Uses NATS/SLIM transport with HTTP fallback.
-The Pi's thin-client A2A executor handles command routing.
+Direct TCP/IP communication — no NATS, no A2A protocol.
+Robot Agent calls this to control the physical robot.
 """
 
 import json
@@ -11,130 +11,90 @@ from typing import Optional
 
 import httpx
 
-from .a2a_client import A2AClient
-
 logger = logging.getLogger(__name__)
 
 
 class RobotClient:
-    """Send commands to Pi robots via A2A protocol.
+    """Send commands to Physical Pi via HTTP POST /command.
 
-    Each command is sent as an A2A message with metadata specifying
-    the task_type and parameters. The Pi's A2A executor routes these
-    to the appropriate hardware handler.
-
-    Tries transport (NATS/SLIM) first, falls back to HTTP on failure.
+    Each command is a JSON payload with task_type and parameters.
+    Pi's thin_client routes these to the appropriate hardware handler.
     """
-
-    def __init__(self):
-        self._a2a = A2AClient()
 
     async def execute_action(
         self, host: str, port: int, action: str, params: dict = None,
         robot_id: str = "unknown",
     ) -> dict:
-        """Execute a hardware action on the robot via A2A."""
-        metadata = {
+        """Execute a hardware action on the robot."""
+        payload = {
             "task_type": "execute",
             "action": action,
             "params": params or {},
         }
-
-        result = await self._send_with_fallback(
-            robot_id, host, port, f"Execute {action}", metadata
-        )
-
+        result = await self._post_command(host, port, payload)
         if result.get("status") == "error":
-            logger.error(f"Command failed: {action} on {host}:{port}: {result.get('error')}")
-            return {"status": "error", "error": result.get("error", "A2A send failed")}
-
-        return self._parse_json_response(result, fallback={"status": "ok", "action": action})
+            logger.error(f"Command failed: {action} on {robot_id}: {result.get('error')}")
+        return result
 
     async def read_ultrasonic(self, host: str, port: int, robot_id: str = "unknown") -> Optional[float]:
-        """Read ultrasonic distance sensor via A2A. Returns distance in cm or None."""
-        metadata = {"task_type": "read_sensor", "sensor": "ultrasonic"}
-
-        result = await self._send_with_fallback(
-            robot_id, host, port, "Read ultrasonic", metadata
-        )
-
-        if result.get("status") == "error":
-            logger.debug(f"Ultrasonic read failed from {host}:{port}: {result.get('error')}")
-            return None
-
-        parsed = self._parse_json_response(result)
-        if parsed:
-            return parsed.get("distance_cm")
-        return None
+        """Read ultrasonic distance sensor. Returns distance in cm or None."""
+        result = await self._post_command(host, port, {"task_type": "read_sensor", "sensor": "ultrasonic"})
+        return result.get("distance_cm")
 
     async def get_status(self, host: str, port: int, robot_id: str = "unknown") -> dict:
-        """Get robot status via A2A."""
-        metadata = {"task_type": "status"}
-
-        result = await self._send_with_fallback(
-            robot_id, host, port, "Get status", metadata
-        )
-
-        if result.get("status") == "error":
-            logger.debug(f"Status check failed for {host}:{port}: {result.get('error')}")
-            return {"status": "error", "error": result.get("error", "")}
-
-        return self._parse_json_response(result, fallback={"status": "unknown"})
+        """Get robot status."""
+        return await self._post_command(host, port, {"task_type": "status"})
 
     async def speak(self, host: str, port: int, text: str, robot_id: str = "unknown") -> dict:
-        """Send TTS command to robot via A2A."""
-        metadata = {"task_type": "speak", "text": text}
+        """Send TTS command to robot."""
+        return await self._post_command(host, port, {"task_type": "speak", "text": text})
 
-        result = await self._send_with_fallback(
-            robot_id, host, port, f"Speak: {text}", metadata
-        )
-
-        if result.get("status") == "error":
-            logger.debug(f"Speak failed on {host}:{port}: {result.get('error')}")
-            return {"status": "error", "error": result.get("error", "")}
-
-        return self._parse_json_response(result, fallback={"status": "ok"})
+    async def send_notification(self, host: str, port: int, notification: dict, robot_id: str = "unknown") -> dict:
+        """Send notification to robot (e.g. target_found → sit_down)."""
+        payload = {**notification, "task_type": "notification"}
+        return await self._post_command(host, port, payload)
 
     async def health_check(self, host: str, port: int) -> Optional[dict]:
-        """Check robot health via HTTP GET /health (always direct HTTP)."""
-        url = f"http://{host}:{port}/health"
+        """Check robot health via GET /health."""
         try:
             async with httpx.AsyncClient(timeout=3) as client:
-                resp = await client.get(url)
+                resp = await client.get(f"http://{host}:{port}/health")
                 resp.raise_for_status()
                 return resp.json()
         except Exception:
             return None
 
-    async def _send_with_fallback(
-        self, robot_id: str, host: str, port: int, prompt: str, metadata: dict
-    ) -> dict:
-        """Try transport first, fall back to HTTP on failure."""
+    async def start_video_stream(self, host: str, camera_port: int, target_host: str, target_port: int, fps: int = 10) -> dict:
+        """Tell Pi to start pushing UDP video frames to target address."""
         try:
-            result = await self._a2a.send_task(robot_id, prompt, metadata)
-            if result.get("status") != "error":
-                logger.debug(f"Sent via transport to {robot_id}")
-                return result
-            logger.warning(f"Transport returned error for {robot_id}: {result.get('error')}, falling back to HTTP")
+            async with httpx.AsyncClient(timeout=5) as client:
+                resp = await client.post(
+                    f"http://{host}:{camera_port}/stream/start",
+                    json={"target_host": target_host, "target_port": target_port, "fps": fps},
+                )
+                return resp.json()
         except Exception as e:
-            logger.warning(f"Transport exception for {robot_id}: {e}, falling back to HTTP")
+            logger.warning(f"Failed to start video stream: {e}")
+            return {"status": "error", "error": str(e)}
 
-        return await self._a2a.send_task_http(host, port, prompt, metadata)
-
-    @staticmethod
-    def _parse_json_response(a2a_result: dict, fallback: dict = None) -> dict:
-        """Parse JSON from A2A response text."""
-        response_text = a2a_result.get("response", "")
+    async def stop_video_stream(self, host: str, camera_port: int) -> dict:
+        """Tell Pi to stop pushing UDP video frames."""
         try:
-            return json.loads(response_text)
-        except (json.JSONDecodeError, TypeError):
-            pass
+            async with httpx.AsyncClient(timeout=5) as client:
+                resp = await client.post(f"http://{host}:{camera_port}/stream/stop")
+                return resp.json()
+        except Exception as e:
+            logger.warning(f"Failed to stop video stream: {e}")
+            return {"status": "error", "error": str(e)}
 
-        structured = a2a_result.get("structured", {})
-        if structured:
-            return structured
-
-        return fallback or {}
+    async def _post_command(self, host: str, port: int, payload: dict) -> dict:
+        """POST a command to Pi's /command endpoint."""
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.post(f"http://{host}:{port}/command", json=payload)
+                return resp.json()
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
 
 
 # Singleton

@@ -8,8 +8,7 @@ import time
 import signal
 import logging
 
-from Thin_Client.config import OBSTACLE_THRESHOLD_CM, PATROL_SPEED
-from Thin_Client import speaker
+from agent_spider.config import OBSTACLE_THRESHOLD_CM, PATROL_SPEED
 
 logger = logging.getLogger(__name__)
 
@@ -182,5 +181,4 @@ class CrawlerControl:
         blocked = dist <= OBSTACLE_THRESHOLD_CM
         if blocked:
             logger.info(f"Obstacle detected at {dist:.1f}cm")
-            speaker.announce_obstacle()
         return blocked

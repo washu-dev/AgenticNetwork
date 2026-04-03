@@ -1,0 +1,14 @@
+[
+    {
+        "robot_id": "crawler-alpha-patrol-002",
+        "pi_host": "10.232.234.119",
+        "zone": "A",
+        "robot_type": "spider"
+    },
+    {
+        "robot_id": "crawler-alpha-patrol-004",
+        "pi_host": "10.232.143.132",
+        "zone": "B",
+        "robot_type": "spider"
+    }
+]

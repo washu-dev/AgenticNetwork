@@ -282,26 +282,3 @@ def create_transport(transport_type: str, **kwargs) -> BaseTransport:
         )
     else:
         raise ValueError(f"Unknown transport type: {transport_type}. Use 'NATS' or 'SLIM'.")
-
-
-def agent_topic(robot_id: str, transport_type: str = "NATS") -> str:
-    """Generate the topic/identity string for a robot agent.
-
-    NATS: "agents.direct.{robot_id}" (dot-separated)
-    SLIM: "default/default/{robot_id}" (slash-separated Name format)
-    """
-    t = transport_type.upper()
-    if t == "SLIM":
-        return f"default/default/{robot_id}"
-    return f"agents.direct.{robot_id}"
-
-
-def broadcast_topic(transport_type: str = "NATS") -> str:
-    """Get the broadcast topic for the given transport.
-
-    NATS: "agents.broadcast"
-    SLIM: Not applicable (use group sessions instead)
-    """
-    if transport_type.upper() == "SLIM":
-        return "default/default/broadcast"
-    return "agents.broadcast"

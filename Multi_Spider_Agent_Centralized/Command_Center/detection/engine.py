@@ -1,11 +1,12 @@
 """
 Central Detection Engine — Central is BOTH the "eyes" AND the "brain".
 
-Central watches Pi's MJPEG stream, runs detection (YOLO / face recognition),
-and passes detections in-process to the CentralPiAgent which decides actions
-via LLM, then sends commands to the thin-client robot.
+Robot Agent receives UDP video frames from Pi, runs detection (YOLO / face recognition),
+and passes detections to the CentralPiAgent which decides actions via LLM,
+then sends commands to Pi via HTTP.
 
-No more HTTP observation push — everything happens in-process.
+Video: Pi pushes UDP frames → Robot Agent receives
+Commands: Robot Agent → HTTP POST → Pi
 """
 
 import asyncio
@@ -16,7 +17,8 @@ from typing import Optional
 
 import httpx
 
-from .yolo_detector import grab_mjpeg_frame, detect_frame
+from .udp_receiver import UDPFrameReceiver
+from .yolo_detector import detect_frame
 from ..config import MISSION_TIMEOUT_STATIONARY, MISSION_TIMEOUT_PATROL
 
 logger = logging.getLogger(__name__)
@@ -219,6 +221,16 @@ def _detect_in_frame(frame: bytes, target_type: str, target_name: str = "",
     return results
 
 
+def _decide_post_action(task_goal: str) -> str:
+    """Decide what other robots should do after target is found. Rule-based for now."""
+    goal_lower = (task_goal or "").lower()
+    if "continue" in goal_lower:
+        return "continue"
+    if "return" in goal_lower or "go back" in goal_lower:
+        return "return_home"
+    return "sit_down"
+
+
 async def _broadcast_target_found(mission: SearchMission):
     """Broadcast 'target found' notification to all other robots and cancel their missions."""
     # Cancel all other active missions on Central side
@@ -230,26 +242,31 @@ async def _broadcast_target_found(mission: SearchMission):
         m.cancel()
         logger.info(f"Cancelled mission {m.mission_id} on {m.agent_id} (target found by {mission.agent_id})")
 
-    # Broadcast notification to all Pi robots
+    # Decide what other robots should do
+    post_action = _decide_post_action(mission.task_goal)
+
+    # Notify all other Pis via HTTP
     try:
-        from ..infra.a2a_client import A2AClient
-        client = A2AClient()
+        from ..infra.robot_client import robot_client
+        from ..infra.robot_registry import robot_registry
         match = mission.match_result or {}
         target_label = mission.target_name or match.get("label", "target")
-        await client.broadcast_notification(
-            notification={
-                "notification_type": "target_found",
-                "finder_id": mission.agent_id,
-                "target_type": mission.target_type,
-                "target_name": target_label,
-                "mission_id": mission.mission_id,
-                "action": "sit_down",
-                "text": f"{mission.agent_id} found {target_label}",
-            },
-            exclude_robot_id=mission.agent_id,
-        )
+        notification = {
+            "notification_type": "target_found",
+            "finder_id": mission.agent_id,
+            "target_type": mission.target_type,
+            "target_name": target_label,
+            "mission_id": mission.mission_id,
+            "action": post_action,
+        }
+        online = robot_registry.get_online_robots()
+        for robot in online:
+            if robot.robot_id != mission.agent_id:
+                await robot_client.send_notification(
+                    robot.host, robot.port, notification, robot_id=robot.robot_id
+                )
     except Exception as e:
-        logger.warning(f"Failed to broadcast target_found: {e}")
+        logger.warning(f"Failed to notify other robots: {e}")
 
 
 async def run_search_mission(mission: SearchMission) -> dict:
@@ -301,15 +318,24 @@ async def run_search_mission(mission: SearchMission) -> dict:
                 "report_all": mission.report_all,
             })
 
-        # Step 3: Continuously analyze frames
+        # Step 3: Start UDP video receiver and tell Pi to start streaming
         timeout = MISSION_TIMEOUT_STATIONARY if is_stationary else MISSION_TIMEOUT_PATROL
-        stream_url = f"http://{mission.host}:{mission.camera_port}/mjpg"
         mission_ended = False
         last_dispatch_time = 0.0
 
-        async with httpx.AsyncClient(timeout=httpx.Timeout(
-            connect=5, read=10, write=5, pool=5
-        )) as stream_client:
+        from ..infra.robot_client import robot_client
+        udp_receiver = UDPFrameReceiver(listen_port=0)
+        udp_receiver.start()
+
+        # Tell Pi to push video frames to our UDP port
+        import socket as _socket
+        local_ip = _socket.gethostbyname(_socket.gethostname())
+        await robot_client.start_video_stream(
+            mission.host, mission.camera_port, local_ip, udp_receiver.port, fps=10
+        )
+        logger.info(f"Mission {mission.mission_id}: UDP receiver on port {udp_receiver.port}")
+
+        try:
           while not mission.is_cancelled and not mission_ended:
             if time.time() - mission.start_time > timeout:
                 mission.status = "timeout"
@@ -317,110 +343,95 @@ async def run_search_mission(mission: SearchMission) -> dict:
                 logger.warning(f"Mission {mission.mission_id}: timeout after {timeout}s")
                 break
 
-            try:
-                async with stream_client.stream("GET", stream_url) as resp:
-                    buf = b""
-                    async for chunk in resp.aiter_bytes(chunk_size=4096):
-                        if mission.is_cancelled or mission_ended:
-                            break
-                        if time.time() - mission.start_time > timeout:
-                            break
+            frame = await udp_receiver.wait_for_frame(timeout=2.0)
+            if frame is None:
+                continue
 
-                        buf += chunk
-                        frame = grab_mjpeg_frame(buf)
-                        if frame is None:
-                            if len(buf) > 500_000:
-                                buf = buf[-100_000:]
-                            continue
-                        buf = buf[buf.find(b'\xff\xd9') + 2:]
+            mission.frames_analyzed += 1
 
-                        mission.frames_analyzed += 1
+            # Only run YOLO for non-face tasks
+            yolo_result = None
+            if mission.target_type != "face":
+                yolo_result = await asyncio.to_thread(
+                    detect_frame, frame, conf_threshold=mission.threshold
+                )
+                annotated = yolo_result.get("annotated_jpeg")
+                if annotated:
+                    _latest_annotated[mission.agent_id] = annotated
+                _latest_detections[mission.agent_id] = {
+                    "detections": yolo_result.get("detections", []),
+                    "image_width": yolo_result.get("image_width", 640),
+                    "image_height": yolo_result.get("image_height", 480),
+                }
 
-                        # Only run YOLO for non-face tasks
-                        yolo_result = None
-                        if mission.target_type != "face":
-                            yolo_result = await asyncio.to_thread(
-                                detect_frame, frame, conf_threshold=mission.threshold
-                            )
-                            annotated = yolo_result.get("annotated_jpeg")
-                            if annotated:
-                                _latest_annotated[mission.agent_id] = annotated
-                            _latest_detections[mission.agent_id] = {
-                                "detections": yolo_result.get("detections", []),
-                                "image_width": yolo_result.get("image_width", 640),
-                                "image_height": yolo_result.get("image_height", 480),
-                            }
+            # Notify stream subscribers
+            evt = _frame_events.get(mission.agent_id)
+            if evt:
+                evt.set()
 
-                        # Notify stream subscribers
-                        evt = _frame_events.get(mission.agent_id)
-                        if evt:
-                            evt.set()
+            # Run detection
+            detections = await asyncio.to_thread(
+                _detect_in_frame,
+                frame, mission.target_type, mission.target_name,
+                mission.threshold, yolo_result,
+            )
 
-                        # Run detection
-                        detections = await asyncio.to_thread(
-                            _detect_in_frame,
-                            frame, mission.target_type, mission.target_name,
-                            mission.threshold, yolo_result,
-                        )
+            # Accumulate detections
+            for d in detections:
+                mission.detections.append(d)
 
-                        # Accumulate detections
-                        for d in detections:
-                            mission.detections.append(d)
+            # Record first target match
+            if mission.match_result is None:
+                target_hit = next(
+                    (d for d in detections if d.get("is_target")), None
+                )
+                if target_hit:
+                    mission.match_result = target_hit
+                    logger.info(
+                        f"Mission {mission.mission_id}: first target match: "
+                        f"'{target_hit['label']}' "
+                        f"(confidence={target_hit['confidence']})"
+                    )
+                    await _broadcast_target_found(mission)
 
-                        # Record first target match
-                        if mission.match_result is None:
-                            target_hit = next(
-                                (d for d in detections if d.get("is_target")), None
-                            )
-                            if target_hit:
-                                mission.match_result = target_hit
-                                logger.info(
-                                    f"Mission {mission.mission_id}: first target match: "
-                                    f"'{target_hit['label']}' "
-                                    f"(confidence={target_hit['confidence']})"
-                                )
-                                # Notify other robots immediately, don't wait for action to finish
-                                await _broadcast_target_found(mission)
+            # Dispatch to CentralPiAgent (throttled)
+            if mission.report_all:
+                push_detections = detections
+            else:
+                push_detections = [d for d in detections if d.get("is_target")]
 
-                        # Dispatch to CentralPiAgent (throttled)
-                        if mission.report_all:
-                            push_detections = detections
-                        else:
-                            push_detections = [
-                                d for d in detections if d.get("is_target")
-                            ]
+            if push_detections:
+                now = time.time()
+                if now - last_dispatch_time >= DETECTION_DISPATCH_INTERVAL:
+                    result = await agent.handle_detection({
+                        "mission_id": mission.mission_id,
+                        "task_goal": mission.task_goal,
+                        "target_type": mission.target_type,
+                        "target_name": mission.target_name,
+                        "status": "searching",
+                        "detections": push_detections,
+                        "elapsed_s": mission.elapsed_s,
+                        "report_all": mission.report_all,
+                    })
+                    last_dispatch_time = now
 
-                        if push_detections:
-                            now = time.time()
-                            if now - last_dispatch_time >= DETECTION_DISPATCH_INTERVAL:
-                                result = await agent.handle_detection({
-                                    "mission_id": mission.mission_id,
-                                    "task_goal": mission.task_goal,
-                                    "target_type": mission.target_type,
-                                    "target_name": mission.target_name,
-                                    "status": "searching",
-                                    "detections": push_detections,
-                                    "elapsed_s": mission.elapsed_s,
-                                    "report_all": mission.report_all,
-                                })
-                                last_dispatch_time = now
+                    if result.get("mission_ended"):
+                        mission.status = "completed"
+                        mission_ended = True
+                        break
 
-                                if result.get("mission_ended"):
-                                    mission.status = "completed"
-                                    mission_ended = True
-                                    break
-
-                        # Log progress
-                        if mission.frames_analyzed % 10 == 0:
-                            logger.info(
-                                f"Mission {mission.mission_id}: "
-                                f"{mission.frames_analyzed} frames, "
-                                f"{mission.elapsed_s}s, "
-                                f"{len(mission.detections)} detections"
-                            )
-            except Exception as e:
-                logger.debug(f"Stream read error: {e}")
-                await asyncio.sleep(1)
+            # Log progress
+            if mission.frames_analyzed % 10 == 0:
+                logger.info(
+                    f"Mission {mission.mission_id}: "
+                    f"{mission.frames_analyzed} frames, "
+                    f"{mission.elapsed_s}s, "
+                    f"{len(mission.detections)} detections"
+                )
+        finally:
+            # Stop UDP receiver and tell Pi to stop streaming
+            udp_receiver.stop()
+            await robot_client.stop_video_stream(mission.host, mission.camera_port)
 
         # Mission ended — handle finish
         if mission.is_cancelled:

@@ -22,25 +22,31 @@ _ADS_CACHE_TTL = 60  # seconds
 
 
 class AgentDiscovery:
-    """Discover and health-check PiCrawler agents on the network.
+    """Discover Robot Agents via ADS or static config.
+
+    In the new architecture:
+    - Robot Agents register themselves to ADS (from server side)
+    - Planner discovers Robot Agents via ADS
+    - Planner communicates with Robot Agents via NATS (not direct HTTP)
+    - Robot Agents manage their own Physical Pi health checks
 
     Supports two modes (set via DISCOVERY_MODE env var):
     - "static": use hardcoded PI_AGENTS list from config
-    - "ads": query Agent Directory Service for registered agents, then health-check
+    - "ads": query Agent Directory Service for registered Robot Agents
     """
 
     def __init__(self, agents: Optional[list[dict]] = None):
         if agents:
             self.agents = agents
         elif DISCOVERY_MODE == "ads":
-            self.agents = []  # ADS mode: populated by _discover_from_ads()
+            self.agents = []
         else:
             self.agents = PI_AGENTS
         self._ads_client = None
         self._ads_connected = False
 
     async def health_check(self, host: str, port: int) -> Optional[dict]:
-        """Check a single agent's health. Returns response dict or None if unreachable."""
+        """Check a Physical Pi's health via HTTP GET /health."""
         url = f"http://{host}:{port}/health"
         try:
             async with httpx.AsyncClient(timeout=HEALTH_CHECK_TIMEOUT) as client:
@@ -51,43 +57,43 @@ class AgentDiscovery:
             logger.debug(f"Health check failed for {host}:{port}: {e}")
             return None
 
-    async def get_agent_card(self, host: str, port: int) -> Optional[dict]:
-        """Fetch agent card from /.well-known/agent-card.json."""
-        url = f"http://{host}:{port}/.well-known/agent-card.json"
-        try:
-            async with httpx.AsyncClient(timeout=HEALTH_CHECK_TIMEOUT) as client:
-                resp = await client.get(url)
-                resp.raise_for_status()
-                return resp.json()
-        except Exception as e:
-            logger.debug(f"Agent card fetch failed for {host}:{port}: {e}")
-            return None
-
     async def get_online_agents(self) -> list[dict]:
-        """Health-check all agents, return those that are online.
+        """Discover Robot Agents and return those that are available.
 
-        In ADS mode, first queries ADS to discover agent URLs,
-        then health-checks each discovered agent.
+        In ADS mode: queries ADS for registered Robot Agents.
+        In static mode: uses PI_AGENTS list and health-checks Pi directly.
         """
         if DISCOVERY_MODE == "ads":
             ads_agents = await self._discover_from_ads()
             if ads_agents:
                 self.agents = ads_agents
+                # Health-check each Pi to determine actual status
+                tasks = [self._check_agent_ads(a) for a in ads_agents]
+                results = await asyncio.gather(*tasks)
+                return [r for r in results if r is not None]
             else:
                 logger.warning("ADS returned no agents, falling back to static config")
 
-        tasks = []
-        for agent in self.agents:
-            tasks.append(self._check_agent(agent))
+        # Static mode: health-check Pi directly
+        tasks = [self._check_agent_static(a) for a in self.agents]
         results = await asyncio.gather(*tasks)
         return [r for r in results if r is not None]
 
-    async def _check_agent(self, agent: dict) -> Optional[dict]:
-        """Check one agent and return enriched info if online.
+    async def _check_agent_ads(self, agent: dict) -> Optional[dict]:
+        """ADS mode: return agent info, health-check Pi to determine status."""
+        health = await self.health_check(agent["host"], agent["port"])
+        status = "online" if health and health.get("status") == "ok" else "offline"
+        return {
+            "id": agent["id"],
+            "host": agent.get("host", ""),
+            "port": agent.get("port", 9004),
+            "zone": agent.get("zone", ""),
+            "robot_type": agent.get("robot_type", "spider"),
+            "status": status,
+        }
 
-        Capabilities are NOT fetched here — they come from heartbeat
-        registration and are stored in the RobotRegistry.
-        """
+    async def _check_agent_static(self, agent: dict) -> Optional[dict]:
+        """Static mode: health-check a Pi directly."""
         health = await self.health_check(agent["host"], agent["port"])
         if health and health.get("status") == "ok":
             return {
@@ -95,10 +101,8 @@ class AgentDiscovery:
                 "host": agent["host"],
                 "port": agent["port"],
                 "zone": agent.get("zone", ""),
+                "robot_type": agent.get("robot_type", "spider"),
                 "agent_id": health.get("agent_id", agent["id"]),
-                "uptime_s": health.get("uptime_s"),
-                "busy": health.get("busy", False),
-                "current_task": health.get("current_task"),
                 "status": "online",
             }
         return None
@@ -152,9 +156,9 @@ class AgentDiscovery:
 
                 record = MessageToDict(resp.record.data)
 
-                # Filter: only PiCrawler agents (check tags for "crawler")
+                # Filter: only robot agents (check tags)
                 tags = self._extract_tags(record)
-                if not any(t in tags for t in ("crawler", "patrol", "robot", "ground")):
+                if not any(t in tags for t in ("crawler", "patrol", "robot", "ground", "spider", "turtlebot", "car")):
                     continue
 
                 # Extract URL from record
@@ -180,11 +184,19 @@ class AgentDiscovery:
                         zone = t[5:].upper()
                         break
 
+                # Extract robot_type from tags (default: spider)
+                robot_type = "spider"
+                for t in tags:
+                    if t in ("spider", "turtlebot", "car"):
+                        robot_type = t
+                        break
+
                 agents.append({
                     "id": agent_id,
                     "host": host,
                     "port": port,
                     "zone": zone,
+                    "robot_type": robot_type,
                 })
 
             if agents:

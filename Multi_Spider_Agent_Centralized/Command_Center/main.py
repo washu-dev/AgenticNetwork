@@ -6,9 +6,7 @@ import time
 
 import uvicorn
 
-from Command_Center.config import (
-    GATEWAY_PORT, HEARTBEAT_TIMEOUT, CLEANUP_INTERVAL,
-)
+from Command_Center.config import GATEWAY_PORT
 
 logging.basicConfig(
     level=logging.INFO,

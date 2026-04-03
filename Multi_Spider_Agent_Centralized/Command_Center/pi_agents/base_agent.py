@@ -16,12 +16,14 @@ State persists across invocations via the CentralPiAgent (replaces MissionManage
 
 import asyncio
 import logging
+import random
 import time
 from typing import Dict, List, Optional, TypedDict
 
 from langgraph.graph import StateGraph, START, END
 
 from .brain import LLMClient
+from .target_approach import SpiderTargetApproach
 from ..infra.robot_client import robot_client
 from ..infra.robot_registry import robot_registry, RegisteredRobot
 
@@ -309,6 +311,9 @@ class CentralPiAgent:
         self.brain = brain
         self.mission_graph = MissionGraph(robot, brain)
 
+        # Target approach module (Role 2 — portable, will move to turtlebot)
+        self._target_approach = SpiderTargetApproach(robot, brain)
+
         # Mission context
         self.mission_id: Optional[str] = None
         self.task_goal: Optional[str] = None
@@ -333,6 +338,9 @@ class CentralPiAgent:
         self._stop_requested = False
         self._patrol_active = False
         self._patrol_task: Optional[asyncio.Task] = None
+
+        # Patrol detection log (for report generation)
+        self._detections_log: list = []
 
         # Completed missions
         self._completed_mission_ids: set = set()
@@ -368,6 +376,8 @@ class CentralPiAgent:
         self.report_all = report_all
         self._consecutive_turns = 0
         self._stop_requested = False
+        self._target_approach.clear()
+        self._detections_log = []
         logger.info(f"[{self.robot.robot_id}] Mission set: {mission_id}, goal={task_goal}, report_all={report_all}")
 
     def clear_mission(self):
@@ -376,6 +386,7 @@ class CentralPiAgent:
         self.mission_active = False
         self.report_all = False
         self._stop_requested = False
+        self._target_approach.clear()
         robot_registry.clear_busy(self.robot.robot_id)
         logger.info(f"[{self.robot.robot_id}] Mission cleared")
 
@@ -385,24 +396,25 @@ class CentralPiAgent:
     # ── Agent mode: initial actions ──────────────────────
 
     async def decide_initial_actions(self):
-        """Run the graph with obs_status='init' to decide setup actions."""
+        """Setup actions at mission start. Stand up if not already standing."""
         if not self.task_goal:
             return
 
-        logger.info(f"[{self.robot.robot_id}] Deciding initial actions for: {self.task_goal}")
-        state = self._build_state(obs_status="init")
-        result = await self.mission_graph.run(state)
-
-        action = result.get("action", "stop")
-        logger.info(f"[{self.robot.robot_id}] Initial action: {action} — {result.get('reason', '')}")
+        if not self.robot.standing:
+            logger.info(f"[{self.robot.robot_id}] Initial setup: stand_up")
+            await self._execute_robot_action("stand_up")
+        else:
+            logger.info(f"[{self.robot.robot_id}] Already standing, skipping init")
 
     # ── Agent mode: handle detection ─────────────────────
 
     async def handle_detection(self, data: dict) -> dict:
-        """Process detection results from detection_engine (in-process, no HTTP).
+        """Process detection results from detection_engine.
 
-        Called by detection_engine.run_search_mission() instead of pushing via HTTP.
-        Returns: {"status": ..., "action_taken": ..., "mission_ended": bool}
+        Routes to:
+        - Role 1 (report_all): log detections, no approach
+        - Role 2 (conditional action): TargetApproach module
+        - Fallback (finished, no target): MissionGraph LLM for fallback action
         """
         # Auto-activate (but not from "finished")
         if not self.mission_active:
@@ -425,15 +437,23 @@ class CentralPiAgent:
         detections = data.get("detections", [])
         has_target = any(d.get("is_target") for d in detections)
 
-        # Fast path: no target and not report_all → skip
-        if obs_status == "searching" and not has_target and not self.report_all:
-            return {"status": "ignored", "reason": "no target detected"}
-
-        # Report task: just log, no LLM
+        # ── Role 1: Report mode — log and continue ──
         if self.report_all and obs_status == "searching":
-            labels = [d.get("label", "?") for d in detections]
-            logger.info(f"[{self.robot.robot_id}] Report: detected {labels}")
-            return {"status": "ok", "action_taken": "stop", "reason": f"logged: {labels}"}
+            if detections:
+                for d in detections:
+                    self._detections_log.append({
+                        "label": d.get("label", "?"),
+                        "confidence": d.get("confidence", 0),
+                        "time_s": data.get("elapsed_s", 0),
+                        "position": _describe_bbox(d.get("bbox", [])),
+                    })
+                labels = [d.get("label", "?") for d in detections]
+                logger.info(f"[{self._rid}] Report: detected {labels}")
+            return {"status": "ok", "action_taken": "stop", "reason": "logged"}
+
+        # Fast path: no target → skip
+        if obs_status == "searching" and not has_target:
+            return {"status": "ignored", "reason": "no target detected"}
 
         # Throttle (except "finished")
         now = time.time()
@@ -444,161 +464,107 @@ class CentralPiAgent:
         self._last_decision_time = now
 
         try:
-            # ── Target during patrol → stop patrol, LLM takes over ──
-            if has_target and not self.report_all and self._patrol_active:
-                return await self._handle_target_during_patrol(data, detections)
-
-            # ── Target found (no patrol) → LLM decides ──
-            if has_target and not self.report_all:
-                logger.info(f"[{self.robot.robot_id}] Target found — LLM deciding action...")
-                return await self._llm_decide_and_execute(data, detections)
-
-            # ── No target / finished → run through MissionGraph ──
-            state = self._build_state(
-                obs_status=obs_status,
-                obs_reason=data.get("reason", ""),
-                detections=detections,
-                has_target=has_target,
-                elapsed_s=data.get("elapsed_s", 0),
-                task_goal=data.get("task_goal", self.task_goal or ""),
-            )
-
-            result = await self.mission_graph.run(state)
-
-            action = result.get("action", "stop")
-            reason = result.get("reason", "")
-            outcome = result.get("outcome", "ignored")
-
-            if outcome in ("completed", "acted"):
-                if self.report_all:
-                    logger.info(f"[{self.robot.robot_id}] Report task: detection logged, patrol continues")
-                    return {"status": "ok", "action_taken": "stop", "reason": reason}
-                else:
-                    if self.mission_id:
-                        self._completed_mission_ids.add(self.mission_id)
-                    if obs_status == "finished":
-                        self.clear_mission()
-                    return {"status": "ok", "action_taken": action, "reason": reason, "mission_ended": True}
-
-            if outcome == "setup":
-                return {"status": "ok", "action_taken": action, "reason": reason}
-
+            # ── Mission finished → LLM decides fallback action ──
             if obs_status == "finished":
-                if self.mission_id:
-                    self._completed_mission_ids.add(self.mission_id)
-                self.clear_mission()
-                return {"status": "ok", "action_taken": action, "reason": reason, "mission_ended": True}
+                return await self._handle_finished(data, detections, has_target)
 
-            return {"status": "ok", "action_taken": action, "reason": reason}
+            # ── Role 2: Target found → TargetApproach module ──
+            if has_target:
+                return await self._handle_target(data, detections)
+
+            return {"status": "ok", "action_taken": "stop", "reason": "waiting"}
 
         except Exception as e:
-            logger.error(f"[{self.robot.robot_id}] Detection handling error: {e}")
+            logger.error(f"[{self._rid}] Detection handling error: {e}")
             return {"status": "error", "reason": str(e)}
         finally:
             self._processing = False
 
-    async def _handle_target_during_patrol(self, data: dict, detections: list) -> dict:
-        """Handle target detection while patrol is running.
-        Stops patrol and lets LLM take over."""
-        logger.info(f"[{self.robot.robot_id}] Target during patrol — stopping patrol, LLM takes over")
-        self._consecutive_turns = 0
-        self.stop_patrol()
-        for _ in range(30):  # wait up to 3s for patrol to stop
-            if not self._patrol_active:
-                break
-            await asyncio.sleep(0.1)
+    async def _handle_target(self, data: dict, detections: list) -> dict:
+        """Handle target detection using TargetApproach module.
 
-        return await self._llm_decide_and_execute(data, detections)
-
-    async def _llm_decide_and_execute(self, data: dict, detections: list) -> dict:
+        Stage 2: LLM plans once (approach? what action?)
+        Stage 3: bbox rules navigate, execute when close
         """
-        Ask LLM to decide next action for target interaction.
+        # Stop patrol if running
+        if self._patrol_active:
+            logger.info(f"[{self._rid}] Target during patrol — stopping patrol")
+            self.stop_patrol()
+            for _ in range(30):
+                if not self._patrol_active:
+                    break
+                await asyncio.sleep(0.1)
 
-        LLM sees target position (left/right/center) and distance (far/close),
-        then decides: turn toward it, move closer, or execute response gesture.
-
-        This bypasses MissionGraph for direct target interaction (same as original).
-        """
         task_goal = data.get("task_goal", self.task_goal or "")
-        obs_desc = _describe_detections(
-            [d for d in detections if d.get("is_target")] or detections
-        )
+        target_dets = [d for d in detections if d.get("is_target")]
+        detected_label = target_dets[0].get("label", "unknown") if target_dets else "unknown"
 
-        # Add ultrasonic distance reading
-        ultrasonic_cm = await self._ultrasonic()
-        if ultrasonic_cm is not None:
-            obs_desc += f"\n\nUltrasonic sensor: obstacle/object at {ultrasonic_cm:.0f}cm ahead"
-        else:
-            obs_desc += "\n\nUltrasonic sensor: no reading"
+        # Stage 2: Plan (LLM, called once, cached)
+        plan = await self._target_approach.plan(task_goal, detected_label)
 
-        # After too many turns, hint LLM to stop turning and act
-        if self._consecutive_turns >= 3:
-            obs_desc += (
-                "\n\nIMPORTANT: You have already turned multiple times. "
-                "The target is approximately in front of you. "
-                "Do NOT turn again. Either move forward to approach, "
-                "or execute the response gesture (e.g. wave) now."
-            )
-
-        # Ask LLM (up to 2 attempts, guard against stand_up when standing)
-        for attempt in range(2):
-            decision = await self.brain.decide_observation_response(
-                task_goal=task_goal,
-                observations=obs_desc,
-                elapsed_s=data.get("elapsed_s", 0),
-                available_actions=self.available_actions,
-                actions_description=self.robot.actions_description,
-                robot_state=f"standing={self.robot.standing}",
-            )
-            action = decision.get("action", "stop")
-            reason = decision.get("reason", "")
-            logger.info(f"[{self.robot.robot_id}] LLM decision (attempt {attempt+1}): {action} — {reason}")
-
-            if action == "stand_up" and self.robot.standing:
-                logger.info(f"[{self.robot.robot_id}] Already standing, retrying")
-                continue
-            break
-
-        # Gesture action → execute and complete mission
-        gesture_actions = _actions_by_category(self.robot, "gesture")
-        if action in gesture_actions or action == "MISSION_COMPLETE":
-            self._consecutive_turns = 0
-            if action != "MISSION_COMPLETE":
-                await self._execute_robot_action(action)
-            await self._speak("Mission complete")
+        # No approach needed → execute immediately and finish
+        if not plan["approach"]:
+            action = plan["final_action"]
+            await self._target_approach.execute_action(action)
             if self.mission_id:
                 self._completed_mission_ids.add(self.mission_id)
-            return {"status": "ok", "action_taken": action, "reason": reason, "mission_ended": True}
+            return {"status": "ok", "action_taken": action, "reason": plan["reason"], "mission_ended": True}
 
-        # Turn action → use bbox for precise angle
-        if action in ("turn_left", "turn_right", "turn_left_angle", "turn_right_angle"):
-            self._consecutive_turns += 1
-            target_dets = [d for d in detections if d.get("is_target")]
-            bbox = target_dets[0].get("bbox", {}) if target_dets else {}
-            turn_degrees = _estimate_turn_degrees(bbox)
-            direction = "left" if "left" in action else "right"
-            logger.info(
-                f"[{self.robot.robot_id}] Turning {direction} ~{turn_degrees}° "
-                f"(from bbox) [turn #{self._consecutive_turns}]"
-            )
-            await self._turn_by_degrees(direction, turn_degrees)
-            return {"status": "ok", "action_taken": action, "reason": f"turned {direction} ~{turn_degrees}°"}
+        # Stage 3: Approach step (rules, per frame)
+        ultrasonic_cm = await self._ultrasonic()
+        action = self._target_approach.approach_step(detections, ultrasonic_cm)
 
-        # Other navigation (forward, backward, etc.)
-        nav_actions = _actions_by_category(self.robot, "movement", "look")
-        if action in nav_actions:
+        if action == "stop":
+            # Target lost — wait for next frame
+            return {"status": "ok", "action_taken": "stop", "reason": "target lost, waiting"}
+
+        # Check if it's the final action (close enough)
+        if action == plan["final_action"]:
+            # Ensure standing before gesture
+            if not self.robot.standing:
+                await self._execute_robot_action("stand_up")
+            await self._target_approach.execute_action(action)
             self._consecutive_turns = 0
+            if self.mission_id:
+                self._completed_mission_ids.add(self.mission_id)
+            return {"status": "ok", "action_taken": action, "reason": "target reached", "mission_ended": True}
+
+        # Navigation action (turn / forward)
+        if action in ("turn_left", "turn_right"):
+            self._consecutive_turns += 1
+            degrees = self._target_approach.get_turn_degrees(detections)
+            direction = "left" if action == "turn_left" else "right"
+            logger.info(f"[{self._rid}] Approach: turn {direction} ~{degrees}° [#{self._consecutive_turns}]")
+            await self._turn_by_degrees(direction, degrees)
+        elif action == "forward":
+            self._consecutive_turns = 0
+            await self._execute_robot_action("forward")
+        else:
             await self._execute_robot_action(action)
-            return {"status": "ok", "action_taken": action, "reason": reason}
 
-        # stand_up
-        if action == "stand_up":
-            await self._execute_robot_action("stand_up")
-            return {"status": "ok", "action_taken": action, "reason": reason}
+        return {"status": "ok", "action_taken": action, "reason": "approaching target"}
 
-        # stop or other
-        logger.info(f"[{self.robot.robot_id}] LLM suggested '{action}' — waiting for next observation")
-        return {"status": "ok", "action_taken": action, "reason": reason}
+    async def _handle_finished(self, data: dict, detections: list, has_target: bool) -> dict:
+        """Handle mission finished — use MissionGraph LLM for fallback decision."""
+        state = self._build_state(
+            obs_status="finished",
+            obs_reason=data.get("reason", ""),
+            detections=detections,
+            has_target=has_target,
+            elapsed_s=data.get("elapsed_s", 0),
+            task_goal=data.get("task_goal", self.task_goal or ""),
+        )
+        result = await self.mission_graph.run(state)
+        action = result.get("action", "stop")
+        reason = result.get("reason", "")
+
+        if action not in ("stop", ""):
+            await self._execute_robot_action(action)
+
+        if self.mission_id:
+            self._completed_mission_ids.add(self.mission_id)
+        self.clear_mission()
+        return {"status": "ok", "action_taken": action, "reason": reason, "mission_ended": True}
 
     # ── Patrol ───────────────────────────────────────────
 
@@ -641,10 +607,22 @@ class CentralPiAgent:
         elapsed_ms = int((time.time() - start) * 1000)
         await self._speak("Patrol complete")
 
-        if self.report_all and self.mission_active:
-            return {"status": "completed", "elapsed_ms": elapsed_ms}
+        # Generate structured patrol report if we logged detections
+        patrol_report = None
+        if self._detections_log:
+            try:
+                patrol_report = await self.brain.generate_patrol_report(
+                    task_goal=self.task_goal or "patrol",
+                    detections_log=self._detections_log,
+                )
+                logger.info(f"[{self._rid}] Patrol report: {patrol_report.get('summary', '')[:100]}")
+            except Exception as e:
+                logger.warning(f"[{self._rid}] Patrol report generation failed: {e}")
 
-        return {"status": "completed", "elapsed_ms": elapsed_ms}
+        result = {"status": "completed", "elapsed_ms": elapsed_ms}
+        if patrol_report:
+            result["patrol_report"] = patrol_report
+        return result
 
     async def _patrol_forward(self, steps: int):
         """Walk forward N steps with obstacle avoidance via ultrasonic."""
@@ -657,31 +635,24 @@ class CentralPiAgent:
             if dist is not None and dist <= 20:  # obstacle threshold
                 if self._stop_requested:
                     return
-                logger.info(f"[{self.robot.robot_id}] Obstacle at {dist:.0f}cm, asking LLM")
-                await self._llm_decide_obstacle(dist)
+                await self._avoid_obstacle(dist)
                 if self._stop_requested:
                     return
             else:
                 await self._exec("forward", {"steps": 1})
                 walked += 1
 
-    async def _llm_decide_obstacle(self, distance_cm: float):
-        """Ask LLM how to handle an obstacle during patrol."""
-        parsed = await self.brain.decide_obstacle_response(distance_cm)
-        action = parsed.get("action", "turn_left")
-        reason = parsed.get("reason", "")
-        logger.info(f"[{self.robot.robot_id}] Obstacle decision: {action} — {reason}")
-
-        if action == "backward":
+    async def _avoid_obstacle(self, distance_cm: float):
+        """Rule-based obstacle avoidance. No LLM needed — ultrasonic has no directional info."""
+        if distance_cm < 10:
+            logger.info(f"[{self._rid}] Obstacle at {distance_cm:.0f}cm — backing up")
             await self._exec("backward", {"steps": 2})
-        elif action == "turn_left":
-            await self._exec("turn_left_angle", {"steps": 2, "angle": 45})
-            await self._exec("forward", {"steps": 2})
-        elif action == "turn_right":
-            await self._exec("turn_right_angle", {"steps": 2, "angle": 45})
-            await self._exec("forward", {"steps": 2})
         else:
-            await self._exec("backward", {"steps": 1})
+            direction = random.choice(["turn_left", "turn_right"])
+            logger.info(f"[{self._rid}] Obstacle at {distance_cm:.0f}cm — {direction}")
+            angle_action = f"{direction}_angle"
+            await self._exec(angle_action, {"steps": 2, "angle": 45})
+            await self._exec("forward", {"steps": 2})
 
     # ── Direct control: execute steps ────────────────────
 
@@ -771,13 +742,20 @@ class PiAgentManager:
 
     def __init__(self):
         self._agents: dict[str, CentralPiAgent] = {}
-        self._brain = LLMClient()
+        self._brains: dict[str, LLMClient] = {}  # one brain per robot_type
+
+    def _get_brain(self, robot_type: str) -> LLMClient:
+        """Get or create a brain (LLMClient) for this robot type."""
+        if robot_type not in self._brains:
+            self._brains[robot_type] = LLMClient(robot_type=robot_type)
+        return self._brains[robot_type]
 
     def get_or_create(self, robot: RegisteredRobot) -> CentralPiAgent:
         """Get existing agent or create a new one for this robot."""
         if robot.robot_id not in self._agents:
-            self._agents[robot.robot_id] = CentralPiAgent(robot, self._brain)
-            logger.info(f"Created CentralPiAgent for {robot.robot_id}")
+            brain = self._get_brain(robot.robot_type)
+            self._agents[robot.robot_id] = CentralPiAgent(robot, brain)
+            logger.info(f"Created CentralPiAgent for {robot.robot_id} [{robot.robot_type}]")
         return self._agents[robot.robot_id]
 
     def get(self, robot_id: str) -> Optional[CentralPiAgent]:

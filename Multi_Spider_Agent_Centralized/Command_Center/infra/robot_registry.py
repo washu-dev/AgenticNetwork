@@ -11,7 +11,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Optional
 
-from ..config import DEFAULT_CAMERA_PORT, HEARTBEAT_TIMEOUT
+from ..config import DEFAULT_CAMERA_PORT, HEALTH_CHECK_INTERVAL
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +37,7 @@ class RegisteredRobot:
     host: str
     port: int = 9004                                     # A2A port
     camera_port: int = DEFAULT_CAMERA_PORT
+    robot_type: str = "spider"                           # spider / turtlebot / car
     capabilities: dict = field(default_factory=dict)
     actions: list = field(default_factory=list)           # action name strings
     actions_description: str = ""                         # formatted for LLM
@@ -55,6 +56,7 @@ class RegisteredRobot:
             "host": self.host,
             "port": self.port,
             "camera_port": self.camera_port,
+            "robot_type": self.robot_type,
             "zone": self.zone,
             "actions": self.actions,
             "status": self.status,
@@ -90,6 +92,7 @@ class RobotRegistry:
                 host=data.get("host", ""),
                 port=data.get("port", 9004),
                 camera_port=data.get("camera_port", DEFAULT_CAMERA_PORT),
+                robot_type=data.get("robot_type", "spider"),
                 capabilities=capabilities,
                 actions=actions,
                 actions_description=actions_description,
@@ -101,7 +104,7 @@ class RobotRegistry:
             self._robots[robot_id] = robot
 
         logger.info(
-            f"Robot registered: {robot_id} at {robot.host}:{robot.port} "
+            f"Robot registered: {robot_id} [{robot.robot_type}] at {robot.host}:{robot.port} "
             f"(camera={robot.camera_port}, zone={robot.zone}, {len(actions)} actions)"
         )
         return {"status": "registered", "robot_id": robot_id}
@@ -124,6 +127,7 @@ class RobotRegistry:
             actions_description = _generate_actions_description(capabilities)
 
         zone = agent_info.get("zone", "")
+        robot_type = agent_info.get("robot_type", "spider")
 
         now = time.time()
         existing = self._robots.get(robot_id)
@@ -132,38 +136,31 @@ class RobotRegistry:
             existing.host = agent_info.get("host", existing.host)
             existing.port = agent_info.get("port", existing.port)
             existing.last_heartbeat = now
-            existing.status = "online"
+            existing.status = agent_info.get("status", "online")
+            existing.robot_type = robot_type
             if zone:
                 existing.zone = zone
             if capabilities:
                 existing.capabilities = capabilities
                 existing.actions = actions
                 existing.actions_description = actions_description
-            elif not existing.actions:
-                # No capabilities yet — fetch from Pi asynchronously
-                asyncio.get_event_loop().create_task(
-                    self._fetch_capabilities(robot_id, existing.host, existing.port)
-                )
         else:
             robot = RegisteredRobot(
                 robot_id=robot_id,
                 host=agent_info.get("host", ""),
                 port=agent_info.get("port", 9004),
                 camera_port=agent_info.get("camera_port", DEFAULT_CAMERA_PORT),
+                robot_type=robot_type,
                 capabilities=capabilities,
                 actions=actions,
                 actions_description=actions_description,
                 zone=zone,
                 registered_at=now,
-                last_heartbeat=now,
-                status="online",
+                last_heartbeat=now if agent_info.get("status") == "online" else 0,
+                status=agent_info.get("status", "online"),
             )
             self._robots[robot_id] = robot
-            logger.info(f"Robot registered from discovery: {robot_id} (zone={zone})")
-            if not capabilities:
-                asyncio.get_event_loop().create_task(
-                    self._fetch_capabilities(robot_id, robot.host, robot.port)
-                )
+            logger.info(f"Robot registered from discovery: {robot_id} [{robot_type}] (zone={zone}, status={robot.status})")
 
     async def _fetch_capabilities(self, robot_id: str, host: str, port: int):
         """Fetch capabilities from Pi's /capabilities endpoint and update registry."""
@@ -209,7 +206,7 @@ class RobotRegistry:
         now = time.time()
         return [
             r for r in self._robots.values()
-            if r.status == "online" and (now - r.last_heartbeat) < HEARTBEAT_TIMEOUT
+            if r.status == "online" and (now - r.last_heartbeat) < HEALTH_CHECK_INTERVAL * 3
         ]
 
     def get_robot(self, robot_id: str) -> Optional[RegisteredRobot]:

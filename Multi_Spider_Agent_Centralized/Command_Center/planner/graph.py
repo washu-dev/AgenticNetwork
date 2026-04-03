@@ -1,11 +1,13 @@
 """
-LangGraph-based Planner for PiCrawler Multi-Agent System.
+LangGraph-based Planner for Multi-Robot System.
 
-Adapted for Command Center architecture:
-- Uses AgentDiscovery (ADS / static) to find robots
-- Registers discovered robots in robot_registry for state tracking
-- Dispatches to CentralPiAgent instead of A2A client
-- All LLM decisions happen locally
+Dispatches tasks to Robot Agents via NATS (each Robot Agent is an independent process).
+Falls back to in-process execution if NATS dispatch fails.
+
+Architecture:
+- Planner discovers Robot Agents via ADS
+- Planner sends tasks to Robot Agents via NATS request/reply
+- Each Robot Agent manages its own CentralPiAgent + Detection Engine
 """
 
 import asyncio
@@ -108,8 +110,9 @@ _PARSE_PROMPT = (
     "    face - face recognition (only for 'detect faces' or 'find [name]')\n"
     "    object - YOLO object detection (for 'detect person/people/cat/car/...')\n"
     "  search_pattern:\n"
-    "    stationary - robot stays in place\n"
-    "    patrol - robot moves while detecting\n"
+    "    stationary - robot stays in place, only checks current camera view\n"
+    "               ONLY use when user explicitly says 'check here', 'look in front', 'what do you see', 'stay in place', 'don't move', 'stand still'\n"
+    "    patrol     - robot moves around to search the area (DEFAULT for all detection/search tasks)\n"
     "  target_name: (optional, for finding a specific person)\n\n"
     "CRITICAL RULES:\n"
     "1. NEVER mix direct_control with agent.\n"
@@ -121,7 +124,8 @@ _PARSE_PROMPT = (
     "EXAMPLES:\n"
     "  Rejected: 'Write me a poem' -> is_valid_task=false, steps=[]\n"
     "  Execute: 'Wave then dance' -> steps=[{task_type: 'direct_control', action: 'none'}]\n"
-    "  Agent: 'Detect person, if found wave' -> steps=[{task_type: 'agent', target_type: 'object', search_pattern: 'stationary', report_all: false}]\n"
+    "  Agent: 'Detect person, if found wave' -> steps=[{task_type: 'agent', target_type: 'object', search_pattern: 'patrol', report_all: false}]\n"
+    "  Agent: 'Check what is in front of you' -> steps=[{task_type: 'agent', target_type: 'any', search_pattern: 'stationary', report_all: true}]\n"
     "  Agent: 'Find John' -> steps=[{task_type: 'agent', target_type: 'face', target_name: 'John', search_pattern: 'patrol'}]"
 )
 
@@ -249,14 +253,16 @@ def _build_parse_prompt(online_robots: list[dict]) -> str:
     robot_lines = []
     for robot in online_robots:
         rid = robot["id"]
+        rtype = robot.get("robot_type", "spider")
         zone = robot.get("zone", "")
         zone_str = f", zone={zone}" if zone else ""
         busy_str = ", busy" if robot.get("busy") else ""
-        robot_lines.append(f"  - {rid}{zone_str}{busy_str}")
+        robot_lines.append(f"  - {rid} (type={rtype}{zone_str}{busy_str})")
     robots_section = "\n".join(robot_lines) if robot_lines else "  (none)"
 
     return (
-        "You are a task planner for a multi-robot spider (PiCrawler) system.\n\n"
+        "You are a task planner for a multi-robot system.\n"
+        "Robot types: spider (patrol+detect), turtlebot (lidar+localize), car (execute tasks).\n\n"
         "FIRST: check if the request is related to robot control. If NOT,\n"
         "set is_valid_task=false with a rejection_reason and empty steps.\n\n"
         f"AVAILABLE ROBOTS:\n{robots_section}\n\n"
@@ -269,7 +275,10 @@ def _build_parse_prompt(online_robots: list[dict]) -> str:
         "MODE 2: AGENT MODE (task_type = agent)\n"
         "Central watches camera and runs detection. The robot's AI decides actions.\n\n"
         "  target_type: face, object, color, qr_code, any\n"
-        "  search_pattern: stationary or patrol\n"
+        "  search_pattern:\n"
+        "    stationary - robot stays in place, only checks current camera view (short timeout)\n"
+        "               ONLY use when user explicitly says 'check here', 'look in front', 'what do you see', 'stay in place', 'don't move', 'stand still'\n"
+        "    patrol     - robot moves around to search the area (DEFAULT for all detection/search tasks)\n"
         "  target_name: (optional, for finding a specific person)\n\n"
         "SCOPE RULES (target_robot_ids, target_zone, multi_agent):\n"
         "- If user names a specific robot → target_robot_ids=[that id], multi_agent=false\n"
@@ -289,9 +298,10 @@ def _build_parse_prompt(online_robots: list[dict]) -> str:
         "  Rejected: 'Write me a poem' -> is_valid_task=false, steps=[]\n"
         "  Execute: 'Wave then dance' -> multi_agent=false, target_robot_ids=[], steps=[{task_type: 'direct_control'}]\n"
         "  Execute: 'crawler-001 stand up' -> multi_agent=false, target_robot_ids=['crawler-001'], steps=[{task_type: 'direct_control'}]\n"
-        "  Agent: 'Detect person' -> multi_agent=true, target_robot_ids=[], steps=[{task_type: 'agent', target_type: 'object'}]\n"
-        "  Agent: 'Zone A detect person' -> multi_agent=true, target_zone='A', steps=[{task_type: 'agent', target_type: 'object'}]\n"
-        "  Agent: 'Find John' -> multi_agent=true, target_robot_ids=[], steps=[{task_type: 'agent', target_type: 'face', target_name: 'John'}]"
+        "  Agent: 'Detect person, if found wave' -> multi_agent=true, steps=[{task_type: 'agent', target_type: 'object', search_pattern: 'patrol'}]\n"
+        "  Agent: 'Zone A detect person' -> multi_agent=true, target_zone='A', steps=[{task_type: 'agent', target_type: 'object', search_pattern: 'patrol'}]\n"
+        "  Agent: 'Check what is in front' -> multi_agent=false, steps=[{task_type: 'agent', target_type: 'any', search_pattern: 'stationary', report_all: true}]\n"
+        "  Agent: 'Find John' -> multi_agent=true, steps=[{task_type: 'agent', target_type: 'face', target_name: 'John', search_pattern: 'patrol'}]"
     )
 
 
@@ -320,11 +330,13 @@ async def parse_and_discover(state: PlannerState) -> dict:
         reg_robot = robot_registry.get_robot(robot_id)
         caps = reg_robot.capabilities if reg_robot else {}
         zone = (reg_robot.zone if reg_robot else "") or agent_info.get("zone", "")
+        robot_type = (reg_robot.robot_type if reg_robot else agent_info.get("robot_type", "spider"))
         online_agents.append({
             "id": robot_id,
             "host": agent_info["host"],
             "port": agent_info["port"],
             "camera_port": reg_robot.camera_port if reg_robot else agent_info.get("camera_port", 9000),
+            "robot_type": robot_type,
             "capabilities": caps,
             "actions": [a["name"] for a in caps.get("actions", [])],
             "zone": zone,
@@ -432,7 +444,8 @@ def _fallback_intent(prompt: str) -> dict:
     else:
         target = "any"
 
-    pattern = "stationary" if any(kw in p for kw in ["detect", "look", "observe"]) else "patrol"
+    # Default: patrol. Stationary only for explicit "check here" / "what do you see" type prompts
+    pattern = "stationary" if any(kw in p for kw in ["check here", "what do you see", "look in front", "stay in place", "don't move", "stand still"]) else "patrol"
     is_report = any(kw in p for kw in ["report", "observe", "what do you see", "look around"])
 
     return {
@@ -504,7 +517,9 @@ def _build_agent_catalog(agents: list[dict]) -> str:
     lines = []
     for agent in agents:
         reg = robot_registry.get_robot(agent["id"])
+        robot_type = (reg.robot_type if reg else agent.get("robot_type", "spider"))
         line = f"- robot_id: {agent['id']}\n"
+        line += f"  type: {robot_type}\n"
         line += f"  host: {agent['host']}\n"
         if reg and reg.zone:
             line += f"  zone: {reg.zone}\n"
@@ -537,81 +552,54 @@ async def execute_task(state: PlannerState) -> dict:
 
     step_types = {s.get("task_type") for s in steps}
 
-    # Agent Mode
+    # Agent Mode — dispatch via NATS to Robot Agent
     if "agent" in step_types:
         if len(selected) == 1:
-            return await _execute_agent(selected[0], steps, prompt, messages_log)
-        # Parallel: all selected robots run detection concurrently
-        # When one finds the target, _broadcast_target_found() cancels the others
+            return await _dispatch_agent_task(selected[0], steps, prompt, messages_log)
         results = await asyncio.gather(*[
-            _execute_agent(agent, steps, prompt, list(messages_log))
+            _dispatch_agent_task(agent, steps, prompt, list(messages_log))
             for agent in selected
         ])
-        # Return the first successful result (the one that found the target)
         for r in results:
             if r.get("agent_results", [{}])[0].get("status") == "success":
                 return r
         return results[0]
 
-    # Direct Control Mode
-    from ..pi_agents.base_agent import pi_agent_manager
-    from ..infra.robot_registry import robot_registry as reg
-
+    # Direct Control Mode — dispatch via NATS to Robot Agent
     messages_log.append(AIMessage(content=f"Execute: direct_control '{prompt}'"))
-
-    # Fast path: if prompt maps to known actions, skip Brain LLM decompose
     fast_actions = _try_fast_decompose(prompt)
-
     strategy = state.get("strategy", "parallel")
 
     if strategy == "sequential":
         for agent_info in selected:
-            robot = reg.get_robot(agent_info["id"])
-            if not robot:
-                continue
-            pi_agent = pi_agent_manager.get_or_create(robot)
-            if fast_actions:
-                logger.info(f"Fast decompose: '{prompt}' -> {fast_actions} (skipped Brain LLM)")
-                result = await pi_agent.execute_steps(fast_actions)
-            else:
-                result = await pi_agent.execute_steps_from_prompt(prompt)
+            result = await _dispatch_direct_control(agent_info, prompt, fast_actions)
             agent_result = {
                 "agent_id": agent_info["id"],
-                "status": "success" if result.get("mission_status") in ("completed", "partial") else "error",
-                "response": result.get("summary", ""),
-                "structured": result,
+                "status": result.get("status", "error"),
+                "response": result.get("execution_result", {}).get("summary", ""),
+                "structured": result.get("execution_result", {}),
             }
             if agent_result["status"] == "success":
                 messages_log.append(AIMessage(content=f"Execute: {agent_info['id']} succeeded"))
                 return {"agent_results": [agent_result], "messages": messages_log}
         return {"agent_results": [], "error": "All sequential agents failed", "messages": messages_log}
     else:
-        coros = []
-        agent_ids = []
-        for agent_info in selected:
-            robot = reg.get_robot(agent_info["id"])
-            if not robot:
-                continue
-            pi_agent = pi_agent_manager.get_or_create(robot)
-            agent_ids.append(agent_info["id"])
-            if fast_actions:
-                logger.info(f"Fast decompose: '{prompt}' -> {fast_actions} (skipped Brain LLM)")
-                coros.append(pi_agent.execute_steps(fast_actions))
-            else:
-                coros.append(pi_agent.execute_steps_from_prompt(prompt))
-
+        coros = [
+            _dispatch_direct_control(agent_info, prompt, fast_actions)
+            for agent_info in selected
+        ]
         raw_results = await asyncio.gather(*coros, return_exceptions=True)
 
         results = []
-        for agent_id, result in zip(agent_ids, raw_results):
+        for agent_info, result in zip(selected, raw_results):
             if isinstance(result, Exception):
-                results.append({"agent_id": agent_id, "status": "error", "response": str(result), "structured": {}})
+                results.append({"agent_id": agent_info["id"], "status": "error", "response": str(result), "structured": {}})
             else:
                 results.append({
-                    "agent_id": agent_id,
-                    "status": "success" if result.get("mission_status") in ("completed", "partial") else "error",
-                    "response": result.get("summary", ""),
-                    "structured": result,
+                    "agent_id": agent_info["id"],
+                    "status": result.get("status", "error"),
+                    "response": result.get("execution_result", {}).get("summary", ""),
+                    "structured": result.get("execution_result", {}),
                 })
 
         success_count = sum(1 for r in results if r.get("status") == "success")
@@ -621,63 +609,127 @@ async def execute_task(state: PlannerState) -> dict:
         return {"agent_results": results, "messages": messages_log}
 
 
-async def _execute_agent(agent: dict, steps: list[dict], task_goal: str, messages_log: list) -> dict:
-    """Agent Mode: Central detects + CentralPiAgent decides actions."""
+async def _dispatch_to_robot_agent(robot_id: str, task_payload: dict, timeout: float = 180) -> dict:
+    """Send task to Robot Agent via NATS request/reply.
+
+    Falls back to in-process execution if NATS fails.
+    """
+    from ..robot_agent import task_topic
+    from ..infra.shared import ensure_connected
+
+    topic = task_topic(robot_id)
+    payload_bytes = json.dumps(task_payload).encode()
+
+    try:
+        transport = await ensure_connected()
+        reply_bytes = await transport.request(topic, payload_bytes, timeout=timeout)
+        result = json.loads(reply_bytes)
+        logger.info(f"NATS dispatch to {robot_id}: {result.get('status', '?')}")
+        return result
+    except Exception as e:
+        logger.warning(f"NATS dispatch to {robot_id} failed ({e}), falling back to in-process")
+        return await _fallback_in_process(robot_id, task_payload)
+
+
+async def _fallback_in_process(robot_id: str, task_payload: dict) -> dict:
+    """Fallback: execute task in-process (same as before refactor)."""
     import uuid
-    from ..detection.engine import SearchMission, run_search_mission
+    from ..pi_agents.base_agent import pi_agent_manager
     from ..infra.robot_registry import robot_registry as reg
 
+    task_type = task_payload.get("task_type", "direct_control")
+    robot = reg.get_robot(robot_id)
+    if not robot:
+        return {"status": "error", "error": f"Robot {robot_id} not found in registry"}
+
+    if task_type == "agent":
+        from ..detection.engine import SearchMission, run_search_mission
+        mission = SearchMission(
+            mission_id=task_payload.get("mission_id", str(uuid.uuid4())[:8]),
+            agent_id=robot_id,
+            host=robot.host,
+            camera_port=robot.camera_port,
+            target_type=task_payload.get("target_type", "object"),
+            target_name=task_payload.get("target_name", ""),
+            task_goal=task_payload.get("task_goal", ""),
+            search_pattern=task_payload.get("search_pattern", "patrol"),
+            report_all=task_payload.get("report_all", False),
+        )
+        reg.set_busy(robot_id, mission.mission_id)
+        result = await run_search_mission(mission)
+        return {
+            "status": "success" if result["status"] in ("completed", "timeout") else "error",
+            "agent_id": robot_id,
+            "mission_result": result,
+        }
+    else:
+        pi_agent = pi_agent_manager.get_or_create(robot)
+        prompt = task_payload.get("prompt", "")
+        actions = task_payload.get("actions", [])
+        if actions:
+            result = await pi_agent.execute_steps([{"action": a} for a in actions])
+        elif prompt:
+            result = await pi_agent.execute_steps_from_prompt(prompt)
+        else:
+            return {"status": "error", "error": "No prompt or actions"}
+        return {
+            "status": "success" if result.get("mission_status") in ("completed", "partial") else "error",
+            "agent_id": robot_id,
+            "execution_result": result,
+        }
+
+
+async def _dispatch_agent_task(agent: dict, steps: list[dict], task_goal: str, messages_log: list) -> dict:
+    """Dispatch agent mode task to Robot Agent via NATS."""
+    import uuid
     agent_step = next((s for s in steps if s.get("task_type") == "agent"), steps[0])
-    target_type = agent_step.get("target_type", "any")
-    target_name = agent_step.get("target_name", "")
-    search_pattern = agent_step.get("search_pattern", "stationary")
-    report_all = agent_step.get("report_all", False)
 
-    # camera_port: try from agent info, then from registry
-    camera_port = agent.get("camera_port", 9000)
-    reg_robot = reg.get_robot(agent["id"])
-    if reg_robot:
-        camera_port = reg_robot.camera_port
+    task_payload = {
+        "task_type": "agent",
+        "mission_id": str(uuid.uuid4())[:8],
+        "target_type": agent_step.get("target_type", "any"),
+        "target_name": agent_step.get("target_name", ""),
+        "search_pattern": agent_step.get("search_pattern", "patrol"),
+        "report_all": agent_step.get("report_all", False),
+        "task_goal": task_goal,
+    }
 
-    mission = SearchMission(
-        mission_id=str(uuid.uuid4())[:8],
-        agent_id=agent["id"],
-        host=agent["host"],
-        camera_port=camera_port,
-        target_type=target_type,
-        target_name=target_name,
-        task_goal=task_goal,
-        search_pattern=search_pattern,
-        report_all=report_all,
-    )
-
-    reg.set_busy(agent["id"], mission.mission_id)
-
-    target_desc = f"'{target_name}'" if target_name else target_type
-    mode_desc = "patrol" if search_pattern != "stationary" else "stationary"
+    target_desc = f"'{task_payload['target_name']}'" if task_payload['target_name'] else task_payload['target_type']
+    mode_desc = "patrol" if task_payload['search_pattern'] != "stationary" else "stationary"
     messages_log.append(AIMessage(
         content=f"Agent: {mode_desc} on {agent['id']}, watching for {target_desc}"
     ))
-    logger.info(f"Starting agent mission: {mission.mission_id} ({mode_desc})")
+    logger.info(f"Dispatching agent task to {agent['id']}: {task_payload['mission_id']} ({mode_desc})")
 
-    result = await run_search_mission(mission)
+    result = await _dispatch_to_robot_agent(agent["id"], task_payload)
 
+    mission_result = result.get("mission_result", {})
     agent_result = {
         "agent_id": agent["id"],
-        "status": "success" if result["status"] in ("completed", "timeout") else "error",
+        "status": result.get("status", "error"),
         "response": (
-            f"Agent {result['status']}: mode={mode_desc}, target={target_desc}, "
-            f"frames={result['frames_analyzed']}, elapsed={result['elapsed_s']}s, "
-            f"detections={len(result.get('detections', []))}"
+            f"Agent {mission_result.get('status', '?')}: mode={mode_desc}, target={target_desc}, "
+            f"frames={mission_result.get('frames_analyzed', 0)}, elapsed={mission_result.get('elapsed_s', 0)}s, "
+            f"detections={len(mission_result.get('detections', []))}"
         ),
-        "structured": {"mission": result, "detections": result.get("detections", [])},
+        "structured": {"mission": mission_result, "detections": mission_result.get("detections", [])},
     }
 
-    if result.get("match_result"):
-        agent_result["response"] += f", match={result['match_result']}"
+    if mission_result.get("match_result"):
+        agent_result["response"] += f", match={mission_result['match_result']}"
 
-    messages_log.append(AIMessage(content=f"Agent: {result['status']}"))
+    messages_log.append(AIMessage(content=f"Agent: {mission_result.get('status', 'unknown')}"))
     return {"agent_results": [agent_result], "messages": messages_log}
+
+
+async def _dispatch_direct_control(agent_info: dict, prompt: str, fast_actions: list = None) -> dict:
+    """Dispatch direct control task to Robot Agent via NATS."""
+    task_payload = {"task_type": "direct_control", "prompt": prompt}
+    if fast_actions:
+        task_payload["actions"] = [a["action"] if isinstance(a, dict) else a for a in fast_actions]
+        logger.info(f"Fast decompose: '{prompt}' -> {task_payload['actions']} (skipped Brain LLM)")
+
+    return await _dispatch_to_robot_agent(agent_info["id"], task_payload, timeout=60)
 
 
 # ---------------------------------------------------------------------------

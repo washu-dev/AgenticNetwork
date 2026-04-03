@@ -1,9 +1,13 @@
+# HTTP server
 starlette
 uvicorn
-httpx
 python-dotenv
-a2a-sdk>=0.3.2
-agntcy-dir
-nats-py>=2.6.0
-picrawler
-robot_hat
+
+# Video stream (stream.py)
+flask
+opencv-python
+# vilib  # install from: https://github.com/sunfounder/vilib
+
+# Hardware (local installs: pip install -e ~/picrawler ~/robot-hat)
+# picrawler
+# robot_hat

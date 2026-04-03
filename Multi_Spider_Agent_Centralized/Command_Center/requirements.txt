@@ -15,3 +15,4 @@ openai
 agntcy-dir
 a2a-sdk>=0.3.2
 nats-py>=2.6.0
+websockets

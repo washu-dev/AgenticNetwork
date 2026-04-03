@@ -130,7 +130,7 @@
   <!-- Input -->
   <div class="panel">
     <div class="input-row">
-      <input type="text" id="promptInput" placeholder="Type a command... (e.g. 'wave', 'detect faces, if found wave, otherwise sit')" />
+      <input type="text" id="promptInput" placeholder="Type a command... (e.g. 'wave', 'find person, if found wave', 'check what is in front')" />
       <button class="btn btn-send" id="sendBtn" onclick="sendTask()">Send</button>
     </div>
   </div>
@@ -196,10 +196,14 @@ const EXEC_CMDS = [
 ];
 
 const AGENT_CMDS = [
-  { icon: '\u{1F9D1}', label: 'Detect Faces', prompt: 'Detect faces, if found wave, otherwise sit' },
-  { icon: '\u{1F4E6}', label: 'Detect Objects', prompt: 'Detect any objects, report what you see' },
+  // Patrol mode (robot moves around to search)
   { icon: '\u{1F50D}', label: 'Patrol Report', prompt: 'Patrol the area and report all detections' },
-  { icon: '\u{1F34E}', label: 'Patrol Action', prompt: 'Patrol the area, if detect an apple, wave' },
+  { icon: '\u{1F9D1}', label: 'Find Person', prompt: 'Find person, if found wave' },
+  { icon: '\u{1F34E}', label: 'Find Object', prompt: 'Find an apple, if found wave' },
+  { icon: '\u{1F9D1}', label: 'Find Face', prompt: 'Find faces, if found wave, otherwise sit' },
+  // Stationary mode (robot stays in place, checks current view)
+  { icon: '\u{1F4F7}', label: 'Check Here', prompt: 'Check what is in front of you' },
+  { icon: '\u{1F44B}', label: 'Spot & Wave', prompt: 'Stay in place, if detect person, wave' },
 ];
 
 function renderCommands() {
