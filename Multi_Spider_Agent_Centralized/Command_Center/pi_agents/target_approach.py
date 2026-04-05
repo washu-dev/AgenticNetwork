@@ -153,7 +153,7 @@ class SpiderTargetApproach(TargetApproach):
         # Find target detection
         target_dets = [d for d in detections if d.get("is_target")]
         if not target_dets:
-            return "stop"  # target lost, wait for next frame
+            return "forward"  # target lost, keep moving forward
 
         target = target_dets[0]
         bbox = target.get("bbox", {})

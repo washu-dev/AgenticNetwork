@@ -91,7 +91,8 @@ def detect_frame(image_bytes: bytes, conf_threshold: float = 0.25) -> dict:
     annotated_jpeg = jpeg_buf.tobytes()
 
     if detections:
-        logger.info(f"YOLO: {len(detections)} objects in {inference_ms:.0f}ms ({w}x{h})")
+        labels = [f"{d['label']}({d['confidence']:.0%})" for d in detections]
+        logger.info(f"YOLO: {', '.join(labels)} in {inference_ms:.0f}ms ({w}x{h})")
 
     return {
         "detections": detections,

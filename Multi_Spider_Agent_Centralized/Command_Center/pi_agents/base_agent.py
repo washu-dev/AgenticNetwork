@@ -346,7 +346,11 @@ class CentralPiAgent:
         self._completed_mission_ids: set = set()
 
     async def _exec(self, action: str, params: dict = None) -> dict:
-        """Execute action on this robot (shortcut with robot_id)."""
+        """Execute action on this robot (shortcut with robot_id).
+        Skip commands during patrol shutdown to prevent leaking commands after cancel.
+        """
+        if self._stop_requested and self._patrol_active:
+            return {"status": "skipped", "reason": "patrol stopping"}
         return await robot_client.execute_action(
             self._host, self._port, action, params, robot_id=self._rid
         )
@@ -545,26 +549,18 @@ class CentralPiAgent:
         return {"status": "ok", "action_taken": action, "reason": "approaching target"}
 
     async def _handle_finished(self, data: dict, detections: list, has_target: bool) -> dict:
-        """Handle mission finished — use MissionGraph LLM for fallback decision."""
-        state = self._build_state(
-            obs_status="finished",
-            obs_reason=data.get("reason", ""),
-            detections=detections,
-            has_target=has_target,
-            elapsed_s=data.get("elapsed_s", 0),
-            task_goal=data.get("task_goal", self.task_goal or ""),
-        )
-        result = await self.mission_graph.run(state)
-        action = result.get("action", "stop")
-        reason = result.get("reason", "")
+        """Handle mission finished — just clear mission state.
 
-        if action not in ("stop", ""):
-            await self._execute_robot_action(action)
+        sit_down responsibility:
+        - Normal patrol completion: patrol() method does sit_down
+        - Cancelled by coordination: Planner sends sit_down
+        """
+        reason = data.get("reason", "mission finished")
 
         if self.mission_id:
             self._completed_mission_ids.add(self.mission_id)
         self.clear_mission()
-        return {"status": "ok", "action_taken": action, "reason": reason, "mission_ended": True}
+        return {"status": "ok", "action_taken": "none", "reason": reason, "mission_ended": True}
 
     # ── Patrol ───────────────────────────────────────────
 

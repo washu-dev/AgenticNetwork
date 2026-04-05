@@ -29,189 +29,85 @@ Robot (Thin Client)                Command Center (Central Intelligence)
     └─────────────┘             └──────────────┘
 ```
 
-**Flow**: User command → Planner classifies task → Detection engine grabs video frames & runs YOLO → Passes detections in-process to CentralPiAgent → LLM decides action → NATS sends command to robot → Robot executes on hardware
-
 ## Prerequisites
 
 - Python 3.10+
-- Docker & Docker Compose
-- OpenAI API Key (or Anthropic API Key)
-
-## Project Structure
-
-```
-Multi_Spider_Agent_Command_Center/
-├── gateway.py                  # FastAPI app: REST API + frontend serving
-├── main.py                     # Entry point (uvicorn server)
-├── config.py                   # Configuration (env vars)
-├── .env                        # Environment variables (API keys, ports)
-├── start.sh                    # Start Command Center
-├── stop.sh                     # Stop Command Center
-├── requirements.txt            # Python dependencies
-│
-├── frontend/                   # Frontend UI
-│   └── index.html
-│
-├── planner/                    # LangGraph mission planner
-│   ├── graph.py                # Task classification & agent dispatch
-│   └── llm_config.py           # LLM config (LiteLLM)
-│
-├── pi_agents/                  # Centralized pi agent brains
-│   ├── base_agent.py           # CentralPiAgent + MissionGraph + PiAgentManager
-│   └── brain.py                # LLM client (observation → action decisions)
-│
-├── detection/                  # Computer vision
-│   ├── engine.py               # Grabs MJPEG frames, runs detection loop
-│   ├── yolo_detector.py        # YOLO object detection
-│   ├── face_registry.py        # Face recognition (InsightFace)
-│   └── memory.py               # Detection history (SQLite)
-│
-├── infra/                      # Infrastructure & transport
-│   ├── transport.py            # NATS/SLIM transport abstraction
-│   ├── a2a_client.py           # A2A protocol client (JSON-RPC over transport)
-│   ├── robot_client.py         # High-level robot command client
-│   ├── robot_registry.py       # Robot state tracking (online, standing, busy)
-│   ├── discovery.py            # ADS agent discovery
-│   └── shared.py               # Transport singleton
-│
-├── scripts/                    # Infrastructure scripts
-│   ├── start_ads.sh            # Start ADS (Docker)
-│   ├── stop_ads.sh             # Stop ADS
-│   ├── start_nats.sh           # Start NATS (Docker)
-│   └── stop_nats.sh            # Stop NATS
-│
-├── docker-compose-ads.yaml     # ADS services (dir-api-server + zot + oasf)
-└── docker-compose-nats.yaml    # NATS server (JetStream)
-```
+- Docker Desktop
+- API Key (OpenAI / Anthropic / etc.)
 
 ## Setup
 
-### 1. Configure environment
-
-Copy and edit `.env`:
-
 ```bash
-cd Multi_Spider_Agent_Command_Center
+# 1. Create venv & install dependencies
+cd command_center
+python -m venv venv
 
-# Edit .env with your API keys
-vim .env
+# Linux/macOS
+source venv/bin/activate
+
+# Windows
+.\venv\Scripts\activate
+
+pip install -r requirements.txt
+
+# 2. Configure .env with your API key
+#    Edit command_center/.env
 ```
 
-Key variables in `.env`:
+## Startup Order
+
+> Pi Robots must be powered on and on the same network before step 4.
+
+| Step | Linux / macOS | Windows (`windows/` folder) |
+|------|---------------|-----------------------------|
+| 1. Start Docker Desktop | — | — |
+| 2. Start ADS | `./scripts/start_ads.sh` | `.\start_ads.bat` |
+| 3. Start NATS | `./scripts/start_nats.sh` | `.\start_nats.bat` |
+| 4. Start Robot Agents | `./start_robots.sh` | `.\start_robots.bat` |
+| 5. Start Command Center | `./start.sh` | `.\start.bat` |
+
+Windows one-click: `.\start_all.bat`
+
+## Shutdown
+
+| Linux / macOS | Windows |
+|---------------|---------|
+| `./stop.sh` | `.\stop.bat` |
+| `./scripts/stop_nats.sh` | `.\stop_nats.bat` |
+| `./scripts/stop_ads.sh` | `.\stop_ads.bat` |
+
+Windows one-click: `.\stop_all.bat`
+
+## Configuration
+
+Edit `robots.json` to set Pi robot IPs:
+
+```json
+[
+    {"robot_id": "crawler-alpha-patrol-002", "pi_host": "192.168.1.194", "zone": "A", "robot_type": "spider"}
+]
+```
+
+Key `.env` variables:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `LLM_MODEL` | `openai/gpt-4o-mini` | LLM model for planner and pi agent brain |
-| `OPENAI_API_KEY` | — | OpenAI API key (required) |
+| `LLM_MODEL` | `openai/gpt-4o-mini` | LLM provider/model |
+| `OPENAI_API_KEY` | — | API key (or `ANTHROPIC_API_KEY`, etc.) |
 | `GATEWAY_PORT` | `8080` | Command Center HTTP port |
-| `PI_ALPHA_HOST` | — | Pi robot IP address |
+| `DISCOVERY_MODE` | `static` | `ads` or `static` |
 
-### 2. Install Python dependencies
+## Services
 
-```bash
-python -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-```
+| Service | Port | Description |
+|---------|------|-------------|
+| Command Center | 8080 | API + frontend UI |
+| ADS (gRPC) | 8888 | Agent discovery |
+| NATS | 4222 | Message transport |
+| NATS Monitor | 8222 | NATS dashboard |
 
-### 3. Start infrastructure services
+## Notes
 
-ADS and NATS are both Docker services. Start them **before** the Command Center:
-
-```bash
-# Start ADS (Agent Directory Service) — robot discovery
-./scripts/start_ads.sh
-
-# Start NATS — message transport between Command Center and robots
-./scripts/start_nats.sh
-```
-
-Verify services are running:
-
-```bash
-# ADS health check
-curl -s http://localhost:8889/healthz/ready
-
-# NATS monitoring
-curl -s http://localhost:8222/varz | head -5
-```
-
-### 4. Start Command Center
-
-```bash
-./start.sh
-```
-
-The server starts on `http://localhost:8080`.
-
-Open the browser to see the frontend UI.
-
-## Services Overview
-
-| Service | Port | Protocol | Description |
-|---------|------|----------|-------------|
-| Command Center | 8080 | HTTP | Main API + frontend UI |
-| ADS (gRPC) | 8888 | gRPC | Agent Directory Service — robot discovery |
-| ADS (health) | 8889 | HTTP | ADS health check endpoint |
-| NATS (client) | 4222 | TCP | Message transport — commands to robots |
-| NATS (monitor) | 8222 | HTTP | NATS monitoring dashboard |
-| Zot (OCI) | 5555 | HTTP | OCI registry for ADS storage |
-| OASF | 31234 | HTTP | A2A card → OASF translation |
-
-## Stopping
-
-```bash
-# Stop Command Center
-./stop.sh
-
-# Stop infrastructure
-./scripts/stop_nats.sh
-./scripts/stop_ads.sh
-```
-
-## NATS Transport
-
-Commands are sent to robots via NATS topics:
-
-| Topic | Usage |
-|-------|-------|
-| `agents.direct.{robot_id}` | Direct command to a specific robot |
-| `agents.broadcast` | Broadcast to all robots |
-
-If NATS is unavailable, the system automatically falls back to direct HTTP.
-
-Configure transport in `.env` or environment:
-
-```bash
-DEFAULT_MESSAGE_TRANSPORT=NATS            # NATS or SLIM
-TRANSPORT_SERVER_ENDPOINT=nats://localhost:4222
-```
-
-## Pi Robot (Thin Client) Setup
-
-Each Pi robot needs to:
-
-1. Run `remote_stream.py` on port 9000 (MJPEG video stream)
-2. Run `thin_client.py` on port 9010 (command executor)
-3. Register to ADS on startup
-4. Connect to NATS for receiving commands
-
-Required config on Pi side:
-
-```bash
-TRANSPORT_SERVER_ENDPOINT=nats://<command-center-ip>:4222
-CENTRAL_HOST=<command-center-ip>
-```
-
-## API Endpoints
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/` | Frontend UI |
-| `GET` | `/health` | Health check |
-| `GET` | `/api/robots` | List all robots and status |
-| `POST` | `/api/robots/register` | Register a robot |
-| `POST` | `/api/robots/{id}/heartbeat` | Robot heartbeat |
-| `POST` | `/api/tasks` | Submit a task (natural language) |
-| `GET` | `/api/mission/active` | Get active missions |
-| `POST` | `/api/discovery/refresh` | Re-discover robots via ADS |
+- Robot Agents do **not** auto-reconnect to Pi. If Pi comes online later, restart `start_robots`.
+- `robots.json` IPs may change across environments — update before each run.
+- Planner communicates with Robot Agents via NATS (by `robot_id`), not by IP.

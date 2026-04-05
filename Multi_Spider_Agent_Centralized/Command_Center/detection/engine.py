@@ -168,23 +168,32 @@ def _detect_in_frame(frame: bytes, target_type: str, target_name: str = "",
     elif target_type in ("object", "any"):
         yr = yolo_result or detect_frame(frame, conf_threshold=threshold)
         for d in yr.get("detections", []):
+            # If target_name is set, only that label counts as target
+            if target_name:
+                is_target = target_name.lower() in d["label"].lower()
+            else:
+                is_target = True
             results.append({
                 "label": d["label"],
                 "confidence": d["confidence"],
                 "bbox": d.get("bbox"),
                 "source": "central_yolo",
-                "is_target": True,
+                "is_target": is_target,
             })
 
     elif target_type == "color":
         yr = yolo_result or detect_frame(frame, conf_threshold=threshold)
         for d in yr.get("detections", []):
+            if target_name:
+                is_target = target_name.lower() in d["label"].lower()
+            else:
+                is_target = True
             results.append({
                 "label": d["label"],
                 "confidence": d["confidence"],
                 "bbox": d.get("bbox"),
                 "source": "central_yolo",
-                "is_target": True,
+                "is_target": is_target,
             })
 
     elif target_type == "qr_code":
@@ -210,12 +219,16 @@ def _detect_in_frame(frame: bytes, target_type: str, target_name: str = "",
     else:
         yr = yolo_result or detect_frame(frame, conf_threshold=threshold)
         for d in yr.get("detections", []):
+            if target_name:
+                is_target = target_name.lower() in d["label"].lower()
+            else:
+                is_target = True
             results.append({
                 "label": d["label"],
                 "confidence": d["confidence"],
                 "bbox": d.get("bbox"),
                 "source": "central_yolo",
-                "is_target": True,
+                "is_target": is_target,
             })
 
     return results
@@ -269,7 +282,7 @@ async def _broadcast_target_found(mission: SearchMission):
         logger.warning(f"Failed to notify other robots: {e}")
 
 
-async def run_search_mission(mission: SearchMission) -> dict:
+async def run_search_mission(mission: SearchMission, existing_udp_receiver=None) -> dict:
     """Execute a search mission with Central-side detection and Central-side decision.
 
     1. Get CentralPiAgent for this robot
@@ -278,6 +291,10 @@ async def run_search_mission(mission: SearchMission) -> dict:
     4. Pass detections in-process to CentralPiAgent
     5. Agent's LLM decides actions, sends commands to robot
     6. Loop until mission_ended, timeout, or cancel
+
+    Args:
+        existing_udp_receiver: If provided, reuse this UDP receiver instead of creating a new one.
+                               Pi video stream will not be started/stopped by the mission.
     """
     from ..pi_agents.base_agent import pi_agent_manager
     from ..infra.robot_registry import robot_registry
@@ -324,19 +341,29 @@ async def run_search_mission(mission: SearchMission) -> dict:
         last_dispatch_time = 0.0
 
         from ..infra.robot_client import robot_client
-        udp_receiver = UDPFrameReceiver(listen_port=0)
-        udp_receiver.start()
-
-        # Tell Pi to push video frames to our UDP port
-        import socket as _socket
-        local_ip = _socket.gethostbyname(_socket.gethostname())
-        await robot_client.start_video_stream(
-            mission.host, mission.camera_port, local_ip, udp_receiver.port, fps=10
-        )
-        logger.info(f"Mission {mission.mission_id}: UDP receiver on port {udp_receiver.port}")
+        owns_udp = existing_udp_receiver is None
+        if owns_udp:
+            udp_receiver = UDPFrameReceiver(listen_port=0)
+            udp_receiver.start()
+            # Tell Pi to push video frames to our UDP port
+            import socket as _socket
+            local_ip = _socket.gethostbyname(_socket.gethostname())
+            await robot_client.start_video_stream(
+                mission.host, mission.camera_port, local_ip, udp_receiver.port, fps=10
+            )
+            logger.info(f"Mission {mission.mission_id}: UDP receiver on port {udp_receiver.port}")
+        else:
+            udp_receiver = existing_udp_receiver
+            logger.info(f"Mission {mission.mission_id}: reusing existing UDP receiver on port {udp_receiver.port}")
 
         try:
           while not mission.is_cancelled and not mission_ended:
+            # End mission when patrol finishes in report mode (no target to wait for)
+            if patrol_task and patrol_task.done() and not mission_ended and mission.report_all:
+                logger.info(f"Mission {mission.mission_id}: patrol finished, ending mission")
+                mission.status = "completed"
+                break
+
             if time.time() - mission.start_time > timeout:
                 mission.status = "timeout"
                 mission.error = "Mission timeout"
@@ -429,9 +456,10 @@ async def run_search_mission(mission: SearchMission) -> dict:
                     f"{len(mission.detections)} detections"
                 )
         finally:
-            # Stop UDP receiver and tell Pi to stop streaming
-            udp_receiver.stop()
-            await robot_client.stop_video_stream(mission.host, mission.camera_port)
+            # Only stop UDP receiver and Pi stream if we created them
+            if owns_udp:
+                udp_receiver.stop()
+                await robot_client.stop_video_stream(mission.host, mission.camera_port)
 
         # Mission ended — handle finish
         if mission.is_cancelled:

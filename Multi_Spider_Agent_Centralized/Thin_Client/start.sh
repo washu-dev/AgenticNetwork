@@ -9,7 +9,9 @@ if [ -d "$PROJECT_DIR/venv" ]; then
 fi
 
 # Start camera
-python3 "$PROJECT_DIR/stream.py" > /tmp/stream.log 2>&1 &
+LOG_DIR="$PROJECT_DIR/logs"
+mkdir -p "$LOG_DIR"
+python3 "$PROJECT_DIR/stream.py" >> "$LOG_DIR/stream.log" 2>&1 &
 STREAM_PID=$!
 echo "[1/2] stream.py started (PID=$STREAM_PID, port 9000)"
 
@@ -26,7 +28,7 @@ done
 cd "$PROJECT_DIR/.."
 
 echo "[2/2] Starting thin client..."
-python -m agent_spider.thin_client > /tmp/thin_client.log 2>&1 &
+python -m agent_spider.thin_client >> "$LOG_DIR/thin_client.log" 2>&1 &
 AGENT_PID=$!
 
 for i in $(seq 1 15); do

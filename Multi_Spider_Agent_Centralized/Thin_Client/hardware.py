@@ -4,6 +4,7 @@ Hardware driver: PiCrawler servo control with ultrasonic obstacle avoidance.
 Talks directly to PiCrawler servos and ultrasonic sensor.
 """
 
+import threading
 import time
 import signal
 import logging
@@ -20,6 +21,10 @@ class Timeout(Exception):
     pass
 
 
+class Cancelled(Exception):
+    pass
+
+
 def _alarm_handler(signum, frame):
     raise Timeout()
 
@@ -32,121 +37,162 @@ class CrawlerControl:
     def __init__(self, speed: int = PATROL_SPEED):
         self.speed = speed
         self._standing = False
+        self._cancel = threading.Event()
         self.crawler = Picrawler()
         self.sonar = Ultrasonic(Pin("D2"), Pin("D3"))
         signal.signal(signal.SIGALRM, _alarm_handler)
         logger.info("CrawlerControl initialized with hardware")
 
+    def cancel(self):
+        """Signal the current action to stop."""
+        self._cancel.set()
+
+    def stop(self):
+        """Emergency stop: cancel current action, freeze servos, then return to stand."""
+        self._cancel.set()
+        try:
+            # Freeze servos in place immediately
+            positions = list(self.crawler.servo_positions)
+            self.crawler.servo_write_all(positions)
+            logger.info("Emergency stop: servos frozen, returning to stand")
+            # Return to stand posture
+            self.crawler.do_action("stand", 1, self.speed)
+            self._standing = True
+        except Exception as e:
+            logger.error(f"Emergency stop failed: {e}")
+
+    def _wait(self, seconds: float):
+        """Interruptible sleep. Raises Cancelled if cancel was requested."""
+        if self._cancel.wait(seconds):
+            raise Cancelled()
+
+    def _check(self):
+        """Check cancel flag between steps."""
+        if self._cancel.is_set():
+            raise Cancelled()
+
     def stand(self):
         """Stand up."""
         self.crawler.do_action("stand", 1, self.speed)
-        time.sleep(0.5)
+        self._wait(0.5)
         self._standing = True
 
     def sit(self):
         """Sit down."""
         self.crawler.do_step("sit", self.speed)
-        time.sleep(0.5)
+        self._wait(0.5)
         self._standing = False
 
     def forward(self, steps: int = 1):
         """Move forward N steps."""
         for i in range(steps):
+            self._check()
             self.crawler.do_action("forward", 1, self.speed)
-            time.sleep(0.3)
+            self._wait(0.3)
 
     def backward(self, steps: int = 1):
         """Move backward N steps."""
         for i in range(steps):
+            self._check()
             self.crawler.do_action("backward", 1, self.speed)
-            time.sleep(0.3)
+            self._wait(0.3)
 
     def turn_left(self, steps: int = 1):
         """Turn left N steps."""
-        self.crawler.do_action("turn left", steps, self.speed)
-        time.sleep(0.3)
+        for _ in range(steps):
+            self._check()
+            self.crawler.do_action("turn left", 1, self.speed)
+            self._wait(0.3)
 
     def turn_right(self, steps: int = 1):
         """Turn right N steps."""
-        self.crawler.do_action("turn right", steps, self.speed)
-        time.sleep(0.3)
+        for _ in range(steps):
+            self._check()
+            self.crawler.do_action("turn right", 1, self.speed)
+            self._wait(0.3)
 
     def push_up(self, steps: int = 1):
         """Do push-ups."""
         self.crawler.do_action("push up", steps, self.speed)
-        time.sleep(0.5)
+        self._wait(0.5)
 
     def wave(self, steps: int = 1):
         """Wave gesture."""
         self.crawler.do_action("wave", steps, self.speed)
-        time.sleep(0.5)
+        self._wait(0.5)
 
     def look_left(self, steps: int = 1):
         """Look left."""
         self.crawler.do_action("look left", steps, self.speed)
-        time.sleep(0.3)
+        self._wait(0.3)
 
     def look_right(self, steps: int = 1):
         """Look right."""
         self.crawler.do_action("look right", steps, self.speed)
-        time.sleep(0.3)
+        self._wait(0.3)
 
     def look_up(self, steps: int = 1):
         """Look up."""
         self.crawler.do_action("look up", steps, self.speed)
-        time.sleep(0.3)
+        self._wait(0.3)
 
     def look_down(self, steps: int = 1):
         """Look down."""
         self.crawler.do_action("look down", steps, self.speed)
-        time.sleep(0.3)
+        self._wait(0.3)
 
     def dance(self, steps: int = 1):
         """Dance."""
         self.crawler.do_action("dance", steps, self.speed)
-        time.sleep(0.5)
+        self._wait(0.5)
 
     def turn_left_angle(self, steps: int = 1, angle: int = 30):
         """Turn left. angle is the leg swing parameter, actual turn ~ angle x 0.44 per step."""
         self.crawler.angle = angle
-        self.crawler.do_action("turn left angle", steps, self.speed)
-        time.sleep(0.3)
+        for _ in range(steps):
+            self._check()
+            self.crawler.do_action("turn left angle", 1, self.speed)
+            self._wait(0.3)
 
     def turn_right_angle(self, steps: int = 1, angle: int = 30):
         """Turn right. angle is the leg swing parameter, actual turn ~ angle x 0.44 per step."""
         self.crawler.angle = angle
-        self.crawler.do_action("turn right angle", steps, self.speed)
-        time.sleep(0.3)
+        for _ in range(steps):
+            self._check()
+            self.crawler.do_action("turn right angle", 1, self.speed)
+            self._wait(0.3)
 
     def nod(self, steps: int = 2):
         """Nod head up and down."""
         for _ in range(steps):
+            self._check()
             self.crawler.do_action("look up", 1, self.speed)
-            time.sleep(0.2)
+            self._wait(0.2)
             self.crawler.do_action("look down", 1, self.speed)
-            time.sleep(0.2)
+            self._wait(0.2)
         self.crawler.do_action("stand", 1, self.speed)
-        time.sleep(0.3)
+        self._wait(0.3)
 
     def shake_head(self, steps: int = 2):
         """Shake head side to side."""
         for _ in range(steps):
+            self._check()
             self.crawler.do_action("look left", 1, self.speed)
-            time.sleep(0.2)
+            self._wait(0.2)
             self.crawler.do_action("look right", 1, self.speed)
-            time.sleep(0.2)
+            self._wait(0.2)
         self.crawler.do_action("stand", 1, self.speed)
-        time.sleep(0.3)
+        self._wait(0.3)
 
     def shake_hand(self, steps: int = 2):
         """Extend front leg for handshake."""
         self.crawler.do_action("wave", steps, self.speed)
-        time.sleep(0.5)
+        self._wait(0.5)
 
     def play_dead(self, steps: int = 1):
         """Flip over and play dead."""
         self.crawler.do_step("sit", self.speed)
-        time.sleep(0.5)
+        self._wait(0.5)
         self._standing = False
 
     def read_distance(self) -> float | None:

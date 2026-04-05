@@ -130,41 +130,15 @@
   <!-- Input -->
   <div class="panel">
     <div class="input-row">
-      <input type="text" id="promptInput" placeholder="Type a command... (e.g. 'wave', 'find person, if found wave', 'check what is in front')" />
+      <input type="text" id="promptInput" placeholder="Type a command... (e.g. 'stand up', 'all robots detect person, if found wave', 'patrol and report')" />
       <button class="btn btn-send" id="sendBtn" onclick="sendTask()">Send</button>
     </div>
   </div>
 
-  <!-- Commands: two columns -->
-  <div class="two-col">
-    <!-- LEFT: Execute Mode -->
-    <div class="panel">
-      <div class="panel-title">
-        Direct Control
-        <span class="mode-label mode-exec">Execute Mode</span>
-      </div>
-      <div class="cmd-grid" id="execGrid"></div>
-    </div>
-
-    <!-- RIGHT: Agent Mode -->
-    <div class="panel">
-      <div class="panel-title">
-        Detect / Search
-        <span class="mode-label mode-agent">Agent Mode</span>
-      </div>
-      <div class="cmd-grid" id="agentGrid"></div>
-    </div>
-  </div>
-
-  <!-- Face management -->
+  <!-- Quick Commands -->
   <div class="panel">
-    <div class="panel-title">Face Registry</div>
-    <div class="face-row">
-      <button class="face-btn" onclick="registerFace()">Register Face</button>
-      <button class="face-btn" onclick="listFaces()">List Faces</button>
-      <button class="face-btn" onclick="matchFaces()">Match Now</button>
-      <button class="face-btn" onclick="startMission()">Find Person</button>
-    </div>
+    <div class="panel-title">Quick Commands</div>
+    <div class="cmd-grid" id="cmdGrid"></div>
   </div>
 
   <!-- Result -->
@@ -182,51 +156,30 @@ const API = '';
 // ============================================
 // Quick Commands — split by mode
 // ============================================
-const EXEC_CMDS = [
+const QUICK_CMDS = [
+  // Control
   { icon: '\u{1F9CD}', label: 'Stand Up', prompt: 'Stand up' },
   { icon: '\u{1F9CE}', label: 'Sit Down', prompt: 'Sit down' },
   { icon: '\u2B06', label: 'Forward', prompt: 'Move forward' },
   { icon: '\u2B07', label: 'Backward', prompt: 'Go back' },
   { icon: '\u2B05', label: 'Turn Left', prompt: 'Turn left' },
   { icon: '\u27A1', label: 'Turn Right', prompt: 'Turn right' },
-  { icon: '\u23F9', label: 'Stop', prompt: 'Stop' },
   { icon: '\u{1F44B}', label: 'Wave', prompt: 'Wave' },
-  { icon: '\u{1F57A}', label: 'Dance', prompt: 'Dance' },
   { icon: '\u{1F4AA}', label: 'Push Up', prompt: 'Do push ups' },
-];
-
-const AGENT_CMDS = [
-  // Patrol mode (robot moves around to search)
-  { icon: '\u{1F50D}', label: 'Patrol Report', prompt: 'Patrol the area and report all detections' },
-  { icon: '\u{1F9D1}', label: 'Find Person', prompt: 'Find person, if found wave' },
-  { icon: '\u{1F34E}', label: 'Find Object', prompt: 'Find an apple, if found wave' },
-  { icon: '\u{1F9D1}', label: 'Find Face', prompt: 'Find faces, if found wave, otherwise sit' },
-  // Stationary mode (robot stays in place, checks current view)
-  { icon: '\u{1F4F7}', label: 'Check Here', prompt: 'Check what is in front of you' },
-  { icon: '\u{1F44B}', label: 'Spot & Wave', prompt: 'Stay in place, if detect person, wave' },
+  // Detect & Report
+  { icon: '\u{1F50D}', label: 'Detect', prompt: 'All robots patrol and detect person, if found wave' },
+  { icon: '\u{1F4CB}', label: 'Report', prompt: 'All robots patrol and report what you see' },
 ];
 
 function renderCommands() {
-  const execGrid = document.getElementById('execGrid');
-  const agentGrid = document.getElementById('agentGrid');
-
-  execGrid.innerHTML = '';
-  agentGrid.innerHTML = '';
-
-  for (const cmd of EXEC_CMDS) {
+  const grid = document.getElementById('cmdGrid');
+  grid.innerHTML = '';
+  for (const cmd of QUICK_CMDS) {
     const btn = document.createElement('button');
     btn.className = 'cmd-btn';
     btn.innerHTML = `<span class="icon">${cmd.icon}</span><span class="label">${cmd.label}</span>`;
     btn.onclick = () => quickSend(cmd.prompt);
-    execGrid.appendChild(btn);
-  }
-
-  for (const cmd of AGENT_CMDS) {
-    const btn = document.createElement('button');
-    btn.className = 'cmd-btn agent-cmd';
-    btn.innerHTML = `<span class="icon">${cmd.icon}</span><span class="label">${cmd.label}</span>`;
-    btn.onclick = () => quickSend(cmd.prompt);
-    agentGrid.appendChild(btn);
+    grid.appendChild(btn);
   }
 }
 
@@ -274,8 +227,9 @@ async function loadAgents() {
       const isBusy = isOnline && a.busy;
       const dotClass = isBusy ? 'busy' : (isOnline ? 'online' : 'offline');
       document.getElementById(`dot-${a.id}`).className = `dot ${dotClass}`;
+      const zoneLabel = a.zone ? ` [Zone ${a.zone}]` : '';
       const busyLabel = isBusy ? ` [${a.current_task || 'busy'}]` : '';
-      document.getElementById(`info-${a.id}`).textContent = `${a.host} ${mode ? '(' + mode + ')' : ''}${busyLabel}`;
+      document.getElementById(`info-${a.id}`).textContent = `${a.host}${zoneLabel} ${mode ? '(' + mode + ')' : ''}${busyLabel}`;
 
       const statusDiv = document.getElementById(`status-${a.id}`);
       if (isOnline) {
@@ -465,6 +419,13 @@ function renderResult(data) {
 function renderStructured(structured) {
   if (!structured) return '';
   let html = '';
+
+  // Zone report from coordinated patrol
+  if (structured.zone_report) {
+    html += `<div style="margin-top:6px;padding:8px 12px;background:#1e3a5f;border-radius:6px;font-size:12px;color:#38bdf8;font-weight:500">
+      ${structured.zone_report}
+    </div>`;
+  }
 
   if (structured.detections && structured.detections.length > 0) {
     html += '<div class="detection-list">';

@@ -56,6 +56,16 @@ def task_topic(robot_id: str) -> str:
     return f"{TASK_TOPIC_PREFIX}.{robot_id}.task"
 
 
+def cancel_topic(robot_id: str) -> str:
+    """NATS topic for cancel commands."""
+    return f"{TASK_TOPIC_PREFIX}.{robot_id}.cancel"
+
+
+def ping_topic(robot_id: str) -> str:
+    """NATS topic for ping/health check."""
+    return f"{TASK_TOPIC_PREFIX}.{robot_id}.ping"
+
+
 def _ws_port_for(robot_id: str) -> int:
     """Deterministic WebSocket port per robot (consistent across processes)."""
     import hashlib
@@ -143,9 +153,13 @@ class RobotAgentService:
         self._transport = NatsTransport(endpoint=TRANSPORT_SERVER_ENDPOINT)
         await self._transport.connect()
 
-        # Subscribe to task topic
+        # Subscribe to task, cancel, and ping topics
         topic = task_topic(self.robot_id)
+        cancel = cancel_topic(self.robot_id)
+        ping = ping_topic(self.robot_id)
         await self._transport.subscribe([topic], self._handle_task)
+        await self._transport.subscribe([cancel], self._handle_cancel)
+        await self._transport.subscribe([ping], self._handle_ping)
         logger.info(f"Listening for tasks on: {topic}")
 
         # Register to ADS
@@ -159,6 +173,9 @@ class RobotAgentService:
 
         logger.info(f"WebSocket video: ws://localhost:{self.ws_port}")
 
+        # Start Pi health monitor (auto-reconnect video stream)
+        health_task = asyncio.create_task(self._monitor_pi_health())
+
         # Keep alive
         try:
             while self._transport.is_connected:
@@ -168,6 +185,7 @@ class RobotAgentService:
             await robot_client.stop_video_stream(self.pi_host, self.camera_port)
             ws_task.cancel()
             forward_task.cancel()
+            health_task.cancel()
 
     # ── WebSocket server ─────────────────────────────────
 
@@ -208,7 +226,58 @@ class RobotAgentService:
                     disconnected.add(ws)
             self._ws_clients -= disconnected
 
+    # ── Pi health monitor ────────────────────────────────
+
+    async def _monitor_pi_health(self):
+        """Periodically check Pi health. Reconnect video stream if Pi was offline and comes back."""
+        pi_online = True
+        while True:
+            await asyncio.sleep(15)
+            try:
+                health = await robot_client.health_check(self.pi_host, self.pi_port)
+                if health and health.get("status") == "ok":
+                    if not pi_online:
+                        # Pi came back online — reconnect
+                        logger.info(f"[{self.robot_id}] Pi reconnected, restarting video stream")
+                        await robot_registry._fetch_capabilities(
+                            self.robot_id, self.pi_host, self.pi_port
+                        )
+                        local_ip = _get_local_ip()
+                        await robot_client.start_video_stream(
+                            self.pi_host, self.camera_port,
+                            local_ip, self._udp_receiver.port, fps=10
+                        )
+                        pi_online = True
+                else:
+                    if pi_online:
+                        logger.warning(f"[{self.robot_id}] Pi offline")
+                    pi_online = False
+            except Exception:
+                if pi_online:
+                    logger.warning(f"[{self.robot_id}] Pi offline")
+                pi_online = False
+
     # ── NATS task handlers ───────────────────────────────
+
+    _current_mission: SearchMission = None
+
+    async def _handle_ping(self, payload: bytes, reply_fn):
+        """Lightweight ping — no side effects."""
+        await reply_fn(json.dumps({"status": "ok", "agent_id": self.robot_id}).encode())
+
+    async def _handle_cancel(self, payload: bytes, reply_fn):
+        """Handle cancel command — stop current patrol/mission and halt Pi immediately."""
+        logger.info(f"[{self.robot_id}] Cancel received")
+        if self._current_mission and not self._current_mission.is_cancelled:
+            self._current_mission.cancel()
+            logger.info(f"[{self.robot_id}] Mission {self._current_mission.mission_id} cancelled")
+        if self._agent:
+            self._agent.stop_patrol()
+        # Send stop to Pi immediately to interrupt current physical movement
+        await robot_client.execute_action(
+            self.pi_host, self.pi_port, "stop", robot_id=self.robot_id
+        )
+        await reply_fn(json.dumps({"status": "cancelled", "agent_id": self.robot_id}).encode())
 
     async def _handle_task(self, payload: bytes, reply_fn):
         """Handle incoming task request from Planner via NATS."""
@@ -241,12 +310,15 @@ class RobotAgentService:
             search_pattern=request.get("search_pattern", "patrol"),
             report_all=request.get("report_all", False),
         )
+        self._current_mission = mission
         robot_registry.set_busy(self.robot_id, mission.mission_id)
-        result = await run_search_mission(mission)
+        result = await run_search_mission(mission, existing_udp_receiver=self._udp_receiver)
         robot_registry.clear_busy(self.robot_id)
+        self._current_mission = None
         return {
-            "status": "success" if result["status"] in ("completed", "timeout") else "error",
+            "status": "success" if result["status"] in ("completed", "timeout", "cancelled") else "error",
             "agent_id": self.robot_id,
+            "zone": self.zone,
             "mission_result": result,
         }
 

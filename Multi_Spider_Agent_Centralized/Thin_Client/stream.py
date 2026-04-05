@@ -13,6 +13,8 @@ Also provides:
   GET /photo    — single JPEG snapshot (for debugging)
 """
 
+import logging
+import os
 import signal
 import socket
 import struct
@@ -23,6 +25,19 @@ from time import sleep, time
 import cv2
 from flask import Flask, Response, jsonify, request
 from vilib import Vilib
+
+LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+os.makedirs(LOG_DIR, exist_ok=True)
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+    handlers=[
+        logging.FileHandler(os.path.join(LOG_DIR, "stream.log")),
+        logging.StreamHandler(),
+    ],
+)
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
@@ -59,7 +74,7 @@ def _stream_loop():
     global _streaming
 
     interval = 1.0 / _fps_target
-    print(f"UDP stream started -> {_target_host}:{_target_port} ({_fps_target} fps)")
+    logger.info(f"UDP stream started -> {_target_host}:{_target_port} ({_fps_target} fps)")
 
     while _streaming and _running:
         t0 = time()
@@ -92,14 +107,14 @@ def _stream_loop():
                 _udp_sock.sendto(header + chunk, (_target_host, _target_port))
 
         except Exception as e:
-            print(f"UDP send error: {e}")
+            logger.error(f"UDP send error: {e}")
             sleep(0.1)
 
         elapsed = time() - t0
         if elapsed < interval:
             sleep(interval - elapsed)
 
-    print("UDP stream stopped")
+    logger.info("UDP stream stopped")
 
 
 # ── HTTP control endpoints ──────────────────────────────
@@ -179,16 +194,13 @@ def main():
     signal.signal(signal.SIGINT, handle_signal)
     signal.signal(signal.SIGTERM, handle_signal)
 
-    print("Starting camera...")
+    logger.info("Starting camera...")
     Vilib.camera_start(vflip=False, hflip=False)
 
     if not _warmup(8):
-        print("[WARN] Camera warmup timed out")
+        logger.warning("Camera warmup timed out")
 
-    print("Camera ready. Waiting for stream/start command.")
-    print("  POST /stream/start {\"target_host\": \"...\", \"target_port\": 5000}")
-    print("  GET  /status")
-    print("  GET  /photo")
+    logger.info("Camera ready. Waiting for stream/start command.")
 
     try:
         app.run(host="0.0.0.0", port=9000, threaded=True, debug=False, use_reloader=False)

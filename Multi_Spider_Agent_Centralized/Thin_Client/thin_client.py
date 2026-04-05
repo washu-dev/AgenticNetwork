@@ -24,9 +24,16 @@ from agent_spider.config import AGENT_ID, AGENT_PORT
 from agent_spider.capabilities import get_capabilities_json
 from agent_spider.hardware import CrawlerControl
 
+LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+os.makedirs(LOG_DIR, exist_ok=True)
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+    handlers=[
+        logging.FileHandler(os.path.join(LOG_DIR, "thin_client.log")),
+        logging.StreamHandler(),
+    ],
 )
 logger = logging.getLogger(__name__)
 
@@ -63,24 +70,43 @@ def _build_action_map(control: CrawlerControl) -> dict:
 
 
 _action_map: dict = {}
+_action_lock = asyncio.Lock()
 
 
 # ── Command handlers ─────────────────────────────────────
 
 async def _execute_action(metadata: dict) -> dict:
+    from agent_spider.hardware import Cancelled
+
     action = metadata.get("action", "stop")
     params = metadata.get("params", {})
     handler = _action_map.get(action)
     if not handler:
         return {"status": "error", "error": f"Unknown action: {action}"}
-    t0 = time.time()
-    try:
-        await asyncio.to_thread(handler, **params)
-        ms = int((time.time() - t0) * 1000)
-        logger.info(f"Executed {action}({params}) in {ms}ms")
-        return {"status": "ok", "action": action, "duration_ms": ms}
-    except Exception as e:
-        return {"status": "error", "action": action, "error": str(e)}
+
+    # Emergency stop: bypass lock, freeze servos immediately
+    if action == "stop":
+        await asyncio.to_thread(_control.stop)
+        return {"status": "ok", "action": "stop"}
+
+    # Cancel whatever is running now
+    _control.cancel()
+
+    async with _action_lock:
+        # Clear cancel flag before starting new action
+        _control._cancel.clear()
+        t0 = time.time()
+        try:
+            await asyncio.to_thread(handler, **params)
+            ms = int((time.time() - t0) * 1000)
+            logger.info(f"Executed {action}({params}) in {ms}ms")
+            return {"status": "ok", "action": action, "duration_ms": ms}
+        except Cancelled:
+            ms = int((time.time() - t0) * 1000)
+            logger.info(f"Cancelled {action}({params}) after {ms}ms")
+            return {"status": "cancelled", "action": action, "duration_ms": ms}
+        except Exception as e:
+            return {"status": "error", "action": action, "error": str(e)}
 
 
 async def _read_sensor(metadata: dict) -> dict:
@@ -123,6 +149,7 @@ async def command_endpoint(request: Request):
     """
     try:
         metadata = await request.json()
+        logger.info(f"Received command: {metadata}")
     except Exception:
         return JSONResponse({"status": "error", "error": "Invalid JSON"}, status_code=400)
 

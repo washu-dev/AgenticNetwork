@@ -5,4 +5,3 @@ from .engine import (
 )
 from .yolo_detector import detect_frame, grab_mjpeg_frame
 from .face_registry import face_registry
-from .memory import detection_memory

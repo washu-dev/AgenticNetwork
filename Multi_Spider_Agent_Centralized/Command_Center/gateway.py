@@ -21,7 +21,6 @@ from .infra.robot_registry import robot_registry
 from .infra.robot_client import robot_client
 from .detection.face_registry import face_registry
 from .planner.llm_config import create_vision_llm
-from .detection.memory import detection_memory
 from .planner.graph import run_planner
 from .detection.yolo_detector import detect_frame
 
@@ -341,22 +340,6 @@ async def yolo_detect(
     if "error" in result:
         return result
 
-    # Store detections in memory
-    if result["detections"]:
-        detection_memory.record_detections(
-            agent_id=agent_id,
-            task_type="yolo",
-            target_type="object",
-            detections=[
-                {
-                    "label": d["label"],
-                    "confidence": d["confidence"],
-                    "x_cm": 0,
-                    "y_cm": 0,
-                }
-                for d in result["detections"]
-            ],
-        )
 
     return {
         "agent_id": agent_id,
@@ -643,32 +626,6 @@ async def voice_command(
 # ---------------------------------------------------------------------------
 
 
-@app.get("/api/memory/detections")
-async def memory_detections(
-    limit: int = Query(default=50, ge=1, le=500),
-    target_type: Optional[str] = Query(default=None),
-):
-    """Get recent detection history."""
-    return {"detections": detection_memory.get_recent_detections(limit, target_type)}
-
-
-@app.get("/api/memory/missions")
-async def memory_missions(limit: int = Query(default=20, ge=1, le=100)):
-    """Get recent mission history."""
-    return {"missions": detection_memory.get_recent_missions(limit)}
-
-
-@app.get("/api/memory/summary")
-async def memory_summary():
-    """Get detection statistics summary."""
-    return detection_memory.get_detection_summary()
-
-
-@app.delete("/api/memory")
-async def memory_clear():
-    """Clear all detection history."""
-    detection_memory.clear()
-    return {"status": "cleared"}
 
 
 @app.get("/api/context/history")
@@ -876,23 +833,6 @@ async def identify_face(
     # Log for debugging
     src = agent_id or "unknown"
     logger.info(f"Face identify from {src}: {faces_detected} faces detected, {len(matches)} matched, frame={len(image_data)} bytes")
-
-    # Record to detection memory if matches found
-    if matches and agent_id:
-        detection_memory.record_detections(
-            agent_id=agent_id,
-            task_type="face_identify",
-            target_type="face",
-            detections=[
-                {
-                    "label": m["name"],
-                    "confidence": m["similarity"],
-                    "x_cm": 0,
-                    "y_cm": 0,
-                }
-                for m in matches
-            ],
-        )
 
     return {
         "matches": matches,
