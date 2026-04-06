@@ -21,25 +21,6 @@ from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, Field
 from typing_extensions import TypedDict
 
-# Coordination decision schema (LLM structured output)
-class CoordinationDecision(BaseModel):
-    """LLM decides how to coordinate robots after a detection event."""
-    should_stop_others: bool = Field(
-        description="True if other robots should stop searching. False if they should continue."
-    )
-    detecting_robot_action: str = Field(
-        default="",
-        description="Action for the detecting robot (e.g. 'wave'). Empty = no action."
-    )
-    others_action: str = Field(
-        default="sit_down",
-        description="What other robots should do: 'sit_down', 'stop', or 'continue'."
-    )
-    wait_for_more: bool = Field(
-        default=False,
-        description="True if should wait for other robots to finish before concluding (looking for multiple targets)."
-    )
-    reason: str = Field(description="Brief explanation of the coordination decision.")
 
 from ..infra.discovery import AgentDiscovery
 from ..infra.robot_registry import robot_registry
@@ -546,227 +527,320 @@ async def _cancel_robot(robot_id: str):
         logger.warning(f"Cancel to {robot_id} failed: {e}")
 
 
-async def _llm_coordinate(prompt: str, detection_events: list, remaining_robots: list) -> dict:
-    """Ask LLM how to coordinate robots based on detection results.
-
-    Args:
-        prompt: Original user command
-        detection_events: List of {robot_id, zone, detections} for robots that found something
-        remaining_robots: List of robot IDs still patrolling
-    """
-    det_desc = []
-    for evt in detection_events:
-        labels = [d.get("label", "?") for d in evt["detections"]]
-        confs = [f"{d.get('confidence', 0):.0%}" for d in evt["detections"]]
-        det_desc.append(
-            f"- {evt['robot_id']} (zone {evt['zone']}): found {', '.join(labels)} "
-            f"(confidence: {', '.join(confs)})"
-        )
-
-    system = (
-        "You are coordinating a multi-robot search mission. Robots are patrolling different zones.\n"
-        "A detection event has occurred. Decide what to do next.\n\n"
-        "Consider:\n"
-        "- Does the user want to find ONE target or ALL targets?\n"
-        "- Is the detection confidence high enough to act on?\n"
-        "- Should other robots keep searching (there might be more targets)?\n"
-        "- What action should the detecting robot perform?\n\n"
-        "Rules:\n"
-        "- detecting_robot_action: extract from user prompt (e.g. 'if found wave' → 'wave'). Empty if not specified.\n"
-        "- should_stop_others: true if task is 'find a/one target', false if 'find all' or ambiguous.\n"
-        "- wait_for_more: true if other robots should finish their patrol before concluding.\n"
-        "- others_action: 'sit_down', 'stop' (stand still), or 'continue' (keep patrolling).\n"
-    )
-    user = (
-        f"User command: {prompt}\n\n"
-        f"Detection events:\n" + "\n".join(det_desc) + "\n\n"
-        f"Robots still patrolling: {remaining_robots if remaining_robots else 'none'}\n\n"
-        "What should we do?"
-    )
-
-    try:
-        coord_llm = create_llm().with_structured_output(CoordinationDecision)
-        result = await coord_llm.ainvoke([
-            SystemMessage(content=system),
-            HumanMessage(content=user),
-        ])
-        logger.info(f"Coordination LLM: stop_others={result.should_stop_others}, "
-                     f"action={result.detecting_robot_action}, others={result.others_action}, "
-                     f"wait={result.wait_for_more} — {result.reason}")
-        return {
-            "should_stop_others": result.should_stop_others,
-            "detecting_robot_action": result.detecting_robot_action,
-            "others_action": result.others_action,
-            "wait_for_more": result.wait_for_more,
-            "reason": result.reason,
-        }
-    except Exception as e:
-        logger.error(f"Coordination LLM failed: {e}, using defaults")
-        return {
-            "should_stop_others": True,
-            "detecting_robot_action": "",
-            "others_action": "sit_down",
-            "wait_for_more": False,
-            "reason": "LLM error, default behavior",
-        }
-
-
 async def _execute_coordinated_patrol(phase: dict, robots: list[dict], prompt: str, messages_log: list) -> dict:
-    """Coordinated patrol with LLM-driven coordination.
+    """Coordinated patrol with ReAct-style LLM coordination.
 
-    Flow:
-    1. Dispatch patrol to all robots in parallel
-    2. As robots complete, collect detection events
-    3. On first detection: ask LLM how to coordinate
-    4. LLM decides: stop others? keep searching? what actions?
-    5. If wait_for_more: continue collecting until all done or timeout
-    6. Execute decided actions
+    LLM controls the coordination loop via tool calls:
+    - dispatch_patrol: start patrol on robots
+    - wait_for_detection: wait for next robot to report results
+    - execute_action: make a robot perform an action
+    - cancel_robot: stop a robot's patrol
+    - finish: end the coordination
+
+    The LLM sees tool outputs and decides what to do next,
+    just like a ReAct agent with tool-calling.
     """
     import uuid
 
     if len(robots) < 2:
         return await _dispatch_agent_task(robots[0], phase, prompt, messages_log)
 
-    messages_log.append(AIMessage(
-        content=f"Coordinated patrol: {len(robots)} robots"
-    ))
+    # ── State shared between tools ──
+    patrol_tasks: dict = {}       # robot_id → (asyncio.Task, robot_dict)
+    detection_events: list = []    # [{robot_id, zone, detections, result}]
+    agent_results: list = []       # final results to return
+    completed: set = set()         # robot_ids that finished
 
-    # Dispatch patrol to all robots
-    tasks = {}
-    for robot in robots:
-        task_payload = {
-            "task_type": "agent",
-            "mission_id": str(uuid.uuid4())[:8],
-            "target_type": phase.get("target_type", "object"),
-            "target_name": phase.get("target_name", ""),
-            "search_pattern": phase.get("search_pattern", "patrol"),
-            "report_all": phase.get("report_all", False),
-            "task_goal": prompt,
-        }
-        coro = _dispatch_to_robot_agent(robot["id"], task_payload, timeout=300)
-        tasks[robot["id"]] = (asyncio.create_task(coro), robot)
+    # ── Tool implementations ──
+    async def _tool_dispatch_patrol(robot_ids: list[str]) -> str:
+        """Start patrol on specified robots."""
+        dispatched = []
+        for rid in robot_ids:
+            robot = next((r for r in robots if r["id"] == rid), None)
+            if not robot or rid in patrol_tasks:
+                continue
+            task_payload = {
+                "task_type": "agent",
+                "mission_id": str(uuid.uuid4())[:8],
+                "target_type": phase.get("target_type", "object"),
+                "target_name": phase.get("target_name", ""),
+                "search_pattern": phase.get("search_pattern", "patrol"),
+                "report_all": phase.get("report_all", False),
+                "task_goal": prompt,
+            }
+            coro = _dispatch_to_robot_agent(rid, task_payload, timeout=300)
+            patrol_tasks[rid] = (asyncio.create_task(coro), robot)
+            dispatched.append(rid)
+        return f"Patrol started on: {dispatched}"
 
-    # Collect results as they come in
-    task_list = set(t for t, _ in tasks.values())
-    detection_events = []  # robots that found something
-    completed_results = {}  # robot_id → result
-    coordination = None  # LLM coordination decision
+    async def _tool_wait_for_detection() -> str:
+        """Wait for the next robot to complete its patrol. Returns detection results."""
+        pending = set(t for rid, (t, _) in patrol_tasks.items() if rid not in completed)
+        if not pending:
+            return "No robots are patrolling."
 
-    while task_list:
-        done, task_list = await asyncio.wait(task_list, return_when=asyncio.FIRST_COMPLETED)
+        done, _ = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
 
+        results_text = []
         for finished_task in done:
-            for rid, (task, robot) in tasks.items():
+            for rid, (task, robot) in patrol_tasks.items():
                 if task is finished_task:
                     try:
                         result = task.result()
                     except Exception as e:
                         result = {"status": "error", "error": str(e)}
-                    completed_results[rid] = result
+                    completed.add(rid)
 
                     mission_result = result.get("mission_result", {})
                     dets = mission_result.get("detections", [])
+                    zone = robot.get("zone", "?")
+
                     if mission_result.get("status") == "completed" and len(dets) > 0:
                         detection_events.append({
-                            "robot_id": rid,
-                            "robot": robot,
-                            "zone": robot.get("zone", "?"),
-                            "detections": dets,
-                            "result": result,
+                            "robot_id": rid, "robot": robot,
+                            "zone": zone, "detections": dets, "result": result,
                         })
+                        labels = [f"{d.get('label', '?')}({d.get('confidence', 0):.0%})" for d in dets[:5]]
+                        results_text.append(f"{rid} (zone {zone}): FOUND {', '.join(labels)}")
+                    else:
+                        status = mission_result.get("status", result.get("status", "?"))
+                        results_text.append(f"{rid} (zone {zone}): {status}, no target detected")
                     break
 
-        # First detection → ask LLM how to coordinate
-        if detection_events and coordination is None:
-            remaining = [rid for rid, (t, _) in tasks.items()
-                         if rid not in completed_results]
-            coordination = await _llm_coordinate(prompt, detection_events, remaining)
+        still_patrolling = [rid for rid in patrol_tasks if rid not in completed]
+        summary = "\n".join(results_text)
+        summary += f"\nStill patrolling: {still_patrolling if still_patrolling else 'none'}"
+        return summary
 
-            messages_log.append(AIMessage(
-                content=f"Coordination: {coordination['reason']}"
-            ))
+    async def _tool_execute_action(robot_id: str, action: str) -> str:
+        """Execute an action on a specific robot (e.g. wave, sit_down)."""
+        robot = next((r for r in robots if r["id"] == robot_id), None)
+        if not robot:
+            return f"Robot {robot_id} not found"
+        fast = _try_fast_decompose(action)
+        await _dispatch_direct_control(robot, action, fast)
+        return f"{robot_id}: executed {action}"
 
-            if coordination["should_stop_others"] and not coordination["wait_for_more"]:
-                # Stop remaining robots now
-                for task in task_list:
-                    task.cancel()
-                cancel_coros = [_cancel_robot(rid) for rid in remaining]
-                if cancel_coros:
-                    await asyncio.gather(*cancel_coros, return_exceptions=True)
-                if task_list:
-                    await asyncio.wait(task_list, timeout=10)
-                break
+    async def _tool_cancel_robot(robot_id: str) -> str:
+        """Cancel a robot's patrol mission."""
+        await _cancel_robot(robot_id)
+        completed.add(robot_id)
+        # Also cancel the asyncio task
+        if robot_id in patrol_tasks:
+            task, _ = patrol_tasks[robot_id]
+            task.cancel()
+        return f"{robot_id}: cancelled"
 
-            if not coordination["wait_for_more"] and coordination["others_action"] == "continue":
-                # Don't wait for others, but let them keep running
-                break
-
-        # If we have a coordination decision and it says wait_for_more, keep looping
-        # until all tasks complete
-
-    # Execute coordination decisions
-    agent_results = []
-
-    if detection_events:
-        for evt in detection_events:
-            zone_report = f"Target detected by {evt['robot_id']} in zone {evt['zone']}"
-            agent_results.append({
-                "agent_id": evt["robot_id"],
-                "status": "success",
-                "response": zone_report,
-                "structured": {
-                    "mission": evt["result"].get("mission_result", {}),
-                    "detections": evt["detections"],
-                    "zone": evt["zone"],
-                    "zone_report": zone_report,
+    # ── Tool definitions for LLM ──
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "dispatch_patrol",
+                "description": "Start patrol on specified robots. Call this first to begin the search mission.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "robot_ids": {"type": "array", "items": {"type": "string"},
+                                      "description": "List of robot IDs to dispatch"}
+                    },
+                    "required": ["robot_ids"],
                 },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "wait_for_detection",
+                "description": "Wait for the next robot to complete and report results. Returns detection info or 'no target'.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "execute_action",
+                "description": "Make a robot perform a physical action (e.g. wave, sit_down, stop).",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "robot_id": {"type": "string", "description": "Robot ID"},
+                        "action": {"type": "string", "description": "Action name (wave, sit_down, stop, etc.)"},
+                    },
+                    "required": ["robot_id", "action"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "cancel_robot",
+                "description": "Cancel a robot's patrol and stop it.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "robot_id": {"type": "string", "description": "Robot ID to cancel"},
+                    },
+                    "required": ["robot_id"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "finish",
+                "description": "End the coordination. Call this when the mission is complete.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "summary": {"type": "string", "description": "Brief summary of what happened"},
+                    },
+                    "required": ["summary"],
+                },
+            },
+        },
+    ]
+
+    tool_map = {
+        "dispatch_patrol": lambda args: _tool_dispatch_patrol(args.get("robot_ids", [])),
+        "wait_for_detection": lambda args: _tool_wait_for_detection(),
+        "execute_action": lambda args: _tool_execute_action(args["robot_id"], args["action"]),
+        "cancel_robot": lambda args: _tool_cancel_robot(args["robot_id"]),
+    }
+
+    # ── ReAct loop ──
+    robot_desc = ", ".join(f"{r['id']}(zone {r.get('zone', '?')})" for r in robots)
+    system_msg = (
+        "You are a multi-robot coordinator. You have tools to control robots.\n\n"
+        f"Available robots: {robot_desc}\n\n"
+        "Workflow:\n"
+        "1. dispatch_patrol to start all robots searching\n"
+        "2. wait_for_detection to see results as robots complete\n"
+        "3. Based on results and user intent, decide:\n"
+        "   - Should the detecting robot perform an action? (execute_action)\n"
+        "   - Should other robots stop? (cancel_robot + execute_action to sit_down)\n"
+        "   - Should other robots keep searching? (wait_for_detection again)\n"
+        "   - Are we looking for ONE target or ALL targets?\n"
+        "4. When done, call finish\n\n"
+        "Be efficient — don't call unnecessary tools. Typically:\n"
+        "- 'find person, if found wave': dispatch → wait → found → wave → cancel others → sit_down → finish\n"
+        "- 'find all persons': dispatch → wait → found one → wait more → found another → finish\n"
+    )
+
+    from openai import AsyncOpenAI
+    import os
+
+    # Parse model: "openai/gpt-4o-mini" → "gpt-4o-mini"
+    from ..planner.llm_config import LLM_MODEL
+    model = LLM_MODEL.split("/", 1)[-1] if "/" in LLM_MODEL else LLM_MODEL
+    client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY", ""))
+
+    messages = [
+        {"role": "system", "content": system_msg},
+        {"role": "user", "content": f"User command: {prompt}"},
+    ]
+
+    MAX_TURNS = 15
+    messages_log.append(AIMessage(content=f"ReAct coordination: {len(robots)} robots"))
+
+    for turn in range(MAX_TURNS):
+        response = await client.chat.completions.create(
+            model=model,
+            messages=messages,
+            tools=tools,
+            temperature=0.3,
+        )
+
+        choice = response.choices[0]
+        msg = choice.message
+
+        # Add assistant message to history
+        messages.append(msg.model_dump(exclude_none=True))
+
+        # No tool calls → LLM is done (or confused)
+        if not msg.tool_calls:
+            if msg.content:
+                messages_log.append(AIMessage(content=f"Coordinator: {msg.content}"))
+                logger.info(f"ReAct coordinator (turn {turn+1}): {msg.content}")
+            break
+
+        # Execute tool calls
+        for tc in msg.tool_calls:
+            fn_name = tc.function.name
+            try:
+                fn_args = json.loads(tc.function.arguments)
+            except json.JSONDecodeError:
+                fn_args = {}
+
+            logger.info(f"ReAct coordinator (turn {turn+1}): {fn_name}({fn_args})")
+            messages_log.append(AIMessage(content=f"Tool: {fn_name}({fn_args})"))
+
+            if fn_name == "finish":
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": fn_args.get("summary", "done"),
+                })
+                # Build final results
+                for evt in detection_events:
+                    zone_report = f"Target detected by {evt['robot_id']} in zone {evt['zone']}"
+                    agent_results.append({
+                        "agent_id": evt["robot_id"],
+                        "status": "success",
+                        "response": zone_report,
+                        "structured": {
+                            "mission": evt["result"].get("mission_result", {}),
+                            "detections": evt["detections"],
+                            "zone": evt["zone"],
+                            "zone_report": zone_report,
+                        },
+                    })
+                if not detection_events:
+                    for robot in robots:
+                        agent_results.append({
+                            "agent_id": robot["id"],
+                            "status": "success",
+                            "response": "Patrol completed, no target detected",
+                            "structured": {"detections": []},
+                        })
+                return {"agent_results": agent_results}
+
+            # Execute the tool
+            handler = tool_map.get(fn_name)
+            if handler:
+                output = await handler(fn_args)
+            else:
+                output = f"Unknown tool: {fn_name}"
+
+            logger.info(f"ReAct tool output: {output[:200]}")
+
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tc.id,
+                "content": output,
             })
 
-        # Execute action on detecting robots
-        action = coordination["detecting_robot_action"] if coordination else phase.get("on_detect_action", "")
-        if action:
-            for evt in detection_events:
-                messages_log.append(AIMessage(content=f"{evt['robot_id']}: executing {action}"))
-                fast_actions = _try_fast_decompose(action)
-                await _dispatch_direct_control(evt["robot"], action, fast_actions)
-
-        # Handle other robots
-        detecting_ids = {evt["robot_id"] for evt in detection_events}
-        other_robots = [r for r in robots if r["id"] not in detecting_ids]
-
-        others_action = coordination["others_action"] if coordination else "sit_down"
-        if other_robots and others_action != "continue":
-            action_map = {
-                "sit_down": ("sit down", [{"action": "sit_down"}]),
-                "stop": ("stop", [{"action": "stop"}]),
-            }
-            cmd_text, cmd_actions = action_map.get(others_action, ("sit down", [{"action": "sit_down"}]))
-            messages_log.append(AIMessage(
-                content=f"Other robots {cmd_text}: {[r['id'] for r in other_robots]}"
-            ))
-            coros = [_dispatch_direct_control(r, cmd_text, cmd_actions) for r in other_robots]
-            await asyncio.gather(*coros, return_exceptions=True)
-            for r in other_robots:
-                agent_results.append({
-                    "agent_id": r["id"],
-                    "status": "success",
-                    "response": f"{cmd_text} ({coordination['reason']})",
-                    "structured": {},
-                })
-        elif other_robots:
-            messages_log.append(AIMessage(
-                content=f"Other robots continue: {[r['id'] for r in other_robots]}"
-            ))
-    else:
-        messages_log.append(AIMessage(content="Coordinated patrol: no detection by any robot"))
+    # Safety: if loop ended without finish, build results anyway
+    logger.warning("ReAct coordination loop ended without finish call")
+    for evt in detection_events:
+        agent_results.append({
+            "agent_id": evt["robot_id"],
+            "status": "success",
+            "response": f"Target detected in zone {evt['zone']}",
+            "structured": {
+                "mission": evt["result"].get("mission_result", {}),
+                "detections": evt["detections"],
+                "zone": evt["zone"],
+            },
+        })
+    if not agent_results:
         for robot in robots:
             agent_results.append({
                 "agent_id": robot["id"],
                 "status": "success",
-                "response": "Patrol completed, no target detected",
-                "structured": {"detections": []},
+                "response": "Patrol completed",
+                "structured": {},
             })
-
     return {"agent_results": agent_results}
 
 
