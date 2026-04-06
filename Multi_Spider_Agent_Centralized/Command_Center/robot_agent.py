@@ -140,7 +140,7 @@ class RobotAgentService:
 
         # Start UDP receiver for video
         self._udp_receiver = UDPFrameReceiver(listen_port=0)
-        self._udp_receiver.start()
+        await self._udp_receiver.start()
 
         # Tell Pi to start pushing UDP video
         local_ip = _get_local_ip()

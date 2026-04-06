@@ -234,53 +234,6 @@ def _detect_in_frame(frame: bytes, target_type: str, target_name: str = "",
     return results
 
 
-def _decide_post_action(task_goal: str) -> str:
-    """Decide what other robots should do after target is found. Rule-based for now."""
-    goal_lower = (task_goal or "").lower()
-    if "continue" in goal_lower:
-        return "continue"
-    if "return" in goal_lower or "go back" in goal_lower:
-        return "return_home"
-    return "sit_down"
-
-
-async def _broadcast_target_found(mission: SearchMission):
-    """Broadcast 'target found' notification to all other robots and cancel their missions."""
-    # Cancel all other active missions on Central side
-    other_missions = [
-        m for m in _active_missions.values()
-        if m.mission_id != mission.mission_id
-    ]
-    for m in other_missions:
-        m.cancel()
-        logger.info(f"Cancelled mission {m.mission_id} on {m.agent_id} (target found by {mission.agent_id})")
-
-    # Decide what other robots should do
-    post_action = _decide_post_action(mission.task_goal)
-
-    # Notify all other Pis via HTTP
-    try:
-        from ..infra.robot_client import robot_client
-        from ..infra.robot_registry import robot_registry
-        match = mission.match_result or {}
-        target_label = mission.target_name or match.get("label", "target")
-        notification = {
-            "notification_type": "target_found",
-            "finder_id": mission.agent_id,
-            "target_type": mission.target_type,
-            "target_name": target_label,
-            "mission_id": mission.mission_id,
-            "action": post_action,
-        }
-        online = robot_registry.get_online_robots()
-        for robot in online:
-            if robot.robot_id != mission.agent_id:
-                await robot_client.send_notification(
-                    robot.host, robot.port, notification, robot_id=robot.robot_id
-                )
-    except Exception as e:
-        logger.warning(f"Failed to notify other robots: {e}")
-
 
 async def run_search_mission(mission: SearchMission, existing_udp_receiver=None) -> dict:
     """Execute a search mission with Central-side detection and Central-side decision.
@@ -344,7 +297,7 @@ async def run_search_mission(mission: SearchMission, existing_udp_receiver=None)
         owns_udp = existing_udp_receiver is None
         if owns_udp:
             udp_receiver = UDPFrameReceiver(listen_port=0)
-            udp_receiver.start()
+            await udp_receiver.start()
             # Tell Pi to push video frames to our UDP port
             import socket as _socket
             local_ip = _socket.gethostbyname(_socket.gethostname())
@@ -419,7 +372,6 @@ async def run_search_mission(mission: SearchMission, existing_udp_receiver=None)
                         f"'{target_hit['label']}' "
                         f"(confidence={target_hit['confidence']})"
                     )
-                    await _broadcast_target_found(mission)
 
             # Dispatch to CentralPiAgent (throttled)
             if mission.report_all:
