@@ -21,7 +21,7 @@ from .infra.robot_registry import robot_registry
 from .infra.robot_client import robot_client
 from .detection.face_registry import face_registry
 from .planner.llm_config import create_vision_llm
-from .planner.graph import run_planner
+from .planner.graph import run_planner, planner_graph
 from .detection.yolo_detector import detect_frame
 
 logger = logging.getLogger(__name__)
@@ -156,6 +156,7 @@ class SearchResponse(BaseModel):
     results: list[AgentResult] = []
     summary: str = ""
     error: Optional[str] = None
+    reasoning: list[str] = []  # LLM reasoning steps (for frontend display)
 
 
 # ---------------------------------------------------------------------------
@@ -671,16 +672,21 @@ def _resolve_context_prompt(prompt: str) -> tuple[Optional[str], Optional[dict]]
     return None, None
 
 
+# Active background tasks
+_active_tasks: dict[str, asyncio.Task] = {}
+_task_results: dict[str, SearchResponse] = {}
+_live_reasoning: dict[str, list[str]] = {}  # task_id → live reasoning steps
+
+
 @app.post("/api/search", response_model=SearchResponse)
 async def search(request: SearchRequest):
-    """Submit a search/patrol task to the PiCrawler agents."""
+    """Submit a task. Returns immediately with task_id. Task runs in background."""
     task_id = f"task-{uuid.uuid4().hex[:8]}"
     logger.info(f"[{task_id}] Search request: {request.prompt}")
 
-    # --- Conversation context: resolve "do that again", "last result" etc. ---
+    # --- Conversation context ---
     resolved_prompt, cached = _resolve_context_prompt(request.prompt)
     if cached is not None:
-        # Return last result directly
         logger.info(f"[{task_id}] Context: returning cached last result")
         last_resp = cached.get("response", {})
         return SearchResponse(
@@ -694,43 +700,107 @@ async def search(request: SearchRequest):
         request.prompt = resolved_prompt
         logger.info(f"[{task_id}] Context resolved to: {request.prompt}")
 
-    # --- Full LangGraph pipeline for complex/ambiguous prompts ---
-    try:
-        result = await run_planner(
-            prompt=request.prompt,
-            strategy=request.strategy or "",
-            agents=request.agents,
-        )
+    # Live reasoning: intercept messages_log appends
+    _live_reasoning[task_id] = []
 
-        agent_results = result.get("agent_results", [])
-        agents_used = [r.get("agent_id", "") for r in agent_results]
+    # Patch AIMessage to capture reasoning in real-time
+    from langchain_core.messages import AIMessage as _AIMessage
+    _original_prompt = request.prompt
 
-        resp = SearchResponse(
-            task_id=task_id,
-            status="completed" if not result.get("error") else "partial",
-            agents_used=agents_used,
-            results=[
-                AgentResult(
-                    agent_id=r.get("agent_id", ""),
-                    status=r.get("status", "unknown"),
-                    response=r.get("response"),
-                    error=r.get("error"),
-                    structured=r.get("structured"),
-                )
-                for r in agent_results
-            ],
-            summary=result.get("summary", ""),
-            error=result.get("error"),
-        )
-        _save_to_history(request.prompt, resp)
-        return resp
-    except Exception as e:
-        logger.exception(f"[{task_id}] Search failed")
-        return SearchResponse(
-            task_id=task_id,
-            status="failed",
-            error=str(e),
-        )
+    class _LiveMessagesList(list):
+        """List that captures AIMessage content to live reasoning as they're appended."""
+        def append(self, item):
+            super().append(item)
+            if hasattr(item, "content") and item.content and not item.content.startswith(_original_prompt):
+                _live_reasoning.setdefault(task_id, []).append(item.content)
+
+    # Start task in background
+    async def _run_task():
+        try:
+            # Inject our live messages list into the planner
+            from langchain_core.messages import HumanMessage
+            live_messages = _LiveMessagesList([HumanMessage(content=request.prompt)])
+
+            result = await planner_graph.ainvoke({
+                "prompt": request.prompt,
+                "strategy": request.strategy or "",
+                "iteration": 1,
+                "start_time": __import__("datetime").datetime.utcnow().timestamp(),
+                "messages": live_messages,
+            })
+
+            agent_results = result.get("agent_results", [])
+            agents_used = [r.get("agent_id", "") for r in agent_results]
+
+            reasoning = _live_reasoning.get(task_id, [])
+
+            resp = SearchResponse(
+                task_id=task_id,
+                status="completed" if not result.get("error") else "partial",
+                agents_used=agents_used,
+                results=[
+                    AgentResult(
+                        agent_id=r.get("agent_id", ""),
+                        status=r.get("status", "unknown"),
+                        response=r.get("response"),
+                        error=r.get("error"),
+                        structured=r.get("structured"),
+                    )
+                    for r in agent_results
+                ],
+                summary=result.get("summary", ""),
+                error=result.get("error"),
+                reasoning=reasoning,
+            )
+            _task_results[task_id] = resp
+            _save_to_history(request.prompt, resp)
+        except asyncio.CancelledError:
+            _task_results[task_id] = SearchResponse(
+                task_id=task_id, status="cancelled", summary="Task was cancelled",
+                reasoning=_live_reasoning.get(task_id, []),
+            )
+        except Exception as e:
+            logger.exception(f"[{task_id}] Search failed")
+            _task_results[task_id] = SearchResponse(
+                task_id=task_id, status="failed", error=str(e),
+                reasoning=_live_reasoning.get(task_id, []),
+            )
+        finally:
+            _active_tasks.pop(task_id, None)
+
+    task = asyncio.create_task(_run_task())
+    _active_tasks[task_id] = task
+
+    return SearchResponse(
+        task_id=task_id,
+        status="running",
+        summary=f"Task started: {request.prompt}",
+    )
+
+
+@app.get("/api/task/{task_id}")
+async def get_task_status(task_id: str):
+    """Get task status/result with live reasoning steps."""
+    if task_id in _task_results:
+        return _task_results[task_id]
+    if task_id in _active_tasks:
+        return {
+            "task_id": task_id,
+            "status": "running",
+            "reasoning": _live_reasoning.get(task_id, []),
+        }
+    return {"task_id": task_id, "status": "not_found"}
+
+
+@app.post("/api/task/{task_id}/cancel")
+async def cancel_task(task_id: str):
+    """Cancel a running task."""
+    task = _active_tasks.get(task_id)
+    if not task:
+        return {"task_id": task_id, "status": "not_found"}
+    task.cancel()
+    logger.info(f"[{task_id}] Task cancelled by user")
+    return {"task_id": task_id, "status": "cancelling"}
 
 
 # ---------------------------------------------------------------------------

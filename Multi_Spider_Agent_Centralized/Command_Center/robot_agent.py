@@ -309,6 +309,7 @@ class RobotAgentService:
             task_goal=request.get("task_goal", ""),
             search_pattern=request.get("search_pattern", "patrol"),
             report_all=request.get("report_all", False),
+            duration_s=request.get("duration_s", 0),
         )
         self._current_mission = mission
         robot_registry.set_busy(self.robot_id, mission.mission_id)

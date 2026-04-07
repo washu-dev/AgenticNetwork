@@ -60,6 +60,10 @@ class Phase(BaseModel):
         default="sit_down",
         description="What other robots should do when one detects the target: 'sit_down' (default), 'stop' (stand still), or 'continue' (keep patrolling).",
     )
+    duration_s: int = Field(
+        default=0,
+        description="Duration in seconds if user specifies (e.g. 'for 5 seconds' → 5). 0 = use default timeout.",
+    )
 
 
 class TaskIntent(BaseModel):
@@ -95,124 +99,33 @@ class PlannerState(TypedDict, total=False):
 # ---------------------------------------------------------------------------
 
 _PARSE_PROMPT = (
-    "You are a task planner for a multi-robot spider (PiCrawler) system.\n\n"
-    "FIRST: check if the request is related to robot control. If NOT (e.g. 'write a poem',\n"
-    "'what is the weather'), set is_valid_task=false with a rejection_reason and empty phases.\n\n"
-    "Output EXACTLY ONE phase in the phases list.\n\n"
-    "TASK TYPES:\n\n"
-    "  direct_control — Pure movement / posture / gesture. No detection.\n"
-    "    action: 'none' (robot's LLM decides the actions)\n"
-    "    target_type: none, search_pattern: stationary\n\n"
-    "  agent — Central watches camera and runs detection. Robot's AI decides actions.\n"
-    "    target_type: face, object, color, qr_code, any\n"
-    "    search_pattern:\n"
-    "      stationary — only check current camera view (use when user says 'check here', 'stay in place')\n"
-    "      patrol     — move around to search (DEFAULT for detection/search tasks)\n"
-    "    target_name: optional, for finding a specific person\n\n"
-    "ROUTING:\n"
-    "  target_robot_ids=[]    — send to ALL online robots\n"
-    "  target_robot_ids=[id]  — send to specific robot(s)\n"
-    "  target_zone='A'        — send to all robots in zone A\n\n"
-    "AUTO-COORDINATION (agent mode with multiple robots):\n"
-    "  report_all=false → COORDINATED: first robot to detect stops others, reports zone.\n"
-    "                      Set on_detect_action for what detecting robot does after (e.g. 'wave').\n"
-    "                      Leave on_detect_action empty if user only wants zone report.\n"
-    "                      Set on_detect_others_action for what OTHER robots do:\n"
-    "                        'sit_down' (default) — others sit down\n"
-    "                        'stop' — others stop but stay standing\n"
-    "                        'continue' — others keep patrolling\n"
-    "  report_all=true  → INDEPENDENT: all robots patrol and report continuously.\n\n"
-    "CRITICAL RULES:\n"
-    "1. ALWAYS output exactly ONE phase.\n"
-    "2. If user does NOT name a specific robot, target_robot_ids=[] (all robots).\n"
-    "3. 'person'/'people' → target_type='object' (YOLO). 'face'/'faces' → target_type='face'.\n"
-    "4. report_all=true ONLY for observe/report tasks ('report what you see', 'look around').\n"
-    "5. on_detect_action: the action user wants after detection (e.g. 'wave', 'dance').\n"
-    "   Leave empty if user doesn't specify a post-detection action.\n"
-    "6. on_detect_others_action: what other robots do when one finds target.\n"
-    "   'sit_down' (default), 'stop' (stand still), 'continue' (keep patrolling).\n"
-    "   Infer from user prompt: 'others keep going' → continue, 'others stop' → stop.\n\n"
+    "You are a task planner for a multi-robot system.\n\n"
+    "If the request is NOT about robot control, set is_valid_task=false.\n"
+    "Otherwise, output exactly ONE phase.\n\n"
+    "TASK TYPES:\n"
+    "  direct_control — movement/posture/gesture, no detection\n"
+    "  agent — camera detection + robot actions\n\n"
+    "KEY FIELDS:\n"
+    "  target_robot_ids: [] = all robots, ['id'] = specific robot\n"
+    "  target_zone: 'A' = robots in zone A, '' = no filter\n"
+    "  target_type: object, face, any, none\n"
+    "  search_pattern: 'stationary' (stay in place) or 'patrol' (move around)\n"
+    "  report_all: true = just observe/report, false = act on detection\n"
+    "  on_detect_action: action after detection (e.g. 'wave'). Empty = just report.\n"
+    "  duration_s: seconds if user specifies (e.g. 'for 5 seconds' → 5). 0 = default.\n\n"
+    "RULES:\n"
+    "1. 'person'/'people' → target_type='object'. 'face' → target_type='face'.\n"
+    "2. report_all=true → default search_pattern='stationary'.\n"
+    "   Only use 'patrol' if user explicitly says 'patrol and report'.\n"
+    "3. on_detect_action: extract from user prompt. Leave empty if not specified.\n\n"
     "EXAMPLES:\n"
-    "  Rejected: 'Write a poem' → is_valid_task=false, phases=[]\n\n"
-    "  Direct: 'Stand up' / 'Sit down' / 'All robots sit down' / 'Wave' / 'Move forward'\n"
-    "    → phases=[{target_robot_ids=[], task_type='direct_control'}]\n\n"
-    "  Direct: 'robot-002 wave'\n"
-    "    → phases=[{target_robot_ids=['robot-002'], task_type='direct_control'}]\n\n"
-    "  Detect: 'Detect person, if found wave'\n"
-    "    → phases=[{target_robot_ids=[], task_type='agent', target_type='object',\n"
-    "               search_pattern='patrol', on_detect_action='wave'}]\n\n"
-    "  Detect: 'All robots detect apple, if found others stop'\n"
-    "    → phases=[{target_robot_ids=[], task_type='agent', target_type='object',\n"
-    "               target_name='apple', search_pattern='patrol', on_detect_action=''}]\n\n"
-    "  Report: 'All robots patrol and report what you see'\n"
-    "    → phases=[{target_robot_ids=[], task_type='agent', target_type='any',\n"
-    "               search_pattern='patrol', report_all=true}]"
+    "  'Wave' → direct_control\n"
+    "  'robot-002 wave' → direct_control, target_robot_ids=['robot-002']\n"
+    "  'Detect person, if found wave' → agent, target_type='object', on_detect_action='wave'\n"
+    "  'Report what you see' → agent, target_type='any', report_all=true, search_pattern='stationary'\n"
+    "  'Detect person for 10 seconds' → agent, target_type='object', duration_s=10"
 )
 
-
-# ---------------------------------------------------------------------------
-# Fast action decompose: map known commands to actions (skips Brain LLM)
-# ---------------------------------------------------------------------------
-
-_FAST_DIRECT_MAP = {
-    "stand up": "stand_up", "get up": "stand_up", "rise": "stand_up",
-    "sit down": "sit_down", "sit": "sit_down",
-    "stop": "stop", "halt": "stop", "freeze": "stop",
-    "forward": "forward", "move forward": "forward", "go forward": "forward",
-    "go ahead": "forward", "advance": "forward",
-    "backward": "backward", "go back": "backward", "move back": "backward",
-    "back up": "backward", "reverse": "backward",
-    "turn left": "turn_left", "turn right": "turn_right",
-    "look left": "look_left", "look right": "look_right",
-    "look up": "look_up", "look down": "look_down",
-    "wave": "wave", "say hi": "wave", "say hello": "wave", "greet": "wave",
-    "dance": "dance", "dancing": "dance",
-    "push up": "push_up", "pushup": "push_up", "push ups": "push_up",
-    "do push ups": "push_up", "do pushups": "push_up",
-    "nod": "nod", "shake head": "shake_head",
-    "shake hand": "shake_hand", "handshake": "shake_hand",
-    "play dead": "play_dead",
-}
-
-# Keywords that indicate detection/agent mode
-_AGENT_KEYWORDS = {"detect", "search", "find", "patrol", "scan", "look for",
-                   "if found", "if detect", "otherwise", "report", "observe"}
-
-
-def _try_fast_decompose(prompt: str) -> list | None:
-    """Try to decompose simple commands into action list without Brain LLM.
-    Returns list of action dicts or None if LLM is needed."""
-    p = prompt.lower().strip().rstrip(".!?")
-
-    # If any agent keyword present, can't fast decompose
-    if any(kw in p for kw in _AGENT_KEYWORDS):
-        return None
-
-    # Single action
-    if p in _FAST_DIRECT_MAP:
-        action = _FAST_DIRECT_MAP[p]
-        actions = []
-        # Auto-prepend stand_up for actions that require standing
-        if action not in ("stand_up", "sit_down", "stop"):
-            actions.append({"action": "stand_up"})
-        actions.append({"action": action})
-        return actions
-
-    # Multi-action combo (e.g. "wave then dance")
-    for sep in [" then ", " and then ", " and ", ", "]:
-        if sep in p:
-            parts = [part.strip() for part in p.split(sep)]
-            if all(part in _FAST_DIRECT_MAP for part in parts):
-                mapped = [_FAST_DIRECT_MAP[part] for part in parts]
-                actions = []
-                # Auto-prepend stand_up if first action needs it
-                if mapped[0] not in ("stand_up", "sit_down", "stop"):
-                    actions.append({"action": "stand_up"})
-                for a in mapped:
-                    actions.append({"action": a})
-                return actions
-
-    return None
 
 
 def _build_parse_prompt(online_robots: list[dict]) -> str:
@@ -334,6 +247,24 @@ async def parse_and_discover(state: PlannerState) -> dict:
                 desc += f"(on_detect={ph['on_detect_action']})"
             phase_descs.append(desc)
         messages_log.append(AIMessage(content=f"Parse: {', '.join(phase_descs)}"))
+
+        # Detailed intent for reasoning display
+        ph = intent["phases"][0] if intent["phases"] else {}
+        details = []
+        if ph.get("task_type"): details.append(f"type={ph['task_type']}")
+        if ph.get("target_type") and ph["target_type"] != "none": details.append(f"target={ph['target_type']}")
+        if ph.get("target_name"): details.append(f"name='{ph['target_name']}'")
+        if ph.get("search_pattern"): details.append(f"pattern={ph['search_pattern']}")
+        if ph.get("target_zone"): details.append(f"zone={ph['target_zone']}")
+        if ph.get("target_robot_ids"): details.append(f"robots={ph['target_robot_ids']}")
+        if ph.get("report_all"): details.append("report_all=true")
+        if ph.get("on_detect_action"): details.append(f"on_detect={ph['on_detect_action']}")
+        if ph.get("on_detect_others_action") and ph["on_detect_others_action"] != "sit_down":
+            details.append(f"others={ph['on_detect_others_action']}")
+        if ph.get("duration_s", 0) > 0: details.append(f"duration={ph['duration_s']}s")
+        if ph.get("description"): details.append(f"desc='{ph['description']}'")
+        messages_log.append(AIMessage(content=f"Intent: {', '.join(details)}"))
+
         logger.info(f"Parsed intent: {intent}")
 
     if not online_agents:
@@ -385,7 +316,11 @@ def _fallback_intent(prompt: str) -> dict:
     else:
         target = "any"
 
-    pattern = "stationary" if any(kw in p for kw in ["check here", "what do you see", "look in front", "stay in place", "don't move", "stand still"]) else "patrol"
+    pattern = "stationary" if any(kw in p for kw in [
+        "check here", "what do you see", "what you see", "report what",
+        "look in front", "stay in place", "don't move", "stand still",
+        "check what", "observe", "report",
+    ]) else "patrol"
     is_report = any(kw in p for kw in ["report", "observe", "what do you see", "look around"])
 
     return {
@@ -494,8 +429,7 @@ async def _execute_single_phase(phase: dict, robots: list[dict], prompt: str, me
     else:
         # Direct control: dispatch to all target robots in parallel
         description = phase.get("description", prompt)
-        fast_actions = _try_fast_decompose(description)
-        coros = [_dispatch_direct_control(robot, description, fast_actions) for robot in robots]
+        coros = [_dispatch_direct_control(robot, description) for robot in robots]
         raw_results = await asyncio.gather(*coros, return_exceptions=True)
 
         results = []
@@ -617,8 +551,7 @@ async def _execute_coordinated_patrol(phase: dict, robots: list[dict], prompt: s
         robot = next((r for r in robots if r["id"] == robot_id), None)
         if not robot:
             return f"Robot {robot_id} not found"
-        fast = _try_fast_decompose(action)
-        await _dispatch_direct_control(robot, action, fast)
+        await _dispatch_direct_control(robot, action)
         return f"{robot_id}: executed {action}"
 
     async def _tool_cancel_robot(robot_id: str) -> str:
@@ -716,15 +649,12 @@ async def _execute_coordinated_patrol(phase: dict, robots: list[dict], prompt: s
         "Workflow:\n"
         "1. dispatch_patrol to start all robots searching\n"
         "2. wait_for_detection to see results as robots complete\n"
-        "3. Based on results and user intent, decide:\n"
-        "   - Should the detecting robot perform an action? (execute_action)\n"
-        "   - Should other robots stop? (cancel_robot + execute_action to sit_down)\n"
-        "   - Should other robots keep searching? (wait_for_detection again)\n"
-        "   - Are we looking for ONE target or ALL targets?\n"
-        "4. When done, call finish\n\n"
-        "Be efficient — don't call unnecessary tools. Typically:\n"
-        "- 'find person, if found wave': dispatch → wait → found → wave → cancel others → sit_down → finish\n"
-        "- 'find all persons': dispatch → wait → found one → wait more → found another → finish\n"
+        "3. Based on the user's intent and detection results, decide what each robot should do next\n"
+        "4. When the mission is complete, call finish\n\n"
+        "You decide autonomously what actions to take based on the user's command.\n"
+        "Consider what the user wants for EACH robot — the detecting robot AND the others.\n"
+        "The user may want others to: sit down, stop, keep searching, go somewhere, or anything else.\n"
+        "Read the user's command carefully and infer the right behavior.\n"
     )
 
     from openai import AsyncOpenAI
@@ -813,6 +743,7 @@ async def _execute_coordinated_patrol(phase: dict, robots: list[dict], prompt: s
                 output = f"Unknown tool: {fn_name}"
 
             logger.info(f"ReAct tool output: {output[:200]}")
+            messages_log.append(AIMessage(content=f"Result: {output[:200]}"))
 
             messages.append({
                 "role": "tool",
@@ -946,6 +877,9 @@ async def _dispatch_agent_task(agent: dict, phase: dict, task_goal: str, message
         "report_all": phase.get("report_all", False),
         "task_goal": task_goal,
     }
+    duration = phase.get("duration_s", 0)
+    if duration > 0:
+        task_payload["duration_s"] = duration
 
     target_desc = f"'{task_payload['target_name']}'" if task_payload['target_name'] else task_payload['target_type']
     mode_desc = "patrol" if task_payload['search_pattern'] != "stationary" else "stationary"
@@ -971,17 +905,24 @@ async def _dispatch_agent_task(agent: dict, phase: dict, task_goal: str, message
     if mission_result.get("match_result"):
         agent_result["response"] += f", match={mission_result['match_result']}"
 
-    messages_log.append(AIMessage(content=f"Agent: {mission_result.get('status', 'unknown')}"))
+    # Detailed agent result for reasoning
+    det_count = len(mission_result.get("detections", []))
+    elapsed = mission_result.get("elapsed_s", 0)
+    frames = mission_result.get("frames_analyzed", 0)
+    agent_status = mission_result.get("status", "unknown")
+    detail = f"{agent['id']}: {agent_status}, {frames} frames, {elapsed:.0f}s, {det_count} detections"
+    if mission_result.get("match_result"):
+        match = mission_result["match_result"]
+        detail += f", found {match.get('label', '?')} ({match.get('confidence', 0):.0%})"
+    if mission_result.get("patrol_report", {}).get("summary"):
+        detail += f" | Report: {mission_result['patrol_report']['summary'][:100]}"
+    messages_log.append(AIMessage(content=f"Agent result: {detail}"))
     return {"agent_results": [agent_result], "messages": messages_log}
 
 
-async def _dispatch_direct_control(agent_info: dict, prompt: str, fast_actions: list = None) -> dict:
+async def _dispatch_direct_control(agent_info: dict, prompt: str) -> dict:
     """Dispatch direct control task to Robot Agent via NATS."""
     task_payload = {"task_type": "direct_control", "prompt": prompt}
-    if fast_actions:
-        task_payload["actions"] = [a["action"] if isinstance(a, dict) else a for a in fast_actions]
-        logger.info(f"Fast decompose: '{prompt}' -> {task_payload['actions']} (skipped Brain LLM)")
-
     return await _dispatch_to_robot_agent(agent_info["id"], task_payload, timeout=60)
 
 

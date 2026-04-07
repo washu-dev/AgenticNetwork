@@ -86,6 +86,20 @@
   .result-summary h4 { font-size: 12px; color: #64748b; margin-bottom: 6px; }
   .result-summary p { font-size: 12px; line-height: 1.6; color: #cbd5e1; white-space: pre-wrap; }
 
+  /* Reasoning panel */
+  .reasoning-panel { border: 1px solid #334155; border-radius: 8px; margin-bottom: 12px; overflow: hidden; }
+  .reasoning-toggle { background: #1e293b; padding: 10px 14px; cursor: pointer; display: flex; align-items: center; gap: 8px; font-size: 12px; color: #94a3b8; border: none; width: 100%; text-align: left; }
+  .reasoning-toggle:hover { background: #334155; }
+  .reasoning-toggle .arrow { transition: transform 0.2s; }
+  .reasoning-toggle.open .arrow { transform: rotate(90deg); }
+  .reasoning-steps { display: none; padding: 0; max-height: 400px; overflow-y: auto; }
+  .reasoning-steps.open { display: block; }
+  .reasoning-step { padding: 8px 14px; font-size: 11px; line-height: 1.5; border-bottom: 1px solid #1e293b; font-family: monospace; }
+  .reasoning-step.think { color: #a78bfa; background: #1e1338; }
+  .reasoning-step.tool { color: #38bdf8; background: #0f172a; }
+  .reasoning-step.result { color: #22c55e; background: #0f172a; }
+  .reasoning-step.info { color: #94a3b8; background: #0f172a; }
+
   .placeholder { color: #334155; text-align: center; padding: 40px 20px; font-size: 13px; }
 
   .detection-list { margin-top: 8px; }
@@ -354,6 +368,8 @@ function startDetectionOverlay(agentId) {
 // ============================================
 // Send Task
 // ============================================
+let _currentTaskId = null;
+
 async function sendTask() {
   const prompt = document.getElementById('promptInput').value.trim();
   if (!prompt) return;
@@ -363,7 +379,6 @@ async function sendTask() {
   btn.disabled = true;
   btn.textContent = '...';
   taskRunning = true;
-  area.innerHTML = '<div class="loading"><div class="spinner"></div>Executing...</div>';
 
   try {
     const resp = await fetch(`${API}/api/search`, {
@@ -372,30 +387,109 @@ async function sendTask() {
       body: JSON.stringify({ prompt }),
     });
     const data = await resp.json();
-    renderResult(data);
+    _currentTaskId = data.task_id;
 
-    // If result contains an active mission, start polling
-    if (data.results) {
-      for (const r of data.results) {
-        const mission = r.structured && r.structured.mission;
-        if (mission && (mission.status === 'searching' || mission.status === 'completed')) {
-          pollMissionStatus(mission.mission_id);
-        }
-      }
+    if (data.status === 'running') {
+      // Task is running in background — show cancel button + poll
+      area.innerHTML = `<div class="loading">
+        <div class="spinner"></div>Executing: ${prompt}
+        <button class="btn" style="background:#ef4444;color:white;margin-left:12px;padding:6px 14px"
+                onclick="cancelTask('${data.task_id}')">Cancel</button>
+      </div>`;
+      pollTaskResult(data.task_id);
+    } else {
+      // Immediate result (cached etc)
+      renderResult(data);
+      btn.disabled = false;
+      btn.textContent = 'Send';
+      taskRunning = false;
     }
   } catch (e) {
     area.innerHTML = `<div class="error-msg">Request failed: ${e.message}</div>`;
+    btn.disabled = false;
+    btn.textContent = 'Send';
+    taskRunning = false;
   }
+}
 
-  btn.disabled = false;
-  btn.textContent = 'Send';
-  taskRunning = false;
-  loadAgents();
+async function pollTaskResult(taskId) {
+  const area = document.getElementById('resultArea');
+  const btn = document.getElementById('sendBtn');
+
+  while (true) {
+    await new Promise(r => setTimeout(r, 1000));
+    try {
+      const resp = await fetch(`${API}/api/task/${taskId}`);
+      const data = await resp.json();
+      if (data.status !== 'running') {
+        renderResult(data);
+        btn.disabled = false;
+        btn.textContent = 'Send';
+        taskRunning = false;
+        _currentTaskId = null;
+        loadAgents();
+        return;
+      }
+      // Show live reasoning while running
+      if (data.reasoning && data.reasoning.length > 0) {
+        let html = `<div class="loading"><div class="spinner"></div>Executing...
+          <button class="btn" style="background:#ef4444;color:white;margin-left:12px;padding:6px 14px"
+                  onclick="cancelTask('${taskId}')">Cancel</button>
+        </div>`;
+        html += `<div class="reasoning-panel">
+          <div class="reasoning-toggle open"><span class="arrow" style="transform:rotate(90deg)">&#9654;</span> LLM Reasoning (${data.reasoning.length} steps — live)</div>
+          <div class="reasoning-steps open">`;
+        data.reasoning.forEach((step, i) => {
+          let cls = 'info';
+          if (step.startsWith('Tool:')) cls = 'tool';
+          else if (step.startsWith('Coordinator:') || step.startsWith('Coordination:')) cls = 'think';
+          else if (step.startsWith('Parse') || step.startsWith('Intent:')) cls = 'think';
+          else if (step.startsWith('Execute:') || step.startsWith('Done:') || step.startsWith('Result:') || step.startsWith('Agent result:')) cls = 'result';
+          else if (step.startsWith('Agent:') || step.startsWith('Detection')) cls = 'result';
+          html += `<div class="reasoning-step ${cls}"><span style="color:#475569;margin-right:8px">${i+1}.</span>${step}</div>`;
+        });
+        html += `</div></div>`;
+        area.innerHTML = html;
+      }
+    } catch (e) {
+      // Keep polling
+    }
+  }
+}
+
+async function cancelTask(taskId) {
+  try {
+    await fetch(`${API}/api/task/${taskId}/cancel`, { method: 'POST' });
+    document.getElementById('resultArea').innerHTML =
+      '<div class="loading"><div class="spinner"></div>Cancelling...</div>';
+  } catch (e) {
+    console.error('Cancel failed:', e);
+  }
 }
 
 function renderResult(data) {
   const area = document.getElementById('resultArea');
   let html = `<div class="result-header"><h3>Result</h3><span class="badge ${data.status}">${data.status}</span></div>`;
+
+  // Reasoning panel (collapsible)
+  if (data.reasoning && data.reasoning.length > 0) {
+    const rid = 'reasoning-' + Date.now();
+    html += `<div class="reasoning-panel">
+      <button class="reasoning-toggle" onclick="this.classList.toggle('open'); document.getElementById('${rid}').classList.toggle('open')">
+        <span class="arrow">&#9654;</span> LLM Reasoning (${data.reasoning.length} steps)
+      </button>
+      <div class="reasoning-steps" id="${rid}">`;
+    data.reasoning.forEach((step, i) => {
+      let cls = 'info';
+      if (step.startsWith('Tool:')) cls = 'tool';
+      else if (step.startsWith('Coordinator:') || step.startsWith('Coordination:')) cls = 'think';
+      else if (step.startsWith('Parse') || step.startsWith('Parsed')) cls = 'think';
+      else if (step.startsWith('Execute:') || step.startsWith('Done:')) cls = 'result';
+      else if (step.startsWith('Agent:') || step.startsWith('Detection')) cls = 'result';
+      html += `<div class="reasoning-step ${cls}"><span style="color:#475569;margin-right:8px">${i+1}.</span>${step}</div>`;
+    });
+    html += `</div></div>`;
+  }
 
   if (data.results && data.results.length > 0) {
     data.results.forEach(r => {

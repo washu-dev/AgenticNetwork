@@ -44,6 +44,7 @@ class SearchMission:
     task_goal: str = ""
     search_pattern: str = "patrol"
     report_all: bool = False
+    duration_s: int = 0  # 0 = use default timeout
     threshold: float = 0.7
     status: str = "pending"
     start_time: float = 0.0
@@ -289,7 +290,10 @@ async def run_search_mission(mission: SearchMission, existing_udp_receiver=None)
             })
 
         # Step 3: Start UDP video receiver and tell Pi to start streaming
-        timeout = MISSION_TIMEOUT_STATIONARY if is_stationary else MISSION_TIMEOUT_PATROL
+        if mission.duration_s > 0:
+            timeout = mission.duration_s
+        else:
+            timeout = MISSION_TIMEOUT_STATIONARY if is_stationary else MISSION_TIMEOUT_PATROL
         mission_ended = False
         last_dispatch_time = 0.0
 
