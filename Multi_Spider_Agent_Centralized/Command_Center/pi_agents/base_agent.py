@@ -154,11 +154,16 @@ class MissionGraph:
     - decide node uses async LLM calls
     """
 
-    def __init__(self, robot: RegisteredRobot, brain: LLMClient):
+    def __init__(self, robot: RegisteredRobot, brain: LLMClient, on_reasoning=None):
         self.robot = robot
         self.brain = brain
         self._rid = robot.robot_id
+        self._on_reasoning = on_reasoning
         self.graph = self._build()
+
+    async def _emit(self, step: str):
+        if self._on_reasoning:
+            await self._on_reasoning(self._rid, step)
 
     def _build(self):
         g = StateGraph(MissionState)
@@ -216,6 +221,7 @@ class MissionGraph:
         action = decision.get("action", "stop")
         reason = decision.get("reason", "")
         logger.info(f"[{self.robot.robot_id}] LLM decision: {action} — {reason} (obs={state['obs_status']})")
+        await self._emit(f"Intent: {action} — {reason}")
         return {"action": action, "reason": reason}
 
     async def _act(self, state: MissionState) -> dict:
@@ -288,6 +294,7 @@ class CentralPiAgent:
     def __init__(self, robot: RegisteredRobot, brain: LLMClient):
         self.robot = robot
         self.brain = brain
+        self.on_reasoning = None  # async callback(robot_id, step_str)
         self.mission_graph = MissionGraph(robot, brain)
 
         # Target approach module (Role 2 — portable, will move to turtlebot)
@@ -323,6 +330,13 @@ class CentralPiAgent:
 
         # Completed missions
         self._completed_mission_ids: set = set()
+
+    async def _emit(self, step: str):
+        """Emit a reasoning step to the callback (if set)."""
+        if self.on_reasoning:
+            await self.on_reasoning(self._rid, step)
+        # Also forward to MissionGraph
+        self.mission_graph._on_reasoning = self.on_reasoning
 
     async def _exec(self, action: str, params: dict = None) -> dict:
         """Execute action on this robot (shortcut with robot_id).
@@ -483,6 +497,7 @@ class CentralPiAgent:
 
         # Stage 2: Plan (LLM, called once, cached)
         plan = await self._target_approach.plan(task_goal, detected_label)
+        await self._emit(f"Intent: Target '{detected_label}' → {plan['final_action']} (approach={plan['approach']}) — {plan['reason']}")
 
         # No approach needed → execute immediately and finish
         if not plan["approach"]:
@@ -505,6 +520,7 @@ class CentralPiAgent:
             # Ensure standing before gesture
             if not self.robot.standing:
                 await self._execute_robot_action("stand_up")
+            await self._emit(f"Tool: {action} (target reached)")
             await self._target_approach.execute_action(action)
             self._consecutive_turns = 0
             if self.mission_id:
@@ -534,6 +550,7 @@ class CentralPiAgent:
         - Cancelled by coordination: Planner sends sit_down
         """
         reason = data.get("reason", "mission finished")
+        await self._emit(f"Result: Mission finished — {reason}")
 
         if self.mission_id:
             self._completed_mission_ids.add(self.mission_id)
@@ -549,6 +566,7 @@ class CentralPiAgent:
         start = time.time()
 
         logger.info(f"[{self.robot.robot_id}] Patrol started")
+        await self._emit("Execute: Patrol started")
 
         try:
             if not self.robot.standing:
@@ -558,6 +576,7 @@ class CentralPiAgent:
             route_plan = await self.brain.plan_patrol_route(self.task_goal or "patrol area")
             pattern = route_plan.get("pattern", "area")
             steps = route_plan.get("steps", [])
+            await self._emit(f"Intent: route plan → {pattern}, {len(steps)} steps — {route_plan.get('reason', '')}")
 
             if pattern == "stationary" or not steps:
                 logger.info(f"[{self.robot.robot_id}] Stationary patrol — no movement")
@@ -574,6 +593,7 @@ class CentralPiAgent:
                     break
 
                 logger.info(f"[{self.robot.robot_id}] Patrol step {i+1}/{len(route)}: {action}({count})")
+                await self._emit(f"Tool: {action}({count})")
 
                 if action == "forward":
                     await self._patrol_forward(count)
@@ -586,6 +606,7 @@ class CentralPiAgent:
 
             if not self._stop_requested:
                 logger.info(f"[{self.robot.robot_id}] Patrol route completed")
+                await self._emit("Result: Patrol route completed")
                 await self._execute_robot_action("sit_down")
         finally:
             self._patrol_active = False
@@ -659,6 +680,7 @@ class CentralPiAgent:
                 action = step
                 params = None
             logger.info(f"[{self.robot.robot_id}] Step {i+1}/{len(steps)}: {action} {params or ''}")
+            await self._emit(f"Tool: {action}")
 
             result = await self._exec(action, params)
             duration = result.get("duration_ms", 0)
@@ -679,9 +701,11 @@ class CentralPiAgent:
 
     async def execute_steps_from_prompt(self, prompt: str) -> dict:
         """Decompose a natural language prompt into actions and execute them."""
-        steps = await self.brain.decompose_actions(
+        steps, reason = await self.brain.decompose_actions(
             prompt, self.robot.actions, self.robot.actions_description
         )
+        action_names = [s.get("action", s) if isinstance(s, dict) else s for s in steps]
+        await self._emit(f"Intent: decompose → {action_names} — {reason}")
         return await self.execute_steps(steps)
 
     # ── Hardware helpers ─────────────────────────────────

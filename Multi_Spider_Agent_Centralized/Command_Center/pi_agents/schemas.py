@@ -5,7 +5,7 @@ Used with LangChain's .with_structured_output() to get reliable,
 typed responses from the LLM instead of manual JSON parsing.
 """
 
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -13,16 +13,23 @@ from pydantic import BaseModel, Field
 class ActionStep(BaseModel):
     """A single action with optional parameters."""
     action: str = Field(description="Action name from the available actions list")
-    params: Optional[Dict] = Field(
-        default=None,
-        description="Optional parameters, e.g. {\"steps\": 3, \"angle\": 20} for turn_left_angle",
+    steps: int = Field(
+        default=0,
+        description="Number of steps/repetitions. 0 = use default. For turn_left_angle/turn_right_angle: number of turn steps.",
+    )
+    angle: int = Field(
+        default=0,
+        description="Angle parameter. 0 = use default. For turn_left_angle/turn_right_angle: leg swing amplitude (10-90).",
     )
 
 
 class ActionDecomposition(BaseModel):
     """LLM output: decompose a natural language command into robot actions."""
-    steps: List[ActionStep] = Field(
+    actions: List[ActionStep] = Field(
         description="Ordered list of robot actions to execute, each with optional parameters"
+    )
+    reason: str = Field(
+        description="Brief explanation of why these actions were chosen and in this order"
     )
 
 
@@ -59,14 +66,19 @@ class TargetPlan(BaseModel):
     )
 
 
+class PatrolStep(BaseModel):
+    """A single step in a patrol route."""
+    action: str = Field(description="Movement action: 'forward', 'turn_left', or 'turn_right'")
+    value: int = Field(description="For forward: number of steps. For turns: degrees.")
+
+
 class PatrolRoute(BaseModel):
     """LLM output: patrol route based on user's task goal."""
     pattern: str = Field(
         description="Route pattern: 'stationary' (stay in place), 'spin' (turn 360 in place), or 'area' (walk a route)"
     )
-    steps: List[dict] = Field(
-        description="Ordered list of movement steps. Each step: {action: 'forward'|'turn_left'|'turn_right', value: int}. "
-                    "For forward: value = number of steps. For turns: value = degrees."
+    steps: List[PatrolStep] = Field(
+        description="Ordered list of movement steps."
     )
     reason: str = Field(description="Brief explanation of why this route was chosen")
 

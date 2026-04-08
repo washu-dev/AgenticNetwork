@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import json
 import logging
 import os
 import tempfile
@@ -52,6 +53,23 @@ async def startup_event():
         logger.info(f"Transport connected: {transport.__class__.__name__}")
     except Exception as e:
         logger.warning(f"Transport connection failed (will use HTTP fallback): {e}")
+    # Subscribe to robot reasoning steps via NATS
+    try:
+        from .robot_agent import REASONING_TOPIC_WILDCARD
+        transport = await ensure_connected()
+
+        async def _on_robot_reasoning(payload: bytes, reply_fn):
+            data = json.loads(payload)
+            rid = data.get("robot_id", "")
+            step = data.get("step", "")
+            if rid and step:
+                _live_robot_reasoning.setdefault(rid, []).append(step)
+
+        await transport.subscribe([REASONING_TOPIC_WILDCARD], _on_robot_reasoning)
+        logger.info(f"Subscribed to robot reasoning: {REASONING_TOPIC_WILDCARD}")
+    except Exception as e:
+        logger.warning(f"Robot reasoning subscription failed: {e}")
+
     # Initial discovery: populate registry from ADS/static config
     _background_tasks.append(asyncio.create_task(_initial_discovery()))
     # Periodic health check: actively check robot health + re-discover from ADS
@@ -676,6 +694,7 @@ def _resolve_context_prompt(prompt: str) -> tuple[Optional[str], Optional[dict]]
 _active_tasks: dict[str, asyncio.Task] = {}
 _task_results: dict[str, SearchResponse] = {}
 _live_reasoning: dict[str, list[str]] = {}  # task_id → live reasoning steps
+_live_robot_reasoning: dict[str, list[str]] = {}  # robot_id → reasoning steps
 
 
 @app.post("/api/search", response_model=SearchResponse)
@@ -702,6 +721,7 @@ async def search(request: SearchRequest):
 
     # Live reasoning: intercept messages_log appends
     _live_reasoning[task_id] = []
+    _live_robot_reasoning.clear()
 
     # Patch AIMessage to capture reasoning in real-time
     from langchain_core.messages import AIMessage as _AIMessage
@@ -782,12 +802,14 @@ async def search(request: SearchRequest):
 async def get_task_status(task_id: str):
     """Get task status/result with live reasoning steps."""
     if task_id in _task_results:
-        return _task_results[task_id]
+        resp = _task_results[task_id]
+        return {**resp.dict(), "robot_reasoning": dict(_live_robot_reasoning)}
     if task_id in _active_tasks:
         return {
             "task_id": task_id,
             "status": "running",
             "reasoning": _live_reasoning.get(task_id, []),
+            "robot_reasoning": dict(_live_robot_reasoning),
         }
     return {"task_id": task_id, "status": "not_found"}
 

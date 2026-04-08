@@ -66,6 +66,14 @@ def ping_topic(robot_id: str) -> str:
     return f"{TASK_TOPIC_PREFIX}.{robot_id}.ping"
 
 
+def reasoning_topic(robot_id: str) -> str:
+    """NATS topic for publishing reasoning steps."""
+    return f"{TASK_TOPIC_PREFIX}.{robot_id}.reasoning"
+
+
+REASONING_TOPIC_WILDCARD = f"{TASK_TOPIC_PREFIX}.*.reasoning"
+
+
 def _ws_port_for(robot_id: str) -> int:
     """Deterministic WebSocket port per robot (consistent across processes)."""
     import hashlib
@@ -137,6 +145,17 @@ class RobotAgentService:
             f"Robot Agent initialized: {self.robot_id} [{self.robot_type}] "
             f"zone={self.zone} pi={self.pi_host}:{self.pi_port}"
         )
+
+        # Wire reasoning callback — publishes steps to NATS for gateway to collect
+        async def _publish_reasoning(robot_id: str, step: str):
+            if self._transport:
+                try:
+                    msg = json.dumps({"robot_id": robot_id, "step": step}).encode()
+                    await self._transport.publish(reasoning_topic(robot_id), msg)
+                except Exception:
+                    pass  # fire-and-forget, don't break execution
+
+        self._agent.on_reasoning = _publish_reasoning
 
         # Start UDP receiver for video
         self._udp_receiver = UDPFrameReceiver(listen_port=0)

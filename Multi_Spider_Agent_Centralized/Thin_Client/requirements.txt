@@ -3,9 +3,10 @@ starlette
 uvicorn
 python-dotenv
 
-# Camera + video encoding
+# Video stream (stream.py)
+flask
 opencv-python
-picamera2
+# vilib  # install from: https://github.com/sunfounder/vilib
 
 # Hardware (local installs: pip install -e ~/picrawler ~/robot-hat)
 # picrawler

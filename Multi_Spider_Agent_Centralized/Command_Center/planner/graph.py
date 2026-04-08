@@ -47,18 +47,9 @@ class Phase(BaseModel):
     )
     task_type: str = Field(description="direct_control or agent")
     target_type: str = Field(default="none", description="face, color, qr_code, object, any, or none")
-    action: str = Field(default="none", description="Control action or 'none'")
     description: str = Field(description="One-line description")
     target_name: str = Field(default="", description="For face search: specific person name")
     report_all: bool = Field(default=False, description="True if observe/report task")
-    on_detect_action: str = Field(
-        default="",
-        description="Action for the detecting robot after detection (e.g. 'wave'). Empty = just report zone. Only used when report_all=false.",
-    )
-    on_detect_others_action: str = Field(
-        default="sit_down",
-        description="What other robots should do when one detects the target: 'sit_down' (default), 'stop' (stand still), or 'continue' (keep patrolling).",
-    )
     duration_s: int = Field(
         default=0,
         description="Duration in seconds if user specifies (e.g. 'for 5 seconds' → 5). 0 = use default timeout.",
@@ -109,16 +100,14 @@ _PARSE_PROMPT = (
     "  target_zone: 'A' = robots in zone A, '' = no filter\n"
     "  target_type: object, face, any, none\n"
     "  report_all: true = just observe/report, false = act on detection\n"
-    "  on_detect_action: action after detection (e.g. 'wave'). Empty = just report.\n"
     "  duration_s: seconds if user specifies (e.g. 'for 5 seconds' → 5). 0 = default.\n\n"
     "RULES:\n"
     "1. 'person'/'people' → target_type='object'. 'face' → target_type='face'.\n"
-    "2. Robot decides movement pattern (stationary/spin/patrol) from task_goal.\n"
-    "3. on_detect_action: extract from user prompt. Leave empty if not specified.\n\n"
+    "2. Robot decides movement pattern and response actions from task_goal autonomously.\n\n"
     "EXAMPLES:\n"
     "  'Wave' → direct_control\n"
     "  'robot-002 wave' → direct_control, target_robot_ids=['robot-002']\n"
-    "  'Detect person, if found wave' → agent, target_type='object', on_detect_action='wave'\n"
+    "  'Detect person, if found wave' → agent, target_type='object'\n"
     "  'Report what you see' → agent, target_type='any', report_all=true\n"
     "  'Detect person for 10 seconds' → agent, target_type='object', duration_s=10"
 )
@@ -240,8 +229,6 @@ async def parse_and_discover(state: PlannerState) -> dict:
             desc = f"{ph['task_type']}"
             if ph.get("target_robot_ids"):
                 desc += f"→{ph['target_robot_ids']}"
-            if ph.get("on_detect_action"):
-                desc += f"(on_detect={ph['on_detect_action']})"
             phase_descs.append(desc)
         messages_log.append(AIMessage(content=f"Parse: {', '.join(phase_descs)}"))
 
@@ -254,9 +241,6 @@ async def parse_and_discover(state: PlannerState) -> dict:
         if ph.get("target_zone"): details.append(f"zone={ph['target_zone']}")
         if ph.get("target_robot_ids"): details.append(f"robots={ph['target_robot_ids']}")
         if ph.get("report_all"): details.append("report_all=true")
-        if ph.get("on_detect_action"): details.append(f"on_detect={ph['on_detect_action']}")
-        if ph.get("on_detect_others_action") and ph["on_detect_others_action"] != "sit_down":
-            details.append(f"others={ph['on_detect_others_action']}")
         if ph.get("duration_s", 0) > 0: details.append(f"duration={ph['duration_s']}s")
         if ph.get("description"): details.append(f"desc='{ph['description']}'")
         messages_log.append(AIMessage(content=f"Intent: {', '.join(details)}"))
@@ -296,7 +280,7 @@ def _fallback_intent(prompt: str) -> dict:
     if is_direct and not is_detection:
         return {
             "phases": [{"target_robot_ids": [], "task_type": "direct_control", "target_type": "none",
-                        "action": "none", "description": prompt}],
+                        "description": prompt}],
             "urgency": "medium",
         }
 
@@ -315,7 +299,7 @@ def _fallback_intent(prompt: str) -> dict:
 
     return {
         "phases": [{"target_robot_ids": [], "task_type": "agent", "target_type": target,
-                    "action": "none", "description": prompt, "report_all": is_report}],
+                    "description": prompt, "report_all": is_report}],
         "urgency": "medium",
     }
 
@@ -356,7 +340,7 @@ async def execute_phases(state: PlannerState) -> dict:
     phases = intent.get("phases", [])
     if not phases:
         phases = [{"target_robot_ids": [], "task_type": "agent", "target_type": "object",
-                   "action": "none", "description": prompt}]
+                   "description": prompt}]
 
     # Always exactly one phase
     phase = phases[0]
@@ -417,8 +401,8 @@ async def _execute_single_phase(phase: dict, robots: list[dict], prompt: str, me
         return {"agent_results": merged}
     else:
         # Direct control: dispatch to all target robots in parallel
-        description = phase.get("description", prompt)
-        coros = [_dispatch_direct_control(robot, description) for robot in robots]
+        # Use original user prompt, not LLM-rewritten description, to avoid semantic drift
+        coros = [_dispatch_direct_control(robot, prompt) for robot in robots]
         raw_results = await asyncio.gather(*coros, return_exceptions=True)
 
         results = []

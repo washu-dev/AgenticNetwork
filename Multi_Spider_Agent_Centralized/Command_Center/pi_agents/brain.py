@@ -38,6 +38,8 @@ ROBOT_PROFILES = {
             "- For rotations, minimize the number of action calls to reduce cumulative error. "
             "Prefer fewer calls with more steps over many calls with few steps. "
             "E.g. for 360°: use 2 calls of 180° rather than 4 calls of 90°.\n"
+            "- Unless the user specifies a repeat count, execute each gesture action exactly once. "
+            "Do not add extra repetitions.\n"
         ),
         "observation_rules": (
             "- You must stand_up before you can move or perform gestures\n"
@@ -175,8 +177,9 @@ class LLMClient:
             f"Available actions:\n{actions_block}\n\n"
             "Rules:\n"
             "- Only use actions from the list above\n"
-            "- For turn_left_angle / turn_right_angle, specify params with 'steps' and 'angle' "
+            "- For turn_left_angle / turn_right_angle, set 'steps' and 'angle' fields "
             "to achieve the desired rotation. Use the calibration data in the action descriptions.\n"
+            "- Leave steps=0 and angle=0 for actions that don't need parameters (uses defaults)\n"
             f"{self._profile['decompose_rules']}"
         )
 
@@ -185,19 +188,28 @@ class LLMClient:
                 SystemMessage(content=system),
                 HumanMessage(content=prompt),
             ])
-            valid = [
-                s.model_dump(exclude_none=True)
-                for s in result.steps
-                if s.action in available_actions
-            ]
+            valid = []
+            for s in result.actions:
+                if s.action not in available_actions:
+                    continue
+                entry = {"action": s.action}
+                params = {}
+                if s.steps > 0:
+                    params["steps"] = s.steps
+                if s.angle > 0:
+                    params["angle"] = s.angle
+                if params:
+                    entry["params"] = params
+                valid.append(entry)
             if not valid:
-                logger.warning(f"No valid actions from LLM decomposition: {result.steps}")
+                logger.warning(f"No valid actions from LLM decomposition: {result.actions}")
                 return [{"action": "stop"}]
-            logger.info(f"LLM decomposed '{prompt}' -> {valid}")
-            return valid
+            reason = getattr(result, 'reason', '')
+            logger.info(f"LLM decomposed '{prompt}' -> {valid} ({reason})")
+            return valid, reason
         except Exception as e:
             logger.error(f"Failed to decompose actions: {e}")
-            return [{"action": "stop"}]
+            return [{"action": "stop"}], ""
 
     async def decide_observation_response(
         self,
@@ -357,7 +369,7 @@ class LLMClient:
                 SystemMessage(content=system),
                 HumanMessage(content=f"Mission goal: {task_goal}"),
             ])
-            steps = result.steps
+            steps = [s.model_dump() for s in result.steps]
             logger.info(f"Patrol route: pattern={result.pattern}, {len(steps)} steps — {result.reason}")
             return {"pattern": result.pattern, "steps": steps, "reason": result.reason}
         except Exception as e:
