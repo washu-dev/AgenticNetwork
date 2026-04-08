@@ -3,732 +3,391 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>PiCrawler Central Controller</title>
+<title>Multi-Spider Command Center</title>
+<script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; }
 
-  .header { background: #1e293b; padding: 14px 24px; border-bottom: 1px solid #334155; display: flex; align-items: center; justify-content: space-between; }
-  .header h1 { font-size: 18px; color: #38bdf8; }
-  .header .status { font-size: 12px; color: #94a3b8; display: flex; align-items: center; gap: 6px; }
+  /* Header */
+  .header { background: #1e293b; padding: 10px 20px; border-bottom: 1px solid #334155; display: flex; align-items: center; justify-content: space-between; }
+  .header h1 { font-size: 16px; color: #38bdf8; }
+  .header .status { font-size: 11px; color: #94a3b8; display: flex; align-items: center; gap: 6px; }
+
+  /* Three-column layout */
+  .layout { display: grid; grid-template-columns: 280px 1fr 300px; height: calc(100vh - 44px); gap: 1px; background: #334155; }
+  @media (max-width: 1200px) { .layout { grid-template-columns: 240px 1fr 260px; } }
+
+  .col { background: #0f172a; overflow-y: auto; padding: 10px; }
+  .col-left { background: #0f172a; }
+  .col-center { background: #0f172a; display: flex; flex-direction: column; gap: 10px; }
+  .col-right { background: #0f172a; }
+
+  /* Shared */
+  .panel { background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 10px; }
+  .panel-title { font-size: 11px; color: #64748b; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; font-weight: 600; }
   .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; }
   .dot.online { background: #22c55e; }
   .dot.busy { background: #f59e0b; }
   .dot.offline { background: #ef4444; }
 
-  .main { max-width: 1200px; margin: 0 auto; padding: 20px; display: flex; flex-direction: column; gap: 16px; }
+  /* Left: Video streams */
+  .video-card { background: #1e293b; border: 1px solid #334155; border-radius: 8px; margin-bottom: 8px; overflow: hidden; }
+  .video-header { padding: 6px 10px; display: flex; align-items: center; gap: 6px; font-size: 11px; background: #1e293b; }
+  .video-header .name { font-weight: 600; color: #e2e8f0; flex: 1; }
+  .video-header .zone { color: #38bdf8; font-size: 10px; }
+  .video-frame { position: relative; width: 100%; height: 140px; background: #0f172a; }
+  .video-frame img { width: 100%; height: 100%; object-fit: cover; }
+  .video-frame canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
+  .video-frame .no-feed { display: flex; align-items: center; justify-content: center; height: 100%; color: #334155; font-size: 11px; }
 
-  .panel { background: #1e293b; border: 1px solid #334155; border-radius: 12px; padding: 16px; }
-  .panel-title { font-size: 13px; color: #64748b; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 12px; }
+  /* Right: Robot reasoning */
+  .robot-reasoning { background: #1e293b; border: 1px solid #334155; border-radius: 8px; margin-bottom: 8px; overflow: hidden; }
+  .robot-reasoning .rr-header { padding: 6px 10px; font-size: 11px; font-weight: 600; color: #e2e8f0; display: flex; align-items: center; gap: 6px; }
+  .robot-reasoning .rr-body { max-height: 150px; overflow-y: auto; }
+  .robot-reasoning .rr-step { padding: 4px 10px; font-size: 10px; line-height: 1.4; border-top: 1px solid #0f172a; font-family: monospace; }
+  .robot-reasoning .rr-step.think { color: #a78bfa; background: #1e1338; }
+  .robot-reasoning .rr-step.tool { color: #38bdf8; }
+  .robot-reasoning .rr-step.result { color: #22c55e; }
+  .robot-reasoning .rr-step.info { color: #94a3b8; }
+  .robot-reasoning .rr-idle { padding: 10px; color: #334155; font-size: 10px; text-align: center; }
 
-  /* Agent bar */
-  .agents-bar { display: flex; gap: 10px; flex-wrap: wrap; }
-  .agent-chip { background: #1e293b; border: 1px solid #334155; border-radius: 10px; padding: 10px 14px; font-size: 12px; min-width: 200px; max-width: 280px; flex: 1; }
-  .agent-chip .chip-top { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
-  .agent-chip .name { font-weight: 600; color: #e2e8f0; }
-  .agent-chip .info { color: #64748b; font-size: 11px; }
-  .agent-chip .status-row { display: flex; justify-content: space-between; color: #94a3b8; font-size: 11px; margin-top: 2px; }
-  .agent-chip .cam-btn { background: #334155; border: none; border-radius: 4px; padding: 3px 8px; color: #94a3b8; font-size: 10px; cursor: pointer; margin-top: 4px; }
-  .agent-chip .cam-btn:hover { background: #475569; color: #e2e8f0; }
-  .agent-chip .cam-wrap { position: relative; width: 100%; margin-top: 6px; display: none; }
-  .agent-chip .cam-wrap.visible { display: block; }
-  .agent-chip .camera-preview { width: 100%; height: 150px; object-fit: cover; border-radius: 6px; background: #0f172a; display: block; }
-  .agent-chip .cam-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 150px; pointer-events: none; border-radius: 6px; }
+  /* Center: Map placeholder */
+  .map-panel { background: #1e293b; border: 1px solid #334155; border-radius: 8px; flex: 1; min-height: 200px; display: flex; align-items: center; justify-content: center; color: #334155; font-size: 13px; }
 
-  /* Input */
-  .input-row { display: flex; gap: 8px; }
-  .input-row input { flex: 1; background: #0f172a; border: 1px solid #334155; border-radius: 8px; padding: 12px 16px; color: #e2e8f0; font-size: 15px; outline: none; }
+  /* Center: Planner reasoning */
+  .planner-panel { background: #1e293b; border: 1px solid #334155; border-radius: 8px; max-height: 250px; overflow: hidden; }
+  .planner-panel .pp-header { padding: 8px 12px; font-size: 12px; font-weight: 600; color: #a78bfa; cursor: pointer; display: flex; align-items: center; gap: 6px; }
+  .planner-panel .pp-header:hover { background: #334155; }
+  .planner-panel .pp-body { max-height: 200px; overflow-y: auto; }
+  .planner-step { padding: 5px 12px; font-size: 11px; line-height: 1.4; border-top: 1px solid #0f172a; font-family: monospace; }
+  .planner-step.think { color: #a78bfa; background: #1e1338; }
+  .planner-step.tool { color: #38bdf8; }
+  .planner-step.result { color: #22c55e; }
+  .planner-step.info { color: #94a3b8; }
+
+  /* Center: Input */
+  .input-panel { background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 10px; }
+  .input-row { display: flex; gap: 6px; }
+  .input-row input { flex: 1; background: #0f172a; border: 1px solid #334155; border-radius: 6px; padding: 10px 14px; color: #e2e8f0; font-size: 14px; outline: none; }
   .input-row input:focus { border-color: #38bdf8; }
   .input-row input::placeholder { color: #475569; }
-  .btn { border: none; border-radius: 8px; padding: 10px 18px; font-size: 13px; font-weight: 600; cursor: pointer; transition: all 0.15s; }
+  .btn { border: none; border-radius: 6px; padding: 8px 16px; font-size: 12px; font-weight: 600; cursor: pointer; }
   .btn:disabled { opacity: 0.4; cursor: not-allowed; }
   .btn-send { background: #2563eb; color: white; }
   .btn-send:hover:not(:disabled) { background: #1d4ed8; }
+  .btn-cancel { background: #ef4444; color: white; margin-left: 6px; }
+  .btn-cancel:hover { background: #dc2626; }
 
-  /* Two-column layout for commands */
-  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-  @media (max-width: 900px) { .two-col { grid-template-columns: 1fr; } }
+  /* Quick commands */
+  .quick-cmds { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 8px; }
+  .qcmd { background: #0f172a; border: 1px solid #1e293b; border-radius: 6px; padding: 5px 10px; color: #94a3b8; cursor: pointer; font-size: 11px; }
+  .qcmd:hover { border-color: #38bdf8; color: #e2e8f0; }
 
-  /* Mode labels */
-  .mode-label { font-size: 10px; padding: 2px 8px; border-radius: 4px; font-weight: 600; letter-spacing: 0.5px; margin-left: 8px; }
-  .mode-exec { background: #1e3a5f; color: #38bdf8; }
-  .mode-agent { background: #3b1764; color: #c084fc; }
-
-  /* Command grid */
-  .cmd-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 6px; }
-  .cmd-btn { background: #0f172a; border: 1px solid #1e293b; border-radius: 8px; padding: 10px 8px; color: #cbd5e1; cursor: pointer; text-align: center; font-size: 12px; transition: all 0.15s; display: flex; flex-direction: column; align-items: center; gap: 4px; }
-  .cmd-btn:hover { border-color: #38bdf8; background: #1e3a5f; color: white; }
-  .cmd-btn.agent-cmd:hover { border-color: #a855f7; background: #2e1065; }
-  .cmd-btn .icon { font-size: 18px; }
-  .cmd-btn .label { font-size: 11px; }
-
-  /* Face management row */
-  .face-row { display: flex; gap: 6px; flex-wrap: wrap; }
-  .face-btn { background: #0f172a; border: 1px solid #1e293b; border-radius: 6px; padding: 8px 14px; color: #cbd5e1; cursor: pointer; font-size: 12px; transition: all 0.15s; }
-  .face-btn:hover { border-color: #38bdf8; color: white; }
-
-  /* Result */
-  .result-panel { min-height: 200px; }
-  .result-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
-  .result-header h3 { font-size: 14px; color: #38bdf8; }
-  .badge { font-size: 11px; padding: 3px 10px; border-radius: 20px; font-weight: 500; }
+  /* Center: Results */
+  .result-panel { background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 10px; max-height: 250px; overflow-y: auto; }
+  .result-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+  .result-header h3 { font-size: 12px; color: #38bdf8; }
+  .badge { font-size: 10px; padding: 2px 8px; border-radius: 20px; font-weight: 500; }
   .badge.completed { background: #166534; color: #86efac; }
   .badge.partial { background: #854d0e; color: #fde68a; }
   .badge.failed { background: #991b1b; color: #fca5a5; }
-  .badge.searching { background: #1e3a5f; color: #38bdf8; animation: pulse 2s infinite; }
+  .badge.running { background: #1e3a5f; color: #38bdf8; animation: pulse 2s infinite; }
+  .badge.cancelled { background: #78350f; color: #fde68a; }
   @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+  .result-agent { background: #0f172a; border-radius: 6px; padding: 8px; margin-bottom: 6px; font-size: 11px; }
+  .result-agent .agent-name { font-weight: 500; color: #38bdf8; margin-bottom: 3px; }
+  .result-agent .agent-response { color: #94a3b8; white-space: pre-wrap; line-height: 1.4; }
+  .result-summary { border-top: 1px solid #334155; padding-top: 8px; margin-top: 8px; font-size: 11px; color: #cbd5e1; white-space: pre-wrap; line-height: 1.5; }
+  .error-msg { color: #fca5a5; font-size: 11px; padding: 8px; background: #450a0a; border-radius: 6px; }
+  .placeholder { color: #334155; text-align: center; padding: 20px; font-size: 12px; }
 
-  .result-agent { background: #0f172a; border-radius: 8px; padding: 12px; margin-bottom: 8px; }
-  .result-agent .agent-name { font-weight: 500; color: #38bdf8; margin-bottom: 4px; font-size: 13px; }
-  .result-agent .agent-response { font-size: 12px; color: #94a3b8; white-space: pre-wrap; line-height: 1.5; }
-
-  .result-summary { border-top: 1px solid #334155; padding-top: 12px; margin-top: 12px; }
-  .result-summary h4 { font-size: 12px; color: #64748b; margin-bottom: 6px; }
-  .result-summary p { font-size: 12px; line-height: 1.6; color: #cbd5e1; white-space: pre-wrap; }
-
-  /* Reasoning panel */
-  .reasoning-panel { border: 1px solid #334155; border-radius: 8px; margin-bottom: 12px; overflow: hidden; }
-  .reasoning-toggle { background: #1e293b; padding: 10px 14px; cursor: pointer; display: flex; align-items: center; gap: 8px; font-size: 12px; color: #94a3b8; border: none; width: 100%; text-align: left; }
-  .reasoning-toggle:hover { background: #334155; }
-  .reasoning-toggle .arrow { transition: transform 0.2s; }
-  .reasoning-toggle.open .arrow { transform: rotate(90deg); }
-  .reasoning-steps { display: none; padding: 0; max-height: 400px; overflow-y: auto; }
-  .reasoning-steps.open { display: block; }
-  .reasoning-step { padding: 8px 14px; font-size: 11px; line-height: 1.5; border-bottom: 1px solid #1e293b; font-family: monospace; }
-  .reasoning-step.think { color: #a78bfa; background: #1e1338; }
-  .reasoning-step.tool { color: #38bdf8; background: #0f172a; }
-  .reasoning-step.result { color: #22c55e; background: #0f172a; }
-  .reasoning-step.info { color: #94a3b8; background: #0f172a; }
-
-  .placeholder { color: #334155; text-align: center; padding: 40px 20px; font-size: 13px; }
-
-  .detection-list { margin-top: 8px; }
-  .detection-item { display: flex; gap: 6px; align-items: center; padding: 3px 8px; background: #1e293b; border-radius: 4px; margin-bottom: 3px; font-size: 11px; }
-  .detection-item .det-label { color: #38bdf8; font-weight: 500; }
-  .detection-item .det-conf { color: #22c55e; }
-  .detection-item .det-pos { color: #94a3b8; }
-
-  .loading { display: flex; align-items: center; gap: 8px; color: #64748b; font-size: 13px; padding: 30px 0; justify-content: center; }
-  .spinner { width: 16px; height: 16px; border: 2px solid #334155; border-top-color: #38bdf8; border-radius: 50%; animation: spin 0.8s linear infinite; }
+  .spinner { width: 14px; height: 14px; border: 2px solid #334155; border-top-color: #38bdf8; border-radius: 50%; animation: spin 0.8s linear infinite; display: inline-block; }
   @keyframes spin { to { transform: rotate(360deg); } }
-  .error-msg { color: #fca5a5; font-size: 12px; padding: 10px; background: #450a0a; border-radius: 6px; }
-
-  /* Mission status bar */
-  .mission-bar { background: #1e1338; border: 1px solid #6d28d9; border-radius: 8px; padding: 10px 16px; display: none; align-items: center; gap: 12px; font-size: 12px; }
-  .mission-bar.active { display: flex; }
-  .mission-bar .mission-info { flex: 1; color: #c084fc; }
-  .mission-bar .mission-stats { color: #94a3b8; }
-  .mission-bar .cancel-btn { background: #dc2626; border: none; border-radius: 4px; padding: 4px 12px; color: white; font-size: 11px; cursor: pointer; }
-  .mission-bar .cancel-btn:hover { background: #b91c1c; }
 </style>
 </head>
 <body>
+<div id="app">
 
-<div class="header">
-  <h1>PiCrawler Central</h1>
-  <div class="status" id="svcStatus"><span class="dot online"></span> Connected</div>
-</div>
-
-<div class="main">
-  <!-- Agents -->
-  <div class="agents-bar" id="agentsBar"></div>
-
-  <!-- Mission status bar (shown when agent mode mission is active) -->
-  <div class="mission-bar" id="missionBar">
-    <div class="spinner"></div>
-    <div class="mission-info" id="missionInfo">Mission active</div>
-    <div class="mission-stats" id="missionStats"></div>
-    <button class="cancel-btn" onclick="cancelMission()">Cancel</button>
-  </div>
-
-  <!-- Input -->
-  <div class="panel">
-    <div class="input-row">
-      <input type="text" id="promptInput" placeholder="Type a command... (e.g. 'stand up', 'all robots detect person, if found wave', 'patrol and report')" />
-      <button class="btn btn-send" id="sendBtn" onclick="sendTask()">Send</button>
+  <!-- Header -->
+  <div class="header">
+    <h1>Multi-Spider Command Center</h1>
+    <div class="status">
+      <span :class="['dot', agents.length > 0 ? 'online' : 'offline']"></span>
+      {{ onlineCount }}/{{ agents.length }} online
     </div>
   </div>
 
-  <!-- Quick Commands -->
-  <div class="panel">
-    <div class="panel-title">Quick Commands</div>
-    <div class="cmd-grid" id="cmdGrid"></div>
-  </div>
+  <!-- Three-column layout -->
+  <div class="layout">
 
-  <!-- Result -->
-  <div class="panel result-panel">
-    <div class="panel-title">Result</div>
-    <div id="resultArea">
-      <div class="placeholder">Send a command to see results here</div>
+    <!-- LEFT: Video Streams -->
+    <div class="col col-left">
+      <div class="panel-title">Video Streams</div>
+      <div v-for="a in agents" :key="'v-'+a.id" class="video-card">
+        <div class="video-header">
+          <span :class="['dot', a.status === 'online' ? 'online' : 'offline']"></span>
+          <span class="name">{{ a.id.replace('crawler-alpha-patrol-','') }}</span>
+          <span class="zone" v-if="a.zone">Zone {{ a.zone }}</span>
+        </div>
+        <div class="video-frame">
+          <img v-if="a.status === 'online'" :src="'/api/stream/' + a.id" />
+          <canvas :id="'canvas-'+a.id"></canvas>
+          <div v-if="a.status !== 'online'" class="no-feed">Offline</div>
+        </div>
+      </div>
+      <div v-if="agents.length === 0" class="placeholder">No robots discovered</div>
     </div>
+
+    <!-- CENTER: Map + Planner + Input + Results -->
+    <div class="col col-center">
+
+      <!-- Bird's Eye Map -->
+      <div class="map-panel">
+        Bird's Eye Map (Coming Soon)
+      </div>
+
+      <!-- Planner Reasoning -->
+      <div class="planner-panel" v-if="reasoning.length > 0 || taskRunning">
+        <div class="pp-header" @click="plannerOpen = !plannerOpen">
+          <span style="font-size:10px">{{ plannerOpen ? '&#9660;' : '&#9654;' }}</span>
+          Planner Reasoning ({{ reasoning.length }} steps{{ taskRunning ? ' — live' : '' }})
+          <span v-if="taskRunning" class="spinner" style="margin-left:auto"></span>
+        </div>
+        <div class="pp-body" v-show="plannerOpen" ref="plannerBody">
+          <div v-for="(step, i) in reasoning" :key="i" :class="['planner-step', stepClass(step)]">
+            <span style="color:#475569;margin-right:6px">{{ i+1 }}.</span>{{ step }}
+          </div>
+        </div>
+      </div>
+
+      <!-- Input -->
+      <div class="input-panel">
+        <div class="input-row">
+          <input v-model="prompt" @keyup.enter="sendTask" placeholder="Type a command..." :disabled="taskRunning" />
+          <button class="btn btn-send" @click="sendTask" :disabled="taskRunning || !prompt.trim()">
+            {{ taskRunning ? '...' : 'Send' }}
+          </button>
+          <button v-if="taskRunning && currentTaskId" class="btn btn-cancel" @click="cancelTask">Cancel</button>
+        </div>
+        <div class="quick-cmds">
+          <span v-for="cmd in quickCmds" :key="cmd.label" class="qcmd" @click="prompt = cmd.prompt">
+            {{ cmd.icon }} {{ cmd.label }}
+          </span>
+        </div>
+      </div>
+
+      <!-- Results -->
+      <div class="result-panel" v-if="result">
+        <div class="result-header">
+          <h3>Result</h3>
+          <span :class="['badge', result.status]">{{ result.status }}</span>
+        </div>
+        <div v-if="result.results && result.results.length > 0">
+          <div v-for="r in result.results" :key="r.agent_id" class="result-agent">
+            <div class="agent-name">
+              {{ r.agent_id }}
+              <span :style="{color: r.status === 'success' ? '#22c55e' : '#ef4444'}">[{{ r.status }}]</span>
+            </div>
+            <div class="agent-response">{{ r.response || r.error || 'No response' }}</div>
+          </div>
+        </div>
+        <div v-else-if="result.error" class="error-msg">{{ result.error }}</div>
+        <div v-if="result.summary" class="result-summary">{{ result.summary }}</div>
+      </div>
+      <div v-else class="result-panel">
+        <div class="placeholder">Send a command to see results here</div>
+      </div>
+    </div>
+
+    <!-- RIGHT: Robot Agent Reasoning -->
+    <div class="col col-right">
+      <div class="panel-title">Robot Agent Reasoning</div>
+      <div v-for="a in agents" :key="'r-'+a.id" class="robot-reasoning">
+        <div class="rr-header">
+          <span :class="['dot', a.status === 'online' ? 'online' : 'offline']"></span>
+          {{ a.id.replace('crawler-alpha-patrol-','') }}
+          <span v-if="a.zone" style="color:#64748b;font-size:10px">Zone {{ a.zone }}</span>
+        </div>
+        <div class="rr-body" v-if="robotReasoning[a.id] && robotReasoning[a.id].length > 0">
+          <div v-for="(step, i) in robotReasoning[a.id]" :key="i" :class="['rr-step', stepClass(step)]">
+            {{ step }}
+          </div>
+        </div>
+        <div v-else class="rr-idle">Idle</div>
+      </div>
+      <div v-if="agents.length === 0" class="placeholder">No robots</div>
+    </div>
+
   </div>
 </div>
 
 <script>
-const API = '';
+const { createApp, ref, reactive, computed, onMounted, onUnmounted, nextTick, watch } = Vue;
 
-// ============================================
-// Quick Commands — split by mode
-// ============================================
-const QUICK_CMDS = [
-  // Control
-  { icon: '\u{1F9CD}', label: 'Stand Up', prompt: 'Stand up' },
-  { icon: '\u{1F9CE}', label: 'Sit Down', prompt: 'Sit down' },
-  { icon: '\u2B06', label: 'Forward', prompt: 'Move forward' },
-  { icon: '\u2B07', label: 'Backward', prompt: 'Go back' },
-  { icon: '\u2B05', label: 'Turn Left', prompt: 'Turn left' },
-  { icon: '\u27A1', label: 'Turn Right', prompt: 'Turn right' },
-  { icon: '\u{1F44B}', label: 'Wave', prompt: 'Wave' },
-  { icon: '\u{1F4AA}', label: 'Push Up', prompt: 'Do push ups' },
-  // Detect & Report
-  { icon: '\u{1F50D}', label: 'Detect', prompt: 'All robots patrol and detect person, if found wave' },
-  { icon: '\u{1F4CB}', label: 'Report', prompt: 'All robots patrol and report what you see' },
-];
+createApp({
+  setup() {
+    const API = '';
+    const agents = ref([]);
+    const prompt = ref('');
+    const taskRunning = ref(false);
+    const currentTaskId = ref(null);
+    const reasoning = ref([]);
+    const result = ref(null);
+    const plannerOpen = ref(true);
+    const plannerBody = ref(null);
+    const robotReasoning = reactive({});
+    const _detectionSSEs = {};
 
-function renderCommands() {
-  const grid = document.getElementById('cmdGrid');
-  grid.innerHTML = '';
-  for (const cmd of QUICK_CMDS) {
-    const btn = document.createElement('button');
-    btn.className = 'cmd-btn';
-    btn.innerHTML = `<span class="icon">${cmd.icon}</span><span class="label">${cmd.label}</span>`;
-    btn.onclick = () => quickSend(cmd.prompt);
-    grid.appendChild(btn);
-  }
-}
+    const quickCmds = [
+      { icon: '\u{1F9CD}', label: 'Stand Up', prompt: 'Stand up' },
+      { icon: '\u{1F9CE}', label: 'Sit Down', prompt: 'Sit down' },
+      { icon: '\u{1F44B}', label: 'Wave', prompt: 'Wave' },
+      { icon: '\u{1F4AA}', label: 'Push Up', prompt: 'Do push ups' },
+      { icon: '\u{1F50D}', label: 'Detect', prompt: 'All robots detect person, if found wave' },
+      { icon: '\u{1F4CB}', label: 'Report', prompt: 'All robots report what you see' },
+      { icon: '\u{1F504}', label: 'Look Around', prompt: 'All robots look around and report' },
+    ];
 
-function quickSend(prompt) {
-  document.getElementById('promptInput').value = prompt;
-  document.getElementById('promptInput').focus();
-}
+    const onlineCount = computed(() => agents.value.filter(a => a.status === 'online').length);
 
-renderCommands();
+    function stepClass(step) {
+      if (step.startsWith('Tool:')) return 'tool';
+      if (step.startsWith('Coordinator:') || step.startsWith('Coordination:') || step.startsWith('Parse') || step.startsWith('Intent:')) return 'think';
+      if (step.startsWith('Execute:') || step.startsWith('Done:') || step.startsWith('Result:') || step.startsWith('Agent result:') || step.startsWith('Agent:')) return 'result';
+      return 'info';
+    }
 
-// ============================================
-// Agents
-// ============================================
-const agentHosts = {};
-let taskRunning = false;
-
-async function loadAgents() {
-  try {
-    const resp = await fetch(`${API}/api/agents`);
-    const data = await resp.json();
-    const bar = document.getElementById('agentsBar');
-
-    for (const a of data.agents) {
-      agentHosts[a.id] = a.host;
-      const isOnline = a.status === 'online';
-      const mode = isOnline ? (a.mock_mode ? 'mock' : 'live') : '';
-      let existing = document.getElementById(`card-${a.id}`);
-
-      if (!existing) {
-        existing = document.createElement('div');
-        existing.className = 'agent-chip';
-        existing.id = `card-${a.id}`;
-        existing.innerHTML = `
-          <div class="chip-top">
-            <span class="dot" id="dot-${a.id}"></span>
-            <span class="name">${a.id}</span>
-            <span class="info" id="info-${a.id}"></span>
-          </div>
-          <div id="status-${a.id}"></div>
-          <div id="cam-area-${a.id}"></div>
-        `;
-        bar.appendChild(existing);
-      }
-
-      const isBusy = isOnline && a.busy;
-      const dotClass = isBusy ? 'busy' : (isOnline ? 'online' : 'offline');
-      document.getElementById(`dot-${a.id}`).className = `dot ${dotClass}`;
-      const zoneLabel = a.zone ? ` [Zone ${a.zone}]` : '';
-      const busyLabel = isBusy ? ` [${a.current_task || 'busy'}]` : '';
-      document.getElementById(`info-${a.id}`).textContent = `${a.host}${zoneLabel} ${mode ? '(' + mode + ')' : ''}${busyLabel}`;
-
-      const statusDiv = document.getElementById(`status-${a.id}`);
-      if (isOnline) {
-        try {
-          const sResp = await fetch(`${API}/api/agents/${a.id}/status`);
-          const s = await sResp.json();
-          if (!s.error) {
-            const uptime = s.uptime_s != null ? `${Math.floor(s.uptime_s / 60)}m ${Math.floor(s.uptime_s % 60)}s` : '?';
-            statusDiv.innerHTML = `
-              <div class="status-row"><span>Posture:</span><span>${s.standing ? 'Standing' : 'Sitting'}</span></div>
-              <div class="status-row"><span>Uptime:</span><span>${uptime}</span></div>
-              <div class="status-row"><span>Mission:</span><span>${s.mission_active ? 'Active' : 'Idle'}</span></div>
-            `;
+    // Load agents
+    async function loadAgents() {
+      try {
+        const resp = await fetch(`${API}/api/agents`);
+        const data = await resp.json();
+        agents.value = data.agents || [];
+        // Start detection overlays for online agents
+        for (const a of agents.value) {
+          if (a.status === 'online' && !_detectionSSEs[a.id]) {
+            startDetectionOverlay(a.id);
           }
-        } catch (e) { statusDiv.innerHTML = ''; }
-      } else {
-        statusDiv.innerHTML = '';
-      }
-
-      const camArea = document.getElementById(`cam-area-${a.id}`);
-      if (!document.getElementById(`cam-btn-${a.id}`)) {
-        camArea.innerHTML = `
-          <button class="cam-btn" id="cam-btn-${a.id}" onclick="toggleCamera('${a.id}')">Camera</button>
-          <div class="cam-wrap" id="cam-wrap-${a.id}">
-            <img class="camera-preview" id="cam-${a.id}" />
-            <canvas class="cam-overlay" id="cam-canvas-${a.id}"></canvas>
-          </div>
-        `;
-      }
-    }
-
-    document.getElementById('svcStatus').innerHTML = `<span class="dot online"></span> ${data.online_count}/${data.total_count} online`;
-  } catch (e) {
-    document.getElementById('svcStatus').innerHTML = '<span class="dot offline"></span> Disconnected';
-  }
-}
-
-const _detectionSSEs = {};
-
-function toggleCamera(agentId) {
-  const wrap = document.getElementById(`cam-wrap-${agentId}`);
-  const img = document.getElementById(`cam-${agentId}`);
-  const btn = document.getElementById(`cam-btn-${agentId}`);
-  const host = agentHosts[agentId];
-  if (!wrap || !img || !btn || !host) return;
-
-  if (wrap.classList.contains('visible')) {
-    img.src = '';
-    wrap.classList.remove('visible');
-    btn.textContent = 'Camera';
-    // Stop detection overlay SSE
-    if (_detectionSSEs[agentId]) {
-      _detectionSSEs[agentId].close();
-      delete _detectionSSEs[agentId];
-    }
-  } else {
-    img.src = `${API}/api/stream/${agentId}`;
-    wrap.classList.add('visible');
-    btn.textContent = 'Hide';
-    // Start detection overlay SSE
-    startDetectionOverlay(agentId);
-  }
-}
-
-function startDetectionOverlay(agentId) {
-  if (_detectionSSEs[agentId]) _detectionSSEs[agentId].close();
-
-  const canvas = document.getElementById(`cam-canvas-${agentId}`);
-  if (!canvas) return;
-  const ctx = canvas.getContext('2d');
-
-  const sse = new EventSource(`${API}/api/detections/stream/${agentId}`);
-  _detectionSSEs[agentId] = sse;
-
-  sse.onmessage = (e) => {
-    try {
-      const data = JSON.parse(e.data);
-      const dets = data.detections || [];
-      const srcW = data.image_width || 640;
-      const srcH = data.image_height || 480;
-
-      // Match canvas size to displayed element
-      const rect = canvas.getBoundingClientRect();
-      canvas.width = rect.width;
-      canvas.height = rect.height;
-
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-      const scaleX = canvas.width / srcW;
-      const scaleY = canvas.height / srcH;
-
-      for (const det of dets) {
-        if (!det.bbox) continue;
-        const { x1, y1, x2, y2 } = det.bbox;
-        const dx = x1 * scaleX;
-        const dy = y1 * scaleY;
-        const dw = (x2 - x1) * scaleX;
-        const dh = (y2 - y1) * scaleY;
-
-        // Draw box
-        ctx.strokeStyle = '#00ff00';
-        ctx.lineWidth = 2;
-        ctx.strokeRect(dx, dy, dw, dh);
-
-        // Draw label
-        const label = `${det.label} ${(det.confidence * 100).toFixed(0)}%`;
-        ctx.font = `${Math.max(10, canvas.height / 15)}px monospace`;
-        const textW = ctx.measureText(label).width;
-        ctx.fillStyle = 'rgba(0,0,0,0.6)';
-        ctx.fillRect(dx, dy - parseInt(ctx.font) - 2, textW + 4, parseInt(ctx.font) + 4);
-        ctx.fillStyle = '#00ff00';
-        ctx.fillText(label, dx + 2, dy - 4);
-      }
-    } catch (err) {}
-  };
-
-  sse.onerror = () => {
-    // Auto-reconnect is built into EventSource
-  };
-}
-
-// ============================================
-// Send Task
-// ============================================
-let _currentTaskId = null;
-
-async function sendTask() {
-  const prompt = document.getElementById('promptInput').value.trim();
-  if (!prompt) return;
-
-  const btn = document.getElementById('sendBtn');
-  const area = document.getElementById('resultArea');
-  btn.disabled = true;
-  btn.textContent = '...';
-  taskRunning = true;
-
-  try {
-    const resp = await fetch(`${API}/api/search`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt }),
-    });
-    const data = await resp.json();
-    _currentTaskId = data.task_id;
-
-    if (data.status === 'running') {
-      // Task is running in background — show cancel button + poll
-      area.innerHTML = `<div class="loading">
-        <div class="spinner"></div>Executing: ${prompt}
-        <button class="btn" style="background:#ef4444;color:white;margin-left:12px;padding:6px 14px"
-                onclick="cancelTask('${data.task_id}')">Cancel</button>
-      </div>`;
-      pollTaskResult(data.task_id);
-    } else {
-      // Immediate result (cached etc)
-      renderResult(data);
-      btn.disabled = false;
-      btn.textContent = 'Send';
-      taskRunning = false;
-    }
-  } catch (e) {
-    area.innerHTML = `<div class="error-msg">Request failed: ${e.message}</div>`;
-    btn.disabled = false;
-    btn.textContent = 'Send';
-    taskRunning = false;
-  }
-}
-
-async function pollTaskResult(taskId) {
-  const area = document.getElementById('resultArea');
-  const btn = document.getElementById('sendBtn');
-
-  while (true) {
-    await new Promise(r => setTimeout(r, 1000));
-    try {
-      const resp = await fetch(`${API}/api/task/${taskId}`);
-      const data = await resp.json();
-      if (data.status !== 'running') {
-        renderResult(data);
-        btn.disabled = false;
-        btn.textContent = 'Send';
-        taskRunning = false;
-        _currentTaskId = null;
-        loadAgents();
-        return;
-      }
-      // Show live reasoning while running
-      if (data.reasoning && data.reasoning.length > 0) {
-        let html = `<div class="loading"><div class="spinner"></div>Executing...
-          <button class="btn" style="background:#ef4444;color:white;margin-left:12px;padding:6px 14px"
-                  onclick="cancelTask('${taskId}')">Cancel</button>
-        </div>`;
-        html += `<div class="reasoning-panel">
-          <div class="reasoning-toggle open"><span class="arrow" style="transform:rotate(90deg)">&#9654;</span> LLM Reasoning (${data.reasoning.length} steps — live)</div>
-          <div class="reasoning-steps open">`;
-        data.reasoning.forEach((step, i) => {
-          let cls = 'info';
-          if (step.startsWith('Tool:')) cls = 'tool';
-          else if (step.startsWith('Coordinator:') || step.startsWith('Coordination:')) cls = 'think';
-          else if (step.startsWith('Parse') || step.startsWith('Intent:')) cls = 'think';
-          else if (step.startsWith('Execute:') || step.startsWith('Done:') || step.startsWith('Result:') || step.startsWith('Agent result:')) cls = 'result';
-          else if (step.startsWith('Agent:') || step.startsWith('Detection')) cls = 'result';
-          html += `<div class="reasoning-step ${cls}"><span style="color:#475569;margin-right:8px">${i+1}.</span>${step}</div>`;
-        });
-        html += `</div></div>`;
-        area.innerHTML = html;
-      }
-    } catch (e) {
-      // Keep polling
-    }
-  }
-}
-
-async function cancelTask(taskId) {
-  try {
-    await fetch(`${API}/api/task/${taskId}/cancel`, { method: 'POST' });
-    document.getElementById('resultArea').innerHTML =
-      '<div class="loading"><div class="spinner"></div>Cancelling...</div>';
-  } catch (e) {
-    console.error('Cancel failed:', e);
-  }
-}
-
-function renderResult(data) {
-  const area = document.getElementById('resultArea');
-  let html = `<div class="result-header"><h3>Result</h3><span class="badge ${data.status}">${data.status}</span></div>`;
-
-  // Reasoning panel (collapsible)
-  if (data.reasoning && data.reasoning.length > 0) {
-    const rid = 'reasoning-' + Date.now();
-    html += `<div class="reasoning-panel">
-      <button class="reasoning-toggle" onclick="this.classList.toggle('open'); document.getElementById('${rid}').classList.toggle('open')">
-        <span class="arrow">&#9654;</span> LLM Reasoning (${data.reasoning.length} steps)
-      </button>
-      <div class="reasoning-steps" id="${rid}">`;
-    data.reasoning.forEach((step, i) => {
-      let cls = 'info';
-      if (step.startsWith('Tool:')) cls = 'tool';
-      else if (step.startsWith('Coordinator:') || step.startsWith('Coordination:')) cls = 'think';
-      else if (step.startsWith('Parse') || step.startsWith('Parsed')) cls = 'think';
-      else if (step.startsWith('Execute:') || step.startsWith('Done:')) cls = 'result';
-      else if (step.startsWith('Agent:') || step.startsWith('Detection')) cls = 'result';
-      html += `<div class="reasoning-step ${cls}"><span style="color:#475569;margin-right:8px">${i+1}.</span>${step}</div>`;
-    });
-    html += `</div></div>`;
-  }
-
-  if (data.results && data.results.length > 0) {
-    data.results.forEach(r => {
-      html += `<div class="result-agent">
-        <div class="agent-name">${r.agent_id || '?'} <span style="color:${r.status === 'success' ? '#22c55e' : '#ef4444'}">[${r.status}]</span></div>
-        <div class="agent-response">${r.response || r.error || 'No response'}</div>
-        ${renderStructured(r.structured)}
-      </div>`;
-    });
-  } else if (data.error) {
-    html += `<div class="error-msg">${data.error}</div>`;
-  }
-
-  if (data.summary) {
-    html += `<div class="result-summary"><h4>Summary</h4><p>${data.summary}</p></div>`;
-  }
-
-  area.innerHTML = html;
-}
-
-function renderStructured(structured) {
-  if (!structured) return '';
-  let html = '';
-
-  // Zone report from coordinated patrol
-  if (structured.zone_report) {
-    html += `<div style="margin-top:6px;padding:8px 12px;background:#1e3a5f;border-radius:6px;font-size:12px;color:#38bdf8;font-weight:500">
-      ${structured.zone_report}
-    </div>`;
-  }
-
-  if (structured.detections && structured.detections.length > 0) {
-    html += '<div class="detection-list">';
-    structured.detections.slice(0, 10).forEach((d, i) => {
-      html += `<div class="detection-item">
-        <span class="det-label">#${i+1} ${d.label || '?'}</span>
-        <span class="det-conf">${(d.confidence * 100).toFixed(0)}%</span>
-      </div>`;
-    });
-    if (structured.detections.length > 10) {
-      html += `<div style="font-size:11px;color:#475569;padding:4px 8px">+${structured.detections.length - 10} more</div>`;
-    }
-    html += '</div>';
-  }
-
-  const mission = structured.mission;
-  if (mission) {
-    html += `<div style="margin-top:8px;font-size:11px;color:#475569">
-      Frames: ${mission.frames_analyzed} | Time: ${mission.elapsed_s}s | Pushes: ${mission.observations_pushed}
-    </div>`;
-  }
-
-  return html;
-}
-
-// ============================================
-// Mission status polling
-// ============================================
-let activePoll = null;
-
-async function pollMissionStatus(missionId) {
-  if (activePoll) clearInterval(activePoll);
-
-  const bar = document.getElementById('missionBar');
-  bar.classList.add('active');
-
-  activePoll = setInterval(async () => {
-    try {
-      const resp = await fetch(`${API}/api/mission/active`);
-      const data = await resp.json();
-      const mission = (data.missions || []).find(m => m.mission_id === missionId);
-
-      if (!mission) {
-        clearInterval(activePoll);
-        activePoll = null;
-        bar.classList.remove('active');
-        loadAgents();
-        return;
-      }
-
-      document.getElementById('missionInfo').textContent =
-        `Mission ${missionId.slice(0,8)} | ${mission.target_type}${mission.target_name ? ':' + mission.target_name : ''}`;
-      document.getElementById('missionStats').textContent =
-        `${mission.frames_analyzed} frames | ${mission.elapsed_s}s | ${mission.observations_pushed} pushes`;
-
-      if (mission.status === 'completed' || mission.status === 'failed' || mission.status === 'cancelled') {
-        clearInterval(activePoll);
-        activePoll = null;
-        bar.classList.remove('active');
-
-        let msg = `Mission ${mission.status}!\nFrames: ${mission.frames_analyzed} | Time: ${mission.elapsed_s}s | Pushes: ${mission.observations_pushed}`;
-        if (mission.match_result) {
-          msg += `\nFirst match: ${mission.match_result.label} (${(mission.match_result.confidence*100).toFixed(1)}%)`;
         }
-        if (mission.error) msg += `\nError: ${mission.error}`;
-        showResult({ summary: msg });
-        loadAgents();
+      } catch (e) {}
+    }
+
+    function startDetectionOverlay(agentId) {
+      if (_detectionSSEs[agentId]) _detectionSSEs[agentId].close();
+      const sse = new EventSource(`${API}/api/detections/stream/${agentId}`);
+      _detectionSSEs[agentId] = sse;
+      sse.onmessage = (e) => {
+        try {
+          const data = JSON.parse(e.data);
+          const canvas = document.getElementById(`canvas-${agentId}`);
+          if (!canvas) return;
+          const ctx = canvas.getContext('2d');
+          const dets = data.detections || [];
+          const srcW = data.image_width || 640;
+          const srcH = data.image_height || 480;
+          const rect = canvas.getBoundingClientRect();
+          canvas.width = rect.width;
+          canvas.height = rect.height;
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+          const scaleX = canvas.width / srcW;
+          const scaleY = canvas.height / srcH;
+          for (const det of dets) {
+            if (!det.bbox) continue;
+            const { x1, y1, x2, y2 } = det.bbox;
+            ctx.strokeStyle = '#00ff00';
+            ctx.lineWidth = 2;
+            ctx.strokeRect(x1*scaleX, y1*scaleY, (x2-x1)*scaleX, (y2-y1)*scaleY);
+            const label = `${det.label} ${(det.confidence*100).toFixed(0)}%`;
+            ctx.font = `${Math.max(9, canvas.height/18)}px monospace`;
+            ctx.fillStyle = 'rgba(0,0,0,0.6)';
+            ctx.fillRect(x1*scaleX, y1*scaleY-parseInt(ctx.font)-2, ctx.measureText(label).width+4, parseInt(ctx.font)+4);
+            ctx.fillStyle = '#00ff00';
+            ctx.fillText(label, x1*scaleX+2, y1*scaleY-4);
+          }
+        } catch (err) {}
+      };
+    }
+
+    // Send task
+    async function sendTask() {
+      if (!prompt.value.trim() || taskRunning.value) return;
+      taskRunning.value = true;
+      result.value = null;
+      reasoning.value = [];
+      // Clear robot reasoning
+      for (const key in robotReasoning) robotReasoning[key] = [];
+
+      try {
+        const resp = await fetch(`${API}/api/search`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt: prompt.value }),
+        });
+        const data = await resp.json();
+        currentTaskId.value = data.task_id;
+
+        if (data.status === 'running') {
+          pollTaskResult(data.task_id);
+        } else {
+          result.value = data;
+          reasoning.value = data.reasoning || [];
+          taskRunning.value = false;
+          currentTaskId.value = null;
+        }
+      } catch (e) {
+        result.value = { status: 'failed', error: e.message };
+        taskRunning.value = false;
       }
-    } catch (e) {
-      clearInterval(activePoll);
-      activePoll = null;
-      bar.classList.remove('active');
     }
-  }, 2000);
-}
 
-// ============================================
-// Face Registry & Mission
-// ============================================
-function showResult(data) {
-  const area = document.getElementById('resultArea');
-  const summary = (data.summary || '').replace(/\n/g, '<br>');
-  let html = `<div style="padding:10px;font-size:13px;line-height:1.6;color:#e2e8f0">${summary}</div>`;
-  if (data.error) html += `<div class="error-msg">${data.error}</div>`;
-  area.innerHTML = html;
-}
+    async function pollTaskResult(taskId) {
+      while (true) {
+        await new Promise(r => setTimeout(r, 1000));
+        try {
+          const resp = await fetch(`${API}/api/task/${taskId}`);
+          const data = await resp.json();
 
-async function registerFace() {
-  const name = prompt('Enter person name to register:');
-  if (!name) return;
+          if (data.reasoning) {
+            reasoning.value = data.reasoning;
+            await nextTick();
+            if (plannerBody.value) plannerBody.value.scrollTop = plannerBody.value.scrollHeight;
+          }
 
-  const onlineAgent = Object.keys(agentHosts)[0];
-  const agentParam = onlineAgent ? `&agent_id=${onlineAgent}` : '';
-
-  showResult({ summary: `Capturing face for "${name}"...` });
-  try {
-    const resp = await fetch(`${API}/api/faces/register?name=${encodeURIComponent(name)}${agentParam}`, { method: 'POST' });
-    const data = await resp.json();
-    if (data.status === 'ok') {
-      showResult({ summary: `Face "${name}" registered successfully!` });
-    } else {
-      showResult({ summary: `Registration failed: ${data.message || data.error}`, error: data.error });
+          if (data.status !== 'running') {
+            result.value = data;
+            reasoning.value = data.reasoning || reasoning.value;
+            taskRunning.value = false;
+            currentTaskId.value = null;
+            loadAgents();
+            return;
+          }
+        } catch (e) {}
+      }
     }
-  } catch (e) {
-    showResult({ summary: `Error: ${e.message}`, error: e.message });
+
+    async function cancelTask() {
+      if (!currentTaskId.value) return;
+      try {
+        await fetch(`${API}/api/task/${currentTaskId.value}/cancel`, { method: 'POST' });
+      } catch (e) {}
+    }
+
+    // Polling
+    let pollInterval;
+    onMounted(() => {
+      loadAgents();
+      pollInterval = setInterval(loadAgents, 10000);
+    });
+    onUnmounted(() => clearInterval(pollInterval));
+
+    return {
+      agents, prompt, taskRunning, currentTaskId, reasoning, result,
+      plannerOpen, plannerBody, robotReasoning, quickCmds, onlineCount,
+      stepClass, sendTask, cancelTask,
+    };
   }
-}
-
-async function listFaces() {
-  try {
-    const resp = await fetch(`${API}/api/faces`);
-    const data = await resp.json();
-    const faces = data.faces || [];
-    if (faces.length === 0) {
-      showResult({ summary: 'No faces registered. Use "Register Face" to add one.' });
-    } else {
-      const list = faces.map(f => `- ${f.name} (${f.registered_at || 'unknown'})`).join('\n');
-      showResult({ summary: `Registered faces (${faces.length}):\n${list}` });
-    }
-  } catch (e) {
-    showResult({ summary: `Error: ${e.message}`, error: e.message });
-  }
-}
-
-async function matchFaces() {
-  const onlineAgent = Object.keys(agentHosts)[0];
-  const agentParam = onlineAgent ? `?agent_id=${onlineAgent}` : '';
-
-  showResult({ summary: 'Matching faces...' });
-  try {
-    const resp = await fetch(`${API}/api/faces/match${agentParam}`, { method: 'POST' });
-    const data = await resp.json();
-    if (data.error) { showResult({ summary: `Failed: ${data.error}` }); return; }
-    const matches = data.matches || [];
-    if (matches.length === 0) {
-      showResult({ summary: `No matches. ${data.registered_count} faces in registry.` });
-    } else {
-      const list = matches.map(m => `- ${m.name} (${(m.similarity*100).toFixed(1)}%)`).join('\n');
-      showResult({ summary: `${matches.length} match(es):\n${list}` });
-    }
-  } catch (e) {
-    showResult({ summary: `Error: ${e.message}` });
-  }
-}
-
-async function startMission() {
-  let faces = [];
-  try {
-    const fResp = await fetch(`${API}/api/faces`);
-    faces = (await fResp.json()).faces || [];
-  } catch (e) {}
-
-  if (faces.length === 0) {
-    showResult({ summary: 'No faces registered. Register a face first.' });
-    return;
-  }
-
-  const target = prompt(`Registered: ${faces.map(f=>f.name).join(', ')}\nEnter person name to find:`);
-  if (!target) return;
-
-  const onlineAgent = Object.keys(agentHosts)[0];
-  const agentParam = onlineAgent ? `&agent_id=${onlineAgent}` : '';
-
-  showResult({ summary: `Starting mission: find "${target}"...` });
-  try {
-    const resp = await fetch(
-      `${API}/api/mission/start?target_name=${encodeURIComponent(target)}${agentParam}`,
-      { method: 'POST' }
-    );
-    const data = await resp.json();
-    if (data.error) {
-      showResult({ summary: `Failed: ${data.error}` });
-    } else {
-      showResult({ summary: `Mission started: ${data.mission_id}\nSearching for "${target}"...` });
-      pollMissionStatus(data.mission_id);
-    }
-  } catch (e) {
-    showResult({ summary: `Error: ${e.message}` });
-  }
-}
-
-async function cancelMission() {
-  try {
-    const resp = await fetch(`${API}/api/mission/active`);
-    const missions = (await resp.json()).missions || [];
-    if (missions.length === 0) {
-      showResult({ summary: 'No active missions.' });
-      return;
-    }
-    for (const m of missions) {
-      await fetch(`${API}/api/mission/${m.mission_id}/cancel`, { method: 'POST' });
-    }
-    showResult({ summary: `Cancelled ${missions.length} mission(s).` });
-    document.getElementById('missionBar').classList.remove('active');
-    if (activePoll) { clearInterval(activePoll); activePoll = null; }
-  } catch (e) {
-    showResult({ summary: `Error: ${e.message}` });
-  }
-}
-
-// ============================================
-// Init
-// ============================================
-document.getElementById('promptInput').addEventListener('keydown', e => {
-  if (e.key === 'Enter') sendTask();
-});
-
-loadAgents();
-setInterval(loadAgents, 10000);
+}).mount('#app');
 </script>
 </body>
 </html>

@@ -5,15 +5,24 @@ Used with LangChain's .with_structured_output() to get reliable,
 typed responses from the LLM instead of manual JSON parsing.
 """
 
-from typing import List
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
 
+class ActionStep(BaseModel):
+    """A single action with optional parameters."""
+    action: str = Field(description="Action name from the available actions list")
+    params: Optional[Dict] = Field(
+        default=None,
+        description="Optional parameters, e.g. {\"steps\": 3, \"angle\": 20} for turn_left_angle",
+    )
+
+
 class ActionDecomposition(BaseModel):
     """LLM output: decompose a natural language command into robot actions."""
-    actions: List[str] = Field(
-        description="Ordered list of robot action names to execute"
+    steps: List[ActionStep] = Field(
+        description="Ordered list of robot actions to execute, each with optional parameters"
     )
 
 
@@ -48,6 +57,18 @@ class TargetPlan(BaseModel):
     reason: str = Field(
         description="Brief explanation of the plan"
     )
+
+
+class PatrolRoute(BaseModel):
+    """LLM output: patrol route based on user's task goal."""
+    pattern: str = Field(
+        description="Route pattern: 'stationary' (stay in place), 'spin' (turn 360 in place), or 'area' (walk a route)"
+    )
+    steps: List[dict] = Field(
+        description="Ordered list of movement steps. Each step: {action: 'forward'|'turn_left'|'turn_right', value: int}. "
+                    "For forward: value = number of steps. For turns: value = degrees."
+    )
+    reason: str = Field(description="Brief explanation of why this route was chosen")
 
 
 class PatrolReport(BaseModel):

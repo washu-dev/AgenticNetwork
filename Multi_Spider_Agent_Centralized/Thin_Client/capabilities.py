@@ -57,29 +57,29 @@ ACTIONS: List[Action] = [
         category="movement",
         parameters="3 steps, ~2.5cm each",
     ),
-    Action(
-        name="turn_left",
-        description="Turn left ~80 degrees (stays in place, does not move forward).",
-        category="movement",
-        parameters="2 turn steps, ~38 degrees each",
-    ),
-    Action(
-        name="turn_right",
-        description="Turn right ~80 degrees (stays in place, does not move forward).",
-        category="movement",
-        parameters="2 turn steps, ~38 degrees each",
-    ),
+    # Action(
+    #     name="turn_left",
+    #     description="Turn left ~80 degrees (stays in place, does not move forward).",
+    #     category="movement",
+    #     parameters="2 turn steps, ~38 degrees each",
+    # ),
+    # Action(
+    #     name="turn_right",
+    #     description="Turn right ~80 degrees (stays in place, does not move forward).",
+    #     category="movement",
+    #     parameters="2 turn steps, ~38 degrees each",
+    # ),
     Action(
         name="turn_left_angle",
-        description="Turn left with body tilting (angular turn, more expressive than normal turn).",
+        description="Turn left. Primary rotation method. angle=20: ~30 deg/step (3 steps=90°). angle=30: ~36 deg/step (5 steps=180°).",
         category="movement",
-        parameters="2 turn steps, ~40 degrees each (angle=90), ~13 degrees each (angle=30 default)",
+        parameters="angle=20 ~30°/step, angle=30 ~36°/step",
     ),
     Action(
         name="turn_right_angle",
-        description="Turn right with body tilting (angular turn, more expressive than normal turn).",
+        description="Turn right. Primary rotation method. angle=20: ~30 deg/step (3 steps=90°). angle=30: ~36 deg/step (5 steps=180°).",
         category="movement",
-        parameters="2 turn steps, ~40 degrees each (angle=90), ~13 degrees each (angle=30 default)",
+        parameters="angle=20 ~30°/step, angle=30 ~36°/step",
     ),
 
     # Gestures

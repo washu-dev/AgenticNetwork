@@ -34,38 +34,17 @@ FRAME_WIDTH = 640
 FRAME_HEIGHT = 480
 CAMERA_H_FOV = 62.0
 
-# Fallback action categories (used when robot has no capabilities metadata)
-_DEFAULT_SETUP = {"stand_up", "sit_down", "stop"}
-_DEFAULT_NAVIGATION = {
-    "forward", "backward", "turn_left", "turn_right",
-    "turn_left_angle", "turn_right_angle",
-    "look_left", "look_right", "look_up", "look_down",
-}
-_DEFAULT_GESTURE = {
-    "wave", "dance", "push_up", "nod", "shake_head",
-    "shake_hand", "play_dead",
-}
-
-# Category → fallback set mapping
-_CATEGORY_DEFAULTS = {
-    "posture": _DEFAULT_SETUP,
-    "movement": _DEFAULT_NAVIGATION,
-    "look": _DEFAULT_NAVIGATION,
-    "gesture": _DEFAULT_GESTURE,
-}
-
-
 def _actions_by_category(robot: "RegisteredRobot", *categories: str) -> set:
     """Get action names from a robot's capabilities by category.
 
-    Falls back to hardcoded defaults if the robot has no capabilities metadata.
+    Raises if capabilities have not been fetched from the robot.
     """
     caps = robot.capabilities.get("actions", []) if robot.capabilities else []
     if not caps:
-        result = set()
-        for cat in categories:
-            result |= _CATEGORY_DEFAULTS.get(cat, set())
-        return result
+        raise RuntimeError(
+            f"Robot {robot.robot_id} has no capabilities metadata. "
+            "Ensure /capabilities was fetched from the Thin Client before starting a mission."
+        )
     return {a["name"] for a in caps if a.get("category") in categories}
 
 
@@ -391,7 +370,6 @@ class CentralPiAgent:
         self.report_all = False
         self._stop_requested = False
         self._target_approach.clear()
-        robot_registry.clear_busy(self.robot.robot_id)
         logger.info(f"[{self.robot.robot_id}] Mission cleared")
 
     def stop_patrol(self):
@@ -565,19 +543,31 @@ class CentralPiAgent:
     # ── Patrol ───────────────────────────────────────────
 
     async def patrol(self) -> dict:
-        """Patrol a fixed route. Detection handled by Central's detection_engine."""
+        """Patrol using LLM-planned route. Detection handled by Central's detection_engine."""
         self._stop_requested = False
         self._patrol_active = True
         start = time.time()
 
         logger.info(f"[{self.robot.robot_id}] Patrol started")
-        await self._speak("Patrol started")
 
         try:
             if not self.robot.standing:
                 await self._execute_robot_action("stand_up")
 
-            route = DEFAULT_PATROL_ROUTE
+            # LLM plans the route based on task_goal
+            route_plan = await self.brain.plan_patrol_route(self.task_goal or "patrol area")
+            pattern = route_plan.get("pattern", "area")
+            steps = route_plan.get("steps", [])
+
+            if pattern == "stationary" or not steps:
+                logger.info(f"[{self.robot.robot_id}] Stationary patrol — no movement")
+                await asyncio.sleep(2)  # brief wait for detection
+                self._patrol_active = False
+                return {"status": "completed", "elapsed_ms": int((time.time() - start) * 1000)}
+
+            # Convert LLM steps to (action, value) tuples
+            route = [(s.get("action", "forward"), s.get("value", 1)) for s in steps]
+
             for i, (action, count) in enumerate(route):
                 if self._stop_requested:
                     logger.info(f"[{self.robot.robot_id}] Patrol aborted at step {i+1}")
@@ -653,15 +643,24 @@ class CentralPiAgent:
     # ── Direct control: execute steps ────────────────────
 
     async def execute_steps(self, steps: list) -> dict:
-        """Execute a list of action steps sequentially."""
+        """Execute a list of action steps sequentially.
+
+        Each step is a dict with 'action' and optional 'params', e.g.:
+            {"action": "turn_left_angle", "params": {"steps": 3, "angle": 20}}
+        """
         results = []
         total_time = 0
 
         for i, step in enumerate(steps):
-            action = step.get("action", step) if isinstance(step, dict) else step
-            logger.info(f"[{self.robot.robot_id}] Step {i+1}/{len(steps)}: {action}")
+            if isinstance(step, dict):
+                action = step.get("action", "stop")
+                params = step.get("params")
+            else:
+                action = step
+                params = None
+            logger.info(f"[{self.robot.robot_id}] Step {i+1}/{len(steps)}: {action} {params or ''}")
 
-            result = await self._exec(action)
+            result = await self._exec(action, params)
             duration = result.get("duration_ms", 0)
             total_time += duration
             status = "completed" if result.get("status") == "ok" else "failed"
@@ -680,8 +679,9 @@ class CentralPiAgent:
 
     async def execute_steps_from_prompt(self, prompt: str) -> dict:
         """Decompose a natural language prompt into actions and execute them."""
-        actions = await self.brain.decompose_actions(prompt, self.robot.actions)
-        steps = [{"action": a} for a in actions]
+        steps = await self.brain.decompose_actions(
+            prompt, self.robot.actions, self.robot.actions_description
+        )
         return await self.execute_steps(steps)
 
     # ── Hardware helpers ─────────────────────────────────

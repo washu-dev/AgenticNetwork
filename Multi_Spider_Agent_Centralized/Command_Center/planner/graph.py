@@ -47,7 +47,6 @@ class Phase(BaseModel):
     )
     task_type: str = Field(description="direct_control or agent")
     target_type: str = Field(default="none", description="face, color, qr_code, object, any, or none")
-    search_pattern: str = Field(default="stationary", description="'stationary' or 'patrol'")
     action: str = Field(default="none", description="Control action or 'none'")
     description: str = Field(description="One-line description")
     target_name: str = Field(default="", description="For face search: specific person name")
@@ -109,20 +108,18 @@ _PARSE_PROMPT = (
     "  target_robot_ids: [] = all robots, ['id'] = specific robot\n"
     "  target_zone: 'A' = robots in zone A, '' = no filter\n"
     "  target_type: object, face, any, none\n"
-    "  search_pattern: 'stationary' (stay in place) or 'patrol' (move around)\n"
     "  report_all: true = just observe/report, false = act on detection\n"
     "  on_detect_action: action after detection (e.g. 'wave'). Empty = just report.\n"
     "  duration_s: seconds if user specifies (e.g. 'for 5 seconds' → 5). 0 = default.\n\n"
     "RULES:\n"
     "1. 'person'/'people' → target_type='object'. 'face' → target_type='face'.\n"
-    "2. report_all=true → default search_pattern='stationary'.\n"
-    "   Only use 'patrol' if user explicitly says 'patrol and report'.\n"
+    "2. Robot decides movement pattern (stationary/spin/patrol) from task_goal.\n"
     "3. on_detect_action: extract from user prompt. Leave empty if not specified.\n\n"
     "EXAMPLES:\n"
     "  'Wave' → direct_control\n"
     "  'robot-002 wave' → direct_control, target_robot_ids=['robot-002']\n"
     "  'Detect person, if found wave' → agent, target_type='object', on_detect_action='wave'\n"
-    "  'Report what you see' → agent, target_type='any', report_all=true, search_pattern='stationary'\n"
+    "  'Report what you see' → agent, target_type='any', report_all=true\n"
     "  'Detect person for 10 seconds' → agent, target_type='object', duration_s=10"
 )
 
@@ -254,7 +251,6 @@ async def parse_and_discover(state: PlannerState) -> dict:
         if ph.get("task_type"): details.append(f"type={ph['task_type']}")
         if ph.get("target_type") and ph["target_type"] != "none": details.append(f"target={ph['target_type']}")
         if ph.get("target_name"): details.append(f"name='{ph['target_name']}'")
-        if ph.get("search_pattern"): details.append(f"pattern={ph['search_pattern']}")
         if ph.get("target_zone"): details.append(f"zone={ph['target_zone']}")
         if ph.get("target_robot_ids"): details.append(f"robots={ph['target_robot_ids']}")
         if ph.get("report_all"): details.append("report_all=true")
@@ -300,8 +296,7 @@ def _fallback_intent(prompt: str) -> dict:
     if is_direct and not is_detection:
         return {
             "phases": [{"target_robot_ids": [], "task_type": "direct_control", "target_type": "none",
-                        "search_pattern": "stationary", "action": "none", "description": prompt,
-                        }],
+                        "action": "none", "description": prompt}],
             "urgency": "medium",
         }
 
@@ -316,17 +311,11 @@ def _fallback_intent(prompt: str) -> dict:
     else:
         target = "any"
 
-    pattern = "stationary" if any(kw in p for kw in [
-        "check here", "what do you see", "what you see", "report what",
-        "look in front", "stay in place", "don't move", "stand still",
-        "check what", "observe", "report",
-    ]) else "patrol"
     is_report = any(kw in p for kw in ["report", "observe", "what do you see", "look around"])
 
     return {
         "phases": [{"target_robot_ids": [], "task_type": "agent", "target_type": target,
-                    "search_pattern": pattern, "action": "none", "description": prompt,
-                    "report_all": is_report, }],
+                    "action": "none", "description": prompt, "report_all": is_report}],
         "urgency": "medium",
     }
 
@@ -367,7 +356,7 @@ async def execute_phases(state: PlannerState) -> dict:
     phases = intent.get("phases", [])
     if not phases:
         phases = [{"target_robot_ids": [], "task_type": "agent", "target_type": "object",
-                   "search_pattern": "patrol", "action": "none", "description": prompt}]
+                   "action": "none", "description": prompt}]
 
     # Always exactly one phase
     phase = phases[0]
@@ -498,7 +487,6 @@ async def _execute_coordinated_patrol(phase: dict, robots: list[dict], prompt: s
                 "mission_id": str(uuid.uuid4())[:8],
                 "target_type": phase.get("target_type", "object"),
                 "target_name": phase.get("target_name", ""),
-                "search_pattern": phase.get("search_pattern", "patrol"),
                 "report_all": phase.get("report_all", False),
                 "task_goal": prompt,
             }
@@ -812,56 +800,8 @@ async def _dispatch_to_robot_agent(robot_id: str, task_payload: dict, timeout: f
         logger.info(f"NATS dispatch to {robot_id}: {result.get('status', '?')}")
         return result
     except Exception as e:
-        logger.warning(f"NATS dispatch to {robot_id} failed ({e}), falling back to in-process")
-        return await _fallback_in_process(robot_id, task_payload)
-
-
-async def _fallback_in_process(robot_id: str, task_payload: dict) -> dict:
-    """Fallback: execute task in-process (same as before refactor)."""
-    import uuid
-    from ..pi_agents.base_agent import pi_agent_manager
-    from ..infra.robot_registry import robot_registry as reg
-
-    task_type = task_payload.get("task_type", "direct_control")
-    robot = reg.get_robot(robot_id)
-    if not robot:
-        return {"status": "error", "error": f"Robot {robot_id} not found in registry"}
-
-    if task_type == "agent":
-        from ..detection.engine import SearchMission, run_search_mission
-        mission = SearchMission(
-            mission_id=task_payload.get("mission_id", str(uuid.uuid4())[:8]),
-            agent_id=robot_id,
-            host=robot.host,
-            camera_port=robot.camera_port,
-            target_type=task_payload.get("target_type", "object"),
-            target_name=task_payload.get("target_name", ""),
-            task_goal=task_payload.get("task_goal", ""),
-            search_pattern=task_payload.get("search_pattern", "patrol"),
-            report_all=task_payload.get("report_all", False),
-        )
-        reg.set_busy(robot_id, mission.mission_id)
-        result = await run_search_mission(mission)
-        return {
-            "status": "success" if result["status"] in ("completed", "timeout") else "error",
-            "agent_id": robot_id,
-            "mission_result": result,
-        }
-    else:
-        pi_agent = pi_agent_manager.get_or_create(robot)
-        prompt = task_payload.get("prompt", "")
-        actions = task_payload.get("actions", [])
-        if actions:
-            result = await pi_agent.execute_steps([{"action": a} for a in actions])
-        elif prompt:
-            result = await pi_agent.execute_steps_from_prompt(prompt)
-        else:
-            return {"status": "error", "error": "No prompt or actions"}
-        return {
-            "status": "success" if result.get("mission_status") in ("completed", "partial") else "error",
-            "agent_id": robot_id,
-            "execution_result": result,
-        }
+        logger.error(f"NATS dispatch to {robot_id} failed: {e}")
+        return {"status": "error", "agent_id": robot_id, "error": f"Robot Agent unreachable: {e}"}
 
 
 async def _dispatch_agent_task(agent: dict, phase: dict, task_goal: str, messages_log: list) -> dict:
@@ -873,7 +813,6 @@ async def _dispatch_agent_task(agent: dict, phase: dict, task_goal: str, message
         "mission_id": str(uuid.uuid4())[:8],
         "target_type": phase.get("target_type", "any"),
         "target_name": phase.get("target_name", ""),
-        "search_pattern": phase.get("search_pattern", "patrol"),
         "report_all": phase.get("report_all", False),
         "task_goal": task_goal,
     }
@@ -882,11 +821,10 @@ async def _dispatch_agent_task(agent: dict, phase: dict, task_goal: str, message
         task_payload["duration_s"] = duration
 
     target_desc = f"'{task_payload['target_name']}'" if task_payload['target_name'] else task_payload['target_type']
-    mode_desc = "patrol" if task_payload['search_pattern'] != "stationary" else "stationary"
     messages_log.append(AIMessage(
-        content=f"Agent: {mode_desc} on {agent['id']}, watching for {target_desc}"
+        content=f"Agent: {agent['id']} watching for {target_desc}"
     ))
-    logger.info(f"Dispatching agent task to {agent['id']}: {task_payload['mission_id']} ({mode_desc})")
+    logger.info(f"Dispatching agent task to {agent['id']}: {task_payload['mission_id']}")
 
     result = await _dispatch_to_robot_agent(agent["id"], task_payload)
 

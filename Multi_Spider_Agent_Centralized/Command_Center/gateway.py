@@ -955,7 +955,6 @@ async def start_mission(
     target_type: str = Query(default="face", description="What to detect: face, object, color, qr_code, any"),
     target_name: str = Query(default="", description="For face: specific person name (optional)"),
     task_goal: str = Query(default="", description="Full task goal for Pi's LLM (e.g. 'find John and wave')"),
-    search_pattern: str = Query(default="patrol", description="'stationary' or 'patrol'"),
     agent_id: Optional[str] = Query(default=None),
 ):
     """Start a search mission: Pi patrols, Central watches stream and pushes observations."""
@@ -985,7 +984,6 @@ async def start_mission(
         target_type=target_type,
         target_name=target_name,
         task_goal=task_goal or f"Search for {target_type}" + (f" ({target_name})" if target_name else ""),
-        search_pattern=search_pattern,
     )
 
     # Run mission in background

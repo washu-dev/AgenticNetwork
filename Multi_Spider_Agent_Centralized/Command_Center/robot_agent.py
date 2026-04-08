@@ -307,7 +307,6 @@ class RobotAgentService:
             target_type=request.get("target_type", "object"),
             target_name=request.get("target_name", ""),
             task_goal=request.get("task_goal", ""),
-            search_pattern=request.get("search_pattern", "patrol"),
             report_all=request.get("report_all", False),
             duration_s=request.get("duration_s", 0),
         )

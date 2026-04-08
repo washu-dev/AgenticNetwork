@@ -42,7 +42,6 @@ class SearchMission:
     target_type: str = "any"
     target_name: str = ""
     task_goal: str = ""
-    search_pattern: str = "patrol"
     report_all: bool = False
     duration_s: int = 0  # 0 = use default timeout
     threshold: float = 0.7
@@ -72,7 +71,6 @@ class SearchMission:
             "target_type": self.target_type,
             "target_name": self.target_name,
             "task_goal": self.task_goal,
-            "search_pattern": self.search_pattern,
             "status": self.status,
             "elapsed_s": self.elapsed_s,
             "frames_analyzed": self.frames_analyzed,
@@ -269,49 +267,20 @@ async def run_search_mission(mission: SearchMission, existing_udp_receiver=None)
         agent = pi_agent_manager.get_or_create(robot)
         agent.set_mission(mission.mission_id, mission.task_goal, mission.report_all)
 
-        # Step 2: Start patrol if needed
-        is_stationary = mission.search_pattern == "stationary"
-        patrol_task = None
-
-        if not is_stationary:
-            logger.info(f"Mission {mission.mission_id}: starting patrol on {mission.agent_id}")
-            patrol_task = asyncio.create_task(agent.patrol())
-            await asyncio.sleep(1.0)
-        else:
-            logger.info(f"Mission {mission.mission_id}: stationary detect on {mission.agent_id}")
-            # For stationary: ensure robot decides initial setup (stand up etc)
-            await agent.handle_detection({
-                "mission_id": mission.mission_id,
-                "task_goal": mission.task_goal,
-                "status": "init",
-                "detections": [],
-                "elapsed_s": 0,
-                "report_all": mission.report_all,
-            })
+        # Step 2: Start patrol (Robot Agent LLM decides movement pattern)
+        logger.info(f"Mission {mission.mission_id}: starting on {mission.agent_id}")
+        patrol_task = asyncio.create_task(agent.patrol())
+        await asyncio.sleep(1.0)
 
         # Step 3: Start UDP video receiver and tell Pi to start streaming
-        if mission.duration_s > 0:
-            timeout = mission.duration_s
-        else:
-            timeout = MISSION_TIMEOUT_STATIONARY if is_stationary else MISSION_TIMEOUT_PATROL
+        timeout = mission.duration_s if mission.duration_s > 0 else MISSION_TIMEOUT_PATROL
         mission_ended = False
         last_dispatch_time = 0.0
 
-        from ..infra.robot_client import robot_client
-        owns_udp = existing_udp_receiver is None
-        if owns_udp:
-            udp_receiver = UDPFrameReceiver(listen_port=0)
-            await udp_receiver.start()
-            # Tell Pi to push video frames to our UDP port
-            import socket as _socket
-            local_ip = _socket.gethostbyname(_socket.gethostname())
-            await robot_client.start_video_stream(
-                mission.host, mission.camera_port, local_ip, udp_receiver.port, fps=10
-            )
-            logger.info(f"Mission {mission.mission_id}: UDP receiver on port {udp_receiver.port}")
-        else:
-            udp_receiver = existing_udp_receiver
-            logger.info(f"Mission {mission.mission_id}: reusing existing UDP receiver on port {udp_receiver.port}")
+        if existing_udp_receiver is None:
+            raise ValueError("UDP receiver must be provided by Robot Agent")
+        udp_receiver = existing_udp_receiver
+        logger.info(f"Mission {mission.mission_id}: using UDP receiver on port {udp_receiver.port}")
 
         try:
           while not mission.is_cancelled and not mission_ended:
@@ -412,18 +381,12 @@ async def run_search_mission(mission: SearchMission, existing_udp_receiver=None)
                     f"{len(mission.detections)} detections"
                 )
         finally:
-            # Only stop UDP receiver and Pi stream if we created them
-            if owns_udp:
-                udp_receiver.stop()
-                await robot_client.stop_video_stream(mission.host, mission.camera_port)
+            pass  # UDP receiver owned by Robot Agent, not stopped here
 
         # Mission ended — handle finish
         if mission.is_cancelled:
             mission.status = "cancelled"
             logger.info(f"Mission {mission.mission_id}: cancelled")
-        elif is_stationary and mission.report_all and not mission_ended:
-            mission.status = "completed"
-            logger.info(f"Mission {mission.mission_id}: stationary report finished")
         elif not mission_ended and mission.status == "timeout":
             pass  # already set above
 
@@ -441,9 +404,7 @@ async def run_search_mission(mission: SearchMission, existing_udp_receiver=None)
             })
 
         # Stop patrol if running
-        if not is_stationary:
-            agent.stop_patrol()
-
+        agent.stop_patrol()
         if patrol_task and not patrol_task.done():
             patrol_task.cancel()
 

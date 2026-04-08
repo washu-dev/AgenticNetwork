@@ -16,7 +16,7 @@ from langchain_core.messages import SystemMessage, HumanMessage
 
 from ..config import PI_BRAIN_LLM_MODEL
 from ..planner.llm_config import LLM_MODEL, create_llm
-from .schemas import ActionDecomposition, ObservationDecision, ObstacleDecision, TargetPlan, PatrolReport
+from .schemas import ActionDecomposition, ObservationDecision, ObstacleDecision, TargetPlan, PatrolRoute, PatrolReport
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +35,9 @@ ROBOT_PROFILES = {
             "- The robot must stand_up before it can move or perform gestures. "
             "If the command implies movement or gestures and doesn't start with stand_up, "
             "prepend stand_up automatically.\n"
+            "- For rotations, minimize the number of action calls to reduce cumulative error. "
+            "Prefer fewer calls with more steps over many calls with few steps. "
+            "E.g. for 360°: use 2 calls of 180° rather than 4 calls of 90°.\n"
         ),
         "observation_rules": (
             "- You must stand_up before you can move or perform gestures\n"
@@ -149,24 +152,31 @@ class LLMClient:
         self._observe_llm = self._llm.with_structured_output(ObservationDecision)
         self._obstacle_llm = self._llm.with_structured_output(ObstacleDecision)
         self._target_plan_llm = self._llm.with_structured_output(TargetPlan)
+        self._patrol_route_llm = self._llm.with_structured_output(PatrolRoute)
         self._patrol_report_llm = self._llm.with_structured_output(PatrolReport)
         self._profile = _get_profile(robot_type)
         self._robot_type = robot_type
         logger.info(f"PiAgentBrain LLMClient initialized (type={robot_type}, {PI_BRAIN_LLM_MODEL})")
 
-    async def decompose_actions(self, prompt: str, available_actions: list) -> list:
+    async def decompose_actions(self, prompt: str, available_actions: list, actions_description: str = "") -> list[dict]:
         """
         Parse a natural language command into an ordered list of robot actions.
 
         Called for task_type="direct_control" with a free-text prompt.
-        Returns: list of action name strings, e.g. ["stand_up", "wave", "dance"]
+        Args:
+            available_actions: list of valid action name strings (for validation)
+            actions_description: formatted capability descriptions with params (for LLM context)
+        Returns: list of dicts, e.g. [{"action": "stand_up"}, {"action": "turn_left_angle", "params": {"steps": 3, "angle": 20}}]
         """
+        actions_block = actions_description or ', '.join(available_actions)
         system = (
             f"{self._profile['identity']} Parse the user command into "
-            "an ordered list of actions. Available actions:\n"
-            f"{', '.join(available_actions)}\n\n"
+            "an ordered list of actions with parameters.\n\n"
+            f"Available actions:\n{actions_block}\n\n"
             "Rules:\n"
             "- Only use actions from the list above\n"
+            "- For turn_left_angle / turn_right_angle, specify params with 'steps' and 'angle' "
+            "to achieve the desired rotation. Use the calibration data in the action descriptions.\n"
             f"{self._profile['decompose_rules']}"
         )
 
@@ -175,15 +185,19 @@ class LLMClient:
                 SystemMessage(content=system),
                 HumanMessage(content=prompt),
             ])
-            valid = [a for a in result.actions if a in available_actions]
+            valid = [
+                s.model_dump(exclude_none=True)
+                for s in result.steps
+                if s.action in available_actions
+            ]
             if not valid:
-                logger.warning(f"No valid actions from LLM decomposition: {result.actions}")
-                return ["stop"]
+                logger.warning(f"No valid actions from LLM decomposition: {result.steps}")
+                return [{"action": "stop"}]
             logger.info(f"LLM decomposed '{prompt}' -> {valid}")
             return valid
         except Exception as e:
             logger.error(f"Failed to decompose actions: {e}")
-            return ["stop"]
+            return [{"action": "stop"}]
 
     async def decide_observation_response(
         self,
@@ -312,6 +326,53 @@ class LLMClient:
         except Exception as e:
             logger.error(f"Target plan decision failed: {e}")
             return {"approach": False, "final_action": "MISSION_COMPLETE", "reason": "LLM error"}
+
+    async def plan_patrol_route(self, task_goal: str) -> dict:
+        """
+        Generate a patrol route based on the user's task goal.
+
+        Called once at mission start. Returns route steps for the robot to follow.
+        Returns: {"pattern": "spin"|"area"|"stationary", "steps": [...], "reason": "..."}
+        """
+        system = (
+            f"{self._profile['identity']} Plan a patrol route based on the mission goal.\n\n"
+            "Route patterns:\n"
+            "- 'stationary': stay in place, don't move (for 'check here', 'report what you see')\n"
+            "- 'spin': turn 360 degrees in place to look around (for 'look around', 'turn around', 'scan area')\n"
+            "- 'area': walk a route to cover an area (for 'patrol', 'search', 'find')\n\n"
+            "Movement steps (each step is {action, value}):\n"
+            "- {action: 'forward', value: N} — walk forward N steps (~2.5cm each)\n"
+            "- {action: 'turn_left', value: D} — turn left D degrees\n"
+            "- {action: 'turn_right', value: D} — turn right D degrees\n\n"
+            "Common routes:\n"
+            "- Spin: [{turn_left, 90}, {turn_left, 90}, {turn_left, 90}, {turn_left, 90}]\n"
+            "- Small area: [{forward,3}, {turn_left,90}, {forward,3}, {turn_left,90}, "
+            "{forward,3}, {turn_left,90}, {forward,3}]\n"
+            "- Straight line: [{forward, 5}]\n\n"
+            "For stationary pattern, return empty steps [].\n"
+        )
+
+        try:
+            result = await self._patrol_route_llm.ainvoke([
+                SystemMessage(content=system),
+                HumanMessage(content=f"Mission goal: {task_goal}"),
+            ])
+            steps = result.steps
+            logger.info(f"Patrol route: pattern={result.pattern}, {len(steps)} steps — {result.reason}")
+            return {"pattern": result.pattern, "steps": steps, "reason": result.reason}
+        except Exception as e:
+            logger.error(f"Patrol route planning failed: {e}, using default")
+            return {
+                "pattern": "area",
+                "steps": [
+                    {"action": "forward", "value": 5},
+                    {"action": "turn_left", "value": 90},
+                    {"action": "forward", "value": 2},
+                    {"action": "turn_right", "value": 90},
+                    {"action": "forward", "value": 2},
+                ],
+                "reason": "LLM error, using default route",
+            }
 
     async def generate_patrol_report(self, task_goal: str, detections_log: list) -> dict:
         """

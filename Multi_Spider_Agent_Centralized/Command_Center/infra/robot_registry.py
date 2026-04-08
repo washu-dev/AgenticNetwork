@@ -163,21 +163,25 @@ class RobotRegistry:
             logger.info(f"Robot registered from discovery: {robot_id} [{robot_type}] (zone={zone}, status={robot.status})")
 
     async def _fetch_capabilities(self, robot_id: str, host: str, port: int):
-        """Fetch capabilities from Pi's /capabilities endpoint and update registry."""
+        """Fetch capabilities from Pi's /capabilities endpoint and update registry.
+
+        Raises on failure so callers know the robot is not ready for missions.
+        """
         import httpx
         try:
             async with httpx.AsyncClient(timeout=5) as client:
                 resp = await client.get(f"http://{host}:{port}/capabilities")
-                if resp.status_code == 200:
-                    caps = resp.json()
-                    robot = self._robots.get(robot_id)
-                    if robot:
-                        robot.capabilities = caps
-                        robot.actions = [a["name"] for a in caps.get("actions", [])]
-                        robot.actions_description = _generate_actions_description(caps)
-                        logger.info(f"Fetched capabilities for {robot_id}: {len(robot.actions)} actions")
+                resp.raise_for_status()
+                caps = resp.json()
+                robot = self._robots.get(robot_id)
+                if robot:
+                    robot.capabilities = caps
+                    robot.actions = [a["name"] for a in caps.get("actions", [])]
+                    robot.actions_description = _generate_actions_description(caps)
+                    logger.info(f"Fetched capabilities for {robot_id}: {len(robot.actions)} actions")
         except Exception as e:
-            logger.warning(f"Failed to fetch capabilities for {robot_id}: {e}")
+            logger.error(f"Failed to fetch capabilities for {robot_id} at {host}:{port}: {e}")
+            raise
 
     async def heartbeat(self, robot_id: str, data: dict = None) -> dict:
         """Update heartbeat. Called by Pi every 10s."""
