@@ -417,7 +417,9 @@ class LLMClient:
             f"{self._profile['identity']} You have just completed a patrol mission. "
             "Summarize what was observed in a concise report.\n\n"
             "Rules:\n"
-            "- Group duplicate detections (same object seen multiple times)\n"
+            "- DEDUPLICATE: The same object seen across consecutive frames is ONE object, not many. "
+            "Use time and position to judge: detections close in time at similar positions are the same object.\n"
+            "- Set target_count to the number of DISTINCT targets (not total detections).\n"
             "- Note anything unusual or potentially important\n"
             "- Keep the summary brief (2-3 sentences)\n"
         )
@@ -435,6 +437,7 @@ class LLMClient:
             report = {
                 "summary": result.summary,
                 "targets_found": result.targets_found,
+                "target_count": result.target_count,
                 "anomalies": result.anomalies,
                 "recommendation": result.recommendation,
             }

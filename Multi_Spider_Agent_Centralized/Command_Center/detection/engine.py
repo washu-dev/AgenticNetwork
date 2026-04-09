@@ -18,10 +18,86 @@ from typing import Optional
 import httpx
 
 from .udp_receiver import UDPFrameReceiver
-from .yolo_detector import detect_frame
-from ..config import MISSION_TIMEOUT_STATIONARY, MISSION_TIMEOUT_PATROL
+from .yolo_detector import detect_frame, detect_frame_with_tracking, reset_tracker, get_unique_count
+from ..config import MISSION_TIMEOUT_STATIONARY, MISSION_TIMEOUT_PATROL, create_vision_llm
 
 logger = logging.getLogger(__name__)
+
+
+# ── VLM attribute verification ──
+
+_vlm_cache: dict[str, bool] = {}  # cache to avoid repeated calls for same frame
+
+
+async def _vlm_verify_attribute(frame: bytes, bbox: dict, task_goal: str) -> bool:
+    """Use VLM to verify if a detected person matches the task description.
+
+    Only called when task_goal contains attribute descriptions (color, clothing, etc.)
+    that YOLO cannot determine.
+
+    Args:
+        frame: Full JPEG frame
+        bbox: Bounding box {x1, y1, x2, y2}
+        task_goal: User's natural language description (e.g. "person wearing blue shirt")
+
+    Returns:
+        True if the person matches the description
+    """
+    import base64
+    import cv2
+    import numpy as np
+
+    try:
+        # Crop the bbox region from the frame
+        nparr = np.frombuffer(frame, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        if img is None:
+            return True  # fallback: assume match
+
+        x1 = max(0, int(bbox.get("x1", 0)))
+        y1 = max(0, int(bbox.get("y1", 0)))
+        x2 = min(img.shape[1], int(bbox.get("x2", img.shape[1])))
+        y2 = min(img.shape[0], int(bbox.get("y2", img.shape[0])))
+        cropped = img[y1:y2, x1:x2]
+
+        if cropped.size == 0:
+            return True
+
+        _, buf = cv2.imencode(".jpg", cropped, [cv2.IMWRITE_JPEG_QUALITY, 70])
+        img_b64 = base64.b64encode(buf.tobytes()).decode()
+
+        from langchain_core.messages import HumanMessage
+        vlm = create_vision_llm()
+
+        msg = HumanMessage(content=[
+            {"type": "text", "text": (
+                f"Task: {task_goal}\n\n"
+                "Does this person match the description in the task? "
+                "Answer ONLY 'yes' or 'no'."
+            )},
+            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}},
+        ])
+
+        response = await vlm.ainvoke([msg])
+        answer = response.content.strip().lower()
+        matched = answer.startswith("yes")
+        logger.info(f"VLM verify: '{task_goal}' → {answer} (matched={matched})")
+        return matched
+
+    except Exception as e:
+        logger.warning(f"VLM verify failed: {e}, assuming match")
+        return True
+
+
+def _needs_vlm_verification(task_goal: str) -> bool:
+    """Check if the task goal contains attribute descriptions that need VLM."""
+    if not task_goal:
+        return False
+    keywords = ["wearing", "red", "blue", "green", "yellow", "white", "black",
+                "shirt", "hat", "jacket", "dress", "glasses", "tall", "short",
+                "color", "holding", "carrying"]
+    goal_lower = task_goal.lower()
+    return any(kw in goal_lower for kw in keywords)
 
 
 # How often to grab and analyze a frame (seconds)
@@ -75,6 +151,7 @@ class SearchMission:
             "elapsed_s": self.elapsed_s,
             "frames_analyzed": self.frames_analyzed,
             "detections": self.detections[-20:],
+            "unique_targets": get_unique_count(self.agent_id),
             "match_result": self.match_result,
             "error": self.error,
         }
@@ -124,10 +201,16 @@ async def grab_single_frame(host: str, port: int) -> Optional[bytes]:
     return None
 
 
-def _detect_in_frame(frame: bytes, target_type: str, target_name: str = "",
-                     threshold: float = 0.7, yolo_result: dict = None) -> list[dict]:
-    """Run detection on a single frame. Returns list of detections."""
+async def _detect_in_frame(frame: bytes, target_type: str, target_name: str = "",
+                           threshold: float = 0.7, yolo_result: dict = None,
+                           task_goal: str = "") -> list[dict]:
+    """Run detection on a single frame. Returns list of detections.
+
+    If task_goal contains attribute descriptions (e.g. 'wearing blue shirt'),
+    VLM is used to verify person detections beyond what YOLO can determine.
+    """
     results = []
+    use_vlm = _needs_vlm_verification(task_goal)
 
     if target_type == "face":
         from .face_registry import face_registry
@@ -167,16 +250,22 @@ def _detect_in_frame(frame: bytes, target_type: str, target_name: str = "",
     elif target_type in ("object", "any"):
         yr = yolo_result or detect_frame(frame, conf_threshold=threshold)
         for d in yr.get("detections", []):
-            # If target_name is set, only that label counts as target
             if target_name:
                 is_target = target_name.lower() in d["label"].lower()
             else:
                 is_target = True
+
+            # VLM verification: if YOLO says "person" and task has attribute description
+            if use_vlm and is_target and d["label"] == "person" and d.get("bbox"):
+                is_target = await _vlm_verify_attribute(frame, d["bbox"], task_goal)
+                if is_target:
+                    d["label"] = f"person (matched: {task_goal[:30]})"
+
             results.append({
                 "label": d["label"],
                 "confidence": d["confidence"],
                 "bbox": d.get("bbox"),
-                "source": "central_yolo",
+                "source": "central_yolo" + ("+vlm" if use_vlm else ""),
                 "is_target": is_target,
             })
 
@@ -255,6 +344,7 @@ async def run_search_mission(mission: SearchMission, existing_udp_receiver=None)
     _active_tasks[mission.mission_id] = asyncio.current_task()
     mission.start_time = time.time()
     mission.status = "searching"
+    reset_tracker(mission.agent_id)  # Reset ByteTrack state for fresh counting
 
     try:
         # Step 1: Get CentralPiAgent
@@ -302,11 +392,12 @@ async def run_search_mission(mission: SearchMission, existing_udp_receiver=None)
 
             mission.frames_analyzed += 1
 
-            # Only run YOLO for non-face tasks
+            # Only run YOLO for non-face tasks (with ByteTrack for counting)
             yolo_result = None
             if mission.target_type != "face":
                 yolo_result = await asyncio.to_thread(
-                    detect_frame, frame, conf_threshold=mission.threshold
+                    detect_frame_with_tracking, frame, mission.agent_id,
+                    conf_threshold=mission.threshold,
                 )
                 annotated = yolo_result.get("annotated_jpeg")
                 if annotated:
@@ -322,11 +413,11 @@ async def run_search_mission(mission: SearchMission, existing_udp_receiver=None)
             if evt:
                 evt.set()
 
-            # Run detection
-            detections = await asyncio.to_thread(
-                _detect_in_frame,
+            # Run detection (async because VLM verification may be needed)
+            detections = await _detect_in_frame(
                 frame, mission.target_type, mission.target_name,
                 mission.threshold, yolo_result,
+                task_goal=mission.task_goal,
             )
 
             # Accumulate detections

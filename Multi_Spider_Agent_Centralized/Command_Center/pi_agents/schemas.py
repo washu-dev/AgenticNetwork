@@ -90,7 +90,12 @@ class PatrolReport(BaseModel):
     )
     targets_found: List[str] = Field(
         default_factory=list,
-        description="List of target types detected (e.g. ['person', 'backpack'])"
+        description="List of UNIQUE target types detected (e.g. ['person', 'backpack'])"
+    )
+    target_count: int = Field(
+        default=0,
+        description="Estimated number of DISTINCT targets (deduplicated). "
+                    "E.g. if the same person was seen 5 times across frames, count as 1."
     )
     anomalies: List[str] = Field(
         default_factory=list,
