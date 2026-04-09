@@ -90,7 +90,7 @@ class RobotClient:
     async def _post_command(self, host: str, port: int, payload: dict) -> dict:
         """POST a command to Pi's /command endpoint."""
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
+            async with httpx.AsyncClient(timeout=60) as client:
                 resp = await client.post(f"http://{host}:{port}/command", json=payload)
                 return resp.json()
         except Exception as e:

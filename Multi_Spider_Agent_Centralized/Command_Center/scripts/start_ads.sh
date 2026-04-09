@@ -10,7 +10,7 @@ docker compose -f "$COMPOSE_FILE" up -d
 echo ""
 echo "Waiting for ADS to be ready..."
 for i in $(seq 1 30); do
-    if wget --no-verbose --tries=1 --spider http://127.0.0.1:8889/healthz/ready 2>/dev/null; then
+    if (echo > /dev/tcp/127.0.0.1/8888) 2>/dev/null; then
         echo "ADS is ready! (gRPC: localhost:8888)"
         exit 0
     fi

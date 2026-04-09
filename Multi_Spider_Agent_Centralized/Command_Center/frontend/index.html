@@ -46,6 +46,7 @@
   .robot-card-reasoning .rr-step.think { color: #a78bfa; background: #1e1338; }
   .robot-card-reasoning .rr-step.tool { color: #38bdf8; }
   .robot-card-reasoning .rr-step.result { color: #22c55e; }
+  .robot-card-reasoning .rr-step.auto { color: #64748b; font-size: 10px; }
   .robot-card-reasoning .rr-step.info { color: #94a3b8; }
   .robot-card-reasoning .rr-llm { padding: 4px 8px; border-bottom: 1px solid #0f172a; border-left: 3px solid #a78bfa; background: #1e1338; }
   .robot-card-reasoning .rr-llm-action { color: #e2e8f0; font-weight: 600; font-size: 11px; font-family: monospace; }
@@ -60,6 +61,7 @@
   .robot-reasoning .rr-step.think { color: #a78bfa; background: #1e1338; }
   .robot-reasoning .rr-step.tool { color: #38bdf8; }
   .robot-reasoning .rr-step.result { color: #22c55e; }
+  .robot-reasoning .rr-step.auto { color: #64748b; font-size: 10px; }
   .robot-reasoning .rr-step.info { color: #94a3b8; }
   .robot-reasoning .rr-llm { padding: 5px 10px; border-top: 1px solid #0f172a; border-left: 3px solid #a78bfa; background: #1e1338; }
   .robot-reasoning .rr-llm-action { color: #e2e8f0; font-size: 11px; font-weight: 600; font-family: monospace; }
@@ -67,10 +69,10 @@
   .robot-reasoning .rr-idle { padding: 10px; color: #334155; font-size: 10px; text-align: center; }
 
   /* Center: Planner reasoning */
-  .planner-panel { background: #1e293b; border: 1px solid #334155; border-radius: 8px; max-height: 250px; overflow: hidden; }
+  .planner-panel { background: #1e293b; border: 1px solid #334155; border-radius: 8px; max-height: 250px; overflow: hidden; display: flex; flex-direction: column; }
   .planner-panel .pp-header { padding: 8px 12px; font-size: 12px; font-weight: 600; color: #a78bfa; cursor: pointer; display: flex; align-items: center; gap: 6px; }
   .planner-panel .pp-header:hover { background: #334155; }
-  .planner-panel .pp-body { max-height: 200px; overflow-y: auto; }
+  .planner-panel .pp-body { flex: 1; min-height: 0; overflow-y: auto; }
   .planner-step { padding: 5px 12px; font-size: 11px; line-height: 1.4; border-top: 1px solid #0f172a; font-family: monospace; }
   .planner-step.think { color: #a78bfa; background: #1e1338; }
   .planner-step.tool { color: #38bdf8; }
@@ -228,7 +230,9 @@
             <h3>Result</h3>
             <span :class="['badge', result.status]">{{ result.status }}</span>
           </div>
-          <div v-if="result.results && result.results.length > 0">
+          <div v-if="result.summary" class="result-summary" style="border-top:none; padding-top:0; margin-top:0;">{{ result.summary }}</div>
+          <div v-else-if="result.error" class="error-msg">{{ result.error }}</div>
+          <div v-else-if="result.results && result.results.length > 0">
             <div v-for="r in result.results" :key="r.agent_id" class="result-agent">
               <div class="agent-name">
                 {{ r.agent_id }}
@@ -237,8 +241,6 @@
               <div class="agent-response">{{ r.response || r.error || 'No response' }}</div>
             </div>
           </div>
-          <div v-else-if="result.error" class="error-msg">{{ result.error }}</div>
-          <div v-if="result.summary" class="result-summary">{{ result.summary }}</div>
         </div>
         <div v-else class="result-panel">
           <div class="placeholder">Send a command to see results here</div>
@@ -464,6 +466,7 @@ createApp({
     }
 
     function stepClass(step) {
+      if (step.startsWith('Auto:')) return 'auto';
       if (step.startsWith('Tool:')) return 'tool';
       if (step.startsWith('Coordinator:') || step.startsWith('Coordination:') || step.startsWith('Parse') || step.startsWith('Intent:')) return 'think';
       if (step.startsWith('Execute:') || step.startsWith('Done:') || step.startsWith('Result:') || step.startsWith('Agent result:') || step.startsWith('Agent:')) return 'result';

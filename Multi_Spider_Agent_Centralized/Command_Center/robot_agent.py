@@ -318,6 +318,12 @@ class RobotAgentService:
             await reply_fn(json.dumps({"status": "error", "error": str(e)}).encode())
 
     async def _handle_agent_task(self, request: dict) -> dict:
+        # Ensure the pi_agent_manager's agent instance has reasoning callback
+        from .pi_agents.base_agent import pi_agent_manager
+        mgr_agent = pi_agent_manager.get_or_create(self._robot)
+        if not mgr_agent.on_reasoning and self._agent.on_reasoning:
+            mgr_agent.on_reasoning = self._agent.on_reasoning
+
         mission = SearchMission(
             mission_id=request.get("mission_id", str(uuid.uuid4())[:8]),
             agent_id=self.robot_id,

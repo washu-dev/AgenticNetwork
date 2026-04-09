@@ -215,18 +215,23 @@ async def _execute_single_phase(phase: dict, robots: list[dict], prompt: str, me
         # Agent mode: dispatch to all target robots in parallel
         if len(robots) == 1:
             return await _dispatch_agent_task(robots[0], phase, prompt, messages_log)
+        per_robot_logs = [list(messages_log) for _ in robots]
         results = await asyncio.gather(*[
-            _dispatch_agent_task(robot, phase, prompt, list(messages_log))
-            for robot in robots
+            _dispatch_agent_task(robot, phase, prompt, per_robot_logs[i])
+            for i, robot in enumerate(robots)
         ])
-        # Merge agent_results from all dispatches
+        # Merge agent_results and messages from all dispatches
         merged = []
-        for r in results:
+        for i, r in enumerate(results):
             merged.extend(r.get("agent_results", []))
-        return {"agent_results": merged}
+            for msg in per_robot_logs[i][len(messages_log):]:
+                messages_log.append(msg)
+        return {"agent_results": merged, "messages": messages_log}
     else:
         # Direct control: dispatch to all target robots in parallel
         # Use original user prompt, not LLM-rewritten description, to avoid semantic drift
+        robot_ids = [r["id"] for r in robots]
+        messages_log.append(AIMessage(content=f"Direct control → {robot_ids}"))
         coros = [_dispatch_direct_control(robot, prompt) for robot in robots]
         raw_results = await asyncio.gather(*coros, return_exceptions=True)
 
@@ -235,14 +240,17 @@ async def _execute_single_phase(phase: dict, robots: list[dict], prompt: str, me
             if isinstance(result, Exception):
                 results.append({"agent_id": robot["id"], "status": "error",
                                 "response": str(result), "structured": {}})
+                messages_log.append(AIMessage(content=f"Agent result: {robot['id']}: error — {result}"))
             else:
+                summary = result.get("execution_result", {}).get("summary", "")
                 results.append({
                     "agent_id": robot["id"],
                     "status": result.get("status", "error"),
-                    "response": result.get("execution_result", {}).get("summary", ""),
+                    "response": summary,
                     "structured": result.get("execution_result", {}),
                 })
-        return {"agent_results": results}
+                messages_log.append(AIMessage(content=f"Agent result: {robot['id']}: {result.get('status', '?')} — {summary[:100]}"))
+        return {"agent_results": results, "messages": messages_log}
 
 
 async def _cancel_robot(robot_id: str):
@@ -461,6 +469,7 @@ async def _dispatch_agent_task(agent: dict, phase: dict, task_goal: str, message
     if duration > 0:
         task_payload["duration_s"] = duration
 
+    mode_desc = phase.get("task_type", "agent")
     target_desc = f"'{task_payload['target_name']}'" if task_payload['target_name'] else task_payload['target_type']
     messages_log.append(AIMessage(
         content=f"Agent: {agent['id']} watching for {target_desc}"
@@ -541,6 +550,7 @@ async def summarize(state: PlannerState) -> dict:
     messages_log = state.get("messages", [])
     iteration = state.get("iteration", 1)
     intent = state.get("intent", {})
+    prompt = state.get("prompt", "")
     start_time = state.get("start_time", 0)
     total_latency = int((datetime.utcnow().timestamp() - start_time) * 1000) if start_time else 0
 
@@ -554,12 +564,78 @@ async def summarize(state: PlannerState) -> dict:
         error_msgs = "; ".join(r.get("error", "unknown") for r in error_results)
         return {"summary": f"All agents failed: {error_msgs}"}
 
-    agents_text = []
+    # Collect structured data for LLM summarization
+    agent_data = []
     for r in success_results:
-        agents_text.append(f"Agent {r.get('agent_id', 'unknown')}:\n{r.get('response', '')}")
-    combined = "\n\n---\n\n".join(agents_text)
+        structured = r.get("structured", {})
+        mission = structured.get("mission", {})
+        detections = structured.get("detections", [])
+        patrol_report = mission.get("patrol_report", {})
 
-    summary = f"Completed: {len(success_results)} agent(s), {len(error_results)} failed.\n\n{combined}"
+        # Count objects by max concurrent per label in any single dispatch.
+        # Track IDs can change for the same object, so counting unique track_ids
+        # over-counts. Instead, group detections by elapsed_s (≈ dispatch time)
+        # and take the max count of each label seen in a single dispatch.
+        from collections import Counter, defaultdict
+        per_time_labels = defaultdict(list)
+        for d in detections:
+            per_time_labels[d.get("time_s", d.get("elapsed_s", 0))].append(d.get("label", "unknown"))
+        label_counts = {}
+        for time_s, labels in per_time_labels.items():
+            for label, count in Counter(labels).items():
+                label_counts[label] = max(label_counts.get(label, 0), count)
+
+        agent_data.append({
+            "agent_id": r.get("agent_id", "unknown"),
+            "unique_detections": label_counts,
+            "total_detections": len(detections),
+            "frames_analyzed": mission.get("frames_analyzed", 0),
+            "elapsed_s": mission.get("elapsed_s", 0),
+            "patrol_report": patrol_report.get("summary", ""),
+        })
+
+    # Use LLM to generate a human-readable response
+    try:
+        from ..config import create_llm
+        llm = create_llm()
+
+        context_parts = []
+        for ad in agent_data:
+            part = f"Robot {ad['agent_id']}:"
+            if ad["patrol_report"]:
+                part += f"\n  Patrol report: {ad['patrol_report']}"
+            if ad["unique_detections"]:
+                det_str = ", ".join(f"{label} (max {count} concurrent)" for label, count in ad["unique_detections"].items())
+                part += f"\n  Detected: {det_str}"
+            part += f"\n  Stats: {ad['frames_analyzed']} frames analyzed in {ad['elapsed_s']:.0f}s"
+            context_parts.append(part)
+        context = "\n\n".join(context_parts)
+
+        system_msg = (
+            "You are a multi-robot command center. The user gave a command to robot(s) and the mission is complete. "
+            "Based on the robot data below, write a concise, natural-language response to the user's original request. "
+            "Respond as if you are the robot(s) reporting back. Be specific about what was observed. "
+            "Keep it under 3 sentences. Do NOT include technical stats like frame counts or latency.\n\n"
+            "IMPORTANT: The detection counts are approximate. The same object may be counted multiple times "
+            "due to tracking limitations. Use cautious language like 'at least one', 'approximately', "
+            "'what appears to be' rather than exact numbers. The 'max concurrent' count is the most reliable."
+        )
+        user_msg = f"User command: {prompt}\n\nRobot data:\n{context}"
+
+        from langchain_core.messages import SystemMessage
+        response = await llm.ainvoke([
+            SystemMessage(content=system_msg),
+            HumanMessage(content=user_msg),
+        ])
+        summary = response.content.strip()
+    except Exception as e:
+        logger.warning(f"LLM summarization failed: {e}, using fallback")
+        # Fallback to structured summary
+        agents_text = []
+        for r in success_results:
+            agents_text.append(f"Agent {r.get('agent_id', 'unknown')}:\n{r.get('response', '')}")
+        summary = "\n\n---\n\n".join(agents_text)
+
     summary += f"\n[Iterations: {iteration}, Total latency: {total_latency}ms]"
     messages_log.append(AIMessage(content=f"Summary: generated ({len(success_results)} agents)"))
 

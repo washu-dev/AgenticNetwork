@@ -94,10 +94,13 @@ def _needs_vlm_verification(task_goal: str) -> bool:
     if not task_goal:
         return False
     keywords = ["wearing", "red", "blue", "green", "yellow", "white", "black",
+                "orange", "pink", "purple", "brown", "gray", "grey",
                 "shirt", "hat", "jacket", "dress", "glasses", "tall", "short",
-                "color", "holding", "carrying"]
+                "color", "holding", "carrying", "mannequin", "dummy"]
+    # Use word boundary matching to avoid false positives (e.g. "what" matching "hat")
+    import re
     goal_lower = task_goal.lower()
-    return any(kw in goal_lower for kw in keywords)
+    return any(re.search(rf'\b{kw}\b', goal_lower) for kw in keywords)
 
 
 # How often to grab and analyze a frame (seconds)
@@ -125,6 +128,7 @@ class SearchMission:
     start_time: float = 0.0
     frames_analyzed: int = 0
     detections: list = field(default_factory=list)
+    _seen_track_ids: set = field(default_factory=set)
     match_result: Optional[dict] = None
     error: Optional[str] = None
     _cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
@@ -256,15 +260,24 @@ async def _detect_in_frame(frame: bytes, target_type: str, target_name: str = ""
                 is_target = True
 
             # VLM verification: if YOLO says "person" and task has attribute description
+            # Cache by track_id to avoid repeated VLM calls for the same tracked person
+            track_id = d.get("track_id")
             if use_vlm and is_target and d["label"] == "person" and d.get("bbox"):
-                is_target = await _vlm_verify_attribute(frame, d["bbox"], task_goal)
+                cache_key = f"{task_goal}:{track_id}" if track_id is not None else None
+                if cache_key and cache_key in _vlm_cache:
+                    is_target = _vlm_cache[cache_key]
+                else:
+                    is_target = await _vlm_verify_attribute(frame, d["bbox"], task_goal)
+                    if cache_key:
+                        _vlm_cache[cache_key] = is_target
                 if is_target:
-                    d["label"] = f"person (matched: {task_goal[:30]})"
+                    d["label"] = f"person (VLM confirmed: matches description)"
 
             results.append({
                 "label": d["label"],
                 "confidence": d["confidence"],
                 "bbox": d.get("bbox"),
+                "track_id": d.get("track_id"),
                 "source": "central_yolo" + ("+vlm" if use_vlm else ""),
                 "is_target": is_target,
             })
@@ -345,6 +358,7 @@ async def run_search_mission(mission: SearchMission, existing_udp_receiver=None)
     mission.start_time = time.time()
     mission.status = "searching"
     reset_tracker(mission.agent_id)  # Reset ByteTrack state for fresh counting
+    _vlm_cache.clear()  # Reset VLM cache for fresh verification
 
     try:
         # Step 1: Get CentralPiAgent
@@ -420,8 +434,14 @@ async def run_search_mission(mission: SearchMission, existing_udp_receiver=None)
                 task_goal=mission.task_goal,
             )
 
-            # Accumulate detections
+            # Accumulate detections (deduplicate by track_id)
             for d in detections:
+                track_id = d.get("track_id")
+                if track_id is not None:
+                    key = f"{d.get('label', '')}:{track_id}"
+                    if key in mission._seen_track_ids:
+                        continue
+                    mission._seen_track_ids.add(key)
                 mission.detections.append(d)
 
             # Record first target match

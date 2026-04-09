@@ -70,6 +70,8 @@ async def startup_event():
                         _emit_comm_event(_current_task_id, rid, rid, "think", step[7:].strip())
                     elif step.startswith("Tool:"):
                         _emit_comm_event(_current_task_id, rid, "hardware", "execute", step[5:].strip())
+                    elif step.startswith("Auto:"):
+                        _emit_comm_event(_current_task_id, rid, "hardware", "auto", step[5:].strip())
                     elif step.startswith("Result:"):
                         _emit_comm_event(_current_task_id, rid, "planner", "result", step[7:].strip())
 

@@ -339,52 +339,78 @@ class LLMClient:
             logger.error(f"Target plan decision failed: {e}")
             return {"approach": False, "final_action": "MISSION_COMPLETE", "reason": "LLM error"}
 
-    async def plan_patrol_route(self, task_goal: str) -> dict:
+    async def plan_patrol_route(self, task_goal: str, map_data: dict = None) -> dict:
         """
         Generate a patrol route based on the user's task goal.
 
         Called once at mission start. Returns route steps for the robot to follow.
         Returns: {"pattern": "spin"|"area"|"stationary", "steps": [...], "reason": "..."}
-        """
-        system = (
-            f"{self._profile['identity']} Plan a patrol route based on the mission goal.\n\n"
-            "Route patterns:\n"
-            "- 'stationary': stay in place, don't move (for 'check here', 'report what you see')\n"
-            "- 'spin': turn 360 degrees in place to look around (for 'look around', 'turn around', 'scan area')\n"
-            "- 'area': walk a route to cover an area (for 'patrol', 'search', 'find')\n\n"
-            "Movement steps (each step is {action, value}):\n"
-            "- {action: 'forward', value: N} — walk forward N steps (~2.5cm each)\n"
-            "- {action: 'turn_left', value: D} — turn left D degrees\n"
-            "- {action: 'turn_right', value: D} — turn right D degrees\n\n"
-            "Common routes:\n"
-            "- Spin: [{turn_left, 90}, {turn_left, 90}, {turn_left, 90}, {turn_left, 90}]\n"
-            "- Small area: [{forward,3}, {turn_left,90}, {forward,3}, {turn_left,90}, "
-            "{forward,3}, {turn_left,90}, {forward,3}]\n"
-            "- Straight line: [{forward, 5}]\n\n"
-            "For stationary pattern, return empty steps [].\n"
-        )
 
+        Args:
+            task_goal: Natural language mission goal.
+            map_data: Optional map/spatial data for route planning.
+                      When provided, LLM will use it to plan an informed route.
+                      When None, uses predefined routes (no spatial awareness).
+        """
+        # Step 1: LLM decides which pattern to use
+        pattern = await self._classify_patrol_pattern(task_goal)
+
+        # Step 2: Generate steps based on pattern
+        if pattern == "stationary":
+            return {"pattern": "stationary", "steps": [], "reason": "Stationary observation"}
+
+        if pattern == "spin":
+            return {
+                "pattern": "spin",
+                "steps": [
+                    {"action": "turn_left", "value": 90},
+                    {"action": "turn_left", "value": 90},
+                    {"action": "turn_left", "value": 90},
+                    {"action": "turn_left", "value": 90},
+                ],
+                "reason": "360° scan in place",
+            }
+
+        # pattern == "area"
+        if map_data:
+            # TODO: Use LLM + map_data to plan an informed route
+            # e.g. LLM sees room layout, obstacles, POIs and plans accordingly
+            logger.info("Map data provided — LLM-based route planning (not yet implemented)")
+
+        # Default fixed route: forward 10, turn left 90°, forward 5
+        return {
+            "pattern": "area",
+            "steps": [
+                {"action": "forward", "value": 10},
+                {"action": "turn_left", "value": 90},
+                {"action": "forward", "value": 5},
+            ],
+            "reason": "Default patrol route (no map available)",
+        }
+
+    async def _classify_patrol_pattern(self, task_goal: str) -> str:
+        """Use LLM to classify task_goal into a patrol pattern: stationary, spin, or area."""
+        system = (
+            "Classify the mission goal into one of three patrol patterns. "
+            "Reply with ONLY the pattern name.\n\n"
+            "- 'stationary': stay in place (for 'check here', 'report what you see', 'describe', 'detect in front')\n"
+            "- 'spin': turn 360° in place (for 'look around', 'scan area', 'turn around', 'spin')\n"
+            "- 'area': walk a route (for 'patrol', 'search', 'find', 'explore')\n"
+        )
         try:
             result = await self._patrol_route_llm.ainvoke([
                 SystemMessage(content=system),
                 HumanMessage(content=f"Mission goal: {task_goal}"),
             ])
-            steps = [s.model_dump() for s in result.steps]
-            logger.info(f"Patrol route: pattern={result.pattern}, {len(steps)} steps — {result.reason}")
-            return {"pattern": result.pattern, "steps": steps, "reason": result.reason}
+            # Extract pattern from structured output
+            pattern = result.pattern.strip().lower()
+            if pattern not in ("stationary", "spin", "area"):
+                pattern = "area"
+            logger.info(f"Patrol pattern classified: {pattern} for goal: {task_goal[:50]}")
+            return pattern
         except Exception as e:
-            logger.error(f"Patrol route planning failed: {e}, using default")
-            return {
-                "pattern": "area",
-                "steps": [
-                    {"action": "forward", "value": 5},
-                    {"action": "turn_left", "value": 90},
-                    {"action": "forward", "value": 2},
-                    {"action": "turn_right", "value": 90},
-                    {"action": "forward", "value": 2},
-                ],
-                "reason": "LLM error, using default route",
-            }
+            logger.warning(f"Pattern classification failed: {e}, defaulting to area")
+            return "area"
 
     async def generate_patrol_report(self, task_goal: str, detections_log: list) -> dict:
         """

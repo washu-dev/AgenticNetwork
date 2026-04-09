@@ -331,6 +331,13 @@ class CentralPiAgent:
         # Completed missions
         self._completed_mission_ids: set = set()
 
+        # Last emitted approach action (avoid repeating same emit)
+        self._last_approach_emit: str = ""
+
+        # Report mode dedup: track_ids already logged, last emitted labels
+        self._seen_track_ids: set = set()
+        self._last_report_labels: list = []
+
     async def _emit(self, step: str):
         """Emit a reasoning step to the callback (if set)."""
         if self.on_reasoning:
@@ -375,6 +382,9 @@ class CentralPiAgent:
         self._stop_requested = False
         self._target_approach.clear()
         self._detections_log = []
+        self._seen_track_ids = set()
+        self._last_report_labels = []
+        self._last_approach_emit = ""
         logger.info(f"[{self.robot.robot_id}] Mission set: {mission_id}, goal={task_goal}, report_all={report_all}")
 
     def clear_mission(self):
@@ -398,6 +408,7 @@ class CentralPiAgent:
 
         if not self.robot.standing:
             logger.info(f"[{self.robot.robot_id}] Initial setup: stand_up")
+            await self._emit("Auto: stand_up (initial setup)")
             await self._execute_robot_action("stand_up")
         else:
             logger.info(f"[{self.robot.robot_id}] Already standing, skipping init")
@@ -437,14 +448,27 @@ class CentralPiAgent:
         if self.report_all and obs_status == "searching":
             if detections:
                 for d in detections:
+                    # Deduplicate by track_id — only log first sighting of each tracked object
+                    track_id = d.get("track_id")
+                    label = d.get("label", "?")
+                    if track_id is not None:
+                        seen_key = f"{label}:{track_id}"
+                        if seen_key in self._seen_track_ids:
+                            continue
+                        self._seen_track_ids.add(seen_key)
                     self._detections_log.append({
-                        "label": d.get("label", "?"),
+                        "label": label,
                         "confidence": d.get("confidence", 0),
                         "time_s": data.get("elapsed_s", 0),
                         "position": _describe_bbox(d.get("bbox", [])),
+                        "track_id": track_id,
                     })
-                labels = [d.get("label", "?") for d in detections]
-                logger.info(f"[{self._rid}] Report: detected {labels}")
+                # Only emit when new unique detections were added
+                new_labels = sorted(set(d.get("label", "?") for d in detections))
+                if new_labels != self._last_report_labels:
+                    logger.info(f"[{self._rid}] Report: detected {new_labels}")
+                    await self._emit(f"Result: detected {new_labels}")
+                    self._last_report_labels = new_labels
             return {"status": "ok", "action_taken": "stop", "reason": "logged"}
 
         # Fast path: no target → skip
@@ -472,6 +496,7 @@ class CentralPiAgent:
 
         except Exception as e:
             logger.error(f"[{self._rid}] Detection handling error: {e}")
+            await self._emit(f"Auto: Error — {e}")
             return {"status": "error", "reason": str(e)}
         finally:
             self._processing = False
@@ -485,6 +510,7 @@ class CentralPiAgent:
         # Stop patrol if running
         if self._patrol_active:
             logger.info(f"[{self._rid}] Target during patrol — stopping patrol")
+            await self._emit("Auto: Target detected — stopping patrol")
             self.stop_patrol()
             for _ in range(30):
                 if not self._patrol_active:
@@ -496,8 +522,10 @@ class CentralPiAgent:
         detected_label = target_dets[0].get("label", "unknown") if target_dets else "unknown"
 
         # Stage 2: Plan (LLM, called once, cached)
+        first_plan = not self._target_approach.has_plan
         plan = await self._target_approach.plan(task_goal, detected_label)
-        await self._emit(f"Intent: Target '{detected_label}' → {plan['final_action']} (approach={plan['approach']}) — {plan['reason']}")
+        if first_plan:
+            await self._emit(f"Intent: Target '{detected_label}' → {plan['final_action']} (approach={plan['approach']}) — {plan['reason']}")
 
         # No approach needed → execute immediately and finish
         if not plan["approach"]:
@@ -527,17 +555,25 @@ class CentralPiAgent:
                 self._completed_mission_ids.add(self.mission_id)
             return {"status": "ok", "action_taken": action, "reason": "target reached", "mission_ended": True}
 
-        # Navigation action (turn / forward)
+        # Navigation action (turn / forward) — only emit when action changes
         if action in ("turn_left", "turn_right"):
             self._consecutive_turns += 1
             degrees = self._target_approach.get_turn_degrees(detections)
             direction = "left" if action == "turn_left" else "right"
             logger.info(f"[{self._rid}] Approach: turn {direction} ~{degrees}° [#{self._consecutive_turns}]")
+            emit_key = f"turn_{direction}"
+            if emit_key != self._last_approach_emit:
+                await self._emit(f"Auto: turn {direction} ~{degrees}° (approaching)")
+                self._last_approach_emit = emit_key
             await self._turn_by_degrees(direction, degrees)
         elif action == "forward":
             self._consecutive_turns = 0
+            if self._last_approach_emit != "forward":
+                await self._emit("Auto: forward (approaching)")
+                self._last_approach_emit = "forward"
             await self._execute_robot_action("forward")
         else:
+            await self._emit(f"Auto: {action} (approaching)")
             await self._execute_robot_action(action)
 
         return {"status": "ok", "action_taken": action, "reason": "approaching target"}
@@ -550,7 +586,7 @@ class CentralPiAgent:
         - Cancelled by coordination: Planner sends sit_down
         """
         reason = data.get("reason", "mission finished")
-        await self._emit(f"Result: Mission finished — {reason}")
+        await self._emit(f"Auto: Mission finished — {reason}")
 
         if self.mission_id:
             self._completed_mission_ids.add(self.mission_id)
@@ -566,7 +602,7 @@ class CentralPiAgent:
         start = time.time()
 
         logger.info(f"[{self.robot.robot_id}] Patrol started")
-        await self._emit("Execute: Patrol started")
+        await self._emit("Auto: Patrol started")
 
         try:
             if not self.robot.standing:
@@ -574,13 +610,26 @@ class CentralPiAgent:
 
             # LLM plans the route based on task_goal
             route_plan = await self.brain.plan_patrol_route(self.task_goal or "patrol area")
+
+            # Target may have been found while LLM was planning — skip if already stopped
+            if self._stop_requested:
+                logger.info(f"[{self.robot.robot_id}] Target found during route planning — skipping patrol")
+                self._patrol_active = False
+                return {"status": "completed", "elapsed_ms": int((time.time() - start) * 1000)}
+
             pattern = route_plan.get("pattern", "area")
             steps = route_plan.get("steps", [])
             await self._emit(f"Intent: route plan → {pattern}, {len(steps)} steps — {route_plan.get('reason', '')}")
 
             if pattern == "stationary" or not steps:
-                logger.info(f"[{self.robot.robot_id}] Stationary patrol — no movement")
-                await asyncio.sleep(2)  # brief wait for detection
+                from ..config import MISSION_TIMEOUT_STATIONARY
+                logger.info(f"[{self.robot.robot_id}] Stationary patrol — observing for {MISSION_TIMEOUT_STATIONARY}s")
+                await self._emit(f"Auto: Observing for {MISSION_TIMEOUT_STATIONARY}s (stationary)")
+                # Wait long enough for detection engine to collect observations
+                for _ in range(MISSION_TIMEOUT_STATIONARY):
+                    if self._stop_requested:
+                        break
+                    await asyncio.sleep(1)
                 self._patrol_active = False
                 return {"status": "completed", "elapsed_ms": int((time.time() - start) * 1000)}
 
@@ -590,6 +639,7 @@ class CentralPiAgent:
             for i, (action, count) in enumerate(route):
                 if self._stop_requested:
                     logger.info(f"[{self.robot.robot_id}] Patrol aborted at step {i+1}")
+                    await self._emit(f"Auto: Patrol aborted at step {i+1}")
                     break
 
                 logger.info(f"[{self.robot.robot_id}] Patrol step {i+1}/{len(route)}: {action}({count})")
@@ -600,13 +650,13 @@ class CentralPiAgent:
                 elif action == "backward":
                     await self._exec("backward", {"steps": count})
                 elif action == "turn_left":
-                    await self._exec("turn_left_angle", {"steps": 2, "angle": count})
+                    await self._turn_by_degrees("left", count)
                 elif action == "turn_right":
-                    await self._exec("turn_right_angle", {"steps": 2, "angle": count})
+                    await self._turn_by_degrees("right", count)
 
             if not self._stop_requested:
                 logger.info(f"[{self.robot.robot_id}] Patrol route completed")
-                await self._emit("Result: Patrol route completed")
+                await self._emit("Auto: Patrol route completed")
                 await self._execute_robot_action("sit_down")
         finally:
             self._patrol_active = False
@@ -623,6 +673,7 @@ class CentralPiAgent:
                     detections_log=self._detections_log,
                 )
                 logger.info(f"[{self._rid}] Patrol report: {patrol_report.get('summary', '')[:100]}")
+                await self._emit(f"Result: {patrol_report.get('summary', 'Report generated')}")
             except Exception as e:
                 logger.warning(f"[{self._rid}] Patrol report generation failed: {e}")
 
@@ -653,10 +704,12 @@ class CentralPiAgent:
         """Rule-based obstacle avoidance. No LLM needed — ultrasonic has no directional info."""
         if distance_cm < 10:
             logger.info(f"[{self._rid}] Obstacle at {distance_cm:.0f}cm — backing up")
+            await self._emit(f"Auto: backward (obstacle at {distance_cm:.0f}cm)")
             await self._exec("backward", {"steps": 2})
         else:
             direction = random.choice(["turn_left", "turn_right"])
             logger.info(f"[{self._rid}] Obstacle at {distance_cm:.0f}cm — {direction}")
+            await self._emit(f"Auto: {direction} (obstacle at {distance_cm:.0f}cm)")
             angle_action = f"{direction}_angle"
             await self._exec(angle_action, {"steps": 2, "angle": 45})
             await self._exec("forward", {"steps": 2})
@@ -720,17 +773,21 @@ class CentralPiAgent:
         return result
 
     async def _turn_by_degrees(self, direction: str, degrees: float):
-        """Turn by estimated degrees using turn_left_angle/turn_right_angle."""
-        if degrees <= 45:
-            angle_param = int(degrees / 0.55)
-            steps = 1
-        else:
-            angle_param = int(degrees / 0.55 / 2)
-            steps = 2
-        angle_param = max(10, min(angle_param, 90))
+        """Turn by estimated degrees using turn_left_angle/turn_right_angle.
+
+        Calibrated from capability data:
+          angle=20, 1 step → ~30°   (3 steps → 90°)
+          angle=30, 1 step → ~36°   (5 steps → 180°)
+        Use angle=20 (~30°/step) as the standard unit to keep motion smooth.
+        """
+        DEG_PER_STEP = 30  # at angle=20, each step ≈ 30°
+        ANGLE_PARAM = 20   # safe, well-calibrated value
+
+        steps = max(1, round(degrees / DEG_PER_STEP))
+        steps = min(steps, 12)  # cap at 12 steps (360°)
 
         action = "turn_left_angle" if direction == "left" else "turn_right_angle"
-        await self._exec(action, {"steps": steps, "angle": angle_param})
+        await self._exec(action, {"steps": steps, "angle": ANGLE_PARAM})
 
     # ── State builder ────────────────────────────────────
 
