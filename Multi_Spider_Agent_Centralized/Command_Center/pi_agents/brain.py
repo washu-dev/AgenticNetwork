@@ -15,7 +15,7 @@ import logging
 from langchain_core.messages import SystemMessage, HumanMessage
 
 from ..config import PI_BRAIN_LLM_MODEL
-from ..planner.llm_config import LLM_MODEL, create_llm
+from ..config import LLM_MODEL, create_llm
 from .schemas import ActionDecomposition, ObservationDecision, ObstacleDecision, TargetPlan, PatrolRoute, PatrolReport
 
 logger = logging.getLogger(__name__)

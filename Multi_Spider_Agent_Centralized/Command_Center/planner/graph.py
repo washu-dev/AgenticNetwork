@@ -14,138 +14,20 @@ import asyncio
 import json
 import logging
 from datetime import datetime
-from typing import Any, Dict, List, Literal, Optional
+from typing import Literal, Optional
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.graph import END, START, StateGraph
-from pydantic import BaseModel, Field
-from typing_extensions import TypedDict
 
 
 from ..infra.discovery import AgentDiscovery
 from ..infra.robot_registry import robot_registry
-from .llm_config import create_llm
+from .schemas import PlannerState
+from .brain import parse_intent, fallback_intent, build_coordinator_prompt
 
 logger = logging.getLogger(__name__)
 
 MAX_REPLANS = 3
-
-
-# ---------------------------------------------------------------------------
-# Structured Outputs
-# ---------------------------------------------------------------------------
-
-class Phase(BaseModel):
-    """A single execution phase describing what robots should do."""
-    target_robot_ids: List[str] = Field(
-        default_factory=list,
-        description="Robot IDs for this phase. Empty = all online robots",
-    )
-    target_zone: str = Field(
-        default="",
-        description="Target zone letter (e.g. 'A', 'B'). Empty = no zone filter",
-    )
-    task_type: str = Field(description="direct_control or agent")
-    target_type: str = Field(default="none", description="face, color, qr_code, object, any, or none")
-    description: str = Field(description="One-line description")
-    target_name: str = Field(default="", description="For face search: specific person name")
-    report_all: bool = Field(default=False, description="True if observe/report task")
-    duration_s: int = Field(
-        default=0,
-        description="Duration in seconds if user specifies (e.g. 'for 5 seconds' → 5). 0 = use default timeout.",
-    )
-
-
-class TaskIntent(BaseModel):
-    is_valid_task: bool = Field(description="False if prompt is unrelated to robot control")
-    rejection_reason: str = Field(default="", description="If is_valid_task=false, reason why")
-    phases: List[Phase] = Field(description="Exactly ONE phase describing the task. Always output a list with one element.")
-    urgency: str = Field(description="low / medium / high")
-
-
-# ---------------------------------------------------------------------------
-# State
-# ---------------------------------------------------------------------------
-
-class PlannerState(TypedDict, total=False):
-    prompt: str
-    strategy: str
-    iteration: int
-    start_time: float
-    intent: dict
-    error: Optional[str]
-    online_agents: list[dict]
-    selected_agents: list[dict]
-    agent_results: list[dict]
-    spatial_memory: dict
-    verification_status: str
-    verification_recommendation: str
-    summary: str
-    messages: list
-
-
-# ---------------------------------------------------------------------------
-# Parse prompt
-# ---------------------------------------------------------------------------
-
-_PARSE_PROMPT = (
-    "You are a task planner for a multi-robot system.\n\n"
-    "If the request is NOT about robot control, set is_valid_task=false.\n"
-    "Otherwise, output exactly ONE phase.\n\n"
-    "TASK TYPES:\n"
-    "  direct_control — movement/posture/gesture, no detection\n"
-    "  agent — camera detection + robot actions\n\n"
-    "KEY FIELDS:\n"
-    "  target_robot_ids: [] = all robots, ['id'] = specific robot\n"
-    "  target_zone: 'A' = robots in zone A, '' = no filter\n"
-    "  target_type: object, face, any, none\n"
-    "  report_all: true = just observe/report, false = act on detection\n"
-    "  duration_s: seconds if user specifies (e.g. 'for 5 seconds' → 5). 0 = default.\n\n"
-    "RULES:\n"
-    "1. 'person'/'people' → target_type='object'. 'face' → target_type='face'.\n"
-    "2. Robot decides movement pattern and response actions from task_goal autonomously.\n\n"
-    "EXAMPLES:\n"
-    "  'Wave' → direct_control\n"
-    "  'robot-002 wave' → direct_control, target_robot_ids=['robot-002']\n"
-    "  'Detect person, if found wave' → agent, target_type='object'\n"
-    "  'Report what you see' → agent, target_type='any', report_all=true\n"
-    "  'Detect person for 10 seconds' → agent, target_type='object', duration_s=10"
-)
-
-
-
-def _build_parse_prompt(online_robots: list[dict]) -> str:
-    """Build parse prompt, injecting capabilities and robot list."""
-    all_actions = set()
-    for robot in online_robots:
-        caps = robot.get("capabilities")
-        if not caps:
-            continue
-        for a in caps.get("actions", []):
-            name = a if isinstance(a, str) else a.get("name", "")
-            if name:
-                all_actions.add(name)
-
-    actions_str = ", ".join(sorted(all_actions)) if all_actions else ""
-    actions_line = f"Supported actions: {actions_str}\n" if actions_str else ""
-
-    robot_lines = []
-    for robot in online_robots:
-        rid = robot["id"]
-        rtype = robot.get("robot_type", "spider")
-        zone = robot.get("zone", "")
-        zone_str = f", zone={zone}" if zone else ""
-        busy_str = ", busy" if robot.get("busy") else ""
-        robot_lines.append(f"  - {rid} (type={rtype}{zone_str}{busy_str})")
-    robots_section = "\n".join(robot_lines) if robot_lines else "  (none)"
-
-    return (
-        f"{_PARSE_PROMPT}\n\n"
-        f"AVAILABLE ROBOTS:\n{robots_section}\n\n"
-        f"{actions_line}"
-        "When the user refers to a robot by short name (e.g. '002', 'A'), "
-        "match it to the closest robot ID from the list above."
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -201,20 +83,10 @@ async def parse_and_discover(state: PlannerState) -> dict:
     prompt = state["prompt"]
 
     # All commands go through LLM for intelligent routing
-    parse_prompt = _build_parse_prompt(online_agents)
-
-    try:
-        intent_llm = create_llm().with_structured_output(TaskIntent, strict=True)
-        parse_result = await intent_llm.ainvoke([
-            SystemMessage(content=parse_prompt),
-            HumanMessage(content=prompt),
-        ])
-    except Exception as e:
-        logger.warning(f"LLM parse failed: {e}, using fallback")
-        parse_result = None
+    parse_result = await parse_intent(prompt, online_agents)
 
     if parse_result is None:
-        intent = _fallback_intent(prompt)
+        intent = fallback_intent(prompt)
         phase_descs = [f"{p['task_type']}:{p.get('target_type','')}" for p in intent['phases']]
         messages_log.append(AIMessage(content=f"Parse (fallback): [{', '.join(phase_descs)}]"))
     else:
@@ -255,53 +127,6 @@ async def parse_and_discover(state: PlannerState) -> dict:
     messages_log.append(AIMessage(content=f"Discovery: {len(online_agents)} robots online"))
     return {"intent": intent, "online_agents": online_agents, "messages": messages_log}
 
-
-
-def _fallback_intent(prompt: str) -> dict:
-    """Fallback keyword-based intent classification."""
-    p = prompt.lower()
-
-    _DIRECT_KEYWORDS = [
-        "forward", "go ahead", "move forward", "advance",
-        "backward", "go back", "move back", "reverse",
-        "turn left", "turn right", "rotate",
-        "stand up", "get up", "rise",
-        "sit down", "crouch", "lower",
-        "stop", "halt", "freeze",
-        "push up", "pushup",
-        "wave", "say hi", "say hello", "greet",
-        "look left", "look right", "look up", "look down",
-        "dance", "dancing",
-    ]
-
-    is_direct = any(kw in p for kw in _DIRECT_KEYWORDS)
-    is_detection = any(kw in p for kw in ["detect", "search", "find", "patrol", "scan", "look for"])
-
-    if is_direct and not is_detection:
-        return {
-            "phases": [{"target_robot_ids": [], "task_type": "direct_control", "target_type": "none",
-                        "description": prompt}],
-            "urgency": "medium",
-        }
-
-    if any(kw in p for kw in ["face", "faces"]):
-        target = "face"
-    elif any(kw in p for kw in ["person", "people", "human"]):
-        target = "object"
-    elif any(kw in p for kw in ["red", "blue", "green", "color"]):
-        target = "color"
-    elif any(kw in p for kw in ["qr", "barcode", "code"]):
-        target = "qr_code"
-    else:
-        target = "any"
-
-    is_report = any(kw in p for kw in ["report", "observe", "what do you see", "look around"])
-
-    return {
-        "phases": [{"target_robot_ids": [], "task_type": "agent", "target_type": target,
-                    "description": prompt, "report_all": is_report}],
-        "urgency": "medium",
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -447,193 +272,26 @@ async def _execute_coordinated_patrol(phase: dict, robots: list[dict], prompt: s
     The LLM sees tool outputs and decides what to do next,
     just like a ReAct agent with tool-calling.
     """
-    import uuid
+    from .tools import CoordinationToolExecutor, OPENAI_TOOLS
 
     if len(robots) < 2:
         return await _dispatch_agent_task(robots[0], phase, prompt, messages_log)
 
-    # ── State shared between tools ──
-    patrol_tasks: dict = {}       # robot_id → (asyncio.Task, robot_dict)
-    detection_events: list = []    # [{robot_id, zone, detections, result}]
-    agent_results: list = []       # final results to return
-    completed: set = set()         # robot_ids that finished
-
-    # ── Tool implementations ──
-    async def _tool_dispatch_patrol(robot_ids: list[str]) -> str:
-        """Start patrol on specified robots."""
-        dispatched = []
-        for rid in robot_ids:
-            robot = next((r for r in robots if r["id"] == rid), None)
-            if not robot or rid in patrol_tasks:
-                continue
-            task_payload = {
-                "task_type": "agent",
-                "mission_id": str(uuid.uuid4())[:8],
-                "target_type": phase.get("target_type", "object"),
-                "target_name": phase.get("target_name", ""),
-                "report_all": phase.get("report_all", False),
-                "task_goal": prompt,
-            }
-            coro = _dispatch_to_robot_agent(rid, task_payload, timeout=300)
-            patrol_tasks[rid] = (asyncio.create_task(coro), robot)
-            dispatched.append(rid)
-        return f"Patrol started on: {dispatched}"
-
-    async def _tool_wait_for_detection() -> str:
-        """Wait for the next robot to complete its patrol. Returns detection results."""
-        pending = set(t for rid, (t, _) in patrol_tasks.items() if rid not in completed)
-        if not pending:
-            return "No robots are patrolling."
-
-        done, _ = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
-
-        results_text = []
-        for finished_task in done:
-            for rid, (task, robot) in patrol_tasks.items():
-                if task is finished_task:
-                    try:
-                        result = task.result()
-                    except Exception as e:
-                        result = {"status": "error", "error": str(e)}
-                    completed.add(rid)
-
-                    mission_result = result.get("mission_result", {})
-                    dets = mission_result.get("detections", [])
-                    zone = robot.get("zone", "?")
-
-                    if mission_result.get("status") == "completed" and len(dets) > 0:
-                        detection_events.append({
-                            "robot_id": rid, "robot": robot,
-                            "zone": zone, "detections": dets, "result": result,
-                        })
-                        labels = [f"{d.get('label', '?')}({d.get('confidence', 0):.0%})" for d in dets[:5]]
-                        results_text.append(f"{rid} (zone {zone}): FOUND {', '.join(labels)}")
-                    else:
-                        status = mission_result.get("status", result.get("status", "?"))
-                        results_text.append(f"{rid} (zone {zone}): {status}, no target detected")
-                    break
-
-        still_patrolling = [rid for rid in patrol_tasks if rid not in completed]
-        summary = "\n".join(results_text)
-        summary += f"\nStill patrolling: {still_patrolling if still_patrolling else 'none'}"
-        return summary
-
-    async def _tool_execute_action(robot_id: str, action: str) -> str:
-        """Execute an action on a specific robot (e.g. wave, sit_down)."""
-        robot = next((r for r in robots if r["id"] == robot_id), None)
-        if not robot:
-            return f"Robot {robot_id} not found"
-        await _dispatch_direct_control(robot, action)
-        return f"{robot_id}: executed {action}"
-
-    async def _tool_cancel_robot(robot_id: str) -> str:
-        """Cancel a robot's patrol mission."""
-        await _cancel_robot(robot_id)
-        completed.add(robot_id)
-        # Also cancel the asyncio task
-        if robot_id in patrol_tasks:
-            task, _ = patrol_tasks[robot_id]
-            task.cancel()
-        return f"{robot_id}: cancelled"
-
-    # ── Tool definitions for LLM ──
-    tools = [
-        {
-            "type": "function",
-            "function": {
-                "name": "dispatch_patrol",
-                "description": "Start patrol on specified robots. Call this first to begin the search mission.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "robot_ids": {"type": "array", "items": {"type": "string"},
-                                      "description": "List of robot IDs to dispatch"}
-                    },
-                    "required": ["robot_ids"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "wait_for_detection",
-                "description": "Wait for the next robot to complete and report results. Returns detection info or 'no target'.",
-                "parameters": {"type": "object", "properties": {}},
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "execute_action",
-                "description": "Make a robot perform a physical action (e.g. wave, sit_down, stop).",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "robot_id": {"type": "string", "description": "Robot ID"},
-                        "action": {"type": "string", "description": "Action name (wave, sit_down, stop, etc.)"},
-                    },
-                    "required": ["robot_id", "action"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "cancel_robot",
-                "description": "Cancel a robot's patrol and stop it.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "robot_id": {"type": "string", "description": "Robot ID to cancel"},
-                    },
-                    "required": ["robot_id"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "finish",
-                "description": "End the coordination. Call this when the mission is complete.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "summary": {"type": "string", "description": "Brief summary of what happened"},
-                    },
-                    "required": ["summary"],
-                },
-            },
-        },
-    ]
-
-    tool_map = {
-        "dispatch_patrol": lambda args: _tool_dispatch_patrol(args.get("robot_ids", [])),
-        "wait_for_detection": lambda args: _tool_wait_for_detection(),
-        "execute_action": lambda args: _tool_execute_action(args["robot_id"], args["action"]),
-        "cancel_robot": lambda args: _tool_cancel_robot(args["robot_id"]),
-    }
+    # Create tool executor with coordination state
+    executor = CoordinationToolExecutor(
+        robots=robots, phase=phase, prompt=prompt,
+        dispatch_fn=_dispatch_to_robot_agent,
+        cancel_fn=_cancel_robot,
+        direct_control_fn=_dispatch_direct_control,
+    )
 
     # ── ReAct loop ──
-    robot_desc = ", ".join(f"{r['id']}(zone {r.get('zone', '?')})" for r in robots)
-    system_msg = (
-        "You are a multi-robot coordinator. You have tools to control robots.\n\n"
-        f"Available robots: {robot_desc}\n\n"
-        "Workflow:\n"
-        "1. dispatch_patrol to start all robots searching\n"
-        "2. wait_for_detection to see results as robots complete\n"
-        "3. Based on the user's intent and detection results, decide what each robot should do next\n"
-        "4. When the mission is complete, call finish\n\n"
-        "You decide autonomously what actions to take based on the user's command.\n"
-        "Consider what the user wants for EACH robot — the detecting robot AND the others.\n"
-        "The user may want others to: sit down, stop, keep searching, go somewhere, or anything else.\n"
-        "Read the user's command carefully and infer the right behavior.\n"
-    )
+    system_msg = build_coordinator_prompt(robots)
 
     from openai import AsyncOpenAI
     import os
 
-    # Parse model: "openai/gpt-4o-mini" → "gpt-4o-mini"
-    from ..planner.llm_config import LLM_MODEL
+    from ..config import LLM_MODEL
     model = LLM_MODEL.split("/", 1)[-1] if "/" in LLM_MODEL else LLM_MODEL
     client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY", ""))
 
@@ -649,7 +307,7 @@ async def _execute_coordinated_patrol(phase: dict, robots: list[dict], prompt: s
         response = await client.chat.completions.create(
             model=model,
             messages=messages,
-            tools=tools,
+            tools=OPENAI_TOOLS,
             temperature=0.3,
         )
 
@@ -683,10 +341,10 @@ async def _execute_coordinated_patrol(phase: dict, robots: list[dict], prompt: s
                     "tool_call_id": tc.id,
                     "content": fn_args.get("summary", "done"),
                 })
-                # Build final results
-                for evt in detection_events:
+                # Build final results from executor state
+                for evt in executor.detection_events:
                     zone_report = f"Target detected by {evt['robot_id']} in zone {evt['zone']}"
-                    agent_results.append({
+                    executor.agent_results.append({
                         "agent_id": evt["robot_id"],
                         "status": "success",
                         "response": zone_report,
@@ -697,21 +355,20 @@ async def _execute_coordinated_patrol(phase: dict, robots: list[dict], prompt: s
                             "zone_report": zone_report,
                         },
                     })
-                if not detection_events:
+                if not executor.detection_events:
                     for robot in robots:
-                        agent_results.append({
+                        executor.agent_results.append({
                             "agent_id": robot["id"],
                             "status": "success",
                             "response": "Patrol completed, no target detected",
                             "structured": {"detections": []},
                         })
-                return {"agent_results": agent_results}
+                return {"agent_results": executor.agent_results}
 
             # Execute the tool
-            handler = tool_map.get(fn_name)
-            if handler:
-                output = await handler(fn_args)
-            else:
+            try:
+                output = await executor.call_tool(fn_name, fn_args)
+            except ValueError:
                 output = f"Unknown tool: {fn_name}"
 
             logger.info(f"ReAct tool output: {output[:200]}")
@@ -725,8 +382,8 @@ async def _execute_coordinated_patrol(phase: dict, robots: list[dict], prompt: s
 
     # Safety: if loop ended without finish, build results anyway
     logger.warning("ReAct coordination loop ended without finish call")
-    for evt in detection_events:
-        agent_results.append({
+    for evt in executor.detection_events:
+        executor.agent_results.append({
             "agent_id": evt["robot_id"],
             "status": "success",
             "response": f"Target detected in zone {evt['zone']}",
@@ -736,15 +393,15 @@ async def _execute_coordinated_patrol(phase: dict, robots: list[dict], prompt: s
                 "zone": evt["zone"],
             },
         })
-    if not agent_results:
+    if not executor.agent_results:
         for robot in robots:
-            agent_results.append({
+            executor.agent_results.append({
                 "agent_id": robot["id"],
                 "status": "success",
                 "response": "Patrol completed",
                 "structured": {},
             })
-    return {"agent_results": agent_results}
+    return {"agent_results": executor.agent_results}
 
 
 async def _ping_robot(robot_id: str, timeout: float = 3) -> bool:

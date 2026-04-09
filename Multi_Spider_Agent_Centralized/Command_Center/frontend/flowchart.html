@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agent Communication Flow</title>
+<script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; }
+
+  .header { background: #1e293b; padding: 10px 20px; border-bottom: 1px solid #334155; display: flex; align-items: center; gap: 16px; }
+  .header h1 { font-size: 16px; color: #38bdf8; }
+  .header a { color: #94a3b8; font-size: 12px; text-decoration: none; }
+  .header a:hover { color: #e2e8f0; }
+  .header .task-info { font-size: 11px; color: #64748b; margin-left: auto; }
+  .header .status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; }
+  .header .status-dot.live { background: #22c55e; }
+  .header .status-dot.done { background: #64748b; }
+
+  .main { display: flex; height: calc(100vh - 44px); }
+
+  .chart-area { flex: 1; overflow: auto; padding: 20px; }
+  .placeholder { display: flex; align-items: center; justify-content: center; height: 100%; color: #334155; font-size: 14px; }
+
+  .event-log { width: 340px; background: #1e293b; border-left: 1px solid #334155; overflow-y: auto; padding: 10px; }
+  .event-log-title { font-size: 11px; color: #64748b; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; font-weight: 600; }
+  .event-item { padding: 5px 8px; font-size: 10px; font-family: monospace; border-bottom: 1px solid #0f172a; line-height: 1.5; }
+  .event-item .ev-from { color: #38bdf8; }
+  .event-item .ev-to { color: #a78bfa; }
+  .event-item .ev-label { color: #e2e8f0; }
+  .event-item .ev-time { color: #475569; }
+
+  /* SVG styles */
+  .entity-label { font-size: 11px; font-weight: 600; fill: white; }
+  .entity-box { rx: 6; ry: 6; }
+  .lifeline { stroke: #334155; stroke-width: 1; stroke-dasharray: 4,4; }
+  .arrow-label { font-size: 9px; fill: #94a3b8; font-family: monospace; }
+  .arrow-line { stroke-width: 2; }
+
+  .arrow-line.command { stroke: #f59e0b; }
+  .arrow-line.think { stroke: #a78bfa; }
+  .arrow-line.dispatch { stroke: #38bdf8; }
+  .arrow-line.tool_call { stroke: #38bdf8; }
+  .arrow-line.result { stroke: #22c55e; }
+  .arrow-line.execute { stroke: #38bdf8; }
+  .arrow-line.summary { stroke: #22c55e; }
+  .arrow-line.discovery { stroke: #64748b; }
+
+  @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+  .event-group { animation: fadeIn 0.3s ease-in; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div class="header">
+    <h1>Agent Communication Flow</h1>
+    <a href="/">&larr; Back to Command Center</a>
+    <div class="task-info">
+      <span :class="['status-dot', status === 'running' ? 'live' : 'done']"></span>
+      {{ taskId || 'No task' }} — {{ status }}
+      <span v-if="events.length > 0">({{ events.length }} events)</span>
+    </div>
+  </div>
+
+  <div class="main">
+    <div class="chart-area" ref="chartArea">
+      <div v-if="events.length === 0" class="placeholder">
+        Waiting for task events...
+      </div>
+      <svg v-else :width="svgWidth" :height="svgHeight" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <marker id="arr-yellow" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#f59e0b"/></marker>
+          <marker id="arr-purple" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#a78bfa"/></marker>
+          <marker id="arr-blue" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#38bdf8"/></marker>
+          <marker id="arr-green" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#22c55e"/></marker>
+          <marker id="arr-gray" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#64748b"/></marker>
+          <!-- Reverse arrows (pointing left) -->
+          <marker id="arr-yellow-r" viewBox="0 0 10 10" refX="0" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M10,0 L0,5 L10,10 z" fill="#f59e0b"/></marker>
+          <marker id="arr-purple-r" viewBox="0 0 10 10" refX="0" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M10,0 L0,5 L10,10 z" fill="#a78bfa"/></marker>
+          <marker id="arr-blue-r" viewBox="0 0 10 10" refX="0" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M10,0 L0,5 L10,10 z" fill="#38bdf8"/></marker>
+          <marker id="arr-green-r" viewBox="0 0 10 10" refX="0" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M10,0 L0,5 L10,10 z" fill="#22c55e"/></marker>
+          <marker id="arr-gray-r" viewBox="0 0 10 10" refX="0" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M10,0 L0,5 L10,10 z" fill="#64748b"/></marker>
+        </defs>
+
+        <!-- Entity headers -->
+        <g v-for="(ent, i) in entities" :key="ent.id" :transform="`translate(${colX(ent.id)}, 0)`">
+          <rect class="entity-box" :x="-45" y="8" width="90" height="28" :fill="entityColor(ent.id)" />
+          <text class="entity-label" x="0" y="27" text-anchor="middle">{{ ent.label }}</text>
+          <line class="lifeline" x1="0" y1="42" x2="0" :y2="svgHeight - 10" />
+        </g>
+
+        <!-- Events (arrows) -->
+        <g v-for="ev in events" :key="ev.id" class="event-group" :transform="`translate(0, ${ev.id * rowHeight + headerHeight})`">
+          <line :class="['arrow-line', ev.type]"
+                :x1="arrowX1(ev)" y1="0" :x2="arrowX2(ev)" y2="0"
+                :marker-end="arrowMarker(ev)" />
+          <text class="arrow-label"
+                :x="labelX(ev)" y="-5"
+                :text-anchor="labelAnchor(ev)">
+            {{ ev.label }}
+          </text>
+        </g>
+      </svg>
+    </div>
+
+    <div class="event-log">
+      <div class="event-log-title">Event Log ({{ events.length }})</div>
+      <div v-for="ev in events" :key="ev.id" class="event-item">
+        <span class="ev-time">{{ formatTs(ev.ts) }}</span>
+        <span class="ev-from">{{ shortName(ev.from) }}</span>
+        →
+        <span class="ev-to">{{ shortName(ev.to) }}</span>
+        : <span class="ev-label">{{ ev.label }}</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const { createApp, ref, computed, onMounted, onUnmounted, nextTick } = Vue;
+
+createApp({
+  setup() {
+    const events = ref([]);
+    const taskId = ref('');
+    const status = ref('waiting');
+    const chartArea = ref(null);
+
+    const rowHeight = 36;
+    const headerHeight = 55;
+    const colGap = 160;
+
+    // Entity order: fixed known entities + dynamic robots
+    const knownEntities = ['user', 'planner'];
+
+    const entities = computed(() => {
+      const seen = new Set();
+      for (const ev of events.value) {
+        seen.add(ev.from);
+        seen.add(ev.to);
+      }
+      const result = [];
+      for (const k of knownEntities) {
+        if (seen.has(k)) result.push({ id: k, label: entityLabel(k) });
+      }
+      // Add robots in sorted order
+      const robots = [...seen].filter(s => s.startsWith('crawler-') || s === 'robots').sort();
+      for (const r of robots) result.push({ id: r, label: entityLabel(r) });
+      // Add hardware if any
+      if (seen.has('hardware')) result.push({ id: 'hardware', label: 'Hardware' });
+      return result;
+    });
+
+    const entityIndex = computed(() => {
+      const map = {};
+      entities.value.forEach((e, i) => map[e.id] = i);
+      return map;
+    });
+
+    function colX(id) {
+      const idx = entityIndex.value[id];
+      return idx !== undefined ? 80 + idx * colGap : 80;
+    }
+
+    const svgWidth = computed(() => 80 + entities.value.length * colGap + 40);
+    const svgHeight = computed(() => Math.max(200, headerHeight + events.value.length * rowHeight + 40));
+
+    function entityLabel(id) {
+      if (id === 'user') return 'User';
+      if (id === 'planner') return 'Planner';
+      if (id === 'llm') return 'LLM';
+      if (id === 'hardware') return 'Hardware';
+      if (id === 'robots') return 'Robots';
+      if (id.startsWith('crawler-alpha-patrol-')) return id.replace('crawler-alpha-patrol-', 'Robot ');
+      return id;
+    }
+
+    function entityColor(id) {
+      if (id === 'user') return '#f59e0b';
+      if (id === 'planner') return '#3b82f6';
+      if (id === 'llm') return '#8b5cf6';
+      if (id === 'hardware') return '#64748b';
+      return '#0ea5e9';
+    }
+
+    function arrowColorName(ev) {
+      const t = ev.type;
+      if (t === 'command') return 'yellow';
+      if (t === 'think') return 'purple';
+      if (t === 'dispatch' || t === 'tool_call' || t === 'execute') return 'blue';
+      if (t === 'result' || t === 'summary') return 'green';
+      return 'gray';
+    }
+
+    function arrowX1(ev) {
+      const fx = colX(ev.from);
+      const tx = colX(ev.to);
+      return fx < tx ? fx + 8 : fx - 8;
+    }
+    function arrowX2(ev) {
+      const fx = colX(ev.from);
+      const tx = colX(ev.to);
+      if (fx === tx) return tx + 30; // self-arrow: short right
+      return fx < tx ? tx - 8 : tx + 8;
+    }
+
+    function arrowMarker(ev) {
+      const c = arrowColorName(ev);
+      const fx = colX(ev.from);
+      const tx = colX(ev.to);
+      if (fx <= tx) return `url(#arr-${c})`;
+      return `url(#arr-${c}-r)`;
+    }
+
+    function labelX(ev) {
+      return (colX(ev.from) + colX(ev.to)) / 2;
+    }
+    function labelAnchor(ev) { return 'middle'; }
+
+    function shortName(id) {
+      if (id.startsWith('crawler-alpha-patrol-')) return id.replace('crawler-alpha-patrol-', '');
+      return id;
+    }
+
+    function formatTs(ts) {
+      const d = new Date(ts * 1000);
+      return d.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    }
+
+    // Get task ID from URL params or poll for latest
+    const params = new URLSearchParams(window.location.search);
+    taskId.value = params.get('task') || '';
+
+    let pollTimer = null;
+
+    async function poll() {
+      if (!taskId.value) {
+        // Try to find the latest running task
+        try {
+          const resp = await fetch('/api/agents');
+          // No dedicated "latest task" endpoint, so just wait
+        } catch(e) {}
+        return;
+      }
+      try {
+        const resp = await fetch(`/api/task/${taskId.value}`);
+        const data = await resp.json();
+        if (data.comm_events) {
+          events.value = data.comm_events;
+        }
+        status.value = data.status || 'unknown';
+        await nextTick();
+        // Auto-scroll chart to bottom
+        if (chartArea.value) {
+          chartArea.value.scrollTop = chartArea.value.scrollHeight;
+        }
+      } catch(e) {}
+    }
+
+    onMounted(() => {
+      poll();
+      pollTimer = setInterval(poll, 1000);
+    });
+    onUnmounted(() => {
+      if (pollTimer) clearInterval(pollTimer);
+    });
+
+    return {
+      events, taskId, status, entities, chartArea,
+      svgWidth, svgHeight, rowHeight, headerHeight, colGap,
+      colX, entityLabel, entityColor, arrowColorName,
+      arrowX1, arrowX2, arrowMarker, labelX, labelAnchor,
+      shortName, formatTs,
+    };
+  }
+}).mount('#app');
+</script>
+</body>
+</html>

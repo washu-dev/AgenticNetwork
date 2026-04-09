@@ -21,7 +21,7 @@ from .detection.engine import SearchMission, run_search_mission, get_active_miss
 from .infra.robot_registry import robot_registry
 from .infra.robot_client import robot_client
 from .detection.face_registry import face_registry
-from .planner.llm_config import create_vision_llm
+from .config import create_vision_llm
 from .planner.graph import run_planner, planner_graph
 from .detection.yolo_detector import detect_frame
 
@@ -64,6 +64,14 @@ async def startup_event():
             step = data.get("step", "")
             if rid and step:
                 _live_robot_reasoning.setdefault(rid, []).append(step)
+                # Also emit comm_event for flow chart
+                if _current_task_id:
+                    if step.startswith("Intent:"):
+                        _emit_comm_event(_current_task_id, rid, rid, "think", step[7:].strip())
+                    elif step.startswith("Tool:"):
+                        _emit_comm_event(_current_task_id, rid, "hardware", "execute", step[5:].strip())
+                    elif step.startswith("Result:"):
+                        _emit_comm_event(_current_task_id, rid, "planner", "result", step[7:].strip())
 
         await transport.subscribe([REASONING_TOPIC_WILDCARD], _on_robot_reasoning)
         logger.info(f"Subscribed to robot reasoning: {REASONING_TOPIC_WILDCARD}")
@@ -189,6 +197,12 @@ app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
 async def root():
     """Serve the frontend UI."""
     return FileResponse(FRONTEND_DIR / "index.html")
+
+
+@app.get("/flowchart")
+async def flowchart_page():
+    """Serve the Agent Communication flow chart page."""
+    return FileResponse(FRONTEND_DIR / "flowchart.html")
 
 
 @app.get("/health")
@@ -695,6 +709,67 @@ _active_tasks: dict[str, asyncio.Task] = {}
 _task_results: dict[str, SearchResponse] = {}
 _live_reasoning: dict[str, list[str]] = {}  # task_id → live reasoning steps
 _live_robot_reasoning: dict[str, list[str]] = {}  # robot_id → reasoning steps
+_live_comm_events: dict[str, list[dict]] = {}  # task_id → communication events for flow chart
+_current_task_id: str = ""  # tracks active task for robot reasoning → comm_event association
+_comm_event_counter: int = 0
+
+
+def _emit_comm_event(task_id: str, from_: str, to_: str, type_: str, label: str, status: str = "success"):
+    """Add a communication event for the flow chart."""
+    global _comm_event_counter
+    import time
+    events = _live_comm_events.setdefault(task_id, [])
+    events.append({
+        "id": _comm_event_counter,
+        "ts": time.time(),
+        "from": from_,
+        "to": to_,
+        "type": type_,
+        "label": label[:80],
+        "status": status,
+    })
+    _comm_event_counter += 1
+
+
+def _parse_reasoning_to_comm_event(task_id: str, content: str):
+    """Parse a Planner reasoning string into a comm_event.
+
+    Entities are: user, planner, robot agents, hardware.
+    LLM is internal to each agent — not a separate entity.
+    """
+    import re
+    robot_ids = re.findall(r'crawler-alpha-patrol-\d+', content)
+
+    if content.startswith("Parse:") or content.startswith("Intent:"):
+        # Planner's internal LLM decision — show as planner thinking
+        _emit_comm_event(task_id, "planner", "planner", "think", content.split(":", 1)[1].strip())
+    elif content.startswith("Discovery:"):
+        _emit_comm_event(task_id, "planner", "planner", "discovery", content[10:].strip())
+    elif content.startswith("Execute:"):
+        for rid in robot_ids:
+            short = rid.replace("crawler-alpha-patrol-", "")
+            _emit_comm_event(task_id, "planner", rid, "dispatch", f"dispatch → {short}")
+        if not robot_ids:
+            _emit_comm_event(task_id, "planner", "planner", "dispatch", content[8:].strip())
+    elif content.startswith("Tool:"):
+        # Planner ReAct tool call → dispatch to robot
+        target = robot_ids[0] if robot_ids else "planner"
+        _emit_comm_event(task_id, "planner", target, "tool_call", content[5:].strip())
+    elif content.startswith("Result:"):
+        source = robot_ids[0] if robot_ids else "planner"
+        _emit_comm_event(task_id, source, "planner", "result", content[7:].strip())
+    elif content.startswith("Agent result:") or content.startswith("Agent:"):
+        prefix_len = 13 if content.startswith("Agent result:") else 6
+        source = robot_ids[0] if robot_ids else "planner"
+        _emit_comm_event(task_id, source, "planner", "result", content[prefix_len:].strip())
+    elif content.startswith("Done:"):
+        _emit_comm_event(task_id, "planner", "user", "result", content[5:].strip())
+    elif content.startswith("Summary:"):
+        _emit_comm_event(task_id, "planner", "user", "summary", content[8:].strip())
+    elif content.startswith("Coordinator:"):
+        _emit_comm_event(task_id, "planner", "planner", "think", content[12:].strip())
+    elif content.startswith("ReAct"):
+        _emit_comm_event(task_id, "planner", "planner", "think", content.strip())
 
 
 @app.post("/api/search", response_model=SearchResponse)
@@ -720,8 +795,13 @@ async def search(request: SearchRequest):
         logger.info(f"[{task_id}] Context resolved to: {request.prompt}")
 
     # Live reasoning: intercept messages_log appends
+    global _current_task_id, _comm_event_counter
     _live_reasoning[task_id] = []
     _live_robot_reasoning.clear()
+    _live_comm_events[task_id] = []
+    _current_task_id = task_id
+    _comm_event_counter = 0
+    _emit_comm_event(task_id, "user", "planner", "command", request.prompt[:60])
 
     # Patch AIMessage to capture reasoning in real-time
     from langchain_core.messages import AIMessage as _AIMessage
@@ -733,6 +813,7 @@ async def search(request: SearchRequest):
             super().append(item)
             if hasattr(item, "content") and item.content and not item.content.startswith(_original_prompt):
                 _live_reasoning.setdefault(task_id, []).append(item.content)
+                _parse_reasoning_to_comm_event(task_id, item.content)
 
     # Start task in background
     async def _run_task():
@@ -803,13 +884,18 @@ async def get_task_status(task_id: str):
     """Get task status/result with live reasoning steps."""
     if task_id in _task_results:
         resp = _task_results[task_id]
-        return {**resp.dict(), "robot_reasoning": dict(_live_robot_reasoning)}
+        return {
+            **resp.dict(),
+            "robot_reasoning": dict(_live_robot_reasoning),
+            "comm_events": _live_comm_events.get(task_id, []),
+        }
     if task_id in _active_tasks:
         return {
             "task_id": task_id,
             "status": "running",
             "reasoning": _live_reasoning.get(task_id, []),
             "robot_reasoning": dict(_live_robot_reasoning),
+            "comm_events": _live_comm_events.get(task_id, []),
         }
     return {"task_id": task_id, "status": "not_found"}
 
