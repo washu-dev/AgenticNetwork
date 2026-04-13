@@ -155,7 +155,7 @@ class LLMClient:
         Args:
             available_actions: list of valid action name strings (for validation)
             actions_description: formatted capability descriptions with params (for LLM context)
-        Returns: list of dicts, e.g. [{"action": "stand_up"}, {"action": "turn_left_angle", "params": {"steps": 3, "angle": 20}}]
+        Returns: list of dicts, e.g. [{"action": "stand_up"}, {"action": "turn_left", "params": {"degrees": 90}}]
         """
         actions_block = actions_description or ', '.join(available_actions)
         system = (
@@ -164,9 +164,8 @@ class LLMClient:
             f"Available actions:\n{actions_block}\n\n"
             "Rules:\n"
             "- Only use actions from the list above\n"
-            "- For turn_left_angle / turn_right_angle, set 'steps' and 'angle' fields "
-            "to achieve the desired rotation. Use the calibration data in the action descriptions.\n"
-            "- Leave steps=0 and angle=0 for actions that don't need parameters (uses defaults)\n"
+            "- For turn_left / turn_right, set 'degrees' to the desired rotation amount\n"
+            "- Leave steps=0 and degrees=0 for actions that don't need parameters (uses defaults)\n"
             f"{self._profile['decompose_rules']}"
         )
 
@@ -183,8 +182,8 @@ class LLMClient:
                 params = {}
                 if s.steps > 0:
                     params["steps"] = s.steps
-                if s.angle > 0:
-                    params["angle"] = s.angle
+                if s.degrees > 0:
+                    params["degrees"] = s.degrees
                 if params:
                     entry["params"] = params
                 valid.append(entry)

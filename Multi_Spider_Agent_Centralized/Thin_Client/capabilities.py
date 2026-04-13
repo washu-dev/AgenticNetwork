@@ -57,29 +57,17 @@ ACTIONS: List[Action] = [
         category="movement",
         parameters="steps: number of steps (default 1, each ~9cm)",
     ),
-    # Action(
-    #     name="turn_left",
-    #     description="Turn left ~80 degrees (stays in place, does not move forward).",
-    #     category="movement",
-    #     parameters="2 turn steps, ~38 degrees each",
-    # ),
-    # Action(
-    #     name="turn_right",
-    #     description="Turn right ~80 degrees (stays in place, does not move forward).",
-    #     category="movement",
-    #     parameters="2 turn steps, ~38 degrees each",
-    # ),
     Action(
-        name="turn_left_angle",
-        description="Turn left. Primary rotation method. angle=25: ~30 deg/step (3 steps=90°, 6 steps=180°).",
+        name="turn_left",
+        description="Turn left in place. Specify degrees (e.g. degrees=90 for a quarter turn, degrees=180 for a half turn).",
         category="movement",
-        parameters="angle=25 ~30°/step",
+        parameters="degrees: rotation amount in degrees",
     ),
     Action(
-        name="turn_right_angle",
-        description="Turn right. Primary rotation method. angle=25: ~30 deg/step (3 steps=90°, 6 steps=180°).",
+        name="turn_right",
+        description="Turn right in place. Specify degrees (e.g. degrees=90 for a quarter turn, degrees=180 for a half turn).",
         category="movement",
-        parameters="angle=25 ~30°/step",
+        parameters="degrees: rotation amount in degrees",
     ),
 
     # Gestures
@@ -123,12 +111,12 @@ ACTIONS: List[Action] = [
     # Look (head/body tilt, does NOT move position)
     Action(
         name="look_left",
-        description="Tilt body to look left. Does NOT turn — use turn_left to change facing direction.",
+        description="Tilt body to look left. Does NOT turn — use turn_left(degrees=...) to change facing direction.",
         category="look",
     ),
     Action(
         name="look_right",
-        description="Tilt body to look right. Does NOT turn — use turn_right to change facing direction.",
+        description="Tilt body to look right. Does NOT turn — use turn_right(degrees=...) to change facing direction.",
         category="look",
     ),
     Action(
@@ -148,6 +136,15 @@ ACTION_NAMES = [a.name for a in ACTIONS]
 
 
 # ── Sensors and other capabilities ──────────────────────────
+
+# ── Turn calibration ────────────────────────────────────────
+# Per-robot calibration for _turn_by_degrees on the Command Center.
+# deg_per_step: actual degrees turned per hardware step at the given angle_param.
+# angle_param:  leg swing parameter passed to turn_left_angle / turn_right_angle.
+TURN_CALIBRATION = {
+    "deg_per_step": 30,
+    "angle_param": 25,
+}
 
 SENSORS = [
     {"name": "ultrasonic", "description": "Distance sensor (2-400cm), used for obstacle avoidance", "pins": "D2/D3"},
@@ -197,4 +194,5 @@ def get_capabilities_json() -> dict:
         "sensors": SENSORS,
         "abilities": ABILITIES,
         "endpoints": ENDPOINTS,
+        "turn_calibration": TURN_CALIBRATION,
     }

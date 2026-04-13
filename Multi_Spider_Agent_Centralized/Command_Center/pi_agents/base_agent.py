@@ -765,7 +765,9 @@ class CentralPiAgent:
         """Execute a list of action steps sequentially.
 
         Each step is a dict with 'action' and optional 'params', e.g.:
-            {"action": "turn_left_angle", "params": {"steps": 3, "angle": 20}}
+            {"action": "turn_left", "params": {"degrees": 90}}
+            {"action": "forward", "params": {"steps": 3}}
+        turn_left/turn_right are dispatched through _turn_by_degrees (calibration in one place).
         """
         results = []
         total_time = 0
@@ -773,14 +775,20 @@ class CentralPiAgent:
         for i, step in enumerate(steps):
             if isinstance(step, dict):
                 action = step.get("action", "stop")
-                params = step.get("params")
+                params = step.get("params") or {}
             else:
                 action = step
-                params = None
+                params = {}
             logger.info(f"[{self.robot.robot_id}] Step {i+1}/{len(steps)}: {action} {params or ''}")
             await self._emit(f"Tool: {action}")
 
-            result = await self._exec(action, params)
+            if action in ("turn_left", "turn_right"):
+                direction = "left" if action == "turn_left" else "right"
+                degrees = params.get("degrees", 30)
+                await self._turn_by_degrees(direction, degrees)
+                result = {"status": "ok", "duration_ms": 0}
+            else:
+                result = await self._exec(action, params or None)
             duration = result.get("duration_ms", 0)
             total_time += duration
             status = "completed" if result.get("status") == "ok" else "failed"
@@ -820,20 +828,21 @@ class CentralPiAgent:
     async def _turn_by_degrees(self, direction: str, degrees: float):
         """Turn by estimated degrees using turn_left_angle/turn_right_angle.
 
-        Calibrated: angle=25, 1 step → ~30°   (3 steps → 90°, 6 steps → 180°)
+        Calibration is per-robot, read from capabilities at registration time
+        (robot.deg_per_step, robot.angle_param). Defaults: 30°/step, angle=25.
         Each step is sent individually so _stop_requested can interrupt between steps.
         """
-        DEG_PER_STEP = 30  # at angle=25, each step ≈ 30°
-        ANGLE_PARAM = 25   # calibrated value
+        deg_per_step = self.robot.deg_per_step
+        angle_param = self.robot.angle_param
 
-        steps = max(1, round(degrees / DEG_PER_STEP))
+        steps = max(1, round(degrees / deg_per_step))
         steps = min(steps, 12)  # cap at 12 steps (360°)
 
         action = "turn_left_angle" if direction == "left" else "turn_right_angle"
         for _ in range(steps):
             if self._stop_requested:
                 return
-            await self._exec(action, {"steps": 1, "angle": ANGLE_PARAM})
+            await self._exec(action, {"steps": 1, "angle": angle_param})
             # Pause after each 30° sub-step so the camera captures stable frames
             # at every position during a spin (12 stops per 360°).
             await asyncio.sleep(1.5)

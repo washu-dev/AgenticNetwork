@@ -16,6 +16,19 @@ from ..config import DEFAULT_CAMERA_PORT, HEALTH_CHECK_INTERVAL
 logger = logging.getLogger(__name__)
 
 
+_DEFAULT_DEG_PER_STEP = 30
+_DEFAULT_ANGLE_PARAM = 25
+
+
+def _extract_turn_calibration(capabilities: dict) -> tuple[int, int]:
+    """Extract (deg_per_step, angle_param) from capabilities, with defaults."""
+    cal = capabilities.get("turn_calibration", {})
+    return (
+        int(cal.get("deg_per_step", _DEFAULT_DEG_PER_STEP)),
+        int(cal.get("angle_param", _DEFAULT_ANGLE_PARAM)),
+    )
+
+
 def _generate_actions_description(capabilities: dict) -> str:
     """Generate formatted actions description for LLM prompts.
 
@@ -41,6 +54,8 @@ class RegisteredRobot:
     capabilities: dict = field(default_factory=dict)
     actions: list = field(default_factory=list)           # action name strings
     actions_description: str = ""                         # formatted for LLM
+    deg_per_step: int = _DEFAULT_DEG_PER_STEP             # turn calibration: degrees per hardware step
+    angle_param: int = _DEFAULT_ANGLE_PARAM               # turn calibration: leg swing parameter
     registered_at: float = 0.0
     last_heartbeat: float = 0.0
     status: str = "online"                                # online / offline
@@ -84,6 +99,7 @@ class RobotRegistry:
         capabilities = data.get("capabilities", {})
         actions = [a["name"] for a in capabilities.get("actions", [])] if capabilities else []
         actions_description = _generate_actions_description(capabilities) if capabilities else ""
+        deg_per_step, angle_param = _extract_turn_calibration(capabilities)
 
         now = time.time()
         async with self._lock:
@@ -96,6 +112,8 @@ class RobotRegistry:
                 capabilities=capabilities,
                 actions=actions,
                 actions_description=actions_description,
+                deg_per_step=deg_per_step,
+                angle_param=angle_param,
                 zone=data.get("zone", ""),
                 registered_at=now,
                 last_heartbeat=now,
@@ -122,9 +140,11 @@ class RobotRegistry:
         capabilities = agent_info.get("capabilities") or {}
         actions = []
         actions_description = ""
+        deg_per_step, angle_param = _DEFAULT_DEG_PER_STEP, _DEFAULT_ANGLE_PARAM
         if capabilities:
             actions = [a["name"] for a in capabilities.get("actions", [])]
             actions_description = _generate_actions_description(capabilities)
+            deg_per_step, angle_param = _extract_turn_calibration(capabilities)
 
         zone = agent_info.get("zone", "")
         robot_type = agent_info.get("robot_type", "spider")
@@ -144,6 +164,8 @@ class RobotRegistry:
                 existing.capabilities = capabilities
                 existing.actions = actions
                 existing.actions_description = actions_description
+                existing.deg_per_step = deg_per_step
+                existing.angle_param = angle_param
         else:
             robot = RegisteredRobot(
                 robot_id=robot_id,
@@ -154,6 +176,8 @@ class RobotRegistry:
                 capabilities=capabilities,
                 actions=actions,
                 actions_description=actions_description,
+                deg_per_step=deg_per_step,
+                angle_param=angle_param,
                 zone=zone,
                 registered_at=now,
                 last_heartbeat=now if agent_info.get("status") == "online" else 0,
@@ -178,7 +202,9 @@ class RobotRegistry:
                     robot.capabilities = caps
                     robot.actions = [a["name"] for a in caps.get("actions", [])]
                     robot.actions_description = _generate_actions_description(caps)
-                    logger.info(f"Fetched capabilities for {robot_id}: {len(robot.actions)} actions")
+                    robot.deg_per_step, robot.angle_param = _extract_turn_calibration(caps)
+                    logger.info(f"Fetched capabilities for {robot_id}: {len(robot.actions)} actions, "
+                                f"turn_cal=({robot.deg_per_step}°/step, angle={robot.angle_param})")
         except Exception as e:
             logger.error(f"Failed to fetch capabilities for {robot_id} at {host}:{port}: {e}")
             raise

@@ -15,11 +15,11 @@ class ActionStep(BaseModel):
     action: str = Field(description="Action name from the available actions list")
     steps: int = Field(
         default=0,
-        description="Number of steps/repetitions. 0 = use default. For turn_left_angle/turn_right_angle: number of turn steps.",
+        description="Number of steps/repetitions. 0 = use default. For forward/backward: number of steps.",
     )
-    angle: int = Field(
+    degrees: int = Field(
         default=0,
-        description="Angle parameter. 0 = use default. For turn_left_angle/turn_right_angle: leg swing amplitude (10-90).",
+        description="Rotation in degrees. 0 = use default. For turn_left/turn_right: how many degrees to turn (e.g. 90, 180).",
     )
 
 
