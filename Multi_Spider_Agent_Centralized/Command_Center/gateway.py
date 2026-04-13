@@ -713,6 +713,7 @@ def _resolve_context_prompt(prompt: str) -> tuple[Optional[str], Optional[dict]]
 # Active background tasks
 _active_tasks: dict[str, asyncio.Task] = {}
 _task_results: dict[str, SearchResponse] = {}
+_active_task_robots: dict[str, set[str]] = {}  # task_id → robot IDs dispatched for this task
 _live_reasoning: dict[str, list[str]] = {}  # task_id → live reasoning steps
 _live_robot_reasoning: dict[str, list[str]] = {}  # robot_id → reasoning steps
 _live_comm_events: dict[str, list[dict]] = {}  # task_id → communication events for flow chart
@@ -755,6 +756,7 @@ def _parse_reasoning_to_comm_event(task_id: str, content: str):
         for rid in robot_ids:
             short = rid.replace("crawler-alpha-patrol-", "")
             _emit_comm_event(task_id, "planner", rid, "dispatch", f"dispatch → {short}")
+            _active_task_robots.setdefault(task_id, set()).add(rid)
         if not robot_ids:
             _emit_comm_event(task_id, "planner", "planner", "dispatch", content[8:].strip())
     elif content.startswith("Tool:"):
@@ -874,6 +876,7 @@ async def search(request: SearchRequest):
             )
         finally:
             _active_tasks.pop(task_id, None)
+            _active_task_robots.pop(task_id, None)
 
     task = asyncio.create_task(_run_task())
     _active_tasks[task_id] = task
@@ -917,12 +920,15 @@ async def cancel_task(task_id: str):
     task.cancel()
     logger.info(f"[{task_id}] Task cancelled by user")
 
-    # Send NATS cancel to all online robot agents (fire-and-forget)
+    # Send NATS cancel only to robots involved in this task (fire-and-forget)
     from .planner.graph import _cancel_robot
-    online_robots = robot_registry.get_online_robots()
-    for robot in online_robots:
-        asyncio.create_task(_cancel_robot(robot.robot_id))
-        logger.info(f"[{task_id}] Sending cancel to {robot.robot_id}")
+    task_robots = _active_task_robots.get(task_id, set())
+    if not task_robots:
+        # Fallback: if dispatch hasn't been logged yet, cancel all online robots
+        task_robots = {r.robot_id for r in robot_registry.get_online_robots()}
+    for robot_id in task_robots:
+        asyncio.create_task(_cancel_robot(robot_id))
+        logger.info(f"[{task_id}] Sending cancel to {robot_id}")
 
     return {"task_id": task_id, "status": "cancelling"}
 

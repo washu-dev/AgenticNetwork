@@ -774,6 +774,9 @@ class CentralPiAgent:
         total_time = 0
 
         for i, step in enumerate(steps):
+            if self._stop_requested:
+                logger.info(f"[{self.robot.robot_id}] execute_steps: stop requested, aborting at step {i+1}")
+                break
             if isinstance(step, dict):
                 action = step.get("action", "stop")
                 params = step.get("params") or {}
