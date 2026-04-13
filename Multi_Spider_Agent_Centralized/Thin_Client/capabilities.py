@@ -71,15 +71,15 @@ ACTIONS: List[Action] = [
     # ),
     Action(
         name="turn_left_angle",
-        description="Turn left. Primary rotation method. angle=20: ~30 deg/step (3 steps=90°). angle=30: ~36 deg/step (5 steps=180°).",
+        description="Turn left. Primary rotation method. angle=25: ~30 deg/step (3 steps=90°, 6 steps=180°).",
         category="movement",
-        parameters="angle=20 ~30°/step, angle=30 ~36°/step",
+        parameters="angle=25 ~30°/step",
     ),
     Action(
         name="turn_right_angle",
-        description="Turn right. Primary rotation method. angle=20: ~30 deg/step (3 steps=90°). angle=30: ~36 deg/step (5 steps=180°).",
+        description="Turn right. Primary rotation method. angle=25: ~30 deg/step (3 steps=90°, 6 steps=180°).",
         category="movement",
-        parameters="angle=20 ~30°/step, angle=30 ~36°/step",
+        parameters="angle=25 ~30°/step",
     ),
 
     # Gestures

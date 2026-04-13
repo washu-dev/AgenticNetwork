@@ -147,7 +147,7 @@ class CrawlerControl:
         self._wait(0.5)
 
     def turn_left_angle(self, steps: int = 1, angle: int = 30):
-        """Turn left. angle is the leg swing parameter, actual turn ~ angle x 0.44 per step."""
+        """Turn left. angle is the leg swing parameter."""
         self.crawler.angle = angle
         for _ in range(steps):
             self._check()
@@ -155,7 +155,7 @@ class CrawlerControl:
             self._wait(0.3)
 
     def turn_right_angle(self, steps: int = 1, angle: int = 30):
-        """Turn right. angle is the leg swing parameter, actual turn ~ angle x 0.44 per step."""
+        """Turn right. angle is the leg swing parameter."""
         self.crawler.angle = angle
         for _ in range(steps):
             self._check()

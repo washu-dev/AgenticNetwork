@@ -820,14 +820,11 @@ class CentralPiAgent:
     async def _turn_by_degrees(self, direction: str, degrees: float):
         """Turn by estimated degrees using turn_left_angle/turn_right_angle.
 
-        Calibrated from capability data:
-          angle=20, 1 step → ~30°   (3 steps → 90°)
-          angle=30, 1 step → ~36°   (5 steps → 180°)
-        Use angle=20 (~30°/step) as the standard unit to keep motion smooth.
+        Calibrated: angle=25, 1 step → ~30°   (3 steps → 90°, 6 steps → 180°)
         Each step is sent individually so _stop_requested can interrupt between steps.
         """
-        DEG_PER_STEP = 30  # at angle=20, each step ≈ 30°
-        ANGLE_PARAM = 20   # safe, well-calibrated value
+        DEG_PER_STEP = 30  # at angle=25, each step ≈ 30°
+        ANGLE_PARAM = 25   # calibrated value
 
         steps = max(1, round(degrees / DEG_PER_STEP))
         steps = min(steps, 12)  # cap at 12 steps (360°)
