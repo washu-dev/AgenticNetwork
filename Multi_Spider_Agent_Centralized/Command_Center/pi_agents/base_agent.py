@@ -769,6 +769,7 @@ class CentralPiAgent:
             {"action": "forward", "params": {"steps": 3}}
         turn_left/turn_right are dispatched through _turn_by_degrees (calibration in one place).
         """
+        self._stop_requested = False  # clear any previous cancel before starting
         results = []
         total_time = 0
 
@@ -785,7 +786,7 @@ class CentralPiAgent:
             if action in ("turn_left", "turn_right"):
                 direction = "left" if action == "turn_left" else "right"
                 degrees = params.get("degrees", 30)
-                await self._turn_by_degrees(direction, degrees)
+                await self._turn_by_degrees(direction, degrees, with_pause=False)
                 result = {"status": "ok", "duration_ms": 0}
             else:
                 result = await self._exec(action, params or None)
@@ -825,12 +826,15 @@ class CentralPiAgent:
             robot_registry.update_standing(self.robot.robot_id, False)
         return result
 
-    async def _turn_by_degrees(self, direction: str, degrees: float):
+    async def _turn_by_degrees(self, direction: str, degrees: float, with_pause: bool = False):
         """Turn by estimated degrees using turn_left_angle/turn_right_angle.
 
         Calibration is per-robot, read from capabilities at registration time
         (robot.deg_per_step, robot.angle_param). Defaults: 30°/step, angle=25.
         Each step is sent individually so _stop_requested can interrupt between steps.
+
+        with_pause: pause 1.5s between steps for camera stabilization (patrol/spin only).
+                    Direct control turns should pass with_pause=False for instant response.
         """
         deg_per_step = self.robot.deg_per_step
         angle_param = self.robot.angle_param
@@ -843,9 +847,8 @@ class CentralPiAgent:
             if self._stop_requested:
                 return
             await self._exec(action, {"steps": 1, "angle": angle_param})
-            # Pause after each 30° sub-step so the camera captures stable frames
-            # at every position during a spin (12 stops per 360°).
-            await asyncio.sleep(1.5)
+            if with_pause:
+                await asyncio.sleep(1.5)
 
     # ── State builder ────────────────────────────────────
 

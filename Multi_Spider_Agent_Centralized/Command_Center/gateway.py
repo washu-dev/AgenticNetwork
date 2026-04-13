@@ -908,12 +908,22 @@ async def get_task_status(task_id: str):
 
 @app.post("/api/task/{task_id}/cancel")
 async def cancel_task(task_id: str):
-    """Cancel a running task."""
+    """Cancel a running task and stop all active robot agents."""
     task = _active_tasks.get(task_id)
     if not task:
         return {"task_id": task_id, "status": "not_found"}
+
+    # Cancel the planner asyncio task first
     task.cancel()
     logger.info(f"[{task_id}] Task cancelled by user")
+
+    # Send NATS cancel to all online robot agents (fire-and-forget)
+    from .planner.graph import _cancel_robot
+    online_robots = robot_registry.get_online_robots()
+    for robot in online_robots:
+        asyncio.create_task(_cancel_robot(robot.robot_id))
+        logger.info(f"[{task_id}] Sending cancel to {robot.robot_id}")
+
     return {"task_id": task_id, "status": "cancelling"}
 
 
