@@ -14,8 +14,8 @@ import logging
 
 from langchain_core.messages import SystemMessage, HumanMessage
 
-from ..config import PI_BRAIN_LLM_MODEL
-from ..config import LLM_MODEL, create_llm
+from ..config import PI_BRAIN_LLM_MODEL, LLM_MAX_TOKENS
+from ..config import LLM_MODEL, create_llm, create_llm_for_model
 from .schemas import ActionDecomposition, ObservationDecision, ObstacleDecision, TargetPlan, PatrolRoute, PatrolReport
 
 logger = logging.getLogger(__name__)
@@ -128,21 +128,8 @@ def _create_brain_llm():
     if PI_BRAIN_LLM_MODEL == LLM_MODEL:
         return create_llm()
 
-    # Different model — create a separate instance
-    if "/" in PI_BRAIN_LLM_MODEL:
-        provider, model_name = PI_BRAIN_LLM_MODEL.split("/", 1)
-    else:
-        provider, model_name = "openai", PI_BRAIN_LLM_MODEL
-
-    provider = provider.lower()
     logger.info(f"Creating separate brain LLM: {PI_BRAIN_LLM_MODEL}")
-
-    if provider == "anthropic":
-        from langchain_anthropic import ChatAnthropic
-        return ChatAnthropic(model=model_name, temperature=0.3, max_tokens=1024)
-    else:
-        from langchain_openai import ChatOpenAI
-        return ChatOpenAI(model=model_name, temperature=0.3, max_tokens=1024)
+    return create_llm_for_model(PI_BRAIN_LLM_MODEL, temperature=0.3, max_tokens=1024)
 
 
 class LLMClient:

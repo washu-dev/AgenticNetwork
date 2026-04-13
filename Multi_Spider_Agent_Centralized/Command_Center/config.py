@@ -78,31 +78,35 @@ HEALTH_CHECK_INTERVAL = int(os.getenv("HEALTH_CHECK_INTERVAL", "15"))
 _cached_llm = None
 
 
+def create_llm_for_model(model_string: str, temperature: float, max_tokens: int):
+    """Instantiate a LangChain chat model from a 'provider/model_name' string."""
+    if "/" in model_string:
+        provider, model_name = model_string.split("/", 1)
+    else:
+        provider, model_name = "openai", model_string
+
+    provider = provider.lower()
+
+    if provider == "anthropic":
+        from langchain_anthropic import ChatAnthropic
+        return ChatAnthropic(model=model_name, temperature=temperature, max_tokens=max_tokens)
+    elif provider == "azure":
+        from langchain_openai import AzureChatOpenAI
+        return AzureChatOpenAI(deployment_name=model_name, api_version=AZURE_API_VERSION,
+                               temperature=temperature, max_tokens=max_tokens)
+    else:
+        from langchain_openai import ChatOpenAI
+        return ChatOpenAI(model=model_name, temperature=temperature, max_tokens=max_tokens)
+
+
 def create_llm():
     """Create or return cached LangChain LLM for Planner Agent."""
     global _cached_llm
     if _cached_llm is not None:
         return _cached_llm
 
-    if "/" in LLM_MODEL:
-        provider, model_name = LLM_MODEL.split("/", 1)
-    else:
-        provider, model_name = "openai", LLM_MODEL
-
-    provider = provider.lower()
     logger.info(f"Initializing Planner LLM: {LLM_MODEL}")
-
-    if provider == "anthropic":
-        from langchain_anthropic import ChatAnthropic
-        _cached_llm = ChatAnthropic(model=model_name, temperature=OPENAI_TEMPERATURE, max_tokens=LLM_MAX_TOKENS)
-    elif provider == "azure":
-        from langchain_openai import AzureChatOpenAI
-        _cached_llm = AzureChatOpenAI(deployment_name=model_name, api_version=AZURE_API_VERSION,
-                                       temperature=OPENAI_TEMPERATURE, max_tokens=LLM_MAX_TOKENS)
-    else:
-        from langchain_openai import ChatOpenAI
-        _cached_llm = ChatOpenAI(model=model_name, temperature=OPENAI_TEMPERATURE, max_tokens=LLM_MAX_TOKENS)
-
+    _cached_llm = create_llm_for_model(LLM_MODEL, OPENAI_TEMPERATURE, LLM_MAX_TOKENS)
     return _cached_llm
 
 

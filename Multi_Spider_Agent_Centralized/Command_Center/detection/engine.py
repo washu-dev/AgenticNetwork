@@ -205,8 +205,8 @@ async def _vlm_dedup_objects(track_crops: dict, cooccurrences: set = None) -> di
             result_counts[label] = count
             logger.info(f"VLM dedup: {label} — {len(crops)} tracks → {count} unique (min {min_unique})")
         except Exception as e:
-            logger.warning(f"VLM dedup failed for {label}: {e}, using co-occurrence minimum")
-            result_counts[label] = min_unique
+            logger.warning(f"VLM dedup failed for {label}: {e}, falling back to track count")
+            result_counts[label] = max(min_unique, len(crops))
 
     return result_counts
 
@@ -293,6 +293,103 @@ async def _vlm_describe_objects(track_crops: dict) -> dict:
     return descriptions
 
 
+class TrackRemapper:
+    """Remaps new ByteTrack IDs to original IDs when an object briefly leaves and re-enters frame.
+
+    Mitigates track ID drift: same physical object gets a new track_id after leaving frame,
+    causing duplicate counting. Uses IoU overlap to match new tracks to recently disappeared ones.
+    """
+
+    def __init__(self, max_missing_frames: int = 10, min_iou: float = 0.3):
+        self._active: dict = {}       # track_id → bbox
+        self._disappeared: dict = {}  # track_id → (bbox, frames_missing)
+        self._remapping: dict = {}    # new_id → original_id
+        self._max_missing = max_missing_frames
+        self._min_iou = min_iou
+
+    @staticmethod
+    def _iou(a: dict, b: dict) -> float:
+        ix1 = max(a["x1"], b["x1"])
+        iy1 = max(a["y1"], b["y1"])
+        ix2 = min(a["x2"], b["x2"])
+        iy2 = min(a["y2"], b["y2"])
+        inter = max(0, ix2 - ix1) * max(0, iy2 - iy1)
+        if inter == 0:
+            return 0.0
+        area_a = (a["x2"] - a["x1"]) * (a["y2"] - a["y1"])
+        area_b = (b["x2"] - b["x1"]) * (b["y2"] - b["y1"])
+        union = area_a + area_b - inter
+        return inter / union if union > 0 else 0.0
+
+    def remap(self, detections: list) -> list:
+        """Apply track ID remapping to a frame's detections."""
+        current = {
+            d["track_id"]: d.get("bbox")
+            for d in detections
+            if d.get("track_id") is not None and d.get("bbox")
+        }
+
+        # Age disappeared tracks, evict stale ones
+        stale = [tid for tid, (_, age) in self._disappeared.items() if age + 1 > self._max_missing]
+        for tid in stale:
+            self._disappeared.pop(tid)
+            self._remapping = {k: v for k, v in self._remapping.items() if v != tid}
+        for tid in [t for t in self._disappeared if t not in stale]:
+            bbox, age = self._disappeared[tid]
+            self._disappeared[tid] = (bbox, age + 1)
+
+        # Mark tracks that disappeared this frame
+        for tid, bbox in self._active.items():
+            if tid not in current:
+                self._disappeared[tid] = (bbox, 0)
+
+        # Remap new track IDs to disappeared ones via IoU
+        result = []
+        for d in detections:
+            tid = d.get("track_id")
+            if tid is None:
+                result.append(d)
+                continue
+            bbox = d.get("bbox")
+            if tid not in self._active and tid not in self._remapping and bbox:
+                best_tid, best_iou = None, self._min_iou
+                for old_tid, (old_bbox, _) in self._disappeared.items():
+                    iou = self._iou(bbox, old_bbox)
+                    if iou > best_iou:
+                        best_iou, best_tid = iou, old_tid
+                if best_tid is not None:
+                    self._remapping[tid] = best_tid
+                    self._disappeared.pop(best_tid)
+            original_id = self._remapping.get(tid, tid)
+            if original_id != tid:
+                d = dict(d)
+                d["track_id"] = original_id
+            result.append(d)
+
+        # Update active set with remapped IDs
+        self._active = {self._remapping.get(tid, tid): bbox for tid, bbox in current.items()}
+        return result
+
+
+def _resolve_detection_labels(detections: list, tid_label_counts: dict) -> list:
+    """Replace each detection's label with the most frequent label seen for that track_id so far.
+
+    Provides real-time label correction: if YOLO is confused between 'dog' and 'horse',
+    the historically dominant label wins before the detection is dispatched to the agent.
+    """
+    result = []
+    for d in detections:
+        tid = d.get("track_id")
+        counts = tid_label_counts.get(tid) if tid is not None else None
+        if counts and len(counts) > 1:
+            best = max(counts, key=counts.get)
+            if best != d.get("label"):
+                d = dict(d)
+                d["label"] = best
+        result.append(d)
+    return result
+
+
 def _needs_vlm_verification(task_goal: str) -> bool:
     """Legacy fallback: check if the task goal contains attribute descriptions that need VLM.
     Prefer using mission.use_vlm (set by planner LLM) instead of this keyword matching.
@@ -339,6 +436,8 @@ class SearchMission:
     _track_crops: dict = field(default_factory=dict)  # track_key → JPEG bytes of cropped detection
     _tid_label_counts: dict = field(default_factory=dict)  # track_id → Counter of labels
     _cooccurrences: set = field(default_factory=set)  # set of frozenset({key1, key2}) that appeared in same frame
+    _track_bbox_areas: dict = field(default_factory=dict)  # track_key → bbox area of saved crop
+    _track_remapper: TrackRemapper = field(default_factory=TrackRemapper)
     match_result: Optional[dict] = None
     error: Optional[str] = None
     _cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
@@ -643,6 +742,10 @@ async def run_search_mission(mission: SearchMission, existing_udp_receiver=None)
                     detect_frame_with_tracking, frame, mission.agent_id,
                     conf_threshold=mission.threshold,
                 )
+                # Remap track IDs to recover identity after objects briefly leave frame
+                yolo_result["detections"] = mission._track_remapper.remap(
+                    yolo_result.get("detections", [])
+                )
                 annotated = yolo_result.get("annotated_jpeg")
                 if annotated:
                     _latest_annotated[mission.agent_id] = annotated
@@ -676,15 +779,21 @@ async def run_search_mission(mission: SearchMission, existing_udp_receiver=None)
                     mission._tid_label_counts[track_id][label] = mission._tid_label_counts[track_id].get(label, 0) + 1
 
                     key = f"{label}:{track_id}"
+                    bbox = d.get("bbox")
+                    crop = _crop_bbox(frame, bbox) if bbox and frame is not None else None
                     if key in mission._seen_track_ids:
+                        # Update crop if this bbox is significantly larger (closer, clearer view)
+                        if crop is not None and bbox:
+                            new_area = (bbox["x2"] - bbox["x1"]) * (bbox["y2"] - bbox["y1"])
+                            if new_area > mission._track_bbox_areas.get(key, 0) * 1.2:
+                                mission._track_crops[key] = crop
+                                mission._track_bbox_areas[key] = new_area
                         continue
                     mission._seen_track_ids.add(key)
-                    # Save cropped image for VLM dedup later
-                    bbox = d.get("bbox")
-                    if bbox and frame is not None:
-                        crop = _crop_bbox(frame, bbox)
-                        if crop is not None:
-                            mission._track_crops[key] = crop
+                    if crop is not None:
+                        mission._track_crops[key] = crop
+                        if bbox:
+                            mission._track_bbox_areas[key] = (bbox["x2"] - bbox["x1"]) * (bbox["y2"] - bbox["y1"])
                 mission.detections.append(d)
 
             # Record co-occurrences: track keys that appear in same frame → definitely different objects
@@ -718,6 +827,9 @@ async def run_search_mission(mission: SearchMission, existing_udp_receiver=None)
                 push_detections = detections
             else:
                 push_detections = [d for d in detections if d.get("is_target")]
+
+            # Real-time label correction: use majority-vote label per track_id before dispatch
+            push_detections = _resolve_detection_labels(push_detections, mission._tid_label_counts)
 
             if push_detections:
                 now = time.time()
@@ -812,7 +924,7 @@ async def run_search_mission(mission: SearchMission, existing_udp_receiver=None)
                         ]
 
         # VLM dedup: get accurate object counts by comparing cropped images
-        if mission._track_crops and mission.report_all:
+        if mission._track_crops:
             try:
                 dedup_counts = await _vlm_dedup_objects(mission._track_crops, mission._cooccurrences)
                 mission.dedup_counts = dedup_counts
