@@ -690,6 +690,13 @@ class CentralPiAgent:
                     await self._turn_by_degrees("left", count)
                 elif action == "turn_right":
                     await self._turn_by_degrees("right", count)
+                elif action == "pause":
+                    # Hold position for `count` seconds to let detection capture stable frames
+                    await self._emit(f"Auto: pausing {count}s for detection")
+                    for _ in range(int(count)):
+                        if self._stop_requested:
+                            break
+                        await asyncio.sleep(1)
 
             if not self._stop_requested:
                 logger.info(f"[{self.robot.robot_id}] Patrol route completed")
@@ -830,6 +837,9 @@ class CentralPiAgent:
             if self._stop_requested:
                 return
             await self._exec(action, {"steps": 1, "angle": ANGLE_PARAM})
+            # Pause after each 30° sub-step so the camera captures stable frames
+            # at every position during a spin (12 stops per 360°).
+            await asyncio.sleep(1.5)
 
     # ── State builder ────────────────────────────────────
 

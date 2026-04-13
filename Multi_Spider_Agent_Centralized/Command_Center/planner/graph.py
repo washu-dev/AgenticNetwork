@@ -597,8 +597,27 @@ async def summarize(state: PlannerState) -> dict:
                     det_str = ", ".join(ad["unique_detections"].keys())
                     part += f"\n  Detected object types: {det_str}"
             if ad.get("vlm_descriptions"):
-                for label, desc in ad["vlm_descriptions"].items():
-                    part += f"\n  {label} appearance: {desc}"
+                _BAD_DESC = ("blurry", "can't help", "difficult to", "i'm sorry",
+                             "unclear", "cannot", "unable", "too dark", "not enough")
+                label_indices = {}
+                for key, desc in ad["vlm_descriptions"].items():
+                    label = key.split(":")[0]
+                    label_indices.setdefault(label, []).append((key, desc))
+                dedup_counts = ad.get("unique_detections", {})
+                for label, entries in label_indices.items():
+                    # Prefer clear descriptions; fall back to all if none are clear
+                    good = [(k, d) for k, d in entries
+                            if not any(b in d.lower() for b in _BAD_DESC)]
+                    if not good:
+                        good = entries
+                    # Cap at VLM-verified unique count to avoid showing duplicates
+                    max_n = dedup_counts.get(label, len(good))
+                    good = good[:max_n]
+                    if len(good) == 1:
+                        part += f"\n  {label} appearance: {good[0][1]}"
+                    else:
+                        for i, (key, desc) in enumerate(good, 1):
+                            part += f"\n  {label} {i} appearance: {desc}"
             part += f"\n  Stats: {ad['frames_analyzed']} frames analyzed in {ad['elapsed_s']:.0f}s"
             context_parts.append(part)
         context = "\n\n".join(context_parts)
@@ -609,7 +628,9 @@ async def summarize(state: PlannerState) -> dict:
             "Respond as if you are the robot(s) reporting back. "
             "Report what was detected. If counts are marked as 'VLM verified', report the exact numbers. "
             "Otherwise, just list object types without guessing counts. "
-            "Keep it under 3 sentences. Do NOT include technical stats like frame counts or latency."
+            "If appearance descriptions are provided for multiple individuals of the same type (e.g. person 1, person 2), "
+            "describe EACH one separately — do not skip or merge them. "
+            "Do NOT include technical stats like frame counts or latency."
         )
         user_msg = f"User command: {prompt}\n\nRobot data:\n{context}"
 

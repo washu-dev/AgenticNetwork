@@ -258,19 +258,12 @@ async def _vlm_describe_objects(track_crops: dict) -> dict:
     """
     import base64
     from langchain_core.messages import HumanMessage
-    from collections import defaultdict
-
-    # Group by label, pick one representative crop per label
-    label_best = {}
-    for key, crop_bytes in track_crops.items():
-        label = key.split(":")[0]
-        if label not in label_best:
-            label_best[label] = (key, crop_bytes)
 
     descriptions = {}
     vlm = create_vision_llm()
 
-    for label, (key, crop_bytes) in label_best.items():
+    for key, crop_bytes in track_crops.items():
+        label = key.split(":")[0]
         img_b64 = base64.b64encode(crop_bytes).decode()
         msg = HumanMessage(content=[
             {"type": "text", "text": (
@@ -284,11 +277,11 @@ async def _vlm_describe_objects(track_crops: dict) -> dict:
         try:
             response = await vlm.ainvoke([msg])
             desc = response.content.strip()
-            descriptions[label] = desc
-            logger.info(f"VLM describe: {label} → {desc[:80]}")
+            descriptions[key] = desc
+            logger.info(f"VLM describe: {key} → {desc[:80]}")
         except Exception as e:
-            logger.warning(f"VLM describe failed for {label}: {e}")
-            descriptions[label] = label
+            logger.warning(f"VLM describe failed for {key}: {e}")
+            descriptions[key] = label
 
     return descriptions
 
@@ -746,6 +739,16 @@ async def run_search_mission(mission: SearchMission, existing_udp_receiver=None)
                 yolo_result["detections"] = mission._track_remapper.remap(
                     yolo_result.get("detections", [])
                 )
+                # When using a lowered person threshold, apply a higher bar for
+                # non-person classes to suppress false positives (e.g. bicycle
+                # wheels misclassified as skateboard).
+                _GENERAL_THRESHOLD = 0.55
+                if mission.threshold < _GENERAL_THRESHOLD:
+                    yolo_result["detections"] = [
+                        d for d in yolo_result["detections"]
+                        if d["label"] == "person"
+                        or d["confidence"] >= _GENERAL_THRESHOLD
+                    ]
                 annotated = yolo_result.get("annotated_jpeg")
                 if annotated:
                     _latest_annotated[mission.agent_id] = annotated

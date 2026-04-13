@@ -324,6 +324,12 @@ class RobotAgentService:
         if not mgr_agent.on_reasoning and self._agent.on_reasoning:
             mgr_agent.on_reasoning = self._agent.on_reasoning
 
+        report_all = request.get("report_all", False)
+        vlm_describe = request.get("vlm_describe", False)
+        # Use a lower detection threshold for report/describe tasks so all
+        # objects (including mannequins with borderline confidence) are caught.
+        # For find-and-act tasks keep the higher threshold to reduce false positives.
+        detection_threshold = 0.35 if (report_all or vlm_describe) else 0.7
         mission = SearchMission(
             mission_id=request.get("mission_id", str(uuid.uuid4())[:8]),
             agent_id=self.robot_id,
@@ -332,10 +338,11 @@ class RobotAgentService:
             target_type=request.get("target_type", "object"),
             target_name=request.get("target_name", ""),
             task_goal=request.get("task_goal", ""),
-            report_all=request.get("report_all", False),
+            report_all=report_all,
             vlm_verify=request.get("vlm_verify", False),
-            vlm_describe=request.get("vlm_describe", False),
+            vlm_describe=vlm_describe,
             duration_s=request.get("duration_s", 0),
+            threshold=detection_threshold,
         )
         self._current_mission = mission
         robot_registry.set_busy(self.robot_id, mission.mission_id)
