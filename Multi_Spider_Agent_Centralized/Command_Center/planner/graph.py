@@ -553,6 +553,15 @@ async def summarize(state: PlannerState) -> dict:
         error_msgs = "; ".join(r.get("error", "unknown") for r in error_results)
         return {"summary": f"All agents failed: {error_msgs}"}
 
+    # Direct control tasks (sit down, turn, etc.) don't involve observation —
+    # skip LLM summarization and return a simple completion message.
+    task_type = intent.get("phases", [{}])[0].get("task_type", "")
+    if task_type == "direct_control":
+        agent_ids = ", ".join(r.get("agent_id", "unknown") for r in success_results)
+        summary = f"completed\n[Iterations: {iteration}, Total latency: {total_latency}ms]"
+        messages_log.append(AIMessage(content=f"Summary: direct_control completed ({agent_ids})"))
+        return {"summary": summary, "messages": messages_log}
+
     # Collect structured data for LLM summarization
     agent_data = []
     for r in success_results:
