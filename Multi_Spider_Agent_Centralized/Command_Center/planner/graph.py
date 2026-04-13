@@ -16,7 +16,7 @@ import logging
 from datetime import datetime
 from typing import Literal, Optional
 
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.graph import END, START, StateGraph
 
 
@@ -83,7 +83,7 @@ async def parse_and_discover(state: PlannerState) -> dict:
     prompt = state["prompt"]
 
     # All commands go through LLM for intelligent routing
-    parse_result = await parse_intent(prompt, online_agents)
+    parse_result, vlm_config = await parse_intent(prompt, online_agents)
 
     if parse_result is None:
         intent = fallback_intent(prompt)
@@ -96,6 +96,10 @@ async def parse_and_discover(state: PlannerState) -> dict:
             messages_log.append(AIMessage(content=f"Rejected: {reason}"))
             return {"error": f"NOT_VALID_TASK: {reason}", "messages": messages_log}
         intent = parse_result.model_dump()
+        # Inject VLM tool decisions into phases
+        for ph in intent["phases"]:
+            ph["vlm_verify"] = vlm_config.get("verify", False)
+            ph["vlm_describe"] = vlm_config.get("describe", False)
         phase_descs = []
         for i, ph in enumerate(intent["phases"]):
             desc = f"{ph['task_type']}"
@@ -296,59 +300,43 @@ async def _execute_coordinated_patrol(phase: dict, robots: list[dict], prompt: s
     # ── ReAct loop ──
     system_msg = build_coordinator_prompt(robots)
 
-    from openai import AsyncOpenAI
-    import os
-
-    from ..config import LLM_MODEL
-    model = LLM_MODEL.split("/", 1)[-1] if "/" in LLM_MODEL else LLM_MODEL
-    client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY", ""))
+    from ..config import create_llm
+    llm_with_tools = create_llm().bind_tools(OPENAI_TOOLS)
 
     messages = [
-        {"role": "system", "content": system_msg},
-        {"role": "user", "content": f"User command: {prompt}"},
+        SystemMessage(content=system_msg),
+        HumanMessage(content=f"User command: {prompt}"),
     ]
 
     MAX_TURNS = 15
     messages_log.append(AIMessage(content=f"ReAct coordination: {len(robots)} robots"))
 
     for turn in range(MAX_TURNS):
-        response = await client.chat.completions.create(
-            model=model,
-            messages=messages,
-            tools=OPENAI_TOOLS,
-            temperature=0.3,
-        )
-
-        choice = response.choices[0]
-        msg = choice.message
+        response = await llm_with_tools.ainvoke(messages)
 
         # Add assistant message to history
-        messages.append(msg.model_dump(exclude_none=True))
+        messages.append(response)
 
         # No tool calls → LLM is done (or confused)
-        if not msg.tool_calls:
-            if msg.content:
-                messages_log.append(AIMessage(content=f"Coordinator: {msg.content}"))
-                logger.info(f"ReAct coordinator (turn {turn+1}): {msg.content}")
+        if not response.tool_calls:
+            if response.content:
+                messages_log.append(AIMessage(content=f"Coordinator: {response.content}"))
+                logger.info(f"ReAct coordinator (turn {turn+1}): {response.content}")
             break
 
         # Execute tool calls
-        for tc in msg.tool_calls:
-            fn_name = tc.function.name
-            try:
-                fn_args = json.loads(tc.function.arguments)
-            except json.JSONDecodeError:
-                fn_args = {}
+        for tc in response.tool_calls:
+            fn_name = tc["name"]
+            fn_args = tc["args"]
 
             logger.info(f"ReAct coordinator (turn {turn+1}): {fn_name}({fn_args})")
             messages_log.append(AIMessage(content=f"Tool: {fn_name}({fn_args})"))
 
             if fn_name == "finish":
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tc.id,
-                    "content": fn_args.get("summary", "done"),
-                })
+                messages.append(ToolMessage(
+                    content=fn_args.get("summary", "done"),
+                    tool_call_id=tc["id"],
+                ))
                 # Build final results from executor state
                 for evt in executor.detection_events:
                     zone_report = f"Target detected by {evt['robot_id']} in zone {evt['zone']}"
@@ -382,11 +370,10 @@ async def _execute_coordinated_patrol(phase: dict, robots: list[dict], prompt: s
             logger.info(f"ReAct tool output: {output[:200]}")
             messages_log.append(AIMessage(content=f"Result: {output[:200]}"))
 
-            messages.append({
-                "role": "tool",
-                "tool_call_id": tc.id,
-                "content": output,
-            })
+            messages.append(ToolMessage(
+                content=output,
+                tool_call_id=tc["id"],
+            ))
 
     # Safety: if loop ended without finish, build results anyway
     logger.warning("ReAct coordination loop ended without finish call")
@@ -463,6 +450,8 @@ async def _dispatch_agent_task(agent: dict, phase: dict, task_goal: str, message
         "target_type": phase.get("target_type", "any"),
         "target_name": phase.get("target_name", ""),
         "report_all": phase.get("report_all", False),
+        "vlm_verify": phase.get("vlm_verify", False),
+        "vlm_describe": phase.get("vlm_describe", False),
         "task_goal": task_goal,
     }
     duration = phase.get("duration_s", 0)
@@ -572,22 +561,18 @@ async def summarize(state: PlannerState) -> dict:
         detections = structured.get("detections", [])
         patrol_report = mission.get("patrol_report", {})
 
-        # Count objects by max concurrent per label in any single dispatch.
-        # Track IDs can change for the same object, so counting unique track_ids
-        # over-counts. Instead, group detections by elapsed_s (≈ dispatch time)
-        # and take the max count of each label seen in a single dispatch.
-        from collections import Counter, defaultdict
-        per_time_labels = defaultdict(list)
-        for d in detections:
-            per_time_labels[d.get("time_s", d.get("elapsed_s", 0))].append(d.get("label", "unknown"))
-        label_counts = {}
-        for time_s, labels in per_time_labels.items():
-            for label, count in Counter(labels).items():
-                label_counts[label] = max(label_counts.get(label, 0), count)
+        # Use VLM-deduped counts if available, otherwise list types only
+        dedup_counts = mission.get("dedup_counts")
+        if dedup_counts:
+            label_counts = dedup_counts
+        else:
+            label_counts = {d.get("label", "unknown"): 1 for d in detections}
 
         agent_data.append({
             "agent_id": r.get("agent_id", "unknown"),
             "unique_detections": label_counts,
+            "has_dedup": bool(dedup_counts),
+            "vlm_descriptions": mission.get("vlm_descriptions", {}),
             "total_detections": len(detections),
             "frames_analyzed": mission.get("frames_analyzed", 0),
             "elapsed_s": mission.get("elapsed_s", 0),
@@ -605,8 +590,15 @@ async def summarize(state: PlannerState) -> dict:
             if ad["patrol_report"]:
                 part += f"\n  Patrol report: {ad['patrol_report']}"
             if ad["unique_detections"]:
-                det_str = ", ".join(f"{label} (max {count} concurrent)" for label, count in ad["unique_detections"].items())
-                part += f"\n  Detected: {det_str}"
+                if ad.get("has_dedup"):
+                    det_str = ", ".join(f"{count} {label}" for label, count in ad["unique_detections"].items())
+                    part += f"\n  Detected (VLM verified counts): {det_str}"
+                else:
+                    det_str = ", ".join(ad["unique_detections"].keys())
+                    part += f"\n  Detected object types: {det_str}"
+            if ad.get("vlm_descriptions"):
+                for label, desc in ad["vlm_descriptions"].items():
+                    part += f"\n  {label} appearance: {desc}"
             part += f"\n  Stats: {ad['frames_analyzed']} frames analyzed in {ad['elapsed_s']:.0f}s"
             context_parts.append(part)
         context = "\n\n".join(context_parts)
@@ -614,11 +606,10 @@ async def summarize(state: PlannerState) -> dict:
         system_msg = (
             "You are a multi-robot command center. The user gave a command to robot(s) and the mission is complete. "
             "Based on the robot data below, write a concise, natural-language response to the user's original request. "
-            "Respond as if you are the robot(s) reporting back. Be specific about what was observed. "
-            "Keep it under 3 sentences. Do NOT include technical stats like frame counts or latency.\n\n"
-            "IMPORTANT: The detection counts are approximate. The same object may be counted multiple times "
-            "due to tracking limitations. Use cautious language like 'at least one', 'approximately', "
-            "'what appears to be' rather than exact numbers. The 'max concurrent' count is the most reliable."
+            "Respond as if you are the robot(s) reporting back. "
+            "Report what was detected. If counts are marked as 'VLM verified', report the exact numbers. "
+            "Otherwise, just list object types without guessing counts. "
+            "Keep it under 3 sentences. Do NOT include technical stats like frame counts or latency."
         )
         user_msg = f"User command: {prompt}\n\nRobot data:\n{context}"
 

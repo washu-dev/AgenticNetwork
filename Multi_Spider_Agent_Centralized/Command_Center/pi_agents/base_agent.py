@@ -489,8 +489,37 @@ class CentralPiAgent:
                 return await self._handle_finished(data, detections, has_target)
 
             # ── Role 2: Target found → TargetApproach module ──
+            # Only switch to approach when target is close enough.
+            # Otherwise let patrol bring us closer first.
             if has_target:
-                return await self._handle_target(data, detections)
+                from .target_approach import _get_bbox_height, FRAME_HEIGHT
+                from ..config import APPROACH_DIST_CM, APPROACH_BBOX_RATIO
+
+                target_dets = [d for d in detections if d.get("is_target")]
+                target_bbox_h = max(
+                    (_get_bbox_height(d.get("bbox")) or 0) for d in target_dets
+                ) if target_dets else 0
+
+                # Check distance: prefer ultrasonic (accurate), fallback to bbox
+                close_enough = False
+                if not self._patrol_active:
+                    close_enough = True  # no patrol running, approach regardless
+                else:
+                    ultrasonic_cm = await self._ultrasonic()
+                    if ultrasonic_cm is not None and ultrasonic_cm <= APPROACH_DIST_CM:
+                        close_enough = True  # ultrasonic confirms close
+                    elif target_bbox_h >= FRAME_HEIGHT * APPROACH_BBOX_RATIO:
+                        close_enough = True  # bbox suggests close (ultrasonic may not see target)
+
+                if close_enough:
+                    return await self._handle_target(data, detections)
+                else:
+                    logger.info(
+                        f"[{self._rid}] Target detected but far "
+                        f"(bbox_h={target_bbox_h:.0f}px, ultrasonic={ultrasonic_cm}cm), "
+                        f"continuing patrol"
+                    )
+                    return {"status": "ok", "reason": "target far, continuing patrol"}
 
             return {"status": "ok", "action_taken": "stop", "reason": "waiting"}
 
@@ -519,7 +548,15 @@ class CentralPiAgent:
 
         task_goal = data.get("task_goal", self.task_goal or "")
         target_dets = [d for d in detections if d.get("is_target")]
-        detected_label = target_dets[0].get("label", "unknown") if target_dets else "unknown"
+        if target_dets:
+            label = target_dets[0].get("label", "unknown")
+            # If VLM confirmed this target, tell LLM it matches the task description
+            if "VLM confirmed" in label or target_dets[0].get("source", "").endswith("+vlm"):
+                detected_label = f"person (confirmed match for task: {task_goal[:50]})"
+            else:
+                detected_label = label
+        else:
+            detected_label = "unknown"
 
         # Stage 2: Plan (LLM, called once, cached)
         first_plan = not self._target_approach.has_plan
@@ -668,6 +705,7 @@ class CentralPiAgent:
         patrol_report = None
         if self._detections_log:
             try:
+                await self._emit("Intent: Generating patrol report...")
                 patrol_report = await self.brain.generate_patrol_report(
                     task_goal=self.task_goal or "patrol",
                     detections_log=self._detections_log,
@@ -779,6 +817,7 @@ class CentralPiAgent:
           angle=20, 1 step → ~30°   (3 steps → 90°)
           angle=30, 1 step → ~36°   (5 steps → 180°)
         Use angle=20 (~30°/step) as the standard unit to keep motion smooth.
+        Each step is sent individually so _stop_requested can interrupt between steps.
         """
         DEG_PER_STEP = 30  # at angle=20, each step ≈ 30°
         ANGLE_PARAM = 20   # safe, well-calibrated value
@@ -787,7 +826,10 @@ class CentralPiAgent:
         steps = min(steps, 12)  # cap at 12 steps (360°)
 
         action = "turn_left_angle" if direction == "left" else "turn_right_angle"
-        await self._exec(action, {"steps": steps, "angle": ANGLE_PARAM})
+        for _ in range(steps):
+            if self._stop_requested:
+                return
+            await self._exec(action, {"steps": 1, "angle": ANGLE_PARAM})
 
     # ── State builder ────────────────────────────────────
 

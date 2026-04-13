@@ -89,15 +89,220 @@ async def _vlm_verify_attribute(frame: bytes, bbox: dict, task_goal: str) -> boo
         return True
 
 
+def _crop_bbox(frame_jpeg: bytes, bbox: dict) -> Optional[bytes]:
+    """Crop a bounding box region from a JPEG frame. Returns JPEG bytes or None."""
+    import cv2
+    import numpy as np
+    try:
+        nparr = np.frombuffer(frame_jpeg, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        if img is None:
+            return None
+        x1 = max(0, int(bbox.get("x1", 0)))
+        y1 = max(0, int(bbox.get("y1", 0)))
+        x2 = min(img.shape[1], int(bbox.get("x2", img.shape[1])))
+        y2 = min(img.shape[0], int(bbox.get("y2", img.shape[0])))
+        cropped = img[y1:y2, x1:x2]
+        if cropped.size == 0:
+            return None
+        _, buf = cv2.imencode(".jpg", cropped, [cv2.IMWRITE_JPEG_QUALITY, 70])
+        return buf.tobytes()
+    except Exception:
+        return None
+
+
+async def _vlm_dedup_objects(track_crops: dict, cooccurrences: set = None) -> dict:
+    """Use VLM to deduplicate tracked objects and return accurate counts.
+
+    Args:
+        track_crops: dict of {label:track_id → JPEG bytes}
+        cooccurrences: set of frozenset({key1, key2}) pairs that appeared in the same frame
+                       (these are definitely different objects, no need to ask VLM)
+
+    Returns:
+        dict of {label: count} with deduplicated counts
+    """
+    import base64
+    from collections import defaultdict
+
+    cooccurrences = cooccurrences or set()
+
+    # Group crops by label
+    label_groups = defaultdict(list)
+    for key, crop_bytes in track_crops.items():
+        label = key.split(":")[0]
+        label_groups[label].append((key, crop_bytes))
+
+    result_counts = {}
+
+    for label, crops in label_groups.items():
+        if len(crops) <= 1:
+            result_counts[label] = len(crops)
+            continue
+
+        # Check co-occurrences: find the largest group that ALL appeared in the same single frame.
+        # cooccurrences stores pairwise co-occurrences, but we need the max clique.
+        # For small N, check each frame's contribution directly.
+        # We stored pairwise, so find the largest subset where every pair co-occurred.
+        crop_keys = [key for key, _ in crops]
+        min_unique = 1
+        # Simple approach: for each pair that co-occurred, that's at least 2.
+        # Then check if any triple all co-occurred, etc.
+        from itertools import combinations
+        for size in range(len(crop_keys), 1, -1):
+            found = False
+            for combo in combinations(crop_keys, size):
+                # Check if every pair in this combo co-occurred
+                if all(frozenset({a, b}) in cooccurrences for a, b in combinations(combo, 2)):
+                    min_unique = size
+                    found = True
+                    break
+            if found:
+                break
+
+        logger.info(f"VLM dedup: {label} — {len(crops)} tracks, min {min_unique} from co-occurrence")
+
+        # If all tracks co-occurred, no need to ask VLM
+        if min_unique >= len(crops):
+            result_counts[label] = len(crops)
+            logger.info(f"VLM dedup: {label} — all {len(crops)} co-occurred, skipping VLM")
+            continue
+
+        # Ask VLM, but tell it about the minimum
+        from langchain_core.messages import HumanMessage
+        vlm = create_vision_llm()
+
+        cooccur_note = ""
+        if min_unique > 1:
+            cooccur_note = f" Note: at least {min_unique} of these were seen simultaneously, so there are at least {min_unique} unique ones."
+
+        content = [{"type": "text", "text": (
+            f"I have {len(crops)} cropped images of '{label}' detected by a robot camera during patrol. "
+            f"Some may be the same {label} seen at different times/angles. "
+            f"Look at each image and determine how many UNIQUE {label}(s) there are.{cooccur_note} "
+            f"Reply with ONLY a number."
+        )}]
+
+        for i, (key, crop_bytes) in enumerate(crops):
+            img_b64 = base64.b64encode(crop_bytes).decode()
+            content.append({
+                "type": "text",
+                "text": f"Image {i+1} (track: {key}):"
+            })
+            content.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}
+            })
+
+        try:
+            response = await vlm.ainvoke([HumanMessage(content=content)])
+            answer = response.content.strip()
+            import re
+            nums = re.findall(r'\d+', answer)
+            count = int(nums[0]) if nums else len(crops)
+            # Ensure count is at least the co-occurrence minimum
+            count = max(count, min_unique)
+            result_counts[label] = count
+            logger.info(f"VLM dedup: {label} — {len(crops)} tracks → {count} unique (min {min_unique})")
+        except Exception as e:
+            logger.warning(f"VLM dedup failed for {label}: {e}, using co-occurrence minimum")
+            result_counts[label] = min_unique
+
+    return result_counts
+
+
+async def _vlm_resolve_label(crop_jpeg: bytes, candidate_labels: list) -> str:
+    """Use VLM to resolve a label conflict for a single object.
+
+    Args:
+        crop_jpeg: JPEG bytes of the cropped object
+        candidate_labels: list of candidate labels (e.g. ["dog", "horse"])
+
+    Returns:
+        The correct label chosen by VLM
+    """
+    import base64
+    from langchain_core.messages import HumanMessage
+
+    img_b64 = base64.b64encode(crop_jpeg).decode()
+    vlm = create_vision_llm()
+
+    labels_str = " or ".join(candidate_labels)
+    msg = HumanMessage(content=[
+        {"type": "text", "text": (
+            f"The detection system is confused about this object. "
+            f"Is this a {labels_str}? Reply with ONLY one of: {', '.join(candidate_labels)}"
+        )},
+        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}},
+    ])
+
+    response = await vlm.ainvoke([msg])
+    answer = response.content.strip().lower()
+
+    # Match to one of the candidate labels
+    for label in candidate_labels:
+        if label.lower() in answer:
+            return label
+    # Fallback: return first candidate
+    return candidate_labels[0]
+
+
+async def _vlm_describe_objects(track_crops: dict) -> dict:
+    """Use VLM to describe the appearance of each detected object.
+
+    Args:
+        track_crops: dict of {label:track_id → JPEG bytes}
+
+    Returns:
+        dict of {label:track_id → description string}
+    """
+    import base64
+    from langchain_core.messages import HumanMessage
+    from collections import defaultdict
+
+    # Group by label, pick one representative crop per label
+    label_best = {}
+    for key, crop_bytes in track_crops.items():
+        label = key.split(":")[0]
+        if label not in label_best:
+            label_best[label] = (key, crop_bytes)
+
+    descriptions = {}
+    vlm = create_vision_llm()
+
+    for label, (key, crop_bytes) in label_best.items():
+        img_b64 = base64.b64encode(crop_bytes).decode()
+        msg = HumanMessage(content=[
+            {"type": "text", "text": (
+                f"Briefly describe this {label}'s appearance in 1 sentence. "
+                "Include colors, clothing, size, or distinguishing features. "
+                "Be factual and concise."
+            )},
+            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}},
+        ])
+
+        try:
+            response = await vlm.ainvoke([msg])
+            desc = response.content.strip()
+            descriptions[label] = desc
+            logger.info(f"VLM describe: {label} → {desc[:80]}")
+        except Exception as e:
+            logger.warning(f"VLM describe failed for {label}: {e}")
+            descriptions[label] = label
+
+    return descriptions
+
+
 def _needs_vlm_verification(task_goal: str) -> bool:
-    """Check if the task goal contains attribute descriptions that need VLM."""
+    """Legacy fallback: check if the task goal contains attribute descriptions that need VLM.
+    Prefer using mission.use_vlm (set by planner LLM) instead of this keyword matching.
+    """
     if not task_goal:
         return False
     keywords = ["wearing", "red", "blue", "green", "yellow", "white", "black",
                 "orange", "pink", "purple", "brown", "gray", "grey",
                 "shirt", "hat", "jacket", "dress", "glasses", "tall", "short",
                 "color", "holding", "carrying", "mannequin", "dummy"]
-    # Use word boundary matching to avoid false positives (e.g. "what" matching "hat")
     import re
     goal_lower = task_goal.lower()
     return any(re.search(rf'\b{kw}\b', goal_lower) for kw in keywords)
@@ -122,6 +327,8 @@ class SearchMission:
     target_name: str = ""
     task_goal: str = ""
     report_all: bool = False
+    vlm_verify: bool = False    # VLM verifies attributes (e.g. "wearing green shirt")
+    vlm_describe: bool = False  # VLM describes detected objects in detail
     duration_s: int = 0  # 0 = use default timeout
     threshold: float = 0.7
     status: str = "pending"
@@ -129,6 +336,9 @@ class SearchMission:
     frames_analyzed: int = 0
     detections: list = field(default_factory=list)
     _seen_track_ids: set = field(default_factory=set)
+    _track_crops: dict = field(default_factory=dict)  # track_key → JPEG bytes of cropped detection
+    _tid_label_counts: dict = field(default_factory=dict)  # track_id → Counter of labels
+    _cooccurrences: set = field(default_factory=set)  # set of frozenset({key1, key2}) that appeared in same frame
     match_result: Optional[dict] = None
     error: Optional[str] = None
     _cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
@@ -145,7 +355,7 @@ class SearchMission:
         return round(time.time() - self.start_time, 1) if self.start_time else 0
 
     def to_dict(self) -> dict:
-        return {
+        result = {
             "mission_id": self.mission_id,
             "agent_id": self.agent_id,
             "target_type": self.target_type,
@@ -159,6 +369,11 @@ class SearchMission:
             "match_result": self.match_result,
             "error": self.error,
         }
+        if hasattr(self, "dedup_counts") and self.dedup_counts:
+            result["dedup_counts"] = self.dedup_counts
+        if hasattr(self, "vlm_descriptions") and self.vlm_descriptions:
+            result["vlm_descriptions"] = self.vlm_descriptions
+        return result
 
 
 # Active missions tracker
@@ -207,14 +422,13 @@ async def grab_single_frame(host: str, port: int) -> Optional[bytes]:
 
 async def _detect_in_frame(frame: bytes, target_type: str, target_name: str = "",
                            threshold: float = 0.7, yolo_result: dict = None,
-                           task_goal: str = "") -> list[dict]:
+                           task_goal: str = "", use_vlm: bool = False) -> list[dict]:
     """Run detection on a single frame. Returns list of detections.
 
-    If task_goal contains attribute descriptions (e.g. 'wearing blue shirt'),
-    VLM is used to verify person detections beyond what YOLO can determine.
+    If use_vlm=True (decided by planner LLM), VLM is used to verify
+    person detections beyond what YOLO can determine.
     """
     results = []
-    use_vlm = _needs_vlm_verification(task_goal)
 
     if target_type == "face":
         from .face_registry import face_registry
@@ -259,19 +473,24 @@ async def _detect_in_frame(frame: bytes, target_type: str, target_name: str = ""
             else:
                 is_target = True
 
-            # VLM verification: if YOLO says "person" and task has attribute description
-            # Cache by track_id to avoid repeated VLM calls for the same tracked person
+            # VLM verification: if task requires specific attributes (e.g. "person with green shirt")
+            # Only person detections go through VLM; non-person objects are NOT targets
+            # when VLM mode is active (task is looking for a specific person, not any object)
             track_id = d.get("track_id")
-            if use_vlm and is_target and d["label"] == "person" and d.get("bbox"):
-                cache_key = f"{task_goal}:{track_id}" if track_id is not None else None
-                if cache_key and cache_key in _vlm_cache:
-                    is_target = _vlm_cache[cache_key]
+            if use_vlm:
+                if d["label"] == "person" and d.get("bbox"):
+                    cache_key = f"{task_goal}:{track_id}" if track_id is not None else None
+                    if cache_key and cache_key in _vlm_cache:
+                        is_target = _vlm_cache[cache_key]
+                    else:
+                        is_target = await _vlm_verify_attribute(frame, d["bbox"], task_goal)
+                        if cache_key:
+                            _vlm_cache[cache_key] = is_target
+                    if is_target:
+                        d["label"] = f"person (VLM confirmed: matches description)"
                 else:
-                    is_target = await _vlm_verify_attribute(frame, d["bbox"], task_goal)
-                    if cache_key:
-                        _vlm_cache[cache_key] = is_target
-                if is_target:
-                    d["label"] = f"person (VLM confirmed: matches description)"
+                    # Non-person objects are not targets when looking for a specific person
+                    is_target = False
 
             results.append({
                 "label": d["label"],
@@ -388,11 +607,22 @@ async def run_search_mission(mission: SearchMission, existing_udp_receiver=None)
 
         try:
           while not mission.is_cancelled and not mission_ended:
-            # End mission when patrol finishes in report mode (no target to wait for)
-            if patrol_task and patrol_task.done() and not mission_ended and mission.report_all:
-                logger.info(f"Mission {mission.mission_id}: patrol finished, ending mission")
-                mission.status = "completed"
-                break
+            # End mission when patrol finishes
+            if patrol_task and patrol_task.done() and not mission_ended:
+                if mission.report_all:
+                    logger.info(f"Mission {mission.mission_id}: patrol finished, ending mission")
+                    mission.status = "completed"
+                    break
+                elif not mission.match_result:
+                    # Find+act mode: patrol done but target never found → end mission
+                    logger.info(f"Mission {mission.mission_id}: patrol finished, target not found")
+                    mission.status = "completed"
+                    break
+                elif time.time() - last_dispatch_time > 10:
+                    # Find+act mode: patrol done, target was found but lost for >10s → end mission
+                    logger.info(f"Mission {mission.mission_id}: patrol finished, target lost during approach")
+                    mission.status = "completed"
+                    break
 
             if time.time() - mission.start_time > timeout:
                 mission.status = "timeout"
@@ -432,17 +662,43 @@ async def run_search_mission(mission: SearchMission, existing_udp_receiver=None)
                 frame, mission.target_type, mission.target_name,
                 mission.threshold, yolo_result,
                 task_goal=mission.task_goal,
+                use_vlm=mission.vlm_verify,
             )
 
             # Accumulate detections (deduplicate by track_id)
             for d in detections:
                 track_id = d.get("track_id")
+                label = d.get("label", "unknown")
                 if track_id is not None:
-                    key = f"{d.get('label', '')}:{track_id}"
+                    # Track label frequency per track_id (for resolving conflicts later)
+                    if track_id not in mission._tid_label_counts:
+                        mission._tid_label_counts[track_id] = {}
+                    mission._tid_label_counts[track_id][label] = mission._tid_label_counts[track_id].get(label, 0) + 1
+
+                    key = f"{label}:{track_id}"
                     if key in mission._seen_track_ids:
                         continue
                     mission._seen_track_ids.add(key)
+                    # Save cropped image for VLM dedup later
+                    bbox = d.get("bbox")
+                    if bbox and frame is not None:
+                        crop = _crop_bbox(frame, bbox)
+                        if crop is not None:
+                            mission._track_crops[key] = crop
                 mission.detections.append(d)
+
+            # Record co-occurrences: track keys that appear in same frame → definitely different objects
+            from collections import defaultdict as _dd
+            frame_keys_by_label = _dd(list)
+            for d in detections:
+                tid = d.get("track_id")
+                if tid is not None:
+                    frame_keys_by_label[d.get("label", "unknown")].append(f"{d.get('label', 'unknown')}:{tid}")
+            for label, keys in frame_keys_by_label.items():
+                if len(keys) > 1:
+                    for i in range(len(keys)):
+                        for j in range(i + 1, len(keys)):
+                            mission._cooccurrences.add(frozenset({keys[i], keys[j]}))
 
             # Record first target match
             if mission.match_result is None:
@@ -520,6 +776,58 @@ async def run_search_mission(mission: SearchMission, existing_udp_receiver=None)
             patrol_task.cancel()
 
         agent.clear_mission()
+
+        # Resolve label conflicts: same track_id with different labels → use VLM to decide
+        if mission._tid_label_counts:
+            for tid, label_freq in mission._tid_label_counts.items():
+                if len(label_freq) <= 1:
+                    continue
+                labels = list(label_freq.keys())
+                # Pick the crop with highest confidence to ask VLM
+                best_crop_key = None
+                for label in labels:
+                    key = f"{label}:{tid}"
+                    if key in mission._track_crops:
+                        best_crop_key = key
+                        break
+                if best_crop_key:
+                    try:
+                        resolved = await _vlm_resolve_label(mission._track_crops[best_crop_key], labels)
+                        logger.info(f"Mission {mission.mission_id}: VLM resolved track#{tid}: {labels} → {resolved}")
+                    except Exception as e:
+                        # Fallback to most frequent
+                        resolved = max(label_freq, key=label_freq.get)
+                        logger.warning(f"Mission {mission.mission_id}: VLM resolve failed for track#{tid}: {e}, using {resolved}")
+                else:
+                    resolved = max(label_freq, key=label_freq.get)
+
+                for label in labels:
+                    if label != resolved:
+                        bad_key = f"{label}:{tid}"
+                        mission._track_crops.pop(bad_key, None)
+                        mission._seen_track_ids.discard(bad_key)
+                        mission.detections = [
+                            d for d in mission.detections
+                            if not (d.get("track_id") == tid and d.get("label") == label)
+                        ]
+
+        # VLM dedup: get accurate object counts by comparing cropped images
+        if mission._track_crops and mission.report_all:
+            try:
+                dedup_counts = await _vlm_dedup_objects(mission._track_crops, mission._cooccurrences)
+                mission.dedup_counts = dedup_counts
+                logger.info(f"Mission {mission.mission_id}: VLM dedup counts: {dedup_counts}")
+            except Exception as e:
+                logger.warning(f"Mission {mission.mission_id}: VLM dedup failed: {e}")
+
+        # VLM describe: describe each detected object's appearance
+        if mission._track_crops and mission.vlm_describe:
+            try:
+                descriptions = await _vlm_describe_objects(mission._track_crops)
+                mission.vlm_descriptions = descriptions
+                logger.info(f"Mission {mission.mission_id}: VLM descriptions: {list(descriptions.keys())}")
+            except Exception as e:
+                logger.warning(f"Mission {mission.mission_id}: VLM describe failed: {e}")
 
         return mission.to_dict()
 

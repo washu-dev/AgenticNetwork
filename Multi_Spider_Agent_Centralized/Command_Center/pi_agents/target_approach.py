@@ -29,16 +29,7 @@ logger = logging.getLogger(__name__)
 FRAME_WIDTH = 640
 FRAME_HEIGHT = 480
 
-# Close enough thresholds by action category
-_CLOSE_THRESHOLDS = {
-    "wave": 50, "dance": 50, "nod": 50, "shake_head": 50,
-    "shake_hand": 20, "play_dead": 30,
-}
-_DEFAULT_CLOSE_THRESHOLD = 30
-
-
-def _get_close_threshold(action: str) -> float:
-    return _CLOSE_THRESHOLDS.get(action, _DEFAULT_CLOSE_THRESHOLD)
+from ..config import ACTION_DIST_CM, ACTION_BBOX_RATIO
 
 
 def _get_bbox_center_x(bbox) -> Optional[float]:
@@ -160,10 +151,9 @@ class SpiderTargetApproach(TargetApproach):
         cx = _get_bbox_center_x(bbox)
         bbox_h = _get_bbox_height(bbox)
 
-        # Check if close enough
-        threshold = _get_close_threshold(self._plan["final_action"])
-        is_close_ultrasonic = ultrasonic_cm is not None and ultrasonic_cm <= threshold
-        is_close_bbox = bbox_h is not None and bbox_h > FRAME_HEIGHT * 0.5
+        # Check if close enough to execute final action
+        is_close_ultrasonic = ultrasonic_cm is not None and ultrasonic_cm <= ACTION_DIST_CM
+        is_close_bbox = bbox_h is not None and bbox_h > FRAME_HEIGHT * ACTION_BBOX_RATIO
 
         if is_close_ultrasonic or is_close_bbox:
             return self._plan["final_action"]

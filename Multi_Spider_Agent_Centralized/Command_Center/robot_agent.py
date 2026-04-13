@@ -333,6 +333,8 @@ class RobotAgentService:
             target_name=request.get("target_name", ""),
             task_goal=request.get("task_goal", ""),
             report_all=request.get("report_all", False),
+            vlm_verify=request.get("vlm_verify", False),
+            vlm_describe=request.get("vlm_describe", False),
             duration_s=request.get("duration_s", 0),
         )
         self._current_mission = mission

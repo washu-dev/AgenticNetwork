@@ -47,15 +47,15 @@ ACTIONS: List[Action] = [
     # Movement
     Action(
         name="forward",
-        description="Walk forward ~7.5cm (3 steps).",
+        description="Walk forward. Each step moves ~9cm. Set steps=N to walk N steps.",
         category="movement",
-        parameters="3 steps, ~2.5cm each",
+        parameters="steps: number of steps (default 1, each ~9cm)",
     ),
     Action(
         name="backward",
-        description="Walk backward ~7.5cm (3 steps).",
+        description="Walk backward. Each step moves ~9cm. Set steps=N to walk N steps.",
         category="movement",
-        parameters="3 steps, ~2.5cm each",
+        parameters="steps: number of steps (default 1, each ~9cm)",
     ),
     # Action(
     #     name="turn_left",

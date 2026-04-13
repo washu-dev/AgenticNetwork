@@ -38,7 +38,9 @@ _PARSE_PROMPT = (
     "  'Wave' → direct_control\n"
     "  'robot-002 wave' → direct_control, target_robot_ids=['robot-002']\n"
     "  'Detect person, if found wave' → agent, target_type='object'\n"
+    "  'Find person wearing red shirt' → agent, target_type='object' + call enable_vlm(mode='verify')\n"
     "  'Report what you see' → agent, target_type='any', report_all=true\n"
+    "  'Describe what you see' → agent, target_type='any', report_all=true + call enable_vlm(mode='describe')\n"
     "  'Detect person for 10 seconds' → agent, target_type='object', duration_s=10"
 )
 
@@ -85,21 +87,49 @@ def build_parse_prompt(online_robots: list[dict]) -> str:
 # LLM parse call
 # ---------------------------------------------------------------------------
 
-async def parse_intent(prompt: str, online_robots: list[dict]) -> TaskIntent | None:
-    """Parse user prompt into TaskIntent via LLM structured output.
+async def parse_intent(prompt: str, online_robots: list[dict]) -> tuple[TaskIntent | None, dict]:
+    """Parse user prompt into TaskIntent via LLM.
 
-    Returns None if LLM call fails.
+    Uses two-step process:
+    1. LLM decides whether to call VLM tools (tool calling)
+    2. LLM outputs structured TaskIntent
+
+    Returns: (TaskIntent or None, vlm_config: dict)
+        vlm_config: {"verify": bool, "describe": bool}
     """
     parse_prompt = build_parse_prompt(online_robots)
+    vlm_config = {"verify": False, "describe": False}
+
     try:
-        intent_llm = create_llm().with_structured_output(TaskIntent, strict=True)
-        return await intent_llm.ainvoke([
+        llm = create_llm()
+
+        # Step 1: Let LLM decide which VLM tools to enable
+        from .tools import OPENAI_VLM_TOOLS
+        llm_with_tools = llm.bind_tools(OPENAI_VLM_TOOLS)
+        tool_response = await llm_with_tools.ainvoke([
             SystemMessage(content=parse_prompt),
             HumanMessage(content=prompt),
         ])
+
+        for tool_call in tool_response.tool_calls:
+            if tool_call["name"] == "enable_vlm":
+                mode = tool_call["args"].get("mode", "verify")
+                reason = tool_call["args"].get("reason", "")
+                vlm_config[mode] = True
+                logger.info(f"LLM called enable_vlm(mode={mode}): {reason}")
+
+        # Step 2: Parse intent with structured output
+        intent_llm = llm.with_structured_output(TaskIntent, strict=True)
+        intent = await intent_llm.ainvoke([
+            SystemMessage(content=parse_prompt),
+            HumanMessage(content=prompt),
+        ])
+
+        return intent, vlm_config
+
     except Exception as e:
         logger.warning(f"LLM parse failed: {e}, using fallback")
-        return None
+        return None, vlm_config
 
 
 # ---------------------------------------------------------------------------

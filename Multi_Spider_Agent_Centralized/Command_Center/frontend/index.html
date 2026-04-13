@@ -269,11 +269,11 @@
             <g class="topo-node" :class="{'topo-active': plannerStatus === 'thinking'}"
                :transform="`translate(${topoWidth/2}, 10)`">
               <rect x="-55" y="0" width="110" height="40"
-                    :fill="plannerStatus === 'idle' ? '#334155' : plannerStatus === 'thinking' ? '#5b21b6' : '#166534'"
-                    :stroke="plannerStatus === 'idle' ? '#475569' : plannerStatus === 'thinking' ? '#a78bfa' : '#22c55e'" />
+                    :fill="plannerStatus === 'idle' ? '#334155' : plannerStatus === 'thinking' ? '#5b21b6' : plannerStatus === 'dispatched' ? '#1e40af' : plannerStatus === 'done' ? '#166534' : '#334155'"
+                    :stroke="plannerStatus === 'idle' ? '#475569' : plannerStatus === 'thinking' ? '#a78bfa' : plannerStatus === 'dispatched' ? '#60a5fa' : plannerStatus === 'done' ? '#22c55e' : '#475569'" />
               <text class="node-name" x="0" y="18" text-anchor="middle">Planner</text>
               <text class="node-status" x="0" y="32" text-anchor="middle"
-                    :fill="plannerStatus === 'thinking' ? '#c4b5fd' : plannerStatus === 'done' ? '#86efac' : '#64748b'">
+                    :fill="plannerStatus === 'thinking' ? '#c4b5fd' : plannerStatus === 'dispatched' ? '#93c5fd' : plannerStatus === 'done' ? '#86efac' : '#64748b'">
                 {{ plannerStatus }}
               </text>
             </g>
@@ -382,6 +382,7 @@ createApp({
     });
 
     function robotStatus(rid) {
+      if (!taskRunning.value) return 'idle';
       const evts = commEvents.value;
       // Check if this robot was involved at all
       const involved = evts.some(e => e.from === rid || e.to === rid);
@@ -390,6 +391,7 @@ createApp({
       for (let i = evts.length - 1; i >= 0; i--) {
         if (evts[i].from === rid && evts[i].type === 'result') return 'done';
         if (evts[i].from === rid && evts[i].type === 'execute') return 'executing';
+        if (evts[i].from === rid && evts[i].type === 'observe') return 'executing';
         if (evts[i].from === rid && evts[i].type === 'think') return 'thinking';
         if (evts[i].to === rid && evts[i].type === 'dispatch') return 'executing';
       }

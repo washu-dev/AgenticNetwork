@@ -59,6 +59,14 @@ TRANSPORT_SERVER_ENDPOINT = os.getenv("TRANSPORT_SERVER_ENDPOINT", "nats://local
 # === Detection engine ===
 MISSION_TIMEOUT_STATIONARY = int(os.getenv("MISSION_TIMEOUT_STATIONARY", "10"))
 MISSION_TIMEOUT_PATROL = int(os.getenv("MISSION_TIMEOUT_PATROL", "180"))
+# === Approach thresholds ===
+# Stage 1: Patrol → Approach (when to stop patrol and start approaching target)
+APPROACH_DIST_CM = int(os.getenv("APPROACH_DIST_CM", "50"))            # ultrasonic threshold (cm)
+APPROACH_BBOX_RATIO = float(os.getenv("APPROACH_BBOX_RATIO", "0.30"))  # bbox height ratio (0.30 = 30% of frame)
+
+# Stage 2: Approach → Execute action (when to stop approaching and perform final action)
+ACTION_DIST_CM = int(os.getenv("ACTION_DIST_CM", "30"))                # ultrasonic threshold (cm)
+ACTION_BBOX_RATIO = float(os.getenv("ACTION_BBOX_RATIO", "0.50"))      # bbox height ratio (0.50 = 50% of frame)
 
 # === Health check ===
 HEALTH_CHECK_TIMEOUT = int(os.getenv("HEALTH_CHECK_TIMEOUT", "5"))

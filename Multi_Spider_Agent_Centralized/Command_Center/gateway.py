@@ -73,7 +73,11 @@ async def startup_event():
                     elif step.startswith("Auto:"):
                         _emit_comm_event(_current_task_id, rid, "hardware", "auto", step[5:].strip())
                     elif step.startswith("Result:"):
-                        _emit_comm_event(_current_task_id, rid, "planner", "result", step[7:].strip())
+                        # Detection results are observations, not task completion
+                        if "detected" in step or "Mission finished" in step:
+                            _emit_comm_event(_current_task_id, rid, "planner", "observe", step[7:].strip())
+                        else:
+                            _emit_comm_event(_current_task_id, rid, "planner", "result", step[7:].strip())
 
         await transport.subscribe([REASONING_TOPIC_WILDCARD], _on_robot_reasoning)
         logger.info(f"Subscribed to robot reasoning: {REASONING_TOPIC_WILDCARD}")
