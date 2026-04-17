@@ -1,0 +1,24 @@
+{
+  "_comment": "Cropped from teammate calibrated map13_modified.pgm to just the building area + 40px margin.",
+  "image": "map13.png",
+  "image_width": 593,
+  "image_height": 397,
+  "resolution": 0.05,
+  "origin": [
+    -9.15,
+    -6.1,
+    0.0
+  ],
+  "_pixel_to_world": "world_x = origin_x + pixel_x * resolution; world_y = origin_y + (image_height - pixel_y) * resolution",
+  "_crop_info": {
+    "from_file": "map13_modified.pgm",
+    "original_size": [
+      1070,
+      926
+    ],
+    "left": 337,
+    "top": 227,
+    "right": 140,
+    "bottom": 302
+  }
+}

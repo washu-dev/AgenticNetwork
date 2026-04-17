@@ -316,7 +316,7 @@
           </svg>
         </div>
 
-        <!-- Bird's Eye Map -->
+        <!-- Bird's Eye Map (temporarily disabled — will re-enable later) -->
         <div style="background:#1e293b;border:1px solid #334155;border-radius:8px;flex:1;display:flex;align-items:center;justify-content:center;color:#334155;font-size:12px;">
           Bird's Eye Map (Coming Soon)
         </div>
@@ -344,6 +344,252 @@ createApp({
     const plannerBody = ref(null);
     const robotReasoning = reactive({});
     const _detectionSSEs = {};
+
+    // ── Bird's-eye map state ──
+    const mapContainer = ref(null);   // div wrapping the map
+    const mapImg = ref(null);         // <img> backdrop
+    const mapCanvas = ref(null);      // <canvas> overlay
+    const mapMeta = ref(null);        // { image_width, image_height, resolution, origin }
+    const tagPositions = ref({});     // { tag_id: { zone, pos: [x, y] } }
+    const robotPositions = ref([]);   // [{ robot_id, zone, position, last_tag_id, updated_at, busy }]
+    const mapDetections = ref({});    // { agent_id: { labels: [...], count } }
+    const _imgNatural = { w: 0, h: 0 };
+    const _colorForRobot = {};
+    const ROBOT_COLORS = ['#22c55e', '#f59e0b', '#38bdf8', '#ec4899', '#a78bfa', '#84cc16'];
+    function colorForRobot(robotId) {
+      if (!_colorForRobot[robotId]) {
+        _colorForRobot[robotId] = ROBOT_COLORS[Object.keys(_colorForRobot).length % ROBOT_COLORS.length];
+      }
+      return _colorForRobot[robotId];
+    }
+
+    // Animation + overlap offset state
+    const _renderedPositions = {};  // robot_id → [px, py] last drawn
+    const _animations = {};         // robot_id → { fromPx, fromPy, toPx, toPy, startTime }
+    const ANIM_DURATION_MS = 600;
+    let _animLoopActive = false;
+
+    function _hashId(id) {
+      let h = 0;
+      for (let i = 0; i < id.length; i++) h = ((h << 5) - h + id.charCodeAt(i)) | 0;
+      return Math.abs(h);
+    }
+
+    // Small deterministic offset per robot so two dots at the same tag stay visible.
+    function robotPixelOffset(robotId) {
+      const angle = (_hashId(robotId) % 360) * Math.PI / 180;
+      const radius = 9;  // in canvas pixels
+      return [Math.cos(angle) * radius, Math.sin(angle) * radius];
+    }
+
+    function easeOutCubic(t) { return 1 - Math.pow(1 - t, 3); }
+
+    function _startAnimLoop() {
+      if (_animLoopActive) return;
+      _animLoopActive = true;
+      const tick = () => {
+        drawMap();
+        const now = performance.now();
+        let anyActive = false;
+        for (const id of Object.keys(_animations)) {
+          if (now - _animations[id].startTime < ANIM_DURATION_MS) {
+            anyActive = true;
+          } else {
+            delete _animations[id];
+          }
+        }
+        if (anyActive) {
+          requestAnimationFrame(tick);
+        } else {
+          _animLoopActive = false;
+        }
+      };
+      requestAnimationFrame(tick);
+    }
+
+    function onMapLoaded() {
+      if (!mapImg.value) return;
+      _imgNatural.w = mapImg.value.naturalWidth;
+      _imgNatural.h = mapImg.value.naturalHeight;
+      drawMap();
+    }
+
+    async function loadMapData() {
+      try {
+        const [metaR, tagsR] = await Promise.all([
+          fetch('/api/map_meta').then(r => r.json()),
+          fetch('/api/tag_positions').then(r => r.json()),
+        ]);
+        if (metaR && metaR.image_width) mapMeta.value = metaR;
+        if (tagsR && tagsR.tags) tagPositions.value = tagsR.tags;
+        drawMap();
+      } catch (e) {
+        console.warn('Failed to load map data:', e);
+      }
+    }
+
+    async function pollMapOverlay() {
+      try {
+        const [posR, detR] = await Promise.all([
+          fetch('/api/positions').then(r => r.json()),
+          fetch('/api/latest_detections').then(r => r.json()),
+        ]);
+        if (posR && posR.positions) {
+          // Detect position changes and schedule animations
+          for (const r of posR.positions) {
+            if (!r.position) continue;
+            const [tpx, tpy] = worldToPixel(r.position[0], r.position[1]);
+            const prev = _renderedPositions[r.robot_id];
+            if (prev && (Math.abs(prev[0] - tpx) > 1 || Math.abs(prev[1] - tpy) > 1)) {
+              _animations[r.robot_id] = {
+                fromPx: prev[0], fromPy: prev[1],
+                toPx: tpx, toPy: tpy,
+                startTime: performance.now(),
+              };
+            } else if (!prev) {
+              _renderedPositions[r.robot_id] = [tpx, tpy];
+            }
+          }
+          robotPositions.value = posR.positions;
+        }
+        if (detR && detR.detections) mapDetections.value = detR.detections;
+        _startAnimLoop();  // kick off rAF loop; it exits on its own when done
+        drawMap();
+      } catch (e) {
+        // silently ignore transient polling errors
+      }
+    }
+
+    function worldToPixel(x, y) {
+      // world (x, y) → original-image pixel (px, py), then scaled to canvas size
+      if (!mapMeta.value || !mapCanvas.value) return [0, 0];
+      const m = mapMeta.value;
+      const ox = m.origin[0], oy = m.origin[1];
+      const res = m.resolution;
+      const pxInImg = (x - ox) / res;
+      const pyInImg = m.image_height - (y - oy) / res;
+      // Now map image-pixels to canvas-pixels. The image uses object-fit:contain,
+      // so compute the effective drawn area.
+      const cw = mapCanvas.value.width;
+      const ch = mapCanvas.value.height;
+      const scale = Math.min(cw / m.image_width, ch / m.image_height);
+      const drawW = m.image_width * scale;
+      const drawH = m.image_height * scale;
+      const offX = (cw - drawW) / 2;
+      const offY = (ch - drawH) / 2;
+      return [offX + pxInImg * scale, offY + pyInImg * scale];
+    }
+
+    function _syncCanvasSize() {
+      const canvas = mapCanvas.value;
+      if (!canvas) return false;
+      const rect = canvas.getBoundingClientRect();
+      const dpr = window.devicePixelRatio || 1;
+      const wantW = Math.round(rect.width * dpr);
+      const wantH = Math.round(rect.height * dpr);
+      if (canvas.width !== wantW || canvas.height !== wantH) {
+        canvas.width = wantW;
+        canvas.height = wantH;
+      }
+      return canvas.width > 0 && canvas.height > 0;
+    }
+
+    function drawMap() {
+      if (!mapCanvas.value || !mapMeta.value) return;
+      if (!_syncCanvasSize()) return;
+      const ctx = mapCanvas.value.getContext('2d');
+      ctx.clearRect(0, 0, mapCanvas.value.width, mapCanvas.value.height);
+
+      // ── AprilTag markers (small cyan squares) ──
+      ctx.fillStyle = '#38bdf8';
+      ctx.strokeStyle = '#0ea5e9';
+      ctx.lineWidth = 1;
+      for (const [tid, info] of Object.entries(tagPositions.value || {})) {
+        if (!info || !info.pos) continue;
+        // Skip placeholder [0,0] so they don't clutter the corner
+        if (info.pos[0] === 0 && info.pos[1] === 0) continue;
+        const [px, py] = worldToPixel(info.pos[0], info.pos[1]);
+        ctx.fillRect(px - 3, py - 3, 6, 6);
+        ctx.strokeRect(px - 3, py - 3, 6, 6);
+        ctx.fillStyle = '#94a3b8';
+        ctx.font = '10px monospace';
+        ctx.fillText('#' + tid, px + 6, py - 4);
+        ctx.fillStyle = '#38bdf8';
+      }
+
+      // ── Robot dots ──
+      const now = Date.now() / 1000;
+      const animNow = performance.now();
+      for (const r of robotPositions.value || []) {
+        if (!r.position) continue;
+        let [px, py] = worldToPixel(r.position[0], r.position[1]);
+
+        // Smooth animation: interpolate from previous to target position
+        const anim = _animations[r.robot_id];
+        if (anim) {
+          const t = Math.min(1, (animNow - anim.startTime) / ANIM_DURATION_MS);
+          const eased = easeOutCubic(t);
+          px = anim.fromPx + (anim.toPx - anim.fromPx) * eased;
+          py = anim.fromPy + (anim.toPy - anim.fromPy) * eased;
+        }
+        _renderedPositions[r.robot_id] = [px, py];
+
+        // Per-robot offset so overlapping dots stay visible
+        const [ox, oy] = robotPixelOffset(r.robot_id);
+        px += ox;
+        py += oy;
+
+        const age = r.updated_at ? (now - r.updated_at) : 999;
+        const stale = age > 30;
+        const color = stale ? '#64748b' : (r.busy ? '#f59e0b' : '#22c55e');
+        const ringColor = colorForRobot(r.robot_id);
+
+        // Outer ring = per-robot color for identification
+        ctx.beginPath();
+        ctx.arc(px, py, 11, 0, Math.PI * 2);
+        ctx.fillStyle = ringColor;
+        ctx.globalAlpha = 0.25;
+        ctx.fill();
+        ctx.globalAlpha = 1.0;
+
+        // Inner dot = status color (idle/busy/stale)
+        ctx.beginPath();
+        ctx.arc(px, py, 7, 0, Math.PI * 2);
+        ctx.fillStyle = color;
+        ctx.fill();
+        ctx.strokeStyle = '#0f172a';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        // Robot label
+        const shortId = (r.robot_id || '').split('-').pop();
+        ctx.fillStyle = '#e2e8f0';
+        ctx.font = 'bold 10px monospace';
+        ctx.fillText(shortId, px + 12, py + 4);
+        ctx.fillStyle = '#64748b';
+        ctx.font = '9px monospace';
+        ctx.fillText((r.zone || '?'), px + 12, py + 15);
+
+        // Target detection icon (if this robot is currently seeing a target)
+        const det = mapDetections.value[r.robot_id];
+        if (det && det.count > 0) {
+          ctx.fillStyle = '#ef4444';
+          ctx.beginPath();
+          ctx.moveTo(px - 5, py - 18);
+          ctx.lineTo(px + 5, py - 18);
+          ctx.lineTo(px, py - 10);
+          ctx.closePath();
+          ctx.fill();
+          ctx.fillStyle = '#fca5a5';
+          ctx.font = 'bold 9px monospace';
+          const labelText = det.labels.slice(0, 2).join(',');
+          ctx.fillText(labelText, px - 20, py - 22);
+        }
+      }
+    }
+
+    // Redraw when the container resizes (e.g. window resize)
+    let _resizeObserver = null;
 
     const quickCmds = [
       { icon: '\u{1F9CD}', label: 'Stand Up', prompt: 'Stand up' },
@@ -627,6 +873,7 @@ createApp({
       }
     }
 
+    let mapPollInterval;
     onMounted(() => {
       loadAgents();
       window.addEventListener('load', () => {
@@ -636,8 +883,23 @@ createApp({
       // Stop streams before page unloads so browser doesn't hang
       window.addEventListener('beforeunload', stopVideoStreams);
       pollInterval = setInterval(loadAgents, 10000);
+
+      // Map overlay: load static config once, then poll dynamic data every 1s
+      loadMapData();
+      pollMapOverlay();
+      mapPollInterval = setInterval(pollMapOverlay, 1000);
+
+      // Redraw on container resize
+      if (mapContainer.value && window.ResizeObserver) {
+        _resizeObserver = new ResizeObserver(() => drawMap());
+        _resizeObserver.observe(mapContainer.value);
+      }
     });
-    onUnmounted(() => clearInterval(pollInterval));
+    onUnmounted(() => {
+      clearInterval(pollInterval);
+      clearInterval(mapPollInterval);
+      if (_resizeObserver) _resizeObserver.disconnect();
+    });
 
     return {
       agents, prompt, taskRunning, currentTaskId, reasoning, result,
@@ -649,6 +911,8 @@ createApp({
       plannerStatus, robotStatus, robotNodeFill, robotNodeStroke,
       robotStatusColor, robotStatusLabel,
       edgeColor, edgeMarker, edgeLabel,
+      // Bird's-eye map
+      mapContainer, mapImg, mapCanvas, mapMeta, onMapLoaded,
     };
   }
 }).mount('#app');

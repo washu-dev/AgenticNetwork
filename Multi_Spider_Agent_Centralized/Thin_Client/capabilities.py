@@ -47,29 +47,40 @@ ACTIONS: List[Action] = [
     # Movement
     Action(
         name="forward",
-        description="Walk forward. Each step moves ~9cm. Set steps=N to walk N steps.",
+        description="Walk forward ~7.5cm (3 steps).",
         category="movement",
-        parameters="steps: number of steps (default 1, each ~9cm)",
+        parameters="3 steps, ~2.5cm each",
     ),
     Action(
         name="backward",
-        description="Walk backward. Each step moves ~9cm. Set steps=N to walk N steps.",
+        description="Walk backward ~7.5cm (3 steps).",
         category="movement",
-        parameters="steps: number of steps (default 1, each ~9cm)",
+        parameters="3 steps, ~2.5cm each",
+    ),
+    # Action(
+    #     name="turn_left",
+    #     description="Turn left ~80 degrees (stays in place, does not move forward).",
+    #     category="movement",
+    #     parameters="2 turn steps, ~38 degrees each",
+    # ),
+    # Action(
+    #     name="turn_right",
+    #     description="Turn right ~80 degrees (stays in place, does not move forward).",
+    #     category="movement",
+    #     parameters="2 turn steps, ~38 degrees each",
+    # ),
+    Action(
+        name="turn_left_angle",
+        description="Turn left. Primary rotation method. angle=20: ~30 deg/step (3 steps=90°). angle=30: ~36 deg/step (5 steps=180°).",
+        category="movement",
+        parameters="angle=20 ~30°/step, angle=30 ~36°/step",
     ),
     Action(
-        name="turn_left",
-        description="Turn left in place. Specify degrees (e.g. degrees=90 for a quarter turn, degrees=180 for a half turn).",
+        name="turn_right_angle",
+        description="Turn right. Primary rotation method. angle=20: ~30 deg/step (3 steps=90°). angle=30: ~36 deg/step (5 steps=180°).",
         category="movement",
-        parameters="degrees: rotation amount in degrees",
+        parameters="angle=20 ~30°/step, angle=30 ~36°/step",
     ),
-    Action(
-        name="turn_right",
-        description="Turn right in place. Specify degrees (e.g. degrees=90 for a quarter turn, degrees=180 for a half turn).",
-        category="movement",
-        parameters="degrees: rotation amount in degrees",
-    ),
-
     # Gestures
     Action(
         name="wave",
@@ -111,12 +122,12 @@ ACTIONS: List[Action] = [
     # Look (head/body tilt, does NOT move position)
     Action(
         name="look_left",
-        description="Tilt body to look left. Does NOT turn — use turn_left(degrees=...) to change facing direction.",
+        description="Tilt body to look left. Does NOT turn — use turn_left to change facing direction.",
         category="look",
     ),
     Action(
         name="look_right",
-        description="Tilt body to look right. Does NOT turn — use turn_right(degrees=...) to change facing direction.",
+        description="Tilt body to look right. Does NOT turn — use turn_right to change facing direction.",
         category="look",
     ),
     Action(
@@ -136,15 +147,6 @@ ACTION_NAMES = [a.name for a in ACTIONS]
 
 
 # ── Sensors and other capabilities ──────────────────────────
-
-# ── Turn calibration ────────────────────────────────────────
-# Per-robot calibration for _turn_by_degrees on the Command Center.
-# deg_per_step: actual degrees turned per hardware step at the given angle_param.
-# angle_param:  leg swing parameter passed to turn_left_angle / turn_right_angle.
-TURN_CALIBRATION = {
-    "deg_per_step": 30,
-    "angle_param": 25,
-}
 
 SENSORS = [
     {"name": "ultrasonic", "description": "Distance sensor (2-400cm), used for obstacle avoidance", "pins": "D2/D3"},
@@ -194,5 +196,4 @@ def get_capabilities_json() -> dict:
         "sensors": SENSORS,
         "abilities": ABILITIES,
         "endpoints": ENDPOINTS,
-        "turn_calibration": TURN_CALIBRATION,
     }

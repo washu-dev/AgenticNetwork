@@ -1,9 +1,9 @@
 """
-PiCrawler Thin Client — HTTP server for hardware control.
+PiCrawler Thin Client — single-process server for hardware control + video stream.
 
-No LLM, no NATS, no registration. Just:
-  - HTTP endpoints for receiving commands from Robot Agent (on server)
-  - Video stream (via stream.py, separate process)
+Two HTTP servers in one process:
+  - Port 9004: hardware control (commands, health, capabilities)
+  - Port 9000: video stream (UDP push, photo snapshot)
 
 Robot Agent (on server) sends commands via HTTP POST /command.
 """
@@ -12,12 +12,19 @@ import asyncio
 import json
 import logging
 import os
+import socket
+import struct
+import threading
 import time
 
+import cv2
+import numpy as np
+from picamera2 import Picamera2
+import libcamera
 from uvicorn import Config, Server
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
 from agent_spider.config import AGENT_ID, AGENT_PORT
@@ -37,14 +44,80 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+STREAM_PORT = int(os.getenv("STREAM_PORT", "9000"))
+CAMERA_FPS = int(os.getenv("CAMERA_FPS", "10"))
+
 _start_time = time.time()
 _control: CrawlerControl = None
+
+# ── Camera (picamera2 direct) ────────────────────────────
+
+_picam2: Picamera2 = None
+_current_frame = None
+_frame_lock = threading.Lock()
+_camera_ready = False
+
+
+def _camera_capture_loop():
+    """Background thread: capture frames from picamera2 at CAMERA_FPS."""
+    global _current_frame, _camera_ready
+
+    interval = 1.0 / CAMERA_FPS
+    logger.info(f"Camera capture loop started ({CAMERA_FPS} fps)")
+    _camera_ready = True
+
+    while True:
+        t0 = time.time()
+        try:
+            frame = _picam2.capture_array()
+            with _frame_lock:
+                _current_frame = frame
+        except Exception as e:
+            logger.error(f"Camera capture error: {e}")
+            time.sleep(0.1)
+            continue
+
+        elapsed = time.time() - t0
+        if elapsed < interval:
+            time.sleep(interval - elapsed)
+
+
+def _get_frame():
+    """Get latest camera frame (thread-safe copy)."""
+    with _frame_lock:
+        if _current_frame is None:
+            return None
+        return _current_frame.copy()
+
+
+def _start_camera():
+    """Initialize picamera2 and start capture thread."""
+    global _picam2
+
+    _picam2 = Picamera2()
+    config = _picam2.create_preview_configuration(
+        main={"size": (640, 480), "format": "RGB888"},
+        buffer_count=4,
+        controls={"FrameRate": CAMERA_FPS},
+        transform=libcamera.Transform(hflip=False, vflip=False),
+    )
+    _picam2.configure(config)
+    _picam2.start()
+
+    capture_thread = threading.Thread(target=_camera_capture_loop, daemon=True)
+    capture_thread.start()
+
+    # Wait for first frame
+    for _ in range(80):
+        if _get_frame() is not None:
+            return True
+        time.sleep(0.1)
+    return False
 
 
 # ── Action map ─────────────────────────────────────────────
 
 def _build_action_map(control: CrawlerControl) -> dict:
-    """Map action names to hardware callables."""
     return {
         "stand_up": control.stand,
         "sit_down": control.sit,
@@ -84,16 +157,13 @@ async def _execute_action(metadata: dict) -> dict:
     if not handler:
         return {"status": "error", "error": f"Unknown action: {action}"}
 
-    # Emergency stop: bypass lock, freeze servos immediately
     if action == "stop":
         await asyncio.to_thread(_control.stop)
         return {"status": "ok", "action": "stop"}
 
-    # Cancel whatever is running now
     _control.cancel()
 
     async with _action_lock:
-        # Clear cancel flag before starting new action
         _control._cancel.clear()
         t0 = time.time()
         try:
@@ -117,7 +187,7 @@ async def _read_sensor(metadata: dict) -> dict:
     return {"error": f"Unknown sensor: {sensor}"}
 
 
-# ── HTTP Endpoints ───────────────────────────────────────
+# ── Control endpoints (port 9004) ────────────────────────
 
 async def health(request: Request):
     return JSONResponse({
@@ -143,10 +213,6 @@ async def status_endpoint(request: Request):
 
 
 async def command_endpoint(request: Request):
-    """Receive command from Robot Agent (on server) via HTTP POST.
-
-    Request body: {"task_type": "execute|read_sensor|speak|notification", ...metadata}
-    """
     try:
         metadata = await request.json()
         logger.info(f"Received command: {metadata}")
@@ -177,6 +243,105 @@ async def command_endpoint(request: Request):
     return JSONResponse(result)
 
 
+# ── Video stream (port 9000) ─────────────────────────────
+
+_streaming = False
+_target_host = ""
+_target_port = 0
+_udp_sock: socket.socket = None
+_stream_thread: threading.Thread = None
+_fps_target = 10
+
+
+def _stream_loop():
+    global _streaming
+
+    interval = 1.0 / _fps_target
+    logger.info(f"UDP stream started -> {_target_host}:{_target_port} ({_fps_target} fps)")
+
+    while _streaming:
+        t0 = time.time()
+        frame = _get_frame()
+        if frame is None:
+            time.sleep(0.05)
+            continue
+
+        ok, jpg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+        if not ok:
+            time.sleep(0.02)
+            continue
+
+        data = jpg.tobytes()
+        try:
+            chunk_size = 60000
+            total = len(data)
+            num_chunks = (total + chunk_size - 1) // chunk_size
+            frame_id = int(t0 * 1000) & 0xFFFFFFFF
+            for i in range(num_chunks):
+                offset = i * chunk_size
+                chunk = data[offset:offset + chunk_size]
+                header = struct.pack("!IHH", frame_id, i, num_chunks)
+                _udp_sock.sendto(header + chunk, (_target_host, _target_port))
+        except Exception as e:
+            logger.error(f"UDP send error: {e}")
+            time.sleep(0.1)
+
+        elapsed = time.time() - t0
+        if elapsed < interval:
+            time.sleep(interval - elapsed)
+
+    logger.info("UDP stream stopped")
+
+
+async def stream_start(request: Request):
+    global _streaming, _target_host, _target_port, _udp_sock, _stream_thread, _fps_target
+
+    data = await request.json()
+    _target_host = data.get("target_host", "")
+    _target_port = int(data.get("target_port", 0))
+    _fps_target = min(int(data.get("fps", 10)), 10)  # cap at 10fps
+
+    if not _target_host or not _target_port:
+        return JSONResponse({"error": "target_host and target_port required"}, status_code=400)
+
+    if _streaming:
+        _streaming = False
+        if _stream_thread:
+            _stream_thread.join(timeout=2)
+
+    _udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    _streaming = True
+    _stream_thread = threading.Thread(target=_stream_loop, daemon=True)
+    _stream_thread.start()
+
+    return JSONResponse({"status": "streaming", "target": f"{_target_host}:{_target_port}", "fps": _fps_target})
+
+
+async def stream_stop(request: Request):
+    global _streaming
+    _streaming = False
+    return JSONResponse({"status": "stopped"})
+
+
+async def stream_photo(request: Request):
+    frame = _get_frame()
+    if frame is None:
+        return Response("No frame available\n", status_code=503, media_type="text/plain")
+    ok, jpg = cv2.imencode(".jpg", frame)
+    if not ok:
+        return Response("Encode failed\n", status_code=500, media_type="text/plain")
+    return Response(jpg.tobytes(), media_type="image/jpeg")
+
+
+async def stream_status(request: Request):
+    return JSONResponse({
+        "camera": _camera_ready,
+        "streaming": _streaming,
+        "target": f"{_target_host}:{_target_port}" if _streaming else None,
+        "fps": _fps_target,
+    })
+
+
 # ── Server startup ─────────────────────────────────────────
 
 async def main():
@@ -184,22 +349,46 @@ async def main():
 
     print("=" * 50)
     print(f"PiCrawler Thin Client")
-    print(f"Robot:  {AGENT_ID}")
-    print(f"Port:   {AGENT_PORT}")
+    print(f"Robot:   {AGENT_ID}")
+    print(f"Control: port {AGENT_PORT}")
+    print(f"Stream:  port {STREAM_PORT}")
+    print(f"Camera:  {CAMERA_FPS} fps capture")
     print("=" * 50)
 
+    # Start camera (picamera2 direct, no vilib)
+    logger.info("Starting camera...")
+    if _start_camera():
+        logger.info("Camera ready.")
+    else:
+        logger.warning("Camera warmup timed out")
+
+    # Init hardware
     _control = CrawlerControl(speed=int(os.getenv("PATROL_SPEED", "50")))
     _action_map = _build_action_map(_control)
 
-    app = Starlette(routes=[
+    # Control server (port 9004)
+    control_app = Starlette(routes=[
         Route("/health", health, methods=["GET"]),
         Route("/capabilities", capabilities_endpoint, methods=["GET"]),
         Route("/status", status_endpoint, methods=["GET"]),
         Route("/command", command_endpoint, methods=["POST"]),
     ])
 
-    http_config = Config(app=app, host="0.0.0.0", port=AGENT_PORT, loop="asyncio")
-    await Server(http_config).serve()
+    # Stream server (port 9000)
+    stream_app = Starlette(routes=[
+        Route("/stream/start", stream_start, methods=["POST"]),
+        Route("/stream/stop", stream_stop, methods=["POST"]),
+        Route("/photo", stream_photo, methods=["GET"]),
+        Route("/status", stream_status, methods=["GET"]),
+    ])
+
+    control_server = Server(Config(app=control_app, host="0.0.0.0", port=AGENT_PORT, loop="asyncio"))
+    stream_server = Server(Config(app=stream_app, host="0.0.0.0", port=STREAM_PORT, loop="asyncio"))
+
+    await asyncio.gather(
+        control_server.serve(),
+        stream_server.serve(),
+    )
 
 
 if __name__ == "__main__":
@@ -207,3 +396,8 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         print("\nShutting down.")
+        if _picam2:
+            try:
+                _picam2.close()
+            except Exception:
+                pass

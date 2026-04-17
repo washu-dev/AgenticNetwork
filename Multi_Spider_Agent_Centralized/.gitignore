@@ -7,4 +7,21 @@ __pycache__/
 .env
 .ads_cache/
 .ads_cache.json
-.windows
+
+# Project directories (fixed — no leading dot)
+windows/
+docs/
+MiniCity/
+
+# macOS / LibreOffice junk
+.DS_Store
+__MACOSX/
+.~lock.*#
+*.tmp
+
+# Large map assets that shouldn't be tracked
+Command_Center/frontend/WashU*.dwg
+Command_Center/frontend/WashU*.png
+Command_Center/frontend/WashU*.pdf
+Command_Center/frontend/map13_modified.png
+Command_Center/frontend/map13_original.png

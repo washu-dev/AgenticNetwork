@@ -1,20 +1,32 @@
 [
     {
-        "robot_id": "crawler-alpha-patrol-002",
-        "pi_host": "10.232.235.115",
+        "robot_id": "crawler-alpha-patrol-001",
+        "pi_host": "10.232.230.42",
         "zone": "A",
         "robot_type": "spider"
     },
     {
-        "robot_id": "crawler-alpha-patrol-004",
-        "pi_host": "10.232.143.132",
+        "robot_id": "crawler-alpha-patrol-002",
+        "pi_host": "10.232.234.209",
         "zone": "B",
         "robot_type": "spider"
     },
     {
-        "robot_id": "crawler-alpha-patrol-005",
-        "pi_host": "10.232.145.129",
+        "robot_id": "crawler-alpha-patrol-004",
+        "pi_host": "10.232.141.15",
         "zone": "C",
+        "robot_type": "spider"
+    },
+    {
+        "robot_id": "crawler-alpha-patrol-005",
+        "pi_host": "10.232.147.80",
+        "zone": "D",
+        "robot_type": "spider"
+    },
+    {
+        "robot_id": "crawler-alpha-patrol-006",
+        "pi_host": "10.232.236.78",
+        "zone": "E",
         "robot_type": "spider"
     }
 ]

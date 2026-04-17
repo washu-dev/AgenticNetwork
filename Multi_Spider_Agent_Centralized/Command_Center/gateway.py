@@ -147,6 +147,8 @@ async def _periodic_health_check_loop():
 
             # Mark robots offline if not found in discovery
             for robot in robot_registry.get_all_robots():
+                if robot.is_synthetic:
+                    continue  # synthetic test robots are managed via /api/debug/* only
                 if robot.robot_id not in seen_ids and robot.status == "online":
                     robot_registry.mark_offline(robot.robot_id)
 
@@ -301,6 +303,235 @@ async def list_robots():
 async def list_agents():
     """List all robots (backward-compatible alias for /api/robots)."""
     return await list_robots()
+
+
+@app.get("/api/positions")
+async def robot_positions():
+    """Lightweight endpoint: just positions for map overlay (safe to poll).
+
+    Returns each online robot's latest (x, y) anchor from AprilTag sightings.
+    """
+    online = robot_registry.get_online_robots()
+    return {
+        "positions": [
+            {
+                "robot_id": r.robot_id,
+                "zone": r.zone,
+                "position": list(r.position) if r.position else None,
+                "last_tag_id": r.last_tag_id,
+                "updated_at": r.position_updated_at,
+                "busy": r.busy,
+            }
+            for r in online
+        ],
+    }
+
+
+@app.get("/api/map_meta")
+async def map_meta():
+    """Return map metadata (for frontend to translate world coords ↔ pixels)."""
+    import json as _json
+    from pathlib import Path
+    meta_path = Path(__file__).resolve().parent / "frontend" / "map_meta.json"
+    try:
+        with open(meta_path) as f:
+            return _json.load(f)
+    except FileNotFoundError:
+        return {"error": "map_meta.json not found"}
+
+
+@app.get("/api/tag_positions")
+async def tag_positions():
+    """Expose configured AprilTag positions to the frontend."""
+    from .detection.apriltag_detector import _tag_positions, load_tag_positions
+    # Reload each call to pick up live edits during development
+    return {"tags": load_tag_positions()}
+
+
+@app.get("/api/latest_detections")
+async def latest_detections():
+    """Compact snapshot of what each robot is currently detecting, for map overlay.
+
+    Returns one entry per robot that has any cached detections, listing the
+    unique target labels currently in view (deduplicated).
+    """
+    from .detection.engine import _latest_detections
+    summary = {}
+    for agent_id, data in _latest_detections.items():
+        dets = data.get("detections", []) if isinstance(data, dict) else []
+        # Keep only target-like detections (is_target == True if present, else keep all)
+        target_labels = []
+        seen = set()
+        for d in dets:
+            if d.get("is_target") is False:
+                continue
+            label = d.get("label", "unknown")
+            if label in seen:
+                continue
+            seen.add(label)
+            target_labels.append(label)
+        if target_labels:
+            summary[agent_id] = {
+                "agent_id": agent_id,
+                "labels": target_labels,
+                "count": len(target_labels),
+            }
+    return {"detections": summary}
+
+
+# ---------------------------------------------------------------------------
+# Debug endpoints — let you simulate tag sightings, target detections, and
+# support-dispatch decisions without physical AprilTags or live robots.
+# Safe to leave enabled in dev; consider removing or gating in production.
+# ---------------------------------------------------------------------------
+
+
+@app.post("/api/debug/register_fake_robot")
+async def debug_register_fake_robot(data: dict):
+    """Register a synthetic robot (for map/dispatch testing without hardware).
+
+    Body: {"robot_id": "fake-a", "zone": "A", "host": "127.0.0.1"?, "port": 9004?}
+    """
+    import time
+    from .infra.robot_registry import RegisteredRobot
+    robot_id = data.get("robot_id")
+    if not robot_id:
+        return {"status": "error", "error": "robot_id required"}
+    now = time.time()
+    robot = RegisteredRobot(
+        robot_id=robot_id,
+        host=data.get("host", "127.0.0.1"),
+        port=int(data.get("port", 9004)),
+        zone=data.get("zone", ""),
+        robot_type=data.get("robot_type", "spider"),
+        registered_at=now,
+        last_heartbeat=now,
+        status="online",
+        is_synthetic=True,
+    )
+    robot_registry._robots[robot_id] = robot
+    return {"status": "registered", "robot": robot.to_dict()}
+
+
+@app.post("/api/debug/simulate_tag")
+async def debug_simulate_tag(data: dict):
+    """Simulate a robot seeing an AprilTag, updating its position accordingly.
+
+    Body: {"robot_id": "...", "tag_id": 10}
+    Effect: robot.position ← tag_positions[tag_id].pos; heartbeat refreshed.
+    """
+    import time
+    from .detection.apriltag_detector import get_tag_info
+    from .infra.position_tracker import update_robot_position
+
+    robot_id = data.get("robot_id")
+    tag_id = data.get("tag_id")
+    if not robot_id or tag_id is None:
+        return {"status": "error", "error": "robot_id and tag_id required"}
+
+    info = get_tag_info(int(tag_id))
+    if not info or not info.get("pos"):
+        return {"status": "error", "error": f"tag #{tag_id} not in tag_positions.json"}
+
+    robot = robot_registry.get_robot(robot_id)
+    if robot is None:
+        return {"status": "error", "error": f"robot {robot_id} not registered (try /api/debug/register_fake_robot first)"}
+
+    # Refresh heartbeat so the robot remains "online"
+    robot.last_heartbeat = time.time()
+    robot.status = "online"
+
+    update_robot_position(robot_id, tag_id=int(tag_id), pos=tuple(info["pos"]), zone=info.get("zone"))
+    return {
+        "status": "ok",
+        "robot_id": robot_id,
+        "tag_id": int(tag_id),
+        "position": list(info["pos"]),
+        "zone": info.get("zone"),
+    }
+
+
+@app.post("/api/debug/fake_target")
+async def debug_fake_target(data: dict):
+    """Inject a fake target detection on a robot, visible via /api/latest_detections.
+
+    Body: {"robot_id": "...", "label": "tank"}  or  {"robot_id": "...", "labels": ["tank", "person"]}
+    """
+    from .detection.engine import _latest_detections
+    robot_id = data.get("robot_id")
+    if not robot_id:
+        return {"status": "error", "error": "robot_id required"}
+
+    labels = data.get("labels") or ([data.get("label")] if data.get("label") else [])
+    if not labels:
+        return {"status": "error", "error": "label or labels required"}
+
+    detections = [{"label": lab, "confidence": 0.9, "is_target": True} for lab in labels]
+    _latest_detections[robot_id] = {
+        "detections": detections,
+        "image_width": 640,
+        "image_height": 480,
+    }
+    return {"status": "ok", "robot_id": robot_id, "labels": labels}
+
+
+@app.post("/api/debug/clear_target")
+async def debug_clear_target(data: dict):
+    """Remove the fake detection for one (or all) robots.
+
+    Body: {"robot_id": "..."}  — omit robot_id to clear everything.
+    """
+    from .detection.engine import _latest_detections
+    robot_id = data.get("robot_id") if isinstance(data, dict) else None
+    if robot_id:
+        _latest_detections.pop(robot_id, None)
+        return {"status": "ok", "cleared": [robot_id]}
+    cleared = list(_latest_detections.keys())
+    _latest_detections.clear()
+    return {"status": "ok", "cleared": cleared}
+
+
+@app.get("/api/debug/nearest_support")
+async def debug_nearest_support(finder_robot_id: str):
+    """Dry-run the nearest-support selection without dispatching.
+
+    Returns which idle robot would be chosen to support `finder_robot_id`.
+    Useful for verifying the distance math + adjacency logic.
+    """
+    from .infra.position_tracker import find_nearest_robot, are_adjacent, get_position
+
+    finder_pos = get_position(finder_robot_id)
+    if finder_pos is None:
+        return {"status": "error", "error": f"{finder_robot_id} has no known position"}
+
+    # Build a "candidates" list with distances to each other robot
+    candidates = []
+    finder_robot = robot_registry.get_robot(finder_robot_id)
+    for r in robot_registry.get_online_robots():
+        if r.robot_id == finder_robot_id or r.position is None:
+            continue
+        from .infra.position_tracker import euclidean
+        dist = euclidean(finder_pos, r.position)
+        adj = True
+        if finder_robot and finder_robot.zone and r.zone:
+            adj = are_adjacent(r.zone, finder_robot.zone)
+        candidates.append({
+            "robot_id": r.robot_id,
+            "zone": r.zone,
+            "position": list(r.position),
+            "distance_m": round(dist, 3),
+            "busy": r.busy,
+            "zone_adjacent_to_finder": adj,
+        })
+    candidates.sort(key=lambda c: c["distance_m"])
+
+    nearest = find_nearest_robot(finder_pos, exclude_ids=[finder_robot_id], require_idle=True)
+    return {
+        "status": "ok",
+        "finder": {"robot_id": finder_robot_id, "position": list(finder_pos), "zone": finder_robot.zone if finder_robot else None},
+        "chosen": {"robot_id": nearest["robot_id"], "distance_m": round(nearest["distance"], 3)} if nearest else None,
+        "all_candidates": candidates,
+    }
 
 
 @app.get("/api/agents/{agent_id}/health")

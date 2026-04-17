@@ -68,7 +68,10 @@ def _uvicorn_log_config():
 
 class PollFilter(logging.Filter):
     """Filter out noisy polling endpoints from access logs."""
-    _SKIP = ("/api/robots", "/api/agents", "/sw.js", "/api/mission/active")
+    _SKIP = (
+        "/api/robots", "/api/agents", "/sw.js", "/api/mission/active",
+        "/api/positions", "/api/latest_detections",
+    )
 
     def filter(self, record: logging.LogRecord) -> bool:
         msg = record.getMessage()
