@@ -34,19 +34,22 @@ logger = logging.getLogger(__name__)
 _vlm_cache: dict[str, bool] = {}  # cache to avoid repeated calls for same frame
 
 
-async def _vlm_verify_attribute(frame: bytes, bbox: dict, task_goal: str) -> bool:
-    """Use VLM to verify if a detected person matches the task description.
+async def _vlm_verify_attribute(frame: bytes, bbox: dict, task_goal: str, label: str = "") -> bool:
+    """Use VLM to verify if a detected object matches the task description.
 
-    Only called when task_goal contains attribute descriptions (color, clothing, etc.)
-    that YOLO cannot determine.
+    Works on any COCO class — person, apple, dog, car, etc. VLM is asked
+    whether the cropped object matches the attributes in the task
+    description (colors, sizes, clothing, state, etc.).
 
     Args:
         frame: Full JPEG frame
         bbox: Bounding box {x1, y1, x2, y2}
-        task_goal: User's natural language description (e.g. "person wearing blue shirt")
+        task_goal: User's natural language description
+            (e.g. "person wearing blue shirt", "red apple", "large dog")
+        label: YOLO-detected class name (for the prompt). Defaults to "object".
 
     Returns:
-        True if the person matches the description
+        True if the object matches the description
     """
     import base64
     import cv2
@@ -74,11 +77,13 @@ async def _vlm_verify_attribute(frame: bytes, bbox: dict, task_goal: str) -> boo
         from langchain_core.messages import HumanMessage
         vlm = create_vision_llm()
 
+        subject = label if label else "object"
         msg = HumanMessage(content=[
             {"type": "text", "text": (
-                f"Task: {task_goal}\n\n"
-                "Does this person match the description in the task? "
-                "Answer ONLY 'yes' or 'no'."
+                f"Task description: {task_goal}\n\n"
+                f"The cropped image below shows a detected {subject}. "
+                f"Does it match the description in the task? "
+                f"Answer ONLY 'yes' or 'no'."
             )},
             {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}},
         ])
@@ -86,7 +91,7 @@ async def _vlm_verify_attribute(frame: bytes, bbox: dict, task_goal: str) -> boo
         response = await vlm.ainvoke([msg])
         answer = response.content.strip().lower()
         matched = answer.startswith("yes")
-        logger.info(f"VLM verify: '{task_goal}' → {answer} (matched={matched})")
+        logger.info(f"VLM verify ({subject}): '{task_goal}' → {answer} (matched={matched})")
         return matched
 
     except Exception as e:
@@ -424,6 +429,7 @@ class SearchMission:
     report_all: bool = False
     vlm_verify: bool = False    # VLM verifies attributes (e.g. "wearing green shirt")
     vlm_describe: bool = False  # VLM describes detected objects in detail
+    alarm_on_detection: bool = False  # Watch/alarm mode: emit Alarm: events, don't approach
     duration_s: int = 0  # 0 = use default timeout
     threshold: float = 0.7
     status: str = "pending"
@@ -436,6 +442,9 @@ class SearchMission:
     _cooccurrences: set = field(default_factory=set)  # set of frozenset({key1, key2}) that appeared in same frame
     _track_bbox_areas: dict = field(default_factory=dict)  # track_key → bbox area of saved crop
     _track_remapper: TrackRemapper = field(default_factory=TrackRemapper)
+    _alarmed_track_keys: set = field(default_factory=set)   # every track that has been alarmed (for dedup)
+    _alarm_last_seen: dict = field(default_factory=dict)    # alarm_key → last-seen unix ts (to detect "gone")
+    _active_alarm_keys: set = field(default_factory=set)    # currently-visible alarmed tracks
     match_result: Optional[dict] = None
     error: Optional[str] = None
     _cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
@@ -570,24 +579,25 @@ async def _detect_in_frame(frame: bytes, target_type: str, target_name: str = ""
             else:
                 is_target = True
 
-            # VLM verification: if task requires specific attributes (e.g. "person with green shirt")
-            # Only person detections go through VLM; non-person objects are NOT targets
-            # when VLM mode is active (task is looking for a specific person, not any object)
+            # VLM verification: a second-pass attribute filter on any YOLO-matched
+            # detection. Runs when use_vlm=True and YOLO already flagged the
+            # detection as a target (is_target=True). Works for any COCO class —
+            # apple, person, dog, car, etc. — the VLM is asked whether the crop
+            # matches the user's task_goal description (colors, clothing, state).
+            # If the detection already failed YOLO's class match, skip VLM entirely.
             track_id = d.get("track_id")
-            if use_vlm:
-                if d["label"] == "person" and d.get("bbox"):
-                    cache_key = f"{task_goal}:{track_id}" if track_id is not None else None
-                    if cache_key and cache_key in _vlm_cache:
-                        is_target = _vlm_cache[cache_key]
-                    else:
-                        is_target = await _vlm_verify_attribute(frame, d["bbox"], task_goal)
-                        if cache_key:
-                            _vlm_cache[cache_key] = is_target
-                    if is_target:
-                        d["label"] = f"person (VLM confirmed: matches description)"
+            if use_vlm and is_target and d.get("bbox"):
+                cache_key = f"{task_goal}:{track_id}" if track_id is not None else None
+                if cache_key and cache_key in _vlm_cache:
+                    is_target = _vlm_cache[cache_key]
                 else:
-                    # Non-person objects are not targets when looking for a specific person
-                    is_target = False
+                    is_target = await _vlm_verify_attribute(frame, d["bbox"], task_goal, d["label"])
+                    if cache_key:
+                        _vlm_cache[cache_key] = is_target
+                # Record VLM confirmation as a separate flag (don't mutate d["label"] —
+                # that would leak "(VLM confirmed)" into alarm_key and counting logic).
+                if is_target:
+                    d["vlm_confirmed"] = True
 
             results.append({
                 "label": d["label"],
@@ -685,7 +695,7 @@ async def run_search_mission(mission: SearchMission, existing_udp_receiver=None)
             return mission.to_dict()
 
         agent = pi_agent_manager.get_or_create(robot)
-        agent.set_mission(mission.mission_id, mission.task_goal, mission.report_all)
+        agent.set_mission(mission.mission_id, mission.task_goal, mission.report_all, mission.duration_s)
 
         # Step 2: Start patrol (Robot Agent LLM decides movement pattern)
         logger.info(f"Mission {mission.mission_id}: starting on {mission.agent_id}")
@@ -857,6 +867,64 @@ async def run_search_mission(mission: SearchMission, existing_udp_receiver=None)
                         f"'{target_hit['label']}' "
                         f"(confidence={target_hit['confidence']})"
                     )
+
+            # Alarm mode: emit an Alarm: reasoning step for each NEW target track,
+            # update "last seen" timestamps, and emit AlarmCleared when a previously
+            # alarmed track has been gone from view for more than ALARM_STALE_SEC.
+            if mission.alarm_on_detection:
+                _alarm_now = time.time()
+                ALARM_STALE_SEC = 2.0
+                current_frame_keys = set()
+                for d in detections:
+                    if not d.get("is_target"):
+                        continue
+                    tid = d.get("track_id")
+                    label = d.get("label", "unknown")
+                    # track_id == -1 means ByteTrack could not assign a track
+                    # (e.g. after a brief disappearance). Treat it as unknown so
+                    # the user-visible key stays clean.
+                    tid_part = str(tid) if tid is not None and tid >= 0 else "?"
+                    alarm_key = f"{label}:{tid_part}"
+                    current_frame_keys.add(alarm_key)
+                    mission._alarm_last_seen[alarm_key] = _alarm_now
+                    conf = d.get("confidence", 0)
+                    target_desc = mission.target_name or label
+
+                    if alarm_key not in mission._alarmed_track_keys:
+                        # First-ever sighting for this track
+                        mission._alarmed_track_keys.add(alarm_key)
+                        mission._active_alarm_keys.add(alarm_key)
+                        alarm_msg = (
+                            f"Alarm: {target_desc} detected "
+                            f"[key={alarm_key}] (confidence={conf:.0%})"
+                        )
+                        logger.warning(f"[{mission.mission_id}] {alarm_msg}")
+                        try:
+                            await agent._emit(alarm_msg)
+                        except Exception as e:
+                            logger.debug(f"Alarm emit failed: {e}")
+                    elif alarm_key not in mission._active_alarm_keys:
+                        # Previously alarmed, had cleared, re-appeared
+                        mission._active_alarm_keys.add(alarm_key)
+                        alarm_msg = (
+                            f"Alarm: {target_desc} re-appeared "
+                            f"[key={alarm_key}] (confidence={conf:.0%})"
+                        )
+                        logger.warning(f"[{mission.mission_id}] {alarm_msg}")
+                        try:
+                            await agent._emit(alarm_msg)
+                        except Exception as e:
+                            logger.debug(f"Alarm emit failed: {e}")
+
+                # Emit AlarmCleared for any active alarms that haven't been seen recently
+                stale = [k for k in list(mission._active_alarm_keys)
+                         if _alarm_now - mission._alarm_last_seen.get(k, 0) > ALARM_STALE_SEC]
+                for k in stale:
+                    mission._active_alarm_keys.discard(k)
+                    try:
+                        await agent._emit(f"AlarmCleared: [key={k}] out of view")
+                    except Exception as e:
+                        logger.debug(f"AlarmCleared emit failed: {e}")
 
             # Dispatch to CentralPiAgent (throttled)
             if mission.report_all:

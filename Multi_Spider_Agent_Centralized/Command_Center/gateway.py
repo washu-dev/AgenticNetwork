@@ -1002,10 +1002,18 @@ def _parse_reasoning_to_comm_event(task_id: str, content: str):
     elif content.startswith("Result:"):
         source = robot_ids[0] if robot_ids else "planner"
         _emit_comm_event(task_id, source, "planner", "result", content[7:].strip())
-    elif content.startswith("Agent result:") or content.startswith("Agent:"):
-        prefix_len = 13 if content.startswith("Agent result:") else 6
+    elif content.startswith("Agent result:"):
+        # Robot has finished and returned — this IS a result.
         source = robot_ids[0] if robot_ids else "planner"
-        _emit_comm_event(task_id, source, "planner", "result", content[prefix_len:].strip())
+        _emit_comm_event(task_id, source, "planner", "result", content[13:].strip())
+    elif content.startswith("Agent:"):
+        # Planner announcing an upcoming dispatch to this robot — NOT a result.
+        # Emit as a planner → robot dispatch so the robot shows "executing", not "done".
+        for rid in robot_ids:
+            _emit_comm_event(task_id, "planner", rid, "dispatch", content[6:].strip())
+            _active_task_robots.setdefault(task_id, set()).add(rid)
+        if not robot_ids:
+            _emit_comm_event(task_id, "planner", "planner", "think", content[6:].strip())
     elif content.startswith("Done:"):
         _emit_comm_event(task_id, "planner", "user", "result", content[5:].strip())
     elif content.startswith("Summary:"):

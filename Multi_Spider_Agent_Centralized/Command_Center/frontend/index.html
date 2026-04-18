@@ -83,6 +83,29 @@
   .planner-step.warning { color: #fde68a; background: #3f2e0a; }
   .planner-step.info { color: #94a3b8; }
 
+  /* ── Alarm: red banner + flashing robot video card ── */
+  .alarm-banner {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 9999;
+    background: #dc2626; color: white;
+    padding: 10px 20px; font-weight: 700; font-size: 14px;
+    display: flex; align-items: center; justify-content: space-between; gap: 16px;
+    box-shadow: 0 4px 12px rgba(220, 38, 38, 0.6);
+    animation: alarm-pulse 1.2s ease-in-out infinite;
+  }
+  .alarm-banner .icon { font-size: 20px; }
+  .alarm-banner .dismiss { background: rgba(0,0,0,0.3); border: none; color: white;
+    padding: 6px 14px; border-radius: 4px; cursor: pointer; font-weight: 600; font-size: 12px; }
+  .alarm-banner .dismiss:hover { background: rgba(0,0,0,0.5); }
+  @keyframes alarm-pulse {
+    0%, 100% { background: #dc2626; }
+    50% { background: #991b1b; }
+  }
+  .robot-card.alarmed { animation: card-flash 0.7s ease-in-out infinite; }
+  @keyframes card-flash {
+    0%, 100% { box-shadow: inset 0 0 0 2px #dc2626, 0 0 12px rgba(220, 38, 38, 0.8); }
+    50%      { box-shadow: inset 0 0 0 4px #ef4444, 0 0 20px rgba(239, 68, 68, 1.0); }
+  }
+
   /* Center: Input */
   .input-panel { background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 10px; }
   .input-row { display: flex; gap: 6px; }
@@ -138,6 +161,12 @@
 <body>
 <div id="app">
 
+  <!-- Alarm banner (appears only when robots report alarm events) -->
+  <div v-if="alarmList.length > 0" class="alarm-banner">
+    <span><span class="icon">&#9888;</span> ALARM &mdash; {{ alarmSummary }}</span>
+    <button class="dismiss" @click="dismissAlarms">Dismiss</button>
+  </div>
+
   <!-- Header -->
   <div class="header">
     <h1>Multi-Spider Command Center</h1>
@@ -153,7 +182,8 @@
     <!-- TOP: Robot Cards (horizontal strip) -->
     <div class="row-top">
       <div class="robots-strip">
-        <div v-for="a in agents" :key="'v-'+a.id" class="robot-card">
+        <div v-for="a in agents" :key="'v-'+a.id"
+             :class="['robot-card', alarmedRobots.has(a.id) ? 'alarmed' : '']">
           <div class="robot-card-header">
             <span :class="['dot', a.status === 'online' ? 'online' : 'offline']"></span>
             <span class="name">{{ a.id.replace('crawler-alpha-patrol-','') }}</span>
@@ -171,7 +201,7 @@
                   <div class="rr-llm-action">{{ parseLlmAction(step) }}</div>
                   <div v-if="parseLlmReason(step)" class="rr-llm-reason">{{ parseLlmReason(step) }}</div>
                 </div>
-                <div v-else :class="['rr-step', stepClass(step)]">{{ step }}</div>
+                <div v-else :class="['rr-step', stepClass(step)]">{{ displayStep(step) }}</div>
               </template>
             </template>
             <div v-else class="rr-idle">Idle</div>
@@ -207,7 +237,7 @@
           </div>
           <div class="pp-body" v-show="plannerOpen" ref="plannerBody">
             <div v-for="(step, i) in reasoning" :key="i" :class="['planner-step', stepClass(step)]">
-              <span style="color:#475569;margin-right:6px">{{ i+1 }}.</span>{{ step }}
+              <span style="color:#475569;margin-right:6px">{{ i+1 }}.</span>{{ displayStep(step) }}
             </div>
           </div>
         </div>
@@ -348,6 +378,108 @@ createApp({
     const plannerBody = ref(null);
     const robotReasoning = reactive({});
     const _detectionSSEs = {};
+
+    // ── Alarm state ──
+    // alarmList: flat history of "Alarm:" events — drives the persistent red
+    //   banner until user clicks Dismiss.
+    // activeAlarmsByRobot: robot_id → Set of currently-visible alarm keys —
+    //   drives the robot-card flashing border. Shrinks when "AlarmCleared:"
+    //   events indicate the target has left the frame.
+    const alarmList = ref([]);
+    const _alarmSeenStepKeys = new Set();  // dedup at step-level, not alarm-level
+    const activeAlarmsByRobot = reactive({});  // { rid: Set(keys) }
+
+    // Which robots are currently showing a live alarm (flashes red border).
+    const alarmedRobots = computed(() => {
+      const s = new Set();
+      for (const rid in activeAlarmsByRobot) {
+        if (activeAlarmsByRobot[rid] && activeAlarmsByRobot[rid].size > 0) s.add(rid);
+      }
+      return s;
+    });
+
+    // Strip the internal `[key=...]` tag from any user-visible reasoning
+    // string. The [key=...] marker is just wire-format for frontend logic
+    // to match Alarm/AlarmCleared pairs; users don't care about it.
+    function _cleanAlarmMessage(msg) {
+      return (msg || '').replace(/\s*\[key=[^\]]+\]\s*/g, ' ').replace(/\s+/g, ' ').trim();
+    }
+    // Public helper used by the reasoning panels to display a clean step.
+    function displayStep(step) {
+      return _cleanAlarmMessage(step);
+    }
+    // Extract the target label from an alarm key, e.g. "apple:7" → "apple".
+    function _labelFromAlarmKey(alarmKey) {
+      if (!alarmKey) return '';
+      const idx = alarmKey.lastIndexOf(':');
+      return idx >= 0 ? alarmKey.substring(0, idx) : alarmKey;
+    }
+
+    // Banner shows ONE line per (robot, target label). Repeated sightings of
+    // the same label collapse to the most recent clean message — no count.
+    const alarmSummary = computed(() => {
+      // byRobot: rid → (label → latest clean message)
+      const byRobot = {};
+      for (const a of alarmList.value) {
+        const short = (a.robot_id || '').split('-').pop();
+        const keyMatch = (a.message || '').match(/\[key=([^\]]+)\]/);
+        const alarmKey = keyMatch ? keyMatch[1] : a.message;
+        const label = _labelFromAlarmKey(alarmKey) || 'target';
+        byRobot[short] = byRobot[short] || {};
+        byRobot[short][label] = _cleanAlarmMessage(a.message);
+      }
+      const parts = [];
+      for (const [rid, labels] of Object.entries(byRobot)) {
+        const pieces = Object.values(labels);
+        parts.push(`${rid}: ${pieces.join(' | ')}`);
+      }
+      return parts.join('  ·  ');
+    });
+
+    function dismissAlarms() {
+      alarmList.value = [];
+      _alarmSeenStepKeys.clear();
+      for (const k of Object.keys(activeAlarmsByRobot)) delete activeAlarmsByRobot[k];
+    }
+
+    // Both "Alarm:" and "AlarmCleared:" emits include the canonical alarm key
+    // as `[key=<label>:<track_id>]`. Extract it so the two sides line up
+    // exactly and clearing works.
+    function _alarmKeyFromMessage(step) {
+      const m = step.match(/\[key=([^\]]+)\]/);
+      return m ? m[1].trim() : step;
+    }
+
+    function scanReasoningForAlarms(robotId, steps) {
+      for (const step of steps) {
+        if (typeof step !== 'string') continue;
+        const dedupKey = robotId + '|' + step;
+
+        if (step.startsWith('Alarm:')) {
+          // Persist to banner history (once per unique step)
+          if (!_alarmSeenStepKeys.has(dedupKey)) {
+            _alarmSeenStepKeys.add(dedupKey);
+            alarmList.value = [
+              ...alarmList.value,
+              { robot_id: robotId, message: step.substring(6).trim(), ts: Date.now() / 1000 }
+            ];
+          }
+          // Mark this robot as actively seeing its target → flash border
+          const key = _alarmKeyFromMessage(step);
+          if (!activeAlarmsByRobot[robotId]) activeAlarmsByRobot[robotId] = new Set();
+          activeAlarmsByRobot[robotId].add(key);
+        } else if (step.startsWith('AlarmCleared:')) {
+          // Target left the frame — stop flashing, but keep banner history
+          if (!_alarmSeenStepKeys.has(dedupKey)) {
+            _alarmSeenStepKeys.add(dedupKey);
+          }
+          const key = _alarmKeyFromMessage(step);
+          if (activeAlarmsByRobot[robotId]) {
+            activeAlarmsByRobot[robotId].delete(key);
+          }
+        }
+      }
+    }
 
     // ── Bird's-eye map state ──
     const mapContainer = ref(null);   // div wrapping the map
@@ -649,14 +781,40 @@ createApp({
       // Check if this robot was involved at all
       const involved = evts.some(e => e.from === rid || e.to === rid);
       if (!involved) return 'idle';
-      // Find latest event for this robot
+
+      // Collect latest timestamps for each event type involving this robot.
+      let latestDispatch = -1, latestResult = -1;
+      let latestExec = -1, latestThink = -1;
       for (let i = evts.length - 1; i >= 0; i--) {
-        if (evts[i].from === rid && evts[i].type === 'result') return 'done';
-        if (evts[i].from === rid && evts[i].type === 'execute') return 'executing';
-        if (evts[i].from === rid && evts[i].type === 'observe') return 'executing';
-        if (evts[i].from === rid && evts[i].type === 'think') return 'thinking';
-        if (evts[i].to === rid && evts[i].type === 'dispatch') return 'executing';
+        const e = evts[i];
+        const ts = e.ts || 0;
+        if (e.to === rid && e.type === 'dispatch' && ts > latestDispatch) latestDispatch = ts;
+        if (e.from === rid && e.type === 'result' && ts > latestResult) latestResult = ts;
+        if (e.from === rid && (e.type === 'execute' || e.type === 'observe') && ts > latestExec) latestExec = ts;
+        if (e.from === rid && e.type === 'think' && ts > latestThink) latestThink = ts;
       }
+
+      // Key rule: a robot only shows "done" once the PLANNER has marked the
+      // whole task done (emitted Done: / Summary: to user). Between phases
+      // of a compound command, a robot may have an "Agent result:" entry
+      // but the task isn't actually over — the next phase is about to
+      // dispatch it again. In that window, keep showing "executing".
+      const plannerAlsoDone = (function() {
+        for (let i = evts.length - 1; i >= 0; i--) {
+          const e = evts[i];
+          if (e.from === 'planner' && e.to === 'user') return true;
+          if (e.from === 'planner' && e.type === 'dispatch') return false;
+          if (e.from === 'planner' && e.type === 'think') return false;
+        }
+        return false;
+      })();
+
+      if (plannerAlsoDone && latestResult > 0) return 'done';
+      if (latestExec > 0 && latestExec >= latestDispatch) return 'executing';
+      if (latestThink > 0 && latestThink >= latestDispatch) return 'thinking';
+      if (latestDispatch > 0) return 'executing';
+      // Robot has result but planner isn't done yet → between phases, show executing
+      if (latestResult > 0) return 'executing';
       return 'idle';
     }
 
@@ -750,6 +908,10 @@ createApp({
 
     function stepClass(step) {
       if (!step) return 'info';
+      // Alarm detections render the same as errors (red) for visibility
+      if (step.startsWith('Alarm:')) return 'error';
+      // AlarmCleared is informational — target left the frame, not an error
+      if (step.startsWith('AlarmCleared:')) return 'info';
       // Error / warning states
       if (step.startsWith('Error:') || step.startsWith('Rejected:')) return 'error';
       if (step.startsWith('Warning:') || step.startsWith('Warn:')) return 'warning';
@@ -841,6 +1003,9 @@ createApp({
       // Clear state — use delete so Vue reactivity sees keys removed
       for (const key of Object.keys(robotReasoning)) delete robotReasoning[key];
       commEvents.value = [];
+      alarmList.value = [];
+      _alarmSeenStepKeys.clear();
+      for (const k of Object.keys(activeAlarmsByRobot)) delete activeAlarmsByRobot[k];
       // Close detection SSE streams to free HTTP connections
       for (const key in _detectionSSEs) { _detectionSSEs[key].close(); delete _detectionSSEs[key]; }
 
@@ -899,6 +1064,8 @@ createApp({
               const prev = robotReasoning[robotId] || [];
               if (prev.length !== steps.length) changedRobots.push(robotId);
               robotReasoning[robotId] = steps;
+              // Surface any new "Alarm:" steps as visual alerts
+              scanReasoningForAlarms(robotId, steps);
             }
             // Auto-scroll each robot card's reasoning panel whose content grew.
             if (changedRobots.length > 0) {
@@ -1005,7 +1172,7 @@ createApp({
     return {
       agents, prompt, taskRunning, currentTaskId, reasoning, result,
       plannerOpen, plannerBody, robotReasoning, quickCmds, onlineCount,
-      stepClass, sendTask, cancelTask,
+      stepClass, displayStep, sendTask, cancelTask,
       isLlmDecision, parseLlmAction, parseLlmReason,
       // Topology
       commEvents, onlineAgents, topoWidth, robotX,
@@ -1014,6 +1181,8 @@ createApp({
       edgeColor, edgeMarker, edgeLabel,
       // Bird's-eye map
       mapContainer, mapImg, mapCanvas, mapMeta, onMapLoaded,
+      // Alarm system
+      alarmList, alarmedRobots, alarmSummary, dismissAlarms,
     };
   }
 }).mount('#app');

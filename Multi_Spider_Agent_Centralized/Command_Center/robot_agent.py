@@ -326,10 +326,16 @@ class RobotAgentService:
 
         report_all = request.get("report_all", False)
         vlm_describe = request.get("vlm_describe", False)
+        alarm_on_detection = request.get("alarm_on_detection", False)
         # Use a lower detection threshold for report/describe tasks so all
         # objects (including mannequins with borderline confidence) are caught.
         # For find-and-act tasks keep the higher threshold to reduce false positives.
         detection_threshold = 0.35 if (report_all or vlm_describe) else 0.7
+        # Alarm/watch missions default to a longer runtime (10 min) unless the
+        # user explicitly asked for a duration.
+        user_duration = request.get("duration_s", 0)
+        if user_duration == 0 and alarm_on_detection:
+            user_duration = 600
         mission = SearchMission(
             mission_id=request.get("mission_id", str(uuid.uuid4())[:8]),
             agent_id=self.robot_id,
@@ -341,7 +347,8 @@ class RobotAgentService:
             report_all=report_all,
             vlm_verify=request.get("vlm_verify", False),
             vlm_describe=vlm_describe,
-            duration_s=request.get("duration_s", 0),
+            alarm_on_detection=alarm_on_detection,
+            duration_s=user_duration,
             threshold=detection_threshold,
         )
         self._current_mission = mission

@@ -305,6 +305,7 @@ class CentralPiAgent:
         self.task_goal: Optional[str] = None
         self.mission_active = False
         self.report_all = False
+        self.mission_duration_s: int = 0   # user-specified duration (0 = use defaults)
 
         # Shortcuts for robot_client calls (auto-fills host/port/robot_id)
         self._rid = robot.robot_id
@@ -373,11 +374,12 @@ class CentralPiAgent:
 
     # ── Mission lifecycle ────────────────────────────────
 
-    def set_mission(self, mission_id: str, task_goal: str, report_all: bool = False):
+    def set_mission(self, mission_id: str, task_goal: str, report_all: bool = False, duration_s: int = 0):
         self.mission_id = mission_id
         self.task_goal = task_goal
         self.mission_active = True
         self.report_all = report_all
+        self.mission_duration_s = int(duration_s or 0)
         self._consecutive_turns = 0
         self._stop_requested = False
         self._target_approach.clear()
@@ -385,7 +387,10 @@ class CentralPiAgent:
         self._seen_track_ids = set()
         self._last_report_labels = []
         self._last_approach_emit = ""
-        logger.info(f"[{self.robot.robot_id}] Mission set: {mission_id}, goal={task_goal}, report_all={report_all}")
+        logger.info(
+            f"[{self.robot.robot_id}] Mission set: {mission_id}, goal={task_goal}, "
+            f"report_all={report_all}, duration_s={self.mission_duration_s}"
+        )
 
     def clear_mission(self):
         self.mission_id = None
@@ -660,10 +665,13 @@ class CentralPiAgent:
 
             if pattern == "stationary" or not steps:
                 from ..config import MISSION_TIMEOUT_STATIONARY
-                logger.info(f"[{self.robot.robot_id}] Stationary patrol — observing for {MISSION_TIMEOUT_STATIONARY}s")
-                await self._emit(f"Auto: Observing for {MISSION_TIMEOUT_STATIONARY}s (stationary)")
+                # Prefer user-specified duration (from the prompt) when given;
+                # otherwise fall back to the stationary default.
+                observe_s = self.mission_duration_s if self.mission_duration_s > 0 else MISSION_TIMEOUT_STATIONARY
+                logger.info(f"[{self.robot.robot_id}] Stationary patrol — observing for {observe_s}s")
+                await self._emit(f"Auto: Observing for {observe_s}s (stationary)")
                 # Wait long enough for detection engine to collect observations
-                for _ in range(MISSION_TIMEOUT_STATIONARY):
+                for _ in range(observe_s):
                     if self._stop_requested:
                         break
                     await asyncio.sleep(1)

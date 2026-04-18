@@ -29,6 +29,15 @@ class Phase(BaseModel):
         default=0,
         description="Duration in seconds if user specifies (e.g. 'for 5 seconds' → 5). 0 = use default timeout.",
     )
+    alarm_on_detection: bool = Field(
+        default=False,
+        description=(
+            "True for watch/alarm tasks: robot stays in observe mode for the whole "
+            "duration, does NOT approach targets or stop on first detection. Each new "
+            "target match emits an Alarm: event that the frontend surfaces as a "
+            "flashing red banner."
+        ),
+    )
 
 
 class TaskIntent(BaseModel):

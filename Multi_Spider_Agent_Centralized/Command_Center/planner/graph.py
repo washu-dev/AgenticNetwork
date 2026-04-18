@@ -117,6 +117,9 @@ async def parse_and_discover(state: PlannerState) -> dict:
         if ph.get("target_zone"): details.append(f"zone={ph['target_zone']}")
         if ph.get("target_robot_ids"): details.append(f"robots={ph['target_robot_ids']}")
         if ph.get("report_all"): details.append("report_all=true")
+        if ph.get("alarm_on_detection"): details.append("alarm_on_detection=true")
+        if ph.get("vlm_verify"): details.append("vlm_verify=true")
+        if ph.get("vlm_describe"): details.append("vlm_describe=true")
         if ph.get("duration_s", 0) > 0: details.append(f"duration={ph['duration_s']}s")
         if ph.get("description"): details.append(f"desc='{ph['description']}'")
         messages_log.append(AIMessage(content=f"Intent: {', '.join(details)}"))
@@ -502,14 +505,27 @@ async def _dispatch_agent_task(agent: dict, phase: dict, task_goal: str, message
     """Dispatch agent mode task to Robot Agent via NATS."""
     import uuid
 
+    # Safety net: if the user's prompt clearly asks for a watch/alarm task
+    # (keywords below) but the LLM forgot to set alarm_on_detection, force it.
+    # Also force report_all so we don't accidentally approach the target.
+    alarm_flag = phase.get("alarm_on_detection", False)
+    report_all_flag = phase.get("report_all", False)
+    _ALARM_KW = ("watch", "alarm", "alert", "notify", "warn", "guard", "guardian")
+    goal_lower = (task_goal or "").lower()
+    if not alarm_flag and any(kw in goal_lower for kw in _ALARM_KW):
+        logger.info(f"[{agent['id']}] Prompt keywords → forcing alarm_on_detection=true")
+        alarm_flag = True
+        report_all_flag = True
+
     task_payload = {
         "task_type": "agent",
         "mission_id": str(uuid.uuid4())[:8],
         "target_type": phase.get("target_type", "any"),
         "target_name": phase.get("target_name", ""),
-        "report_all": phase.get("report_all", False),
+        "report_all": report_all_flag,
         "vlm_verify": phase.get("vlm_verify", False),
         "vlm_describe": phase.get("vlm_describe", False),
+        "alarm_on_detection": alarm_flag,
         "task_goal": task_goal,
     }
     duration = phase.get("duration_s", 0)
