@@ -810,6 +810,14 @@ class CentralPiAgent:
                 degrees = params.get("degrees", 30)
                 await self._turn_by_degrees(direction, degrees, with_pause=False)
                 result = {"status": "ok", "duration_ms": 0}
+            elif action in ("turn_left_angle", "turn_right_angle") and "degrees" in params:
+                # LLM sometimes emits the _angle variant with a `degrees`
+                # param (the _angle action itself expects steps+angle). Route
+                # it through _turn_by_degrees so the calibration conversion
+                # happens — otherwise the Pi silently ignores the unknown arg.
+                direction = "left" if action == "turn_left_angle" else "right"
+                await self._turn_by_degrees(direction, params["degrees"], with_pause=False)
+                result = {"status": "ok", "duration_ms": 0}
             else:
                 result = await self._exec(action, params or None)
             duration = result.get("duration_ms", 0)
