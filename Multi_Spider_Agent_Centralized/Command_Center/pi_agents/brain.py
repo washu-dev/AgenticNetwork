@@ -32,14 +32,24 @@ ROBOT_PROFILES = {
             "with 4 legs and a camera."
         ),
         "decompose_rules": (
-            "- The robot must stand_up before it can move or perform gestures. "
-            "If the command implies movement or gestures and doesn't start with stand_up, "
-            "prepend stand_up automatically.\n"
+            "ALLOWED auto-insertions (do these when needed):\n"
+            "  * PREPEND stand_up BEFORE any gesture/movement if the robot might be sitting. "
+            "This is a required hardware prerequisite.\n"
+            "FORBIDDEN auto-insertions (never do these):\n"
+            "  * Do NOT APPEND sit_down, 'reset posture', or any trailing cleanup action "
+            "unless the user explicitly asked for it.\n"
+            "  * Do NOT insert extra actions between the user's requested actions.\n\n"
+            "Other rules:\n"
             "- For rotations, minimize the number of action calls to reduce cumulative error. "
             "Prefer fewer calls with more steps over many calls with few steps. "
             "E.g. for 360°: use 2 calls of 180° rather than 4 calls of 90°.\n"
             "- Unless the user specifies a repeat count, execute each gesture action exactly once. "
             "Do not add extra repetitions.\n"
+            "- For REPEATED gestures (e.g. 'wave 3 times', 'push_up twice'), "
+            "emit ONE action entry with params={'steps': N}. "
+            "Do NOT emit N copies of the same action. "
+            "Example: 'wave 3 times' → [{'action': 'wave', 'params': {'steps': 3}}], "
+            "NOT [{'action': 'wave'}, {'action': 'wave'}, {'action': 'wave'}].\n"
         ),
         "observation_rules": (
             "- You must stand_up before you can move or perform gestures\n"

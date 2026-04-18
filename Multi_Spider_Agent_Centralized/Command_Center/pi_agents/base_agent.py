@@ -525,7 +525,7 @@ class CentralPiAgent:
 
         except Exception as e:
             logger.error(f"[{self._rid}] Detection handling error: {e}")
-            await self._emit(f"Auto: Error — {e}")
+            await self._emit(f"Error: {e}")
             return {"status": "error", "reason": str(e)}
         finally:
             self._processing = False
@@ -784,7 +784,9 @@ class CentralPiAgent:
                 action = step
                 params = {}
             logger.info(f"[{self.robot.robot_id}] Step {i+1}/{len(steps)}: {action} {params or ''}")
-            await self._emit(f"Tool: {action}")
+            # Render params inline so the UI shows e.g. `wave(steps=3)` instead of just `wave`
+            params_str = ", ".join(f"{k}={v}" for k, v in params.items()) if params else ""
+            await self._emit(f"Tool: {action}({params_str})" if params_str else f"Tool: {action}")
 
             if action in ("turn_left", "turn_right"):
                 direction = "left" if action == "turn_left" else "right"

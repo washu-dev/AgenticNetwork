@@ -63,9 +63,12 @@ async def startup_event():
             rid = data.get("robot_id", "")
             step = data.get("step", "")
             if rid and step:
-                _live_robot_reasoning.setdefault(rid, []).append(step)
-                # Also emit comm_event for flow chart
+                # Scope the reasoning to the currently-active task only.
+                # Messages arriving after the task ends (or before the next one
+                # starts) have no owning task and are dropped — preventing
+                # cross-task pollution of the robot reasoning panels.
                 if _current_task_id:
+                    _live_robot_reasoning.setdefault(_current_task_id, {}).setdefault(rid, []).append(step)
                     if step.startswith("Intent:"):
                         _emit_comm_event(_current_task_id, rid, rid, "think", step[7:].strip())
                     elif step.startswith("Tool:"):
@@ -191,6 +194,7 @@ class SearchResponse(BaseModel):
     summary: str = ""
     error: Optional[str] = None
     reasoning: list[str] = []  # LLM reasoning steps (for frontend display)
+    server_start_ts: float = 0.0  # Unix seconds; frontend uses for topology event filtering
 
 
 # ---------------------------------------------------------------------------
@@ -946,8 +950,9 @@ _active_tasks: dict[str, asyncio.Task] = {}
 _task_results: dict[str, SearchResponse] = {}
 _active_task_robots: dict[str, set[str]] = {}  # task_id → robot IDs dispatched for this task
 _live_reasoning: dict[str, list[str]] = {}  # task_id → live reasoning steps
-_live_robot_reasoning: dict[str, list[str]] = {}  # robot_id → reasoning steps
+_live_robot_reasoning: dict[str, dict[str, list[str]]] = {}  # task_id → {robot_id → reasoning steps}
 _live_comm_events: dict[str, list[dict]] = {}  # task_id → communication events for flow chart
+_task_start_ts: dict[str, float] = {}  # task_id → server unix timestamp (for client-side event filtering)
 _current_task_id: str = ""  # tracks active task for robot reasoning → comm_event association
 _comm_event_counter: int = 0
 
@@ -1035,9 +1040,11 @@ async def search(request: SearchRequest):
 
     # Live reasoning: intercept messages_log appends
     global _current_task_id, _comm_event_counter
+    import time as _time
     _live_reasoning[task_id] = []
-    _live_robot_reasoning.clear()
+    _live_robot_reasoning[task_id] = {}       # per-task robot reasoning dict
     _live_comm_events[task_id] = []
+    _task_start_ts[task_id] = _time.time()
     _current_task_id = task_id
     _comm_event_counter = 0
     _emit_comm_event(task_id, "user", "planner", "command", request.prompt[:60])
@@ -1108,6 +1115,18 @@ async def search(request: SearchRequest):
         finally:
             _active_tasks.pop(task_id, None)
             _active_task_robots.pop(task_id, None)
+            # Schedule cleanup of per-task reasoning/events after a grace period
+            # (long enough for the frontend to do a final poll and pick up the
+            # completion status + final reasoning list).
+            async def _cleanup_task_state(tid: str):
+                await asyncio.sleep(60)
+                _live_reasoning.pop(tid, None)
+                _live_robot_reasoning.pop(tid, None)
+                _live_comm_events.pop(tid, None)
+                _task_start_ts.pop(tid, None)
+                _task_results.pop(tid, None)
+                logger.debug(f"Cleaned up task state: {tid}")
+            asyncio.create_task(_cleanup_task_state(task_id))
 
     task = asyncio.create_task(_run_task())
     _active_tasks[task_id] = task
@@ -1116,26 +1135,31 @@ async def search(request: SearchRequest):
         task_id=task_id,
         status="running",
         summary=f"Task started: {request.prompt}",
+        server_start_ts=_task_start_ts.get(task_id, 0.0),
     )
 
 
 @app.get("/api/task/{task_id}")
 async def get_task_status(task_id: str):
     """Get task status/result with live reasoning steps."""
+    server_start_ts = _task_start_ts.get(task_id, 0.0)
+    task_robot_reasoning = dict(_live_robot_reasoning.get(task_id, {}))
     if task_id in _task_results:
         resp = _task_results[task_id]
         return {
             **resp.dict(),
-            "robot_reasoning": dict(_live_robot_reasoning),
+            "robot_reasoning": task_robot_reasoning,
             "comm_events": _live_comm_events.get(task_id, []),
+            "server_start_ts": server_start_ts,
         }
     if task_id in _active_tasks:
         return {
             "task_id": task_id,
             "status": "running",
             "reasoning": _live_reasoning.get(task_id, []),
-            "robot_reasoning": dict(_live_robot_reasoning),
+            "robot_reasoning": task_robot_reasoning,
             "comm_events": _live_comm_events.get(task_id, []),
+            "server_start_ts": server_start_ts,
         }
     return {"task_id": task_id, "status": "not_found"}
 

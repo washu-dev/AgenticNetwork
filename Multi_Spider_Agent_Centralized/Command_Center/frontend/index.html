@@ -46,6 +46,8 @@
   .robot-card-reasoning .rr-step.think { color: #a78bfa; background: #1e1338; }
   .robot-card-reasoning .rr-step.tool { color: #38bdf8; }
   .robot-card-reasoning .rr-step.result { color: #22c55e; }
+  .robot-card-reasoning .rr-step.error { color: #fca5a5; background: #3f0a0a; }
+  .robot-card-reasoning .rr-step.warning { color: #fde68a; background: #3f2e0a; }
   .robot-card-reasoning .rr-step.auto { color: #64748b; font-size: 10px; }
   .robot-card-reasoning .rr-step.info { color: #94a3b8; }
   .robot-card-reasoning .rr-llm { padding: 4px 8px; border-bottom: 1px solid #0f172a; border-left: 3px solid #a78bfa; background: #1e1338; }
@@ -77,6 +79,8 @@
   .planner-step.think { color: #a78bfa; background: #1e1338; }
   .planner-step.tool { color: #38bdf8; }
   .planner-step.result { color: #22c55e; }
+  .planner-step.error { color: #fca5a5; background: #3f0a0a; }
+  .planner-step.warning { color: #fde68a; background: #3f2e0a; }
   .planner-step.info { color: #94a3b8; }
 
   /* Center: Input */
@@ -160,7 +164,7 @@
             <canvas :id="'canvas-'+a.id"></canvas>
             <div v-if="a.status !== 'online'" class="no-feed">Offline</div>
           </div>
-          <div class="robot-card-reasoning">
+          <div class="robot-card-reasoning" :data-robot-reasoning="a.id">
             <template v-if="robotReasoning[a.id] && robotReasoning[a.id].length > 0">
               <template v-for="(step, i) in robotReasoning[a.id]" :key="i">
                 <div v-if="isLlmDecision(step)" class="rr-llm">
@@ -224,26 +228,9 @@
           </div>
         </div>
 
-        <!-- Results -->
-        <div class="result-panel" v-if="result">
-          <div class="result-header">
-            <h3>Result</h3>
-            <span :class="['badge', result.status]">{{ result.status }}</span>
-          </div>
-          <div v-if="result.summary" class="result-summary" style="border-top:none; padding-top:0; margin-top:0;">{{ result.summary }}</div>
-          <div v-else-if="result.error" class="error-msg">{{ result.error }}</div>
-          <div v-else-if="result.results && result.results.length > 0">
-            <div v-for="r in result.results" :key="r.agent_id" class="result-agent">
-              <div class="agent-name">
-                {{ r.agent_id }}
-                <span :style="{color: r.status === 'success' ? '#22c55e' : '#ef4444'}">[{{ r.status }}]</span>
-              </div>
-              <div class="agent-response">{{ r.response || r.error || 'No response' }}</div>
-            </div>
-          </div>
-        </div>
-        <div v-else class="result-panel">
-          <div class="placeholder">Send a command to see results here</div>
+        <!-- Bird's Eye Map (moved from right side) -->
+        <div style="background:#1e293b;border:1px solid #334155;border-radius:8px;flex:1;display:flex;align-items:center;justify-content:center;color:#334155;font-size:12px;min-height:200px;">
+          Bird's Eye Map (Coming Soon)
         </div>
       </div>
 
@@ -316,9 +303,26 @@
           </svg>
         </div>
 
-        <!-- Bird's Eye Map (temporarily disabled — will re-enable later) -->
-        <div style="background:#1e293b;border:1px solid #334155;border-radius:8px;flex:1;display:flex;align-items:center;justify-content:center;color:#334155;font-size:12px;">
-          Bird's Eye Map (Coming Soon)
+        <!-- Results (moved from left side) -->
+        <div class="result-panel" v-if="result" style="flex:1;max-height:none;">
+          <div class="result-header">
+            <h3>Result</h3>
+            <span :class="['badge', result.status]">{{ result.status }}</span>
+          </div>
+          <div v-if="result.summary" class="result-summary" style="border-top:none; padding-top:0; margin-top:0;">{{ result.summary }}</div>
+          <div v-else-if="result.error" class="error-msg">{{ result.error }}</div>
+          <div v-else-if="result.results && result.results.length > 0">
+            <div v-for="r in result.results" :key="r.agent_id" class="result-agent">
+              <div class="agent-name">
+                {{ r.agent_id }}
+                <span :style="{color: r.status === 'success' ? '#22c55e' : '#ef4444'}">[{{ r.status }}]</span>
+              </div>
+              <div class="agent-response">{{ r.response || r.error || 'No response' }}</div>
+            </div>
+          </div>
+        </div>
+        <div v-else class="result-panel" style="flex:1;max-height:none;">
+          <div class="placeholder">Send a command to see results here</div>
         </div>
       </div>
 
@@ -606,8 +610,20 @@ createApp({
 
     // ── Topology state ──
     const commEvents = ref([]);
+    // Timestamp (unix seconds) of the current task start. Events older than
+    // this are late-arriving leftovers from a previous task and must be
+    // ignored — they would otherwise make robots appear "done" the instant
+    // the new task kicks off.
+    const taskStartTs = ref(0);
     const onlineAgents = computed(() => agents.value.filter(a => a.status === 'online'));
     const topoWidth = computed(() => Math.max(400, onlineAgents.value.length * 130 + 100));
+
+    // Only count events emitted after the current task started.
+    function currentTaskEvents() {
+      const cutoff = taskStartTs.value;
+      if (!cutoff) return commEvents.value;
+      return commEvents.value.filter(e => (e.ts || 0) >= cutoff);
+    }
 
     function robotX(i) {
       const count = onlineAgents.value.length;
@@ -618,7 +634,7 @@ createApp({
     // Derive node states from comm_events
     const plannerStatus = computed(() => {
       if (!taskRunning.value) return 'idle';
-      const evts = commEvents.value;
+      const evts = currentTaskEvents();
       for (let i = evts.length - 1; i >= 0; i--) {
         if (evts[i].from === 'planner' && evts[i].to === 'user') return 'done';
         if (evts[i].from === 'planner' && evts[i].type === 'dispatch') return 'dispatched';
@@ -629,7 +645,7 @@ createApp({
 
     function robotStatus(rid) {
       if (!taskRunning.value) return 'idle';
-      const evts = commEvents.value;
+      const evts = currentTaskEvents();
       // Check if this robot was involved at all
       const involved = evts.some(e => e.from === rid || e.to === rid);
       if (!involved) return 'idle';
@@ -668,13 +684,26 @@ createApp({
     function robotStatusLabel(rid) {
       const s = robotStatus(rid);
       if (s === 'idle') return 'idle';
-      // Show latest action from robot reasoning
-      const steps = robotReasoning[rid] || [];
-      if (steps.length > 0) {
-        const last = steps[steps.length - 1];
-        if (last.startsWith('Tool:')) return last.substring(5).trim().substring(0, 15);
-        if (last.startsWith('Intent:')) return 'thinking...';
-        if (last.startsWith('Result:')) return 'done';
+      // Always trust the event-derived status (already filtered by task-start
+      // timestamp) — reading raw robotReasoning here can surface stale
+      // "Result:" lines from a previous mission and wrongly show 'done'.
+      if (s === 'done') return 'done';
+      if (s === 'thinking') return 'thinking...';
+      // For executing/observing, try to show the latest Tool/Auto name — but
+      // only if an in-task event confirms this robot is actually active now.
+      // Otherwise robotReasoning may still hold a stale `Tool: xxx` line from
+      // a previous task that arrived via NATS after our last clear.
+      const evts = currentTaskEvents();
+      const activeInThisTask = evts.some(
+        e => (e.from === rid || e.to === rid)
+          && ['execute', 'observe', 'think', 'dispatch'].includes(e.type)
+      );
+      if (activeInThisTask) {
+        const steps = robotReasoning[rid] || [];
+        if (steps.length > 0) {
+          const last = steps[steps.length - 1];
+          if (last.startsWith('Tool:')) return last.substring(5).trim().substring(0, 15);
+        }
       }
       return s;
     }
@@ -692,7 +721,7 @@ createApp({
       return 'url(#topo-arr)';
     }
     function edgeLabel(rid) {
-      const evts = commEvents.value;
+      const evts = currentTaskEvents();
       for (let i = evts.length - 1; i >= 0; i--) {
         if ((evts[i].from === rid || evts[i].to === rid) && evts[i].from !== evts[i].to) {
           return evts[i].label.substring(0, 20);
@@ -702,22 +731,44 @@ createApp({
     }
 
     function isLlmDecision(step) { return step.startsWith('Intent:'); }
+    // Match ` — `, ` – `, ` -- `, or ` - ` as the action/reason separator.
+    // LLMs sometimes emit ASCII hyphens instead of the em-dash, especially
+    // across different OpenAI model versions.
+    const _INTENT_SEP_RE = /\s+[\u2014\u2013]+\s+|\s+--\s+|\s+-\s+/;
     function parseLlmAction(step) {
       const content = step.replace(/^Intent:\s*/, '');
-      const idx = content.indexOf(' \u2014 ');
-      return idx > 0 ? content.substring(0, idx) : content;
+      const m = content.search(_INTENT_SEP_RE);
+      return m > 0 ? content.substring(0, m) : content;
     }
     function parseLlmReason(step) {
       const content = step.replace(/^Intent:\s*/, '');
-      const idx = content.indexOf(' \u2014 ');
-      return idx > 0 ? content.substring(idx + 3) : '';
+      const match = content.match(_INTENT_SEP_RE);
+      if (!match) return '';
+      const idx = content.indexOf(match[0]);
+      return idx > 0 ? content.substring(idx + match[0].length) : '';
     }
 
     function stepClass(step) {
+      if (!step) return 'info';
+      // Error / warning states
+      if (step.startsWith('Error:') || step.startsWith('Rejected:')) return 'error';
+      if (step.startsWith('Warning:') || step.startsWith('Warn:')) return 'warning';
+      // Hardware action tags
       if (step.startsWith('Auto:')) return 'auto';
       if (step.startsWith('Tool:')) return 'tool';
-      if (step.startsWith('Coordinator:') || step.startsWith('Coordination:') || step.startsWith('Parse') || step.startsWith('Intent:')) return 'think';
-      if (step.startsWith('Execute:') || step.startsWith('Done:') || step.startsWith('Result:') || step.startsWith('Agent result:') || step.startsWith('Agent:')) return 'result';
+      // Planner / LLM reasoning tags
+      if (step.startsWith('Coordinator:') || step.startsWith('Coordination:')
+          || step.startsWith('Parse') || step.startsWith('Intent:')
+          || step.startsWith('Reflection:') || step.startsWith('Discovery:')) {
+        return 'think';
+      }
+      // Outcome / status tags
+      if (step.startsWith('Execute:') || step.startsWith('Done:')
+          || step.startsWith('Result:') || step.startsWith('Agent result:')
+          || step.startsWith('Agent:') || step.startsWith('Status:')
+          || step.startsWith('Phase') || step.startsWith('Summary:')) {
+        return 'result';
+      }
       return 'info';
     }
 
@@ -780,10 +831,15 @@ createApp({
     async function sendTask() {
       if (!prompt.value.trim() || taskRunning.value) return;
       taskRunning.value = true;
+      // Optimistic cutoff (client clock) — will be replaced with server's
+      // exact start timestamp as soon as /api/search responds. Using a
+      // slightly-in-the-past value avoids accidentally filtering out new
+      // events if the client clock is ahead of the server.
+      taskStartTs.value = (Date.now() / 1000) - 30;  // 30s safety margin
       result.value = null;
       reasoning.value = [];
-      // Clear state
-      for (const key in robotReasoning) robotReasoning[key] = [];
+      // Clear state — use delete so Vue reactivity sees keys removed
+      for (const key of Object.keys(robotReasoning)) delete robotReasoning[key];
       commEvents.value = [];
       // Close detection SSE streams to free HTTP connections
       for (const key in _detectionSSEs) { _detectionSSEs[key].close(); delete _detectionSSEs[key]; }
@@ -796,6 +852,9 @@ createApp({
         });
         const data = await resp.json();
         currentTaskId.value = data.task_id;
+        // Replace optimistic cutoff with server's exact start timestamp
+        // (eliminates client/server clock skew).
+        if (data.server_start_ts) taskStartTs.value = data.server_start_ts;
 
         if (data.status === 'running') {
           pollTaskResult(data.task_id);
@@ -818,15 +877,36 @@ createApp({
           const resp = await fetch(`${API}/api/task/${taskId}`);
           const data = await resp.json();
 
+          // Keep cutoff in sync with server's authoritative start time
+          if (data.server_start_ts && data.server_start_ts !== taskStartTs.value) {
+            taskStartTs.value = data.server_start_ts;
+          }
+
           if (data.reasoning) {
+            const hadSteps = reasoning.value.length;
             reasoning.value = data.reasoning;
+            // Auto-open the planner panel on the first reasoning step of a
+            // new task, so users who collapsed it in a prior session aren't
+            // left staring at a closed panel while the planner reasons.
+            if (!hadSteps && data.reasoning.length > 0) plannerOpen.value = true;
             await nextTick();
             if (plannerBody.value) plannerBody.value.scrollTop = plannerBody.value.scrollHeight;
           }
 
           if (data.robot_reasoning) {
+            const changedRobots = [];
             for (const [robotId, steps] of Object.entries(data.robot_reasoning)) {
+              const prev = robotReasoning[robotId] || [];
+              if (prev.length !== steps.length) changedRobots.push(robotId);
               robotReasoning[robotId] = steps;
+            }
+            // Auto-scroll each robot card's reasoning panel whose content grew.
+            if (changedRobots.length > 0) {
+              await nextTick();
+              for (const rid of changedRobots) {
+                const panel = document.querySelector(`[data-robot-reasoning="${rid}"]`);
+                if (panel) panel.scrollTop = panel.scrollHeight;
+              }
             }
           }
 
@@ -839,6 +919,15 @@ createApp({
             reasoning.value = data.reasoning || reasoning.value;
             taskRunning.value = false;
             currentTaskId.value = null;
+            // After showing the final state briefly, clear topology so the
+            // idle state doesn't keep displaying the last task's edges/status.
+            // If a new task starts within 5s, sendTask() clears this anyway.
+            setTimeout(() => {
+              if (!taskRunning.value) {
+                commEvents.value = [];
+                taskStartTs.value = 0;
+              }
+            }, 5000);
             loadAgents();
             return;
           }
@@ -848,9 +937,21 @@ createApp({
 
     async function cancelTask() {
       if (!currentTaskId.value) return;
+      const cancelledId = currentTaskId.value;
+      // Immediately flip UI out of "running" so user sees feedback even if
+      // the server takes a moment to actually stop the task.
+      taskRunning.value = false;
+      currentTaskId.value = null;
       try {
-        await fetch(`${API}/api/task/${currentTaskId.value}/cancel`, { method: 'POST' });
+        await fetch(`${API}/api/task/${cancelledId}/cancel`, { method: 'POST' });
       } catch (e) {}
+      // Clear topology shortly after so the cancelled state doesn't linger.
+      setTimeout(() => {
+        if (!taskRunning.value) {
+          commEvents.value = [];
+          taskStartTs.value = 0;
+        }
+      }, 2000);
     }
 
     // Polling

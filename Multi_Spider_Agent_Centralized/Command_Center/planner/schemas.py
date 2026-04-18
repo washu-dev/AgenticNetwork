@@ -34,7 +34,11 @@ class Phase(BaseModel):
 class TaskIntent(BaseModel):
     is_valid_task: bool = Field(description="False if prompt is unrelated to robot control")
     rejection_reason: str = Field(default="", description="If is_valid_task=false, reason why")
-    phases: List[Phase] = Field(description="Exactly ONE phase describing the task. Always output a list with one element.")
+    phases: List[Phase] = Field(description=(
+        "One or more phases executed sequentially. Use multiple phases ONLY for "
+        "compound commands like 'stand up and report', 'sit down then describe'. "
+        "Single-action commands should be a single phase."
+    ))
     urgency: str = Field(description="low / medium / high")
 
 

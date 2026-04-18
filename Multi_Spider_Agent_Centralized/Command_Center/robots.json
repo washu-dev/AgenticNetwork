@@ -7,7 +7,7 @@
     },
     {
         "robot_id": "crawler-alpha-patrol-002",
-        "pi_host": "10.232.234.209",
+        "pi_host": "10.232.233.15",
         "zone": "B",
         "robot_type": "spider"
     },

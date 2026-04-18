@@ -157,7 +157,22 @@ def _resolve_phase_robots(phase: dict, online: list[dict]) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 async def execute_phases(state: PlannerState) -> dict:
-    """Execute all phases sequentially, respecting triggers."""
+    """Execute phases, choosing parallel or sequential based on robot overlap.
+
+    Two dispatch strategies:
+
+    1. **Parallel** — when no two phases share a target robot
+       (typical for per-robot commands: "robot A wave, robot B sit").
+       All phases run concurrently via asyncio.gather.
+
+    2. **Sequential** — when at least one robot appears in multiple phases
+       (typical for compound commands: "stand up and report", where all robots
+       do phase 1 then phase 2).
+       Phases run one-after-another so that "stand up" completes before "report".
+
+    Each robot appears exactly once in the final result (later phases override
+    earlier ones for that robot).
+    """
     online = state.get("online_agents", [])
     intent = state.get("intent", {})
     prompt = state.get("prompt", "")
@@ -171,35 +186,78 @@ async def execute_phases(state: PlannerState) -> dict:
         phases = [{"target_robot_ids": [], "task_type": "agent", "target_type": "object",
                    "description": prompt}]
 
-    # Always exactly one phase
-    phase = phases[0]
+    is_multi = len(phases) > 1
 
-    robots = _resolve_phase_robots(phase, online)
-    if not robots:
-        target_desc = phase.get("target_robot_ids") or phase.get("target_zone") or "any"
-        return {"agent_results": [], "error": f"No robots matched ({target_desc})", "messages": messages_log}
+    # Resolve robots for each phase once
+    phase_robots: list[tuple[dict, list[dict]]] = []
+    for phase in phases:
+        phase_robots.append((phase, _resolve_phase_robots(phase, online)))
 
-    robot_ids = [r["id"] for r in robots]
-    report_all = phase.get("report_all", False)
-    mode = "report" if report_all else ("coordinated" if len(robots) > 1 and phase["task_type"] == "agent" else "independent")
-    messages_log.append(AIMessage(
-        content=f"Execute: {phase['task_type']} → {robot_ids} [{mode}]"
-    ))
-    logger.info(f"Execute: {phase['task_type']} → {robot_ids} mode={mode}")
+    if not any(r for _, r in phase_robots):
+        return {"agent_results": [], "error": "No robots matched any phase", "messages": messages_log}
 
-    result = await _execute_single_phase(phase, robots, prompt, messages_log)
-    agent_results = result.get("agent_results", [])
+    # Decide parallel vs sequential: any robot shared between two phases?
+    robot_sets = [{r["id"] for r in robs} for _, robs in phase_robots]
+    phases_overlap = any(
+        robot_sets[i] & robot_sets[j]
+        for i in range(len(robot_sets))
+        for j in range(i + 1, len(robot_sets))
+    )
 
-    if not agent_results:
+    strategy = "sequential" if (phases_overlap or len(phases) == 1) else "parallel"
+    if is_multi:
+        messages_log.append(AIMessage(content=f"Phase strategy: {strategy} ({len(phases)} phases)"))
+        logger.info(f"Phase strategy: {strategy} ({len(phases)} phases)")
+
+    async def _run_phase(idx: int, phase: dict, robots: list[dict]) -> dict:
+        if not robots:
+            target_desc = phase.get("target_robot_ids") or phase.get("target_zone") or "any"
+            messages_log.append(AIMessage(
+                content=f"Phase {idx+1}/{len(phases)}: no robots match ({target_desc}), skipping"
+            ))
+            return {"agent_results": []}
+        robot_ids = [r["id"] for r in robots]
+        report_all = phase.get("report_all", False)
+        mode = "report" if report_all else ("coordinated" if len(robots) > 1 and phase["task_type"] == "agent" else "independent")
+        label = f"Phase {idx+1}/{len(phases)}" if is_multi else "Execute"
+        messages_log.append(AIMessage(content=f"{label}: {phase['task_type']} → {robot_ids} [{mode}]"))
+        logger.info(f"{label}: {phase['task_type']} → {robot_ids} mode={mode}")
+        phase_prompt = phase.get("description", prompt) if is_multi else prompt
+        return await _execute_single_phase(phase, robots, phase_prompt, messages_log)
+
+    results_by_robot: dict = {}
+
+    if strategy == "parallel":
+        phase_results = await asyncio.gather(
+            *[_run_phase(i, p, r) for i, (p, r) in enumerate(phase_robots)],
+            return_exceptions=True,
+        )
+        for res in phase_results:
+            if isinstance(res, Exception):
+                logger.warning(f"Parallel phase raised: {res}")
+                continue
+            for r in res.get("agent_results", []):
+                rid = r.get("agent_id")
+                if rid:
+                    results_by_robot[rid] = r
+    else:
+        for i, (phase, robots) in enumerate(phase_robots):
+            res = await _run_phase(i, phase, robots)
+            for r in res.get("agent_results", []):
+                rid = r.get("agent_id")
+                if rid:
+                    results_by_robot[rid] = r
+
+    all_results = list(results_by_robot.values())
+    if not all_results:
         return {"agent_results": [], "error": "No results", "messages": messages_log}
 
-    success_count = sum(1 for r in agent_results if r.get("status") == "success")
-    messages_log.append(AIMessage(
-        content=f"Done: {success_count}/{len(agent_results)} succeeded"
-    ))
+    success_count = sum(1 for r in all_results if r.get("status") == "success")
+    done_suffix = f" ({len(phases)} phases, {strategy})" if is_multi else ""
+    messages_log.append(AIMessage(content=f"Done: {success_count}/{len(all_results)} succeeded{done_suffix}"))
 
     error = "ALL_AGENTS_FAILED" if success_count == 0 else None
-    return {"agent_results": agent_results, "error": error, "messages": messages_log}
+    return {"agent_results": all_results, "error": error, "messages": messages_log}
 
 
 async def _execute_single_phase(phase: dict, robots: list[dict], prompt: str, messages_log: list) -> dict:
@@ -235,7 +293,7 @@ async def _execute_single_phase(phase: dict, robots: list[dict], prompt: str, me
         # Direct control: dispatch to all target robots in parallel
         # Use original user prompt, not LLM-rewritten description, to avoid semantic drift
         robot_ids = [r["id"] for r in robots]
-        messages_log.append(AIMessage(content=f"Direct control → {robot_ids}"))
+        messages_log.append(AIMessage(content=f"Execute: direct control → {robot_ids}"))
         coros = [_dispatch_direct_control(robot, prompt) for robot in robots]
         raw_results = await asyncio.gather(*coros, return_exceptions=True)
 
@@ -309,7 +367,7 @@ async def _execute_coordinated_patrol(phase: dict, robots: list[dict], prompt: s
     ]
 
     MAX_TURNS = 15
-    messages_log.append(AIMessage(content=f"ReAct coordination: {len(robots)} robots"))
+    messages_log.append(AIMessage(content=f"Coordination: ReAct loop on {len(robots)} robots"))
 
     for turn in range(MAX_TURNS):
         response = await llm_with_tools.ainvoke(messages)
@@ -555,7 +613,11 @@ async def summarize(state: PlannerState) -> dict:
 
     # Direct control tasks (sit down, turn, etc.) don't involve observation —
     # skip LLM summarization and return a simple completion message.
-    task_type = intent.get("phases", [{}])[0].get("task_type", "")
+    # For compound commands (e.g. "stand up and report"), any agent phase means
+    # the user cares about observations → use the LLM summarization path.
+    phases_list = intent.get("phases", [])
+    has_agent_phase = any(p.get("task_type") == "agent" for p in phases_list)
+    task_type = "agent" if has_agent_phase else (phases_list[0].get("task_type", "") if phases_list else "")
     if task_type == "direct_control":
         agent_ids = ", ".join(r.get("agent_id", "unknown") for r in success_results)
         summary = f"completed\n[Iterations: {iteration}, Total latency: {total_latency}ms]"
@@ -577,8 +639,16 @@ async def summarize(state: PlannerState) -> dict:
         else:
             label_counts = {d.get("label", "unknown"): 1 for d in detections}
 
+        # Look up zone from registry for labeling in the report
+        from ..infra.robot_registry import robot_registry
+        zone_info = ""
+        robot_entry = robot_registry.get_robot(r.get("agent_id", ""))
+        if robot_entry and robot_entry.zone:
+            zone_info = robot_entry.zone
+
         agent_data.append({
             "agent_id": r.get("agent_id", "unknown"),
+            "zone": zone_info,
             "unique_detections": label_counts,
             "has_dedup": bool(dedup_counts),
             "vlm_descriptions": mission.get("vlm_descriptions", {}),
@@ -595,7 +665,8 @@ async def summarize(state: PlannerState) -> dict:
 
         context_parts = []
         for ad in agent_data:
-            part = f"Robot {ad['agent_id']}:"
+            zone_label = f" (Zone {ad['zone']})" if ad.get('zone') else ""
+            part = f"Robot {ad['agent_id']}{zone_label}:"
             if ad["patrol_report"]:
                 part += f"\n  Patrol report: {ad['patrol_report']}"
             if ad["unique_detections"]:
@@ -632,14 +703,17 @@ async def summarize(state: PlannerState) -> dict:
         context = "\n\n".join(context_parts)
 
         system_msg = (
-            "You are a multi-robot command center. The user gave a command to robot(s) and the mission is complete. "
-            "Based on the robot data below, write a concise, natural-language response to the user's original request. "
-            "Respond as if you are the robot(s) reporting back. "
-            "Report what was detected. If counts are marked as 'VLM verified', report the exact numbers. "
-            "Otherwise, just list object types without guessing counts. "
-            "If appearance descriptions are provided for multiple individuals of the same type (e.g. person 1, person 2), "
-            "describe EACH one separately — do not skip or merge them. "
-            "Do NOT include technical stats like frame counts or latency."
+            "You are a multi-robot command center. The user gave a command to several robots and the mission is complete. "
+            "Write a structured report with ONE section per robot, clearly separated. Use this exact format:\n\n"
+            "### Robot <robot_id> (Zone <zone>)\n"
+            "<what that robot observed, first person, 1-3 sentences>\n\n"
+            "Rules:\n"
+            "- Preserve the order of robots as given in the data.\n"
+            "- Do NOT merge multiple robots into one section.\n"
+            "- If counts are marked 'VLM verified', report the exact numbers; otherwise just list object types.\n"
+            "- If multiple individuals of the same type have descriptions (e.g. person 1, person 2), describe EACH separately.\n"
+            "- Do NOT include technical stats like frame counts or latency.\n"
+            "- If a robot saw nothing notable, say 'Nothing of interest to report.'"
         )
         user_msg = f"User command: {prompt}\n\nRobot data:\n{context}"
 
@@ -673,7 +747,7 @@ async def handle_error(state: PlannerState) -> dict:
     else:
         summary = f"Task failed: {error}"
 
-    messages_log.append(AIMessage(content=f"Error handled: {error}"))
+    messages_log.append(AIMessage(content=f"Error: {error}"))
     return {"summary": summary, "messages": messages_log}
 
 
