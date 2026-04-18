@@ -380,22 +380,33 @@ createApp({
     const _detectionSSEs = {};
 
     // ── Alarm state ──
-    // alarmList: flat history of "Alarm:" events — drives the persistent red
-    //   banner until user clicks Dismiss.
-    // activeAlarmsByRobot: robot_id → Set of currently-visible alarm keys —
-    //   drives the robot-card flashing border. Shrinks when "AlarmCleared:"
-    //   events indicate the target has left the frame.
-    const alarmList = ref([]);
-    const _alarmSeenStepKeys = new Set();  // dedup at step-level, not alarm-level
-    const activeAlarmsByRobot = reactive({});  // { rid: Set(keys) }
+    // Banner + flashing border are both driven by the *current* detection
+    // state: if a target is visible now → show; if it leaves the frame →
+    // remove from banner & stop flashing. When no robot has any active
+    // target, the banner disappears entirely.
+    // activeAlarmsByRobot: { rid: { key: cleanMessage } }
+    const activeAlarmsByRobot = reactive({});
+    const _alarmSeenStepKeys = new Set();  // dedup at step-level (so re-scans don't re-add)
 
     // Which robots are currently showing a live alarm (flashes red border).
     const alarmedRobots = computed(() => {
       const s = new Set();
       for (const rid in activeAlarmsByRobot) {
-        if (activeAlarmsByRobot[rid] && activeAlarmsByRobot[rid].size > 0) s.add(rid);
+        const slot = activeAlarmsByRobot[rid];
+        if (slot && Object.keys(slot).length > 0) s.add(rid);
       }
       return s;
+    });
+
+    // Banner visible when ANY robot has an active alarm.
+    const alarmList = computed(() => {
+      // Keep this as a shallow "is there anything" list for the v-if in the
+      // template. The items are per-robot so we can iterate if needed.
+      const items = [];
+      for (const [rid, slot] of Object.entries(activeAlarmsByRobot)) {
+        if (slot && Object.keys(slot).length > 0) items.push({ robot_id: rid });
+      }
+      return items;
     });
 
     // Strip the internal `[key=...]` tag from any user-visible reasoning
@@ -415,29 +426,26 @@ createApp({
       return idx >= 0 ? alarmKey.substring(0, idx) : alarmKey;
     }
 
-    // Banner shows ONE line per (robot, target label). Repeated sightings of
-    // the same label collapse to the most recent clean message — no count.
+    // Banner summary: one line per robot that currently has an active alarm.
+    // Within each robot, dedup by target label so multiple instances of the
+    // same class (apple×3) show up as just "apple detected".
     const alarmSummary = computed(() => {
-      // byRobot: rid → (label → latest clean message)
-      const byRobot = {};
-      for (const a of alarmList.value) {
-        const short = (a.robot_id || '').split('-').pop();
-        const keyMatch = (a.message || '').match(/\[key=([^\]]+)\]/);
-        const alarmKey = keyMatch ? keyMatch[1] : a.message;
-        const label = _labelFromAlarmKey(alarmKey) || 'target';
-        byRobot[short] = byRobot[short] || {};
-        byRobot[short][label] = _cleanAlarmMessage(a.message);
-      }
       const parts = [];
-      for (const [rid, labels] of Object.entries(byRobot)) {
-        const pieces = Object.values(labels);
-        parts.push(`${rid}: ${pieces.join(' | ')}`);
+      for (const [rid, slot] of Object.entries(activeAlarmsByRobot)) {
+        if (!slot) continue;
+        const short = rid.split('-').pop();
+        const byLabel = {};
+        for (const [key, msg] of Object.entries(slot)) {
+          const label = _labelFromAlarmKey(key) || 'target';
+          byLabel[label] = msg;   // latest message wins per label
+        }
+        const pieces = Object.values(byLabel);
+        if (pieces.length > 0) parts.push(`${short}: ${pieces.join(' | ')}`);
       }
       return parts.join('  ·  ');
     });
 
     function dismissAlarms() {
-      alarmList.value = [];
       _alarmSeenStepKeys.clear();
       for (const k of Object.keys(activeAlarmsByRobot)) delete activeAlarmsByRobot[k];
     }
@@ -456,26 +464,22 @@ createApp({
         const dedupKey = robotId + '|' + step;
 
         if (step.startsWith('Alarm:')) {
-          // Persist to banner history (once per unique step)
-          if (!_alarmSeenStepKeys.has(dedupKey)) {
-            _alarmSeenStepKeys.add(dedupKey);
-            alarmList.value = [
-              ...alarmList.value,
-              { robot_id: robotId, message: step.substring(6).trim(), ts: Date.now() / 1000 }
-            ];
-          }
-          // Mark this robot as actively seeing its target → flash border
+          // Add to the live active set (banner + flash both driven by this)
+          if (_alarmSeenStepKeys.has(dedupKey)) continue;
+          _alarmSeenStepKeys.add(dedupKey);
           const key = _alarmKeyFromMessage(step);
-          if (!activeAlarmsByRobot[robotId]) activeAlarmsByRobot[robotId] = new Set();
-          activeAlarmsByRobot[robotId].add(key);
+          if (!activeAlarmsByRobot[robotId]) activeAlarmsByRobot[robotId] = {};
+          activeAlarmsByRobot[robotId][key] = _cleanAlarmMessage(step.substring(6).trim());
         } else if (step.startsWith('AlarmCleared:')) {
-          // Target left the frame — stop flashing, but keep banner history
-          if (!_alarmSeenStepKeys.has(dedupKey)) {
-            _alarmSeenStepKeys.add(dedupKey);
-          }
+          // Target left the frame — remove from live set. Banner shrinks
+          // automatically and disappears when all robots are clear.
+          if (_alarmSeenStepKeys.has(dedupKey)) continue;
+          _alarmSeenStepKeys.add(dedupKey);
           const key = _alarmKeyFromMessage(step);
-          if (activeAlarmsByRobot[robotId]) {
-            activeAlarmsByRobot[robotId].delete(key);
+          const slot = activeAlarmsByRobot[robotId];
+          if (slot && key in slot) {
+            delete slot[key];
+            if (Object.keys(slot).length === 0) delete activeAlarmsByRobot[robotId];
           }
         }
       }
@@ -1003,7 +1007,6 @@ createApp({
       // Clear state — use delete so Vue reactivity sees keys removed
       for (const key of Object.keys(robotReasoning)) delete robotReasoning[key];
       commEvents.value = [];
-      alarmList.value = [];
       _alarmSeenStepKeys.clear();
       for (const k of Object.keys(activeAlarmsByRobot)) delete activeAlarmsByRobot[k];
       // Close detection SSE streams to free HTTP connections

@@ -461,6 +461,13 @@ class SearchMission:
         return round(time.time() - self.start_time, 1) if self.start_time else 0
 
     def to_dict(self) -> dict:
+        # For alarm/watch tasks, collect the distinct target LABELS that ever
+        # fired an alarm. We strip the :track_id suffix so "apple:1 / apple:3"
+        # → "apple" once. This is what the summary LLM should focus on.
+        alarm_fired_labels = sorted({
+            k.rsplit(":", 1)[0] for k in self._alarmed_track_keys
+        }) if self.alarm_on_detection else []
+
         result = {
             "mission_id": self.mission_id,
             "agent_id": self.agent_id,
@@ -474,6 +481,8 @@ class SearchMission:
             "unique_targets": get_unique_count(self.agent_id),
             "match_result": self.match_result,
             "error": self.error,
+            "alarm_on_detection": self.alarm_on_detection,
+            "alarm_fired_labels": alarm_fired_labels,
         }
         if hasattr(self, "dedup_counts") and self.dedup_counts:
             result["dedup_counts"] = self.dedup_counts
@@ -732,9 +741,16 @@ async def run_search_mission(mission: SearchMission, existing_udp_receiver=None)
                     break
 
             if time.time() - mission.start_time > timeout:
-                mission.status = "timeout"
-                mission.error = "Mission timeout"
-                logger.warning(f"Mission {mission.mission_id}: timeout after {timeout}s")
+                # Distinguish user-specified duration (normal completion) from
+                # the default-timeout case (ambiguous — could be "ran out").
+                if mission.duration_s > 0:
+                    mission.status = "duration_reached"
+                    mission.error = None
+                    logger.info(f"Mission {mission.mission_id}: {timeout}s duration reached")
+                else:
+                    mission.status = "timeout"
+                    mission.error = "Mission timeout"
+                    logger.warning(f"Mission {mission.mission_id}: default timeout after {timeout}s")
                 break
 
             frame = await udp_receiver.wait_for_frame(timeout=2.0)
@@ -1027,8 +1043,11 @@ async def run_search_mission(mission: SearchMission, existing_udp_receiver=None)
                             if not (d.get("track_id") == tid and d.get("label") == label)
                         ]
 
-        # VLM dedup: get accurate object counts by comparing cropped images
-        if mission._track_crops:
+        # VLM dedup: get accurate object counts by comparing cropped images.
+        # Skip in alarm/watch mode — we care whether the target was ever seen,
+        # not how many unique instances there were, and VLM dedup is noisy
+        # when the same object enters/leaves the frame several times.
+        if mission._track_crops and not mission.alarm_on_detection:
             try:
                 dedup_counts = await _vlm_dedup_objects(mission._track_crops, mission._cooccurrences)
                 mission.dedup_counts = dedup_counts

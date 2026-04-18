@@ -672,6 +672,9 @@ async def summarize(state: PlannerState) -> dict:
             "frames_analyzed": mission.get("frames_analyzed", 0),
             "elapsed_s": mission.get("elapsed_s", 0),
             "patrol_report": patrol_report.get("summary", ""),
+            "alarm_on_detection": mission.get("alarm_on_detection", False),
+            "alarm_fired_labels": mission.get("alarm_fired_labels", []),
+            "task_goal": r.get("task_goal") or mission.get("task_goal", ""),
         })
 
     # Use LLM to generate a human-readable response
@@ -683,9 +686,26 @@ async def summarize(state: PlannerState) -> dict:
         for ad in agent_data:
             zone_label = f" (Zone {ad['zone']})" if ad.get('zone') else ""
             part = f"Robot {ad['agent_id']}{zone_label}:"
-            if ad["patrol_report"]:
+            # Alarm/watch missions: report presence of the target, not counts.
+            # If the target appeared even once, alarm_fired_labels lists its
+            # YOLO label. For attribute-described targets (e.g. "person wearing
+            # yellow"), the fact that a label was alarmed ALSO means the VLM
+            # confirmed the description — otherwise the alarm would not have
+            # fired. The summary LLM should trust this.
+            if ad.get("alarm_on_detection"):
+                part += f"\n  Mode: watch/alarm"
+                part += f"\n  Task: {ad.get('task_goal', '')}"
+                fired = ad.get("alarm_fired_labels") or []
+                if fired:
+                    part += (
+                        f"\n  Target(s) detected and alarm fired: {', '.join(fired)}"
+                        f"\n  (VLM already verified these match the task description if attributes were specified.)"
+                    )
+                else:
+                    part += "\n  Target NOT detected during the watch period."
+            elif ad["patrol_report"]:
                 part += f"\n  Patrol report: {ad['patrol_report']}"
-            if ad["unique_detections"]:
+            if not ad.get("alarm_on_detection") and ad["unique_detections"]:
                 if ad.get("has_dedup"):
                     det_str = ", ".join(f"{count} {label}" for label, count in ad["unique_detections"].items())
                     part += f"\n  Detected (VLM verified counts): {det_str}"
@@ -729,7 +749,16 @@ async def summarize(state: PlannerState) -> dict:
             "- If counts are marked 'VLM verified', report the exact numbers; otherwise just list object types.\n"
             "- If multiple individuals of the same type have descriptions (e.g. person 1, person 2), describe EACH separately.\n"
             "- Do NOT include technical stats like frame counts or latency.\n"
-            "- If a robot saw nothing notable, say 'Nothing of interest to report.'"
+            "- If a robot saw nothing notable, say 'Nothing of interest to report.'\n\n"
+            "WATCH/ALARM MODE SPECIAL RULES:\n"
+            "- If a robot's data says 'Mode: watch/alarm', focus on WHETHER the target was detected, NOT how many.\n"
+            "- If 'Target(s) detected and alarm fired' lists any labels, the target WAS detected and (for "
+            "  attribute-described tasks like 'person wearing yellow') the VLM already confirmed the match — "
+            "  report it positively. Do NOT say 'I saw person but didn't confirm yellow' — if an alarm fired, "
+            "  the description was verified.\n"
+            "- If the task said 'Target NOT detected', say plainly the target did not appear during the watch.\n"
+            "- Do NOT speculate about counts of distinct instances (e.g. 'two apples') in watch mode — the same "
+            "  target appearing/disappearing multiple times is NOT multiple targets."
         )
         user_msg = f"User command: {prompt}\n\nRobot data:\n{context}"
 

@@ -356,8 +356,9 @@ class RobotAgentService:
         result = await run_search_mission(mission, existing_udp_receiver=self._udp_receiver)
         robot_registry.clear_busy(self.robot_id)
         self._current_mission = None
+        _ok_statuses = ("completed", "timeout", "cancelled", "duration_reached")
         return {
-            "status": "success" if result["status"] in ("completed", "timeout", "cancelled") else "error",
+            "status": "success" if result["status"] in _ok_statuses else "error",
             "agent_id": self.robot_id,
             "zone": self.zone,
             "mission_result": result,

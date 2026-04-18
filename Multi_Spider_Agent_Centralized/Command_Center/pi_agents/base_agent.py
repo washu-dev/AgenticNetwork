@@ -628,7 +628,16 @@ class CentralPiAgent:
         - Cancelled by coordination: Planner sends sit_down
         """
         reason = data.get("reason", "mission finished")
-        await self._emit(f"Auto: Mission finished — {reason}")
+        # Translate internal status words into something end-users understand.
+        _friendly = {
+            "duration_reached": "duration reached",
+            "completed": "completed",
+            "timeout": "timed out (no duration specified)",
+            "cancelled": "cancelled by user",
+            "finished": "finished",
+        }
+        display_reason = _friendly.get(reason, reason)
+        await self._emit(f"Auto: Mission finished — {display_reason}")
 
         if self.mission_id:
             self._completed_mission_ids.add(self.mission_id)
