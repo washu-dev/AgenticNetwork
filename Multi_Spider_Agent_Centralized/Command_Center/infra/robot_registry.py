@@ -67,9 +67,6 @@ class RegisteredRobot:
     position: Optional[tuple] = None
     last_tag_id: Optional[int] = None
     position_updated_at: Optional[float] = None
-    # Debug/test only: robots created via /api/debug/register_fake_robot have this set
-    # so the periodic health-check doesn't mark them offline.
-    is_synthetic: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -242,17 +239,12 @@ class RobotRegistry:
         return {"status": "error", "error": "robot not found"}
 
     def get_online_robots(self) -> list[RegisteredRobot]:
-        """Return robots with recent heartbeat.
-
-        Synthetic (debug) robots bypass the heartbeat freshness check because
-        no physical Pi is sending heartbeats for them — they're kept alive
-        explicitly via /api/debug/* endpoints.
-        """
+        """Return robots with recent heartbeat."""
         now = time.time()
         return [
             r for r in self._robots.values()
             if r.status == "online"
-            and (r.is_synthetic or (now - r.last_heartbeat) < HEALTH_CHECK_INTERVAL * 3)
+            and (now - r.last_heartbeat) < HEALTH_CHECK_INTERVAL * 3
         ]
 
     def get_robot(self, robot_id: str) -> Optional[RegisteredRobot]:

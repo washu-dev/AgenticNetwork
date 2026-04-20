@@ -1,16 +1,4 @@
 {
-  "_comment": "AprilTag position registry. Key = tag_id (string). Pos = [x, y] in meters (world frame from map13.yaml).",
-  "_how_to_fill": "Measure each tag's real-world (x, y) using rviz Publish Point or by physically measuring from the map origin (-26.0, -21.2). Remove the _comment/_how_to_fill keys before running.",
-
-  "10": {"zone": "A", "pos": [-3.0, 8.0]},
-  "11": {"zone": "A", "pos": [7.0, 3.0]},
-  "12": {"zone": "A", "pos": [14.0, -2.0]},
-
-  "20": {"zone": "B", "pos": [0.0, 0.0]},
-  "21": {"zone": "B", "pos": [0.0, 0.0]},
-  "22": {"zone": "B", "pos": [0.0, 0.0]},
-
-  "30": {"zone": "C", "pos": [0.0, 0.0]},
-  "31": {"zone": "C", "pos": [0.0, 0.0]},
-  "32": {"zone": "C", "pos": [0.0, 0.0]}
+  "_comment": "AprilTag position registry. Key = tag_id (string). Pos = [x, y] in meters (world frame).",
+  "_how_to_fill": "Add entries as '10': {\"zone\": \"A\", \"pos\": [x_meters, y_meters]}. Measure from the map origin."
 }

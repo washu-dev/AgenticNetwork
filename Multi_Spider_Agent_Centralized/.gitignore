@@ -25,3 +25,6 @@ Command_Center/frontend/WashU*.png
 Command_Center/frontend/WashU*.pdf
 Command_Center/frontend/map13_modified.png
 Command_Center/frontend/map13_original.png
+
+# Mock / dev-only support — not shipped
+Command_Center/mock/

@@ -43,6 +43,14 @@ _background_tasks: list[asyncio.Task] = []
 @app.on_event("startup")
 async def startup_event():
     """Run initial ADS discovery, preload models, connect transport, and start background cleanup."""
+    # Optional mock mode: the mock/ folder is gitignored and absent in production.
+    # When present, loading plugin.apply() mounts debug endpoints and patches
+    # the registry + planner to treat synthetic robots as first-class.
+    try:
+        from .mock import plugin as _mock_plugin
+        _mock_plugin.apply(app)
+    except ImportError:
+        pass  # production: no mock folder, nothing to do
     # Pre-load YOLO model so first detection is instant
     from .detection.yolo_detector import preload_model
     await asyncio.to_thread(preload_model)
@@ -150,8 +158,6 @@ async def _periodic_health_check_loop():
 
             # Mark robots offline if not found in discovery
             for robot in robot_registry.get_all_robots():
-                if robot.is_synthetic:
-                    continue  # synthetic test robots are managed via /api/debug/* only
                 if robot.robot_id not in seen_ids and robot.status == "online":
                     robot_registry.mark_offline(robot.robot_id)
 
@@ -390,33 +396,6 @@ async def latest_detections():
 # ---------------------------------------------------------------------------
 
 
-@app.post("/api/debug/register_fake_robot")
-async def debug_register_fake_robot(data: dict):
-    """Register a synthetic robot (for map/dispatch testing without hardware).
-
-    Body: {"robot_id": "fake-a", "zone": "A", "host": "127.0.0.1"?, "port": 9004?}
-    """
-    import time
-    from .infra.robot_registry import RegisteredRobot
-    robot_id = data.get("robot_id")
-    if not robot_id:
-        return {"status": "error", "error": "robot_id required"}
-    now = time.time()
-    robot = RegisteredRobot(
-        robot_id=robot_id,
-        host=data.get("host", "127.0.0.1"),
-        port=int(data.get("port", 9004)),
-        zone=data.get("zone", ""),
-        robot_type=data.get("robot_type", "spider"),
-        registered_at=now,
-        last_heartbeat=now,
-        status="online",
-        is_synthetic=True,
-    )
-    robot_registry._robots[robot_id] = robot
-    return {"status": "registered", "robot": robot.to_dict()}
-
-
 @app.post("/api/debug/simulate_tag")
 async def debug_simulate_tag(data: dict):
     """Simulate a robot seeing an AprilTag, updating its position accordingly.
@@ -439,7 +418,7 @@ async def debug_simulate_tag(data: dict):
 
     robot = robot_registry.get_robot(robot_id)
     if robot is None:
-        return {"status": "error", "error": f"robot {robot_id} not registered (try /api/debug/register_fake_robot first)"}
+        return {"status": "error", "error": f"robot {robot_id} not registered"}
 
     # Refresh heartbeat so the robot remains "online"
     robot.last_heartbeat = time.time()

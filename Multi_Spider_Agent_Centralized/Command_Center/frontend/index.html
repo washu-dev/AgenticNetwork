@@ -125,17 +125,158 @@
   .qcmd { background: #0f172a; border: 1px solid #1e293b; border-radius: 6px; padding: 5px 10px; color: #94a3b8; cursor: pointer; font-size: 11px; }
   .qcmd:hover { border-color: #38bdf8; color: #e2e8f0; }
 
-  /* Center: Agent Topology */
-  .topology-panel { background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 10px; display: flex; flex-direction: column; align-items: center; }
-  .topology-panel .tp-title { font-size: 11px; color: #64748b; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px; font-weight: 600; }
-  .topo-node { cursor: default; }
-  .topo-node rect { rx: 8; ry: 8; stroke-width: 2; }
-  .topo-node .node-name { font-size: 11px; font-weight: 600; fill: #e2e8f0; }
-  .topo-node .node-detail { font-size: 9px; fill: #94a3b8; }
-  .topo-node .node-status { font-size: 9px; font-weight: 500; }
-  .topo-edge-label { font-size: 8px; font-family: monospace; }
-  @keyframes topo-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
-  .topo-active rect { animation: topo-pulse 1.5s infinite; }
+  /* ── Agent Topology (two-plane holographic design) ───────────────── */
+  .topology-panel {
+    background: linear-gradient(180deg, #0a0a1a 0%, #130f2e 40%, #0a1828 100%);
+    border: 1px solid #334155;
+    border-radius: 8px;
+    padding: 8px 10px;
+    display: flex; flex-direction: column;
+    position: relative; overflow: hidden;
+  }
+  .topology-panel::before {
+    /* Horizontal scanline overlay for a command-center feel */
+    content: ''; position: absolute; inset: 0; pointer-events: none;
+    background: repeating-linear-gradient(
+      0deg, transparent 0 2px, rgba(56, 189, 248, 0.025) 2px 3px);
+    z-index: 1;
+  }
+  .topology-panel > * { position: relative; z-index: 2; }
+  .topology-panel .tp-title {
+    display: flex; justify-content: space-between; align-items: center;
+    font-size: 10px; color: #38bdf8; text-transform: uppercase;
+    letter-spacing: 2px; font-weight: 700; margin-bottom: 6px;
+  }
+  .topology-panel .tp-title .tp-sub { color: #64748b; font-size: 9px; letter-spacing: 1px; }
+  .topo-svg { width: 100%; height: 400px; display: block; }
+
+  /* SVG element classes */
+  .tp-plane-label { font-size: 9px; letter-spacing: 3px; font-weight: 700; font-family: monospace; }
+  .tp-grid-line { stroke: rgba(167, 139, 250, 0.06); stroke-width: 1; }
+  .tp-planner-box { stroke-width: 2; }
+  .tp-branch { fill: none; stroke-width: 1.3; }
+  .tp-branch.dim { opacity: 0.28; stroke-dasharray: 3, 3; }
+  .tp-branch.live { opacity: 0.85; stroke-dasharray: 5, 3; }
+
+  /* NATS bus: flowing dashed line */
+  @keyframes tp-bus-flow { 0% { stroke-dashoffset: 0; } 100% { stroke-dashoffset: -24; } }
+  .tp-bus {
+    stroke: #38bdf8; stroke-width: 2; stroke-dasharray: 6, 4;
+    animation: tp-bus-flow 2s linear infinite;
+    filter: drop-shadow(0 0 3px rgba(56, 189, 248, 0.6));
+  }
+  .tp-bus-glow { stroke: rgba(56, 189, 248, 0.25); stroke-width: 6; }
+
+  /* Comm pulse circles travelling bus→robot */
+  .tp-pulse { filter: drop-shadow(0 0 5px currentColor); }
+
+  /* View cone animations */
+  @keyframes tp-cone-pulse {
+    0%, 100% { opacity: 0.22; }
+    50%      { opacity: 0.55; }
+  }
+  @keyframes tp-cone-sweep {
+    0%   { opacity: 0.35; transform: scale(0.95); }
+    50%  { opacity: 0.65; transform: scale(1.03); }
+    100% { opacity: 0.35; transform: scale(0.95); }
+  }
+  .tp-cone { transition: fill 0.3s ease; }
+  .tp-cone.idle { opacity: 0.35; }
+  .tp-cone.thinking { animation: tp-cone-pulse 1.6s ease-in-out infinite; }
+  .tp-cone.executing { animation: tp-cone-sweep 1.4s ease-in-out infinite;
+                        transform-origin: center; transform-box: fill-box; }
+  .tp-cone.done { opacity: 0.5; }
+
+  /* Robot dot halo when executing */
+  @keyframes tp-halo-pulse {
+    0%, 100% { r: 13; opacity: 0.35; }
+    50%      { r: 19; opacity: 0.08; }
+  }
+  .tp-halo.active { animation: tp-halo-pulse 1.4s ease-in-out infinite; }
+
+  /* Map frame: breathing cyan glow around the physical battle plane */
+  @keyframes tp-map-border-glow {
+    0%, 100% { stroke-opacity: 0.35; filter: drop-shadow(0 0 3px rgba(56, 189, 248, 0.5)); }
+    50%      { stroke-opacity: 0.75; filter: drop-shadow(0 0 10px rgba(56, 189, 248, 0.9)); }
+  }
+  .tp-map-border {
+    stroke: #38bdf8; stroke-width: 1.5; fill: none;
+    animation: tp-map-border-glow 3.5s ease-in-out infinite;
+  }
+
+  /* Radar sweep: rotating conic gradient fan over the map */
+  @keyframes tp-radar-spin {
+    0%   { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+  }
+  .tp-radar-sweep {
+    animation: tp-radar-spin 6s linear infinite;
+    transform-origin: center; transform-box: fill-box;
+  }
+
+  /* Sonar ping rings (expanding + fading from robot position) */
+  @keyframes tp-sonar {
+    0%   { r: 8;  opacity: 0.85; }
+    100% { r: 38; opacity: 0; }
+  }
+  .tp-sonar-ring {
+    fill: none; stroke-width: 1.5;
+    animation: tp-sonar 1.8s ease-out infinite;
+  }
+  .tp-sonar-ring.delay { animation-delay: 0.6s; }
+  .tp-sonar-ring.delay2 { animation-delay: 1.2s; }
+
+  /* Inner map grid (very faint) */
+  .tp-map-grid { stroke: rgba(56, 189, 248, 0.07); stroke-width: 0.5; }
+
+  /* Corner HUD L-brackets */
+  .tp-corner-bracket { stroke: #38bdf8; stroke-width: 1.6; fill: none;
+    filter: drop-shadow(0 0 2px rgba(56, 189, 248, 0.6)); }
+  .tp-corner-tick { stroke: #38bdf8; stroke-width: 1; opacity: 0.5; }
+
+  /* Planner thinking glow */
+  @keyframes tp-planner-glow {
+    0%, 100% { filter: drop-shadow(0 0 4px currentColor); }
+    50%      { filter: drop-shadow(0 0 10px currentColor); }
+  }
+  .tp-planner-box.active { animation: tp-planner-glow 1.8s ease-in-out infinite; }
+
+  /* Planner corner HUD brackets (match map brackets but sized to the box) */
+  .tp-planner-bracket { stroke-width: 1.4; fill: none; opacity: 0.75;
+    filter: drop-shadow(0 0 2px currentColor); }
+
+  /* LED indicator (small pulsing dot inside the planner box) */
+  @keyframes tp-led-pulse {
+    0%, 100% { opacity: 1;   r: 2.2; }
+    50%      { opacity: 0.4; r: 3.2; }
+  }
+  .tp-planner-led { animation: tp-led-pulse 1.2s ease-in-out infinite; }
+
+  /* Waveform bars beside the planner */
+  @keyframes tp-wave-1 { 0%,100% { height: 4px; y: -2px; } 50% { height: 14px; y: -7px; } }
+  @keyframes tp-wave-2 { 0%,100% { height: 10px; y: -5px; } 50% { height: 5px; y: -2.5px; } }
+  @keyframes tp-wave-3 { 0%,100% { height: 7px; y: -3.5px; } 50% { height: 16px; y: -8px; } }
+  @keyframes tp-wave-4 { 0%,100% { height: 12px; y: -6px; } 50% { height: 4px; y: -2px; } }
+  @keyframes tp-wave-5 { 0%,100% { height: 6px; y: -3px; } 50% { height: 12px; y: -6px; } }
+  .tp-wave { fill: #a78bfa; opacity: 0.7; }
+  .tp-wave-1 { animation: tp-wave-1 0.9s ease-in-out infinite; }
+  .tp-wave-2 { animation: tp-wave-2 1.1s ease-in-out infinite; }
+  .tp-wave-3 { animation: tp-wave-3 0.7s ease-in-out infinite; }
+  .tp-wave-4 { animation: tp-wave-4 1.3s ease-in-out infinite; }
+  .tp-wave-5 { animation: tp-wave-5 0.8s ease-in-out infinite; }
+
+  /* Horizontal scanline that sweeps the inside of the planner box */
+  @keyframes tp-planner-scan {
+    0%   { transform: translateY(0px); opacity: 0; }
+    10%  { opacity: 0.6; }
+    90%  { opacity: 0.6; }
+    100% { transform: translateY(42px); opacity: 0; }
+  }
+  .tp-planner-scanline { animation: tp-planner-scan 2.5s linear infinite; }
+
+  .tp-label-plate { fill: #0f172a; stroke-width: 1; }
+  .tp-robot-name { font-size: 9px; font-weight: 700; fill: #e2e8f0; font-family: monospace; }
+  .tp-robot-status { font-size: 8px; font-family: monospace; letter-spacing: 0.5px; }
 
   /* Center: Results */
   .result-panel { background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 10px; max-height: 250px; overflow-y: auto; }
@@ -264,69 +405,234 @@
 
       <!-- Bottom Right -->
       <div class="bottom-right">
-        <!-- Agent Topology -->
+        <!-- Agent Topology: Command Plane (Planner) + Physical Battle Plane (Map + Robots) -->
         <div class="topology-panel" v-if="agents.length > 0">
-          <div class="tp-title">Agent Topology</div>
-          <svg :width="topoWidth" height="160" xmlns="http://www.w3.org/2000/svg">
+          <div class="tp-title">
+            <span>&#9670; Agent Topology</span>
+            <span class="tp-sub">{{ onlineAgents.length }} ROBOT{{ onlineAgents.length === 1 ? '' : 'S' }} &#183; {{ plannerStatus.toUpperCase() }}</span>
+          </div>
+          <svg class="topo-svg" viewBox="0 0 640 400" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg">
             <defs>
-              <marker id="topo-arr" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto">
-                <path d="M0,0 L10,5 L0,10 z" fill="#475569"/>
-              </marker>
-              <marker id="topo-arr-blue" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto">
-                <path d="M0,0 L10,5 L0,10 z" fill="#38bdf8"/>
-              </marker>
-              <marker id="topo-arr-green" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto">
-                <path d="M0,0 L10,5 L0,10 z" fill="#22c55e"/>
-              </marker>
+              <linearGradient id="tp-cmd-grad" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0" stop-color="#2a1159" stop-opacity="0.35"/>
+                <stop offset="1" stop-color="#0f172a" stop-opacity="0"/>
+              </linearGradient>
+              <linearGradient id="tp-phys-grad" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0" stop-color="#0f172a" stop-opacity="0"/>
+                <stop offset="1" stop-color="#0a1828" stop-opacity="0.5"/>
+              </linearGradient>
+              <filter id="tp-glow" x="-50%" y="-50%" width="200%" height="200%">
+                <feGaussianBlur stdDeviation="2.2" result="blur"/>
+                <feMerge>
+                  <feMergeNode in="blur"/>
+                  <feMergeNode in="SourceGraphic"/>
+                </feMerge>
+              </filter>
+              <!-- Radar sweep: radial gradient creating a fading trailing arc -->
+              <radialGradient id="tp-radar-grad" cx="0%" cy="50%" r="100%">
+                <stop offset="0%"  stop-color="#38bdf8" stop-opacity="0.5"/>
+                <stop offset="60%" stop-color="#38bdf8" stop-opacity="0.1"/>
+                <stop offset="100%" stop-color="#38bdf8" stop-opacity="0"/>
+              </radialGradient>
+              <!-- Clip radar sweep to the map area so it doesn't bleed over -->
+              <clipPath id="tp-map-clip">
+                <rect x="142" y="150" width="356" height="238" rx="2"/>
+              </clipPath>
             </defs>
 
-            <!-- Planner node (top center) -->
-            <g class="topo-node" :class="{'topo-active': plannerStatus === 'thinking'}"
-               :transform="`translate(${topoWidth/2}, 10)`">
-              <rect x="-55" y="0" width="110" height="40"
-                    :fill="plannerStatus === 'idle' ? '#334155' : plannerStatus === 'thinking' ? '#5b21b6' : plannerStatus === 'dispatched' ? '#1e40af' : plannerStatus === 'done' ? '#166534' : '#334155'"
-                    :stroke="plannerStatus === 'idle' ? '#475569' : plannerStatus === 'thinking' ? '#a78bfa' : plannerStatus === 'dispatched' ? '#60a5fa' : plannerStatus === 'done' ? '#22c55e' : '#475569'" />
-              <text class="node-name" x="0" y="18" text-anchor="middle">Planner</text>
-              <text class="node-status" x="0" y="32" text-anchor="middle"
-                    :fill="plannerStatus === 'thinking' ? '#c4b5fd' : plannerStatus === 'dispatched' ? '#93c5fd' : plannerStatus === 'done' ? '#86efac' : '#64748b'">
-                {{ plannerStatus }}
+            <!-- ═══ Command Plane ═══ -->
+            <rect x="0" y="0" width="640" height="92" fill="url(#tp-cmd-grad)"/>
+            <g class="tp-grid-line">
+              <line v-for="i in 15" :key="'cg-'+i" :x1="i*40" y1="22" :x2="i*40" y2="92"/>
+              <line x1="0" y1="22" x2="640" y2="22"/>
+              <line x1="0" y1="60" x2="640" y2="60" opacity="0.5"/>
+            </g>
+            <text x="14" y="14" class="tp-plane-label" fill="#a78bfa">&#9670; COMMAND PLANE</text>
+
+            <!-- Planner node (with waveform bars, HUD corners, LED, scanline) -->
+            <g :transform="`translate(320, 32)`" :style="{color: plannerNodeStroke}">
+              <!-- Waveform bars LEFT of the planner box -->
+              <g transform="translate(-98, 22)" :fill="plannerNodeStroke">
+                <rect class="tp-wave tp-wave-1" x="0"  width="2" rx="1"/>
+                <rect class="tp-wave tp-wave-2" x="5"  width="2" rx="1"/>
+                <rect class="tp-wave tp-wave-3" x="10" width="2" rx="1"/>
+                <rect class="tp-wave tp-wave-4" x="15" width="2" rx="1"/>
+                <rect class="tp-wave tp-wave-5" x="20" width="2" rx="1"/>
+              </g>
+              <!-- Waveform bars RIGHT of the planner box (reverse order for symmetry) -->
+              <g transform="translate(76, 22)" :fill="plannerNodeStroke">
+                <rect class="tp-wave tp-wave-5" x="0"  width="2" rx="1"/>
+                <rect class="tp-wave tp-wave-4" x="5"  width="2" rx="1"/>
+                <rect class="tp-wave tp-wave-3" x="10" width="2" rx="1"/>
+                <rect class="tp-wave tp-wave-2" x="15" width="2" rx="1"/>
+                <rect class="tp-wave tp-wave-1" x="20" width="2" rx="1"/>
+              </g>
+
+              <!-- HUD corner brackets 6px outside the planner box -->
+              <g class="tp-planner-bracket" :stroke="plannerNodeStroke">
+                <path d="M -78 -6 L -78 6 M -78 -6 L -66 -6"/>
+                <path d="M 78 -6 L 78 6 M 78 -6 L 66 -6"/>
+                <path d="M -78 50 L -78 38 M -78 50 L -66 50"/>
+                <path d="M 78 50 L 78 38 M 78 50 L 66 50"/>
+              </g>
+
+              <!-- Main box -->
+              <rect class="tp-planner-box" :class="{active: plannerStatus === 'thinking' || plannerStatus === 'dispatched'}"
+                    x="-72" y="0" width="144" height="44" rx="6"
+                    :fill="plannerNodeFill" :stroke="plannerNodeStroke"/>
+
+              <!-- Scanline sweeping inside the box (only active when planner busy) -->
+              <line v-if="plannerStatus === 'thinking' || plannerStatus === 'dispatched'"
+                    class="tp-planner-scanline"
+                    x1="-70" y1="1" x2="70" y2="1"
+                    :stroke="plannerNodeStroke" stroke-width="1"/>
+
+              <!-- Status LED on the left inside the box -->
+              <circle class="tp-planner-led" cx="-62" cy="11" r="2.5"
+                      :fill="plannerStatusColor"/>
+
+              <!-- Title + status text -->
+              <text x="0" y="18" text-anchor="middle" fill="#e2e8f0"
+                    font-size="12" font-weight="700" letter-spacing="1.5">PLANNER</text>
+              <text x="0" y="34" text-anchor="middle"
+                    :fill="plannerStatusColor" font-size="9" letter-spacing="1">
+                {{ plannerStatus.toUpperCase() }}
               </text>
             </g>
 
-            <!-- NATS transport bar -->
-            <rect :x="20" y="62" :width="topoWidth - 40" height="18" rx="4" fill="#1e293b" stroke="#334155" />
-            <text :x="topoWidth/2" y="74" text-anchor="middle" fill="#475569" font-size="9">Transport: NATS</text>
+            <!-- Planner → Bus drop line -->
+            <line x1="320" y1="76" x2="320" y2="110" :stroke="plannerNodeStroke" stroke-width="2"
+                  opacity="0.6" stroke-dasharray="4,3"/>
+            <circle v-if="plannerStatus !== 'idle'" cx="320" cy="92" r="2.5"
+                    :fill="plannerNodeStroke" class="tp-pulse"
+                    :style="{color: plannerNodeStroke}">
+              <animate attributeName="cy" values="76;110" dur="1.2s" repeatCount="indefinite"/>
+              <animate attributeName="opacity" values="0;1;0" dur="1.2s" repeatCount="indefinite"/>
+            </circle>
 
-            <!-- Edges: Planner → each robot -->
-            <g v-for="(a, i) in onlineAgents" :key="'edge-'+a.id">
-              <line :x1="topoWidth/2" y1="50" :x2="robotX(i)" y2="62"
-                    :stroke="edgeColor(a.id)" stroke-width="1.5" stroke-dasharray="4,3"
-                    :marker-end="edgeMarker(a.id)" />
-              <line :x1="robotX(i)" y1="80" :x2="robotX(i)" y2="100"
-                    :stroke="edgeColor(a.id)" stroke-width="1.5" stroke-dasharray="4,3"
-                    :marker-end="edgeMarker(a.id)" />
-              <text class="topo-edge-label" :x="robotX(i)" y="95" text-anchor="middle"
-                    :fill="edgeColor(a.id)">
-                {{ edgeLabel(a.id) }}
-              </text>
+            <!-- ═══ NATS Transport Bus ═══ -->
+            <line x1="30" y1="110" x2="610" y2="110" class="tp-bus-glow"/>
+            <line x1="30" y1="110" x2="610" y2="110" class="tp-bus"/>
+            <text x="320" y="124" text-anchor="middle" fill="#38bdf8"
+                  font-size="7.5" letter-spacing="3" font-weight="600">&#8605; NATS TRANSPORT &#8605;</text>
+
+            <!-- ═══ Physical Battle Plane ═══ -->
+            <rect x="0" y="132" width="640" height="268" fill="url(#tp-phys-grad)"/>
+            <text x="14" y="142" class="tp-plane-label" fill="#38bdf8">&#9670; PHYSICAL BATTLE PLANE</text>
+
+            <!-- Map backdrop. Box aspect ratio matches the native image
+                 (593:397 ≈ 1.494) so the map fills the box without
+                 letterboxing. `invert(1) hue-rotate(180deg)` flips the
+                 default light map into a dark command-center radar look
+                 (walls become bright cyan lines on a dark floor). -->
+            <image href="/static/map13.png" x="142" y="150" width="356" height="238"
+                   opacity="0.75" preserveAspectRatio="xMidYMid meet"
+                   style="filter: invert(1) hue-rotate(180deg) saturate(1.8) brightness(0.9);"/>
+            <rect x="142" y="150" width="356" height="238" fill="#0ea5e9" opacity="0.06"/>
+
+            <!-- Radar sweep: rotating conic fan clipped to the map area.
+                 Fan is a 45° sector centered at map center (320, 269) with
+                 radius 260 (overflows map box — clipped). Rotated via SMIL
+                 so transform-origin works predictably in all browsers. -->
+            <g clip-path="url(#tp-map-clip)" opacity="0.6">
+              <g>
+                <path d="M 320 269 L 580 269 A 260 260 0 0 1 504 453 Z"
+                      fill="url(#tp-radar-grad)"/>
+                <line x1="320" y1="269" x2="580" y2="269"
+                      stroke="#7dd3fc" stroke-width="1.2" opacity="0.8"/>
+                <animateTransform attributeName="transform" type="rotate"
+                                  from="0 320 269" to="360 320 269"
+                                  dur="6s" repeatCount="indefinite"/>
+              </g>
             </g>
 
-            <!-- Robot nodes (bottom row) -->
-            <g v-for="(a, i) in onlineAgents" :key="'node-'+a.id"
-               class="topo-node" :class="{'topo-active': robotStatus(a.id) === 'executing'}"
-               :transform="`translate(${robotX(i)}, 100)`">
-              <rect x="-50" y="0" width="100" height="50"
-                    :fill="robotNodeFill(a.id)" :stroke="robotNodeStroke(a.id)" />
-              <text class="node-name" x="0" y="16" text-anchor="middle">
-                {{ a.id.replace('crawler-alpha-patrol-','') }}
-              </text>
-              <text class="node-detail" x="0" y="28" text-anchor="middle">
-                Zone {{ a.zone || '?' }}
-              </text>
-              <text class="node-status" x="0" y="42" text-anchor="middle"
-                    :fill="robotStatusColor(a.id)">
-                {{ robotStatusLabel(a.id) }}
-              </text>
+            <!-- Faint coordinate grid inside the map area -->
+            <g class="tp-map-grid" clip-path="url(#tp-map-clip)">
+              <line v-for="i in 10" :key="'mvg-'+i" :x1="142 + i*35.6" y1="150" :x2="142 + i*35.6" y2="388"/>
+              <line v-for="i in 7" :key="'mhg-'+i" x1="142" :y1="150 + i*34" x2="498" :y2="150 + i*34"/>
+            </g>
+
+            <!-- Map border: breathing cyan glow -->
+            <rect x="142" y="150" width="356" height="238" rx="2" class="tp-map-border"/>
+
+            <!-- Corner HUD L-brackets (tactical display framing) -->
+            <g>
+              <!-- Top-left -->
+              <path d="M 142 164 L 142 150 L 156 150" class="tp-corner-bracket"/>
+              <line x1="148" y1="150" x2="148" y2="153" class="tp-corner-tick"/>
+              <!-- Top-right -->
+              <path d="M 484 150 L 498 150 L 498 164" class="tp-corner-bracket"/>
+              <line x1="498" y1="156" x2="495" y2="156" class="tp-corner-tick"/>
+              <!-- Bottom-left -->
+              <path d="M 142 374 L 142 388 L 156 388" class="tp-corner-bracket"/>
+              <line x1="148" y1="388" x2="148" y2="385" class="tp-corner-tick"/>
+              <!-- Bottom-right -->
+              <path d="M 484 388 L 498 388 L 498 374" class="tp-corner-bracket"/>
+              <line x1="498" y1="382" x2="495" y2="382" class="tp-corner-tick"/>
+            </g>
+
+            <!-- Branch lines: bus (y=110) → robot positions -->
+            <g v-for="a in onlineAgents" :key="'branch-'+a.id">
+              <path :d="busToRobotPath(a)"
+                    :stroke="edgeColor(a.id)"
+                    :class="['tp-branch', isRobotLive(a.id) ? 'live' : 'dim']"/>
+              <!-- Flowing comm pulse along the branch when active -->
+              <g v-if="isRobotLive(a.id)">
+                <circle r="3.5" :fill="edgeColor(a.id)" class="tp-pulse"
+                        :style="{color: edgeColor(a.id)}">
+                  <animateMotion :dur="pulseSpeed(a.id)" repeatCount="indefinite"
+                                 :path="busToRobotPath(a)" rotate="auto"/>
+                </circle>
+                <circle r="2" fill="#ffffff" opacity="0.9">
+                  <animateMotion :dur="pulseSpeed(a.id)" repeatCount="indefinite"
+                                 :path="busToRobotPath(a)"/>
+                </circle>
+              </g>
+            </g>
+
+            <!-- Robots on the map: view cone + halo + dot + label -->
+            <g v-for="a in onlineAgents" :key="'robot-'+a.id"
+               :transform="`translate(${robotMapPos(a).x}, ${robotMapPos(a).y})`">
+              <!-- Sonar rings: expanding circles pinging outward when active -->
+              <g v-if="isRobotLive(a.id)">
+                <circle cx="0" cy="0" r="8" :stroke="robotDotColor(a.id)"
+                        class="tp-sonar-ring"/>
+                <circle cx="0" cy="0" r="8" :stroke="robotDotColor(a.id)"
+                        class="tp-sonar-ring delay"/>
+                <circle cx="0" cy="0" r="8" :stroke="robotDotColor(a.id)"
+                        class="tp-sonar-ring delay2"/>
+              </g>
+              <!-- Field of view cone -->
+              <path :d="viewConePath(a)"
+                    :fill="coneFillColor(a.id)"
+                    :class="['tp-cone', robotStatus(a.id)]"/>
+              <!-- Halo (pulsing when executing) -->
+              <circle cx="0" cy="0" r="13"
+                      :fill="robotDotColor(a.id)"
+                      :class="['tp-halo', isRobotLive(a.id) ? 'active' : '']"
+                      opacity="0.18"/>
+              <!-- Outer ring (per-robot id color) -->
+              <circle cx="0" cy="0" r="8" fill="none"
+                      :stroke="robotRingColorSvg(a.id)" stroke-width="2" opacity="0.9"/>
+              <!-- Inner solid dot -->
+              <circle cx="0" cy="0" r="4.5" :fill="robotDotColor(a.id)"/>
+              <!-- Heading arrow tip (small triangle at front of cone) -->
+              <polygon :points="headingTipPoints(a)" :fill="robotDotColor(a.id)" opacity="0.85"/>
+
+              <!-- Label plate -->
+              <g transform="translate(0, 22)">
+                <rect class="tp-label-plate" x="-26" y="-7" width="52" height="13" rx="3"
+                      :stroke="robotRingColorSvg(a.id)" opacity="0.92"/>
+                <text x="0" y="2.5" text-anchor="middle" class="tp-robot-name">
+                  {{ shortRobotId(a.id) }} &#183; {{ a.zone || '?' }}
+                </text>
+              </g>
+              <g transform="translate(0, 40)">
+                <text x="0" y="0" text-anchor="middle" class="tp-robot-status"
+                      :fill="robotStatusColor(a.id)">
+                  {{ robotStatusLabel(a.id).toUpperCase() }}
+                </text>
+              </g>
             </g>
           </svg>
         </div>
@@ -765,10 +1071,14 @@ createApp({
       return 50 + (i + 0.5) * (totalW / count);
     }
 
-    // Derive node states from comm_events
+    // Derive node states from comm_events.
+    // We look at commEvents (not taskRunning) because the user should still
+    // see the final DONE state during the 5s grace period between task end
+    // and commEvents being cleared. Driving off taskRunning would snap all
+    // nodes back to IDLE the instant the task completes.
     const plannerStatus = computed(() => {
-      if (!taskRunning.value) return 'idle';
       const evts = currentTaskEvents();
+      if (evts.length === 0) return 'idle';
       for (let i = evts.length - 1; i >= 0; i--) {
         if (evts[i].from === 'planner' && evts[i].to === 'user') return 'done';
         if (evts[i].from === 'planner' && evts[i].type === 'dispatch') return 'dispatched';
@@ -778,8 +1088,8 @@ createApp({
     });
 
     function robotStatus(rid) {
-      if (!taskRunning.value) return 'idle';
       const evts = currentTaskEvents();
+      if (evts.length === 0) return 'idle';
       // Check if this robot was involved at all
       const involved = evts.some(e => e.from === rid || e.to === rid);
       if (!involved) return 'idle';
@@ -839,7 +1149,7 @@ createApp({
       if (s === 'executing') return '#38bdf8';
       if (s === 'thinking') return '#c4b5fd';
       if (s === 'done') return '#86efac';
-      return '#64748b';
+      return '#cbd5e1';
     }
     function robotStatusLabel(rid) {
       const s = robotStatus(rid);
@@ -889,6 +1199,138 @@ createApp({
       }
       return '';
     }
+
+    // ── New map-based topology helpers ─────────────────────────────
+    //
+    // Hardcoded robot placements on the mini-city map (no localization yet).
+    // Coordinates are in the SVG viewBox space (640×400). The map image is
+    // drawn at x=142..498, y=150..388 (aspect-matched 356×238 box).
+    // Tune these if the physical scene layout changes.
+    // heading is in radians, 0 = east, π/2 = south (SVG +y is down).
+    const DEMO_ZONE_POSITIONS = {
+      'A': { x: 215, y: 255, heading: 0 },              // upper-left, facing east
+      'B': { x: 320, y: 200, heading: Math.PI / 2 },    // upper-center, facing south
+      'C': { x: 425, y: 255, heading: Math.PI },        // upper-right, facing west
+      'D': { x: 260, y: 340, heading: 0 },              // lower-left, facing east
+      'E': { x: 380, y: 340, heading: Math.PI },        // lower-right, facing west
+    };
+
+    function robotMapPos(agent) {
+      const z = (agent.zone || '').toUpperCase();
+      if (DEMO_ZONE_POSITIONS[z]) return DEMO_ZONE_POSITIONS[z];
+      // Fallback: evenly space unknown-zone robots along a lower row
+      const idx = onlineAgents.value.findIndex(a => a.id === agent.id);
+      const total = Math.max(1, onlineAgents.value.length);
+      return { x: 100 + (idx + 0.5) * (440 / total), y: 370, heading: 0 };
+    }
+
+    function shortRobotId(rid) {
+      return (rid || '').replace('crawler-alpha-patrol-', '');
+    }
+
+    // Build an SVG arc path for the ~60° field-of-view cone.
+    function viewConePath(agent) {
+      const { heading } = robotMapPos(agent);
+      const r = 42;
+      const half = 0.55;  // ~63° total, matching camera H_FOV=62°
+      const x1 = (Math.cos(heading - half) * r).toFixed(1);
+      const y1 = (Math.sin(heading - half) * r).toFixed(1);
+      const x2 = (Math.cos(heading + half) * r).toFixed(1);
+      const y2 = (Math.sin(heading + half) * r).toFixed(1);
+      return `M 0 0 L ${x1} ${y1} A ${r} ${r} 0 0 1 ${x2} ${y2} Z`;
+    }
+
+    // Small arrow tip at the front of the cone (indicates heading).
+    function headingTipPoints(agent) {
+      const { heading } = robotMapPos(agent);
+      const tip = 13;   // distance from center to tip
+      const side = 4;   // half-width
+      const tipX = Math.cos(heading) * tip;
+      const tipY = Math.sin(heading) * tip;
+      const lx = Math.cos(heading + Math.PI / 2) * side;
+      const ly = Math.sin(heading + Math.PI / 2) * side;
+      const bx = Math.cos(heading) * 5;
+      const by = Math.sin(heading) * 5;
+      const p1 = `${tipX.toFixed(1)},${tipY.toFixed(1)}`;
+      const p2 = `${(bx + lx).toFixed(1)},${(by + ly).toFixed(1)}`;
+      const p3 = `${(bx - lx).toFixed(1)},${(by - ly).toFixed(1)}`;
+      return `${p1} ${p2} ${p3}`;
+    }
+
+    // Path from NATS bus (y=110) down to the robot. Two-segment drop so the
+    // pulse travels straight down then directly to the robot — gives a nice
+    // "bus tap → branch out" visual.
+    function busToRobotPath(agent) {
+      const { x, y } = robotMapPos(agent);
+      // Drop straight down partway, then curve toward the robot so the path
+      // hugs the map layout. Quadratic Bézier keeps it smooth.
+      const midY = 150;
+      return `M ${x} 110 L ${x} ${midY} Q ${x} ${(midY + y) / 2} ${x} ${y}`;
+    }
+
+    function isRobotLive(rid) {
+      const s = robotStatus(rid);
+      return s === 'executing' || s === 'thinking' || s === 'done';
+    }
+
+    function coneFillColor(rid) {
+      const s = robotStatus(rid);
+      if (s === 'executing') return '#38bdf8';
+      if (s === 'thinking')  return '#a78bfa';
+      if (s === 'done')      return '#22c55e';
+      // Idle: use the robot's own ring color so each robot is identifiable
+      // on the map even while idle (the cone reveals the scanner's heading).
+      return robotRingColorSvg(rid);
+    }
+
+    function robotDotColor(rid) {
+      const s = robotStatus(rid);
+      if (s === 'executing') return '#38bdf8';
+      if (s === 'thinking')  return '#c4b5fd';
+      if (s === 'done')      return '#22c55e';
+      return '#cbd5e1';
+    }
+
+    // Per-robot ring color for identification (distinct hue per robot).
+    const _TOPO_RING_COLORS = ['#f59e0b', '#ec4899', '#10b981', '#38bdf8', '#a78bfa', '#eab308'];
+    const _ringCache = {};
+    function robotRingColorSvg(rid) {
+      if (!_ringCache[rid]) {
+        _ringCache[rid] = _TOPO_RING_COLORS[Object.keys(_ringCache).length % _TOPO_RING_COLORS.length];
+      }
+      return _ringCache[rid];
+    }
+
+    // Make pulse cadence hint at state: faster when executing, gentler when thinking.
+    function pulseSpeed(rid) {
+      const s = robotStatus(rid);
+      if (s === 'executing') return '0.9s';
+      if (s === 'thinking')  return '1.4s';
+      return '1.8s';  // done → slower
+    }
+
+    // Planner box fill / stroke / text color driven by plannerStatus.
+    const plannerNodeFill = computed(() => {
+      const s = plannerStatus.value;
+      if (s === 'thinking')   return '#4c1d95';
+      if (s === 'dispatched') return '#1e3a8a';
+      if (s === 'done')       return '#14532d';
+      return '#0f172a';
+    });
+    const plannerNodeStroke = computed(() => {
+      const s = plannerStatus.value;
+      if (s === 'thinking')   return '#a78bfa';
+      if (s === 'dispatched') return '#38bdf8';
+      if (s === 'done')       return '#22c55e';
+      return '#475569';
+    });
+    const plannerStatusColor = computed(() => {
+      const s = plannerStatus.value;
+      if (s === 'thinking')   return '#c4b5fd';
+      if (s === 'dispatched') return '#93c5fd';
+      if (s === 'done')       return '#86efac';
+      return '#64748b';
+    });
 
     function isLlmDecision(step) { return step.startsWith('Intent:'); }
     // Match ` — `, ` – `, ` -- `, or ` - ` as the action/reason separator.
@@ -1230,6 +1672,11 @@ createApp({
       plannerStatus, robotStatus, robotNodeFill, robotNodeStroke,
       robotStatusColor, robotStatusLabel,
       edgeColor, edgeMarker, edgeLabel,
+      // New map-based topology
+      robotMapPos, shortRobotId, viewConePath, headingTipPoints,
+      busToRobotPath, isRobotLive, coneFillColor, robotDotColor,
+      robotRingColorSvg, pulseSpeed,
+      plannerNodeFill, plannerNodeStroke, plannerStatusColor,
       // Bird's-eye map
       mapContainer, mapImg, mapCanvas, mapMeta, onMapLoaded,
       // Alarm system
