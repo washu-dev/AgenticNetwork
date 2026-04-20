@@ -670,7 +670,13 @@ class CentralPiAgent:
 
             pattern = route_plan.get("pattern", "area")
             steps = route_plan.get("steps", [])
-            await self._emit(f"Intent: route plan → {pattern}, {len(steps)} steps — {route_plan.get('reason', '')}")
+            if pattern == "stationary":
+                mode_desc = "stationary (observe in place)"
+            elif pattern == "spin":
+                mode_desc = f"spin ({len(steps)} turns)"
+            else:
+                mode_desc = f"{pattern} ({len(steps)} waypoints)"
+            await self._emit(f"Intent: Patrol plan → {mode_desc} — {route_plan.get('reason', '')}")
 
             if pattern == "stationary" or not steps:
                 from ..config import MISSION_TIMEOUT_STATIONARY
@@ -842,7 +848,8 @@ class CentralPiAgent:
             prompt, self.robot.actions, self.robot.actions_description
         )
         action_names = [s.get("action", s) if isinstance(s, dict) else s for s in steps]
-        await self._emit(f"Intent: decompose → {action_names} — {reason}")
+        actions_display = ", ".join(action_names) if action_names else "(none)"
+        await self._emit(f"Intent: Action plan → {actions_display} — {reason}")
         return await self.execute_steps(steps)
 
     # ── Hardware helpers ─────────────────────────────────

@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Optional
 
 import httpx
-from fastapi import FastAPI, Query, Request as FastAPIRequest
+from fastapi import FastAPI, Query, Request as FastAPIRequest, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -716,46 +716,46 @@ async def detection_overlay_stream(agent_id: str):
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
-@app.get("/api/stream/{agent_id}")
-async def video_stream(agent_id: str):
-    """MJPEG stream — connects to Robot Agent's WebSocket, converts to MJPEG for browser."""
-    from fastapi.responses import StreamingResponse
+@app.websocket("/ws/stream/{agent_id}")
+async def video_stream_ws(websocket: WebSocket, agent_id: str):
+    """WebSocket video stream — forwards JPEG frames from the Robot Agent's internal WS
+    to the browser. Replaces the former MJPEG-over-HTTP endpoint so a page showing many
+    robots doesn't exhaust Chrome's 6-per-host HTTP/1.1 connection limit."""
     from .robot_agent import _ws_port_for
 
     robot = robot_registry.get_robot(agent_id)
     if not robot:
-        return {"error": f"Robot not found: {agent_id}"}
+        await websocket.close(code=1008)
+        return
+
+    try:
+        import websockets
+    except ImportError:
+        logger.error("websockets not installed for video proxy")
+        await websocket.close(code=1011)
+        return
 
     ws_port = _ws_port_for(agent_id)
     ws_url = f"ws://localhost:{ws_port}"
 
-    async def mjpeg_from_ws():
-        boundary = b"--frame\r\n"
+    await websocket.accept()
+    client_alive = True
+    while client_alive:
         try:
-            import websockets
-        except ImportError:
-            logger.error("websockets not installed for video proxy")
-            return
-
-        while True:
-            try:
-                async with websockets.connect(ws_url) as ws:
-                    async for frame in ws:
-                        if isinstance(frame, bytes):
-                            yield (
-                                boundary
-                                + b"Content-Type: image/jpeg\r\n"
-                                + f"Content-Length: {len(frame)}\r\n\r\n".encode()
-                                + frame
-                                + b"\r\n"
-                            )
-            except Exception:
-                await asyncio.sleep(1)
-
-    return StreamingResponse(
-        mjpeg_from_ws(),
-        media_type="multipart/x-mixed-replace; boundary=frame",
-    )
+            async with websockets.connect(ws_url) as upstream:
+                async for frame in upstream:
+                    if not isinstance(frame, bytes):
+                        continue
+                    try:
+                        await websocket.send_bytes(frame)
+                    except (WebSocketDisconnect, RuntimeError):
+                        client_alive = False
+                        break
+        except WebSocketDisconnect:
+            client_alive = False
+        except Exception:
+            # Upstream failure — wait and retry unless browser is gone.
+            await asyncio.sleep(1)
 
 
 @app.post("/api/vision/analyze")

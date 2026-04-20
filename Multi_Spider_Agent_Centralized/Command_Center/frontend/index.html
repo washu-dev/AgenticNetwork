@@ -51,6 +51,7 @@
   .robot-card-reasoning .rr-step.auto { color: #64748b; font-size: 10px; }
   .robot-card-reasoning .rr-step.info { color: #94a3b8; }
   .robot-card-reasoning .rr-llm { padding: 4px 8px; border-bottom: 1px solid #0f172a; border-left: 3px solid #a78bfa; background: #1e1338; }
+  .robot-card-reasoning .rr-llm-label { color: #a78bfa; font-size: 9px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 2px; opacity: 0.8; }
   .robot-card-reasoning .rr-llm-action { color: #e2e8f0; font-weight: 600; font-size: 11px; font-family: monospace; }
   .robot-card-reasoning .rr-llm-reason { color: #94a3b8; font-size: 10px; margin-top: 2px; font-style: italic; }
   .robot-card-reasoning .rr-idle { padding: 10px; color: #334155; font-size: 10px; text-align: center; }
@@ -71,7 +72,7 @@
   .robot-reasoning .rr-idle { padding: 10px; color: #334155; font-size: 10px; text-align: center; }
 
   /* Center: Planner reasoning */
-  .planner-panel { background: #1e293b; border: 1px solid #334155; border-radius: 8px; max-height: 250px; overflow: hidden; display: flex; flex-direction: column; }
+  .planner-panel { background: #1e293b; border: 1px solid #334155; border-radius: 8px; flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
   .planner-panel .pp-header { padding: 8px 12px; font-size: 12px; font-weight: 600; color: #a78bfa; cursor: pointer; display: flex; align-items: center; gap: 6px; }
   .planner-panel .pp-header:hover { background: #334155; }
   .planner-panel .pp-body { flex: 1; min-height: 0; overflow-y: auto; }
@@ -198,6 +199,7 @@
             <template v-if="robotReasoning[a.id] && robotReasoning[a.id].length > 0">
               <template v-for="(step, i) in robotReasoning[a.id]" :key="i">
                 <div v-if="isLlmDecision(step)" class="rr-llm">
+                  <div class="rr-llm-label">Plan</div>
                   <div class="rr-llm-action">{{ parseLlmAction(step) }}</div>
                   <div v-if="parseLlmReason(step)" class="rr-llm-reason">{{ parseLlmReason(step) }}</div>
                 </div>
@@ -258,10 +260,6 @@
           </div>
         </div>
 
-        <!-- Bird's Eye Map (moved from right side) -->
-        <div style="background:#1e293b;border:1px solid #334155;border-radius:8px;flex:1;display:flex;align-items:center;justify-content:center;color:#334155;font-size:12px;min-height:200px;">
-          Bird's Eye Map (Coming Soon)
-        </div>
       </div>
 
       <!-- Bottom Right -->
@@ -1127,21 +1125,71 @@ createApp({
     // Polling
     let pollInterval;
     let _streamsStarted = false;
+    // WebSocket-based video streams (one WS per robot, JPEG frames as binary messages).
+    // Replaces the former MJPEG <img src="/api/stream/..."> to avoid Chrome's 6-per-host
+    // HTTP/1.1 connection limit when many robots are shown at once.
+    const _videoSockets = {}; // agentId -> { ws, lastUrl }
+
+    function _attachStream(agentId) {
+      if (_videoSockets[agentId]) return;
+      const img = document.getElementById('stream-' + agentId);
+      if (!img) return;
+
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const url = `${proto}//${location.host}/ws/stream/${agentId}`;
+      const state = { ws: null, lastUrl: null, closed: false, reconnectTimer: null };
+      _videoSockets[agentId] = state;
+
+      const connect = () => {
+        if (state.closed) return;
+        const ws = new WebSocket(url);
+        ws.binaryType = 'blob';
+        state.ws = ws;
+        ws.onmessage = (ev) => {
+          if (!(ev.data instanceof Blob)) return;
+          const next = URL.createObjectURL(ev.data);
+          const prev = state.lastUrl;
+          img.src = next;
+          state.lastUrl = next;
+          if (prev) URL.revokeObjectURL(prev);
+        };
+        ws.onclose = () => {
+          if (state.closed) return;
+          state.reconnectTimer = setTimeout(connect, 1000);
+        };
+        ws.onerror = () => { try { ws.close(); } catch (_) {} };
+      };
+      connect();
+    }
+
+    function _detachStream(agentId) {
+      const state = _videoSockets[agentId];
+      if (!state) return;
+      state.closed = true;
+      if (state.reconnectTimer) clearTimeout(state.reconnectTimer);
+      if (state.ws) { try { state.ws.close(); } catch (_) {} }
+      if (state.lastUrl) URL.revokeObjectURL(state.lastUrl);
+      const img = document.getElementById('stream-' + agentId);
+      if (img) img.removeAttribute('src');
+      delete _videoSockets[agentId];
+    }
+
     function startVideoStreams() {
       if (!_streamsStarted) return;
+      const onlineIds = new Set();
       for (const a of agents.value) {
         if (a.status === 'online') {
-          const img = document.getElementById('stream-' + a.id);
-          if (img && !img.getAttribute('src')) img.src = '/api/stream/' + a.id;
+          onlineIds.add(a.id);
+          _attachStream(a.id);
         }
+      }
+      for (const id of Object.keys(_videoSockets)) {
+        if (!onlineIds.has(id)) _detachStream(id);
       }
     }
 
     function stopVideoStreams() {
-      for (const a of agents.value) {
-        const img = document.getElementById('stream-' + a.id);
-        if (img) img.removeAttribute('src');
-      }
+      for (const id of Object.keys(_videoSockets)) _detachStream(id);
     }
 
     let mapPollInterval;

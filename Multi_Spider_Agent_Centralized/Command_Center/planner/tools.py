@@ -102,41 +102,6 @@ OPENAI_TOOLS = [{"type": "function", "function": spec} for spec in TOOL_SPECS]
 
 
 # ---------------------------------------------------------------------------
-# VLM tools (used during intent parsing)
-# ---------------------------------------------------------------------------
-
-VLM_TOOL_SPECS = [
-    {
-        "name": "enable_vlm",
-        "description": (
-            "Enable the Vision Language Model for this task. "
-            "Call this when the task needs visual understanding beyond simple object detection. "
-            "Use mode='verify' to match attributes (e.g. 'find person wearing green shirt'). "
-            "Use mode='describe' to describe appearance (e.g. 'describe what you see'). "
-            "Do NOT call for simple patrol, counting, or find-and-act without visual requirements."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "mode": {
-                    "type": "string",
-                    "enum": ["verify", "describe"],
-                    "description": "verify = match specific attributes, describe = describe appearance in detail",
-                },
-                "reason": {
-                    "type": "string",
-                    "description": "Brief reason why VLM is needed",
-                },
-            },
-            "required": ["mode", "reason"],
-        },
-    },
-]
-
-OPENAI_VLM_TOOLS = [{"type": "function", "function": spec} for spec in VLM_TOOL_SPECS]
-
-
-# ---------------------------------------------------------------------------
 # Tool executor (holds coordination state)
 # ---------------------------------------------------------------------------
 

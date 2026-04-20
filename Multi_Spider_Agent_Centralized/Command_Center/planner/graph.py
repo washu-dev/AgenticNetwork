@@ -82,8 +82,10 @@ async def parse_and_discover(state: PlannerState) -> dict:
 
     prompt = state["prompt"]
 
-    # All commands go through LLM for intelligent routing
-    parse_result, vlm_config = await parse_intent(prompt, online_agents)
+    # All commands go through LLM for intelligent routing.
+    # parse_intent returns a TaskIntent (or None) — VLM flags now live on each
+    # Phase directly, so there's no second tuple element to unpack.
+    parse_result = await parse_intent(prompt, online_agents)
 
     if parse_result is None:
         intent = fallback_intent(prompt)
@@ -96,10 +98,6 @@ async def parse_and_discover(state: PlannerState) -> dict:
             messages_log.append(AIMessage(content=f"Rejected: {reason}"))
             return {"error": f"NOT_VALID_TASK: {reason}", "messages": messages_log}
         intent = parse_result.model_dump()
-        # Inject VLM tool decisions into phases
-        for ph in intent["phases"]:
-            ph["vlm_verify"] = vlm_config.get("verify", False)
-            ph["vlm_describe"] = vlm_config.get("describe", False)
         phase_descs = []
         for i, ph in enumerate(intent["phases"]):
             desc = f"{ph['task_type']}"
@@ -119,7 +117,8 @@ async def parse_and_discover(state: PlannerState) -> dict:
         if ph.get("report_all"): details.append("report_all=true")
         if ph.get("alarm_on_detection"): details.append("alarm_on_detection=true")
         if ph.get("vlm_verify"): details.append("vlm_verify=true")
-        if ph.get("vlm_describe"): details.append("vlm_describe=true")
+        if ph.get("vlm_describe_objects"): details.append("vlm_describe_objects=true")
+        if ph.get("vlm_describe_scene"): details.append("vlm_describe_scene=true")
         if ph.get("duration_s", 0) > 0: details.append(f"duration={ph['duration_s']}s")
         if ph.get("description"): details.append(f"desc='{ph['description']}'")
         messages_log.append(AIMessage(content=f"Intent: {', '.join(details)}"))
@@ -280,16 +279,22 @@ async def _execute_single_phase(phase: dict, robots: list[dict], prompt: str, me
         # Agent mode: dispatch to all target robots in parallel
         if len(robots) == 1:
             return await _dispatch_agent_task(robots[0], phase, prompt, messages_log)
+        # Snapshot each robot's log from the same baseline so we can diff later.
+        baseline_len = len(messages_log)
         per_robot_logs = [list(messages_log) for _ in robots]
         results = await asyncio.gather(*[
             _dispatch_agent_task(robot, phase, prompt, per_robot_logs[i])
             for i, robot in enumerate(robots)
         ])
-        # Merge agent_results and messages from all dispatches
+        # Merge agent_results and per-robot messages back into the shared log.
+        # Use the fixed baseline — NOT len(messages_log) — because the shared
+        # log grows as we append, which would cause all but the first robot's
+        # messages to be skipped (their logs are still at baseline + 2 while
+        # messages_log has already passed that length).
         merged = []
         for i, r in enumerate(results):
             merged.extend(r.get("agent_results", []))
-            for msg in per_robot_logs[i][len(messages_log):]:
+            for msg in per_robot_logs[i][baseline_len:]:
                 messages_log.append(msg)
         return {"agent_results": merged, "messages": messages_log}
     else:
@@ -524,7 +529,8 @@ async def _dispatch_agent_task(agent: dict, phase: dict, task_goal: str, message
         "target_name": phase.get("target_name", ""),
         "report_all": report_all_flag,
         "vlm_verify": phase.get("vlm_verify", False),
-        "vlm_describe": phase.get("vlm_describe", False),
+        "vlm_describe_objects": phase.get("vlm_describe_objects", False),
+        "vlm_describe_scene": phase.get("vlm_describe_scene", False),
         "alarm_on_detection": alarm_flag,
         "task_goal": task_goal,
     }
@@ -668,6 +674,7 @@ async def summarize(state: PlannerState) -> dict:
             "unique_detections": label_counts,
             "has_dedup": bool(dedup_counts),
             "vlm_descriptions": mission.get("vlm_descriptions", {}),
+            "scene_description": mission.get("scene_description", ""),
             "total_detections": len(detections),
             "frames_analyzed": mission.get("frames_analyzed", 0),
             "elapsed_s": mission.get("elapsed_s", 0),
@@ -712,6 +719,10 @@ async def summarize(state: PlannerState) -> dict:
                 else:
                     det_str = ", ".join(ad["unique_detections"].keys())
                     part += f"\n  Detected object types: {det_str}"
+            if ad.get("scene_description"):
+                # Scene-level VLM output — describes the environment as a
+                # whole, independent of detected objects.
+                part += f"\n  Scene: {ad['scene_description']}"
             if ad.get("vlm_descriptions"):
                 _BAD_DESC = ("blurry", "can't help", "difficult to", "i'm sorry",
                              "unclear", "cannot", "unable", "too dark", "not enough")
@@ -749,7 +760,12 @@ async def summarize(state: PlannerState) -> dict:
             "- If counts are marked 'VLM verified', report the exact numbers; otherwise just list object types.\n"
             "- If multiple individuals of the same type have descriptions (e.g. person 1, person 2), describe EACH separately.\n"
             "- Do NOT include technical stats like frame counts or latency.\n"
-            "- If a robot saw nothing notable, say 'Nothing of interest to report.'\n\n"
+            "- If a robot saw nothing notable, say 'Nothing of interest to report.'\n"
+            "- If a robot's data has a 'Scene:' line, that is a description of the environment/setting the\n"
+            "  robot is in. Lead that robot's section with it, in first person (e.g. \"I am in a …\"). Keep\n"
+            "  the scene description separate from object listings — do NOT merge them into one run-on\n"
+            "  sentence. If the user's command was scene-only ('describe the environment'), keep the\n"
+            "  section focused on the scene and omit per-object details unless they are also requested.\n\n"
             "WATCH/ALARM MODE SPECIAL RULES:\n"
             "- If a robot's data says 'Mode: watch/alarm', focus on WHETHER the target was detected, NOT how many.\n"
             "- If 'Target(s) detected and alarm fired' lists any labels, the target WAS detected and (for "

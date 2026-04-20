@@ -325,12 +325,14 @@ class RobotAgentService:
             mgr_agent.on_reasoning = self._agent.on_reasoning
 
         report_all = request.get("report_all", False)
-        vlm_describe = request.get("vlm_describe", False)
+        vlm_describe_objects = request.get("vlm_describe_objects", False)
+        vlm_describe_scene = request.get("vlm_describe_scene", False)
         alarm_on_detection = request.get("alarm_on_detection", False)
         # Use a lower detection threshold for report/describe tasks so all
         # objects (including mannequins with borderline confidence) are caught.
         # For find-and-act tasks keep the higher threshold to reduce false positives.
-        detection_threshold = 0.35 if (report_all or vlm_describe) else 0.7
+        # Scene-only description doesn't need more detections — threshold stays normal.
+        detection_threshold = 0.35 if (report_all or vlm_describe_objects) else 0.7
         # Alarm/watch missions default to a longer runtime (10 min) unless the
         # user explicitly asked for a duration.
         user_duration = request.get("duration_s", 0)
@@ -346,7 +348,8 @@ class RobotAgentService:
             task_goal=request.get("task_goal", ""),
             report_all=report_all,
             vlm_verify=request.get("vlm_verify", False),
-            vlm_describe=vlm_describe,
+            vlm_describe_objects=vlm_describe_objects,
+            vlm_describe_scene=vlm_describe_scene,
             alarm_on_detection=alarm_on_detection,
             duration_s=user_duration,
             threshold=detection_threshold,

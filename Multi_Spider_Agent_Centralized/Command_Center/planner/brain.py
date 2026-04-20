@@ -21,123 +21,155 @@ logger = logging.getLogger(__name__)
 _PARSE_PROMPT = (
     "You are a task planner for a multi-robot system.\n\n"
     "If the request is NOT about robot control, set is_valid_task=false.\n"
-    "Otherwise, output exactly ONE phase.\n\n"
-    "TASK TYPES:\n"
+    "Otherwise, output one or more phases.\n\n"
+    "TASK TYPES (pick one per phase):\n"
     "  direct_control — movement/posture/gesture, no detection\n"
     "  agent — camera detection + robot actions\n\n"
-    "KEY FIELDS:\n"
+    "TARGETING:\n"
     "  target_robot_ids: [] = all robots, ['id'] = specific robot\n"
-    "  target_zone: 'A' = robots in zone A, '' = no filter\n"
+    "  target_zone: 'A' = robots in zone A, '' = no zone filter\n"
     "  target_type: object, face, any, none\n"
-    "  report_all: true = just observe/report, false = act on detection\n"
-    "  duration_s: seconds if user specifies (e.g. 'for 5 seconds' → 5). 0 = default.\n\n"
-    "RULES:\n"
-    "1. 'person'/'people' → target_type='object'. 'face' → target_type='face'.\n"
-    "2. Robot decides movement pattern and response actions from task_goal autonomously.\n\n"
-    "EXAMPLES:\n"
-    "  'Wave' → ONE phase: direct_control (description='wave')\n"
-    "  'robot-002 wave' → ONE phase: direct_control, target_robot_ids=['robot-002']\n"
-    "  'Detect person, if found wave' → ONE phase: agent, target_type='object'\n"
-    "  'Find person wearing red shirt' → ONE phase: agent, target_type='object' + call enable_vlm(mode='verify')\n"
-    "  'Report what you see' → ONE phase: agent, target_type='any', report_all=true\n"
-    "  'Describe what you see' → ONE phase: agent, target_type='any', report_all=true + call enable_vlm(mode='describe')\n"
-    "  'Detect person for 10 seconds' → ONE phase: agent, target_type='object', duration_s=10\n\n"
-    "WATCH / ALARM COMMANDS (alarm_on_detection=true, robot stays passive, never approaches):\n"
-    "  'Watch for tank, alarm if detected' → ONE phase:\n"
-    "      agent, target_type='object', target_name='tank', report_all=true,\n"
-    "      alarm_on_detection=true, duration_s=0 (default)\n"
-    "  'Watch for intruders for 30 seconds' → ONE phase:\n"
-    "      agent, target_type='object', target_name='person', report_all=true,\n"
-    "      alarm_on_detection=true, duration_s=30\n"
-    "      (Note: YOLO has no 'intruder' class — map semantic intents\n"
-    "       like 'intruder', 'suspect', 'stranger', 'visitor' to target_name='person'.)\n"
-    "  'Alert on person wearing red shirt for 5 minutes' → ONE phase:\n"
-    "      agent, target_type='object', target_name='person', report_all=true,\n"
-    "      alarm_on_detection=true, duration_s=300\n"
-    "      + call enable_vlm(mode='verify')  ← attribute check needs VLM\n"
-    "  'All robots watch for anyone holding a weapon, alert me' → ONE phase:\n"
-    "      agent, target_type='object', target_name='person', report_all=true,\n"
-    "      alarm_on_detection=true + enable_vlm(mode='verify')\n"
-    "Keywords that trigger alarm_on_detection=true: 'watch', 'alert', 'alarm', 'notify', 'warn', 'guard'.\n"
-    "If the user describes specific attributes (color, clothing, behavior), ALSO call enable_vlm(mode='verify').\n\n"
-    "SEMANTIC-TO-COCO MAPPING (YOLO only recognizes 80 COCO classes):\n"
-    "  'intruder' / 'suspect' / 'stranger' / 'visitor' / 'person in red' → target_name='person'\n"
-    "  'vehicle' / 'car' / 'truck' — use exact class ('car', 'truck') if known, else 'car'\n"
-    "  'weapon' / 'gun' / 'knife' → target_name='person' + VLM verify (YOLO has 'knife' for kitchen knife only; real weapons need VLM)\n"
-    "  'animal' → target_name='' + target_type='any' (catches 'dog', 'cat', 'horse', etc.)\n"
-    "  If user names a COCO class directly ('tank'... wait tank is NOT COCO — use VLM),\n"
-    "  map to closest COCO class + VLM verify. Never leave target_name as a non-COCO word.\n\n"
-    "COMPOUND COMMANDS — SAME action sequence for ALL targeted robots\n"
-    "(output MULTIPLE phases in order, each phase with the SAME target_robot_ids):\n"
-    "  'Stand up and report what you see'\n"
-    "    → TWO phases (stand_up is a posture change, not motion-with-perception):\n"
-    "       [1] direct_control, target_robot_ids=[], description='stand up'\n"
-    "       [2] agent, target_robot_ids=[], target_type='any', report_all=true,\n"
-    "           description='report what you see'\n"
-    "  'Sit down then describe what you see'\n"
-    "    → TWO phases:\n"
-    "       [1] direct_control, description='sit down'\n"
-    "       [2] agent, target_type='any', report_all=true, description='describe what you see'\n"
-    "         + call enable_vlm(mode='describe')\n\n"
-    "STRONG RULE — MOTION + REPORT MUST STAY IN ONE AGENT PHASE:\n"
-    "When the motion IS the observation mechanism (spin, rotate, look around, walk,\n"
-    "patrol, scan) + report/describe, output ONE `agent` phase whose description\n"
-    "INCLUDES the motion verb. The robot brain will plan a patrol route that matches\n"
-    "the verb (e.g. 'spin' → 4×90° turns) and detection runs concurrently with the motion.\n"
-    "If you split this into direct_control + agent, the direct_control phase moves\n"
-    "blind (no perception) and the agent phase stands still (no motion) — the user\n"
-    "ends up only seeing whatever is in front after the motion finishes.\n"
-    "  'Spin and report what you saw' / 'Rotate 360 and tell me what you see'\n"
-    "    → ONE phase (NO enable_vlm — 'report' is label-level only):\n"
-    "       agent, target_type='any', report_all=true,\n"
-    "       description='spin 360° and report what you see'\n"
-    "  'Scan the area and report' / 'Look around and tell me what's there'\n"
-    "    → ONE phase (NO enable_vlm — still just 'report/tell'):\n"
-    "       agent, target_type='any', report_all=true,\n"
-    "       description='scan the area and report what you see'\n"
-    "  'Look around and describe everything in detail'\n"
-    "    → ONE phase (user explicitly said 'describe ... in detail'):\n"
-    "       agent, target_type='any', report_all=true,\n"
-    "       description='look around and describe everything in detail'\n"
-    "       + call enable_vlm(mode='describe')\n"
-    "  'Walk forward and report what you see'\n"
-    "    → ONE phase (NO enable_vlm):\n"
-    "       agent, target_type='any', report_all=true,\n"
-    "       description='walk forward and report what you see'\n\n"
-    "STRONG RULE — report VS describe (distinct modes, do not conflate):\n"
-    "'report' / 'tell me' / 'what (you/I) see' / 'what's there' → report_all=true ONLY.\n"
-    "  Output: YOLO labels, counts, brief 2-3 sentence patrol summary. NO VLM describe.\n"
-    "'describe' / 'appearance' / 'what does it look like' / 'in detail' / 'details'\n"
-    "  → report_all=true AND call enable_vlm(mode='describe').\n"
-    "  Output: the above PLUS per-object VLM appearance (colors, clothing, materials).\n"
-    "Do NOT enable_vlm(describe) just because the user wants to see output. Enable it\n"
-    "ONLY when the user explicitly asks to describe, detail, or characterize appearance.\n\n"
-    "STRONG RULE — REPORTING INTENT:\n"
-    "If the prompt contains any of: 'report', 'describe', 'tell me', 'what (you/I) see',\n"
-    "'what (you/I) saw', 'what's there', 'look around and ...' — the plan MUST include an\n"
-    "`agent` phase with report_all=true. Never route the reporting intent to a\n"
-    "direct_control phase — direct_control has no perception and the request is dropped.\n"
-    "Tense does not matter: 'report what you saw' (past) = 'report what you see' (present).\n\n"
+    "  target_name: specific class or person (or '' if generic)\n"
+    "  duration_s: seconds if user specifies ('for 5 seconds' → 5), else 0\n\n"
+    "OUTPUT-CAPABILITY FLAGS — orthogonal, decide EACH INDEPENDENTLY\n"
+    "These five booleans do NOT form a mode enum. Any combination is legal.\n"
+    "Judge every flag on its own trigger, never by elimination of others.\n\n"
+    "  report_all (bool): the user wants observation/report output instead of\n"
+    "    act-on-first-detection. Triggers: 'report', 'describe', 'tell (me/us)',\n"
+    "    'observe', 'what (you|I) (see|saw)', 'what's there', 'look around and …'.\n"
+    "    Tense is irrelevant ('saw' counts the same as 'see').\n\n"
+    "  vlm_describe_objects (bool): the user wants per-object appearance detail\n"
+    "    (clothing, color, held items, distinguishing features of each thing).\n"
+    "    Triggers: 'describe what (you|I) (see|saw)', 'describe it/them/the X',\n"
+    "    'what does it look like', 'appearance', 'in detail', 'details',\n"
+    "    'characterize'. If the verb is 'describe' with an object-ish complement,\n"
+    "    set this true EVEN IF the sentence also has 'what you see/saw' — the\n"
+    "    verb 'describe' wins.\n\n"
+    "  vlm_describe_scene (bool): the user wants a scene/setting description —\n"
+    "    environment as a whole (room type, outdoor/indoor, lighting, layout,\n"
+    "    general context), NOT individual objects. Triggers: 'describe the\n"
+    "    environment', 'describe the scene', 'describe the surroundings',\n"
+    "    'describe where you are', 'describe the setting/place/area/room',\n"
+    "    'what kind of place is this'. Independent of vlm_describe_objects.\n"
+    "    'Describe what you see' → objects only. 'Describe the environment you\n"
+    "    are in' → scene only. 'Describe everything in detail' → BOTH true.\n\n"
+    "  vlm_verify (bool): the user names visual attributes YOLO can't verify:\n"
+    "    colors ('red shirt'), clothing, held objects ('holding a weapon'),\n"
+    "    behavior, or non-COCO entities ('tank', 'intruder'). Independent of others.\n\n"
+    "  alarm_on_detection (bool): watch/alert tasks — robot stays passive, never\n"
+    "    approaches, raises a banner on each hit. Triggers: 'watch', 'alert',\n"
+    "    'alarm', 'notify', 'warn', 'guard'. Independent of others.\n\n"
+    "HARD CONSTRAINT: if the prompt contains any of the report_all trigger words\n"
+    "above, the plan MUST contain an `agent` phase with report_all=true.\n"
+    "Never route reporting intent to a direct_control phase — direct_control has\n"
+    "no perception and the request is silently dropped.\n\n"
+    "GENERAL RULES:\n"
+    "1. 'person'/'people' → target_type='object', target_name='person'.\n"
+    "   'face' → target_type='face'.\n"
+    "2. Robot brain decides movement pattern and response actions from the\n"
+    "   description autonomously; you do NOT enumerate individual moves.\n\n"
+    "EXAMPLES (each shows only the non-default fields per phase):\n"
+    "  'Wave' → 1 phase:\n"
+    "    direct_control, description='wave'\n"
+    "  'robot-002 wave' → 1 phase:\n"
+    "    direct_control, target_robot_ids=['crawler-alpha-patrol-002'], description='wave'\n"
+    "  'Detect person, if found wave' → 1 phase:\n"
+    "    agent, target_type='object', target_name='person', description='find person, wave on detection'\n"
+    "  'Find person wearing red shirt' → 1 phase:\n"
+    "    agent, target_type='object', target_name='person', vlm_verify=true,\n"
+    "    description='find person wearing red shirt'\n"
+    "  'Report what you see' → 1 phase:\n"
+    "    agent, target_type='any', report_all=true, description='report what you see'\n"
+    "  'Describe what you see' → 1 phase (objects, NOT scene):\n"
+    "    agent, target_type='any', report_all=true, vlm_describe_objects=true,\n"
+    "    description='describe what you see'\n"
+    "  'Describe what you saw in front of you' → 1 phase (verb 'describe' wins):\n"
+    "    agent, target_type='any', report_all=true, vlm_describe_objects=true,\n"
+    "    description='describe what you saw in front of you'\n"
+    "  'Describe the environment you are in' → 1 phase (scene, NOT objects):\n"
+    "    agent, target_type='any', report_all=true, vlm_describe_scene=true,\n"
+    "    description='describe the environment you are in'\n"
+    "  'Describe your surroundings' → 1 phase (scene only):\n"
+    "    agent, target_type='any', report_all=true, vlm_describe_scene=true,\n"
+    "    description='describe your surroundings'\n"
+    "  'Describe the room and what's in it' → 1 phase (BOTH scene and objects):\n"
+    "    agent, target_type='any', report_all=true, vlm_describe_scene=true,\n"
+    "    vlm_describe_objects=true, description='describe the room and what is in it'\n"
+    "  'Detect person for 10 seconds' → 1 phase:\n"
+    "    agent, target_type='object', target_name='person', duration_s=10,\n"
+    "    description='detect person for 10 seconds'\n\n"
+    "WATCH / ALARM:\n"
+    "  'Watch for tank, alarm if detected' → 1 phase:\n"
+    "    agent, target_type='object', target_name='person', report_all=true,\n"
+    "    alarm_on_detection=true, vlm_verify=true  (tank is not COCO; person+VLM)\n"
+    "  'Watch for intruders for 30 seconds' → 1 phase:\n"
+    "    agent, target_type='object', target_name='person', report_all=true,\n"
+    "    alarm_on_detection=true, duration_s=30\n"
+    "  'Alert on person wearing red shirt for 5 minutes' → 1 phase:\n"
+    "    agent, target_type='object', target_name='person', report_all=true,\n"
+    "    alarm_on_detection=true, vlm_verify=true, duration_s=300\n"
+    "  'Watch for anyone holding a weapon, alert me' → 1 phase:\n"
+    "    agent, target_type='object', target_name='person', report_all=true,\n"
+    "    alarm_on_detection=true, vlm_verify=true\n\n"
+    "SEMANTIC-TO-COCO MAPPING (YOLO only knows 80 COCO classes):\n"
+    "  'intruder'/'suspect'/'stranger'/'visitor'/'person in red' → target_name='person'\n"
+    "  'vehicle'/'car'/'truck' → use exact COCO class ('car', 'truck'), else 'car'\n"
+    "  'weapon'/'gun'/'knife' → target_name='person' + vlm_verify=true\n"
+    "    (YOLO 'knife' is kitchen knives only; real weapons need VLM)\n"
+    "  'animal' → target_type='any', target_name=''\n"
+    "  Any non-COCO entity ('tank') → nearest COCO class + vlm_verify=true\n\n"
+    "COMPOUND COMMANDS — SAME sequence for ALL targeted robots\n"
+    "(multiple phases, same target_robot_ids across phases):\n"
+    "  'Stand up and report what you see' → 2 phases:\n"
+    "    [1] direct_control, description='stand up'\n"
+    "    [2] agent, target_type='any', report_all=true, description='report what you see'\n"
+    "  'Sit down then describe what you see' → 2 phases:\n"
+    "    [1] direct_control, description='sit down'\n"
+    "    [2] agent, target_type='any', report_all=true, vlm_describe_objects=true,\n"
+    "        description='describe what you see'\n"
+    "  'Stand up and describe what you saw in front of you' → 2 phases:\n"
+    "    [1] direct_control, description='stand up'\n"
+    "    [2] agent, target_type='any', report_all=true, vlm_describe_objects=true,\n"
+    "        description='describe what you saw in front of you'\n"
+    "  'Stand up and describe the environment' → 2 phases:\n"
+    "    [1] direct_control, description='stand up'\n"
+    "    [2] agent, target_type='any', report_all=true, vlm_describe_scene=true,\n"
+    "        description='describe the environment'\n\n"
+    "MOTION-AS-OBSERVATION (stays in ONE agent phase):\n"
+    "When the motion IS the perception mechanism (spin, rotate, look around,\n"
+    "walk, patrol, scan) combined with report/describe, output ONE `agent`\n"
+    "phase whose description INCLUDES the motion verb. The robot brain plans\n"
+    "the motion pattern and runs detection concurrently. Splitting into\n"
+    "direct_control + agent would move blind then stand still observing.\n"
+    "  'Spin and report what you saw' → 1 phase:\n"
+    "    agent, target_type='any', report_all=true,\n"
+    "    description='spin 360° and report what you see'\n"
+    "  'Scan the area and report' → 1 phase:\n"
+    "    agent, target_type='any', report_all=true,\n"
+    "    description='scan the area and report what you see'\n"
+    "  'Look around and describe everything in detail' → 1 phase (both flags):\n"
+    "    agent, target_type='any', report_all=true, vlm_describe_scene=true,\n"
+    "    vlm_describe_objects=true,\n"
+    "    description='look around and describe everything in detail'\n"
+    "  'Walk forward and report what you see' → 1 phase:\n"
+    "    agent, target_type='any', report_all=true,\n"
+    "    description='walk forward and report what you see'\n\n"
     "PER-ROBOT COMMANDS — different actions for different robots\n"
-    "(output ONE phase PER ROBOT, each with its own target_robot_ids):\n"
-    "  'robot 006 wave, robot 005 sit down'\n"
-    "    → TWO phases:\n"
-    "       [1] direct_control, target_robot_ids=['crawler-alpha-patrol-006'], description='wave'\n"
-    "       [2] direct_control, target_robot_ids=['crawler-alpha-patrol-005'], description='sit down'\n"
-    "  'robot 006 stand up and wave, robot 005 push up, robot 001 stand up'\n"
-    "    → THREE phases (note: robot 006's compound is a SINGLE phase — Pi brain handles\n"
-    "       the 'stand up and wave' sub-sequence on that one robot):\n"
-    "       [1] direct_control, target_robot_ids=['crawler-alpha-patrol-006'],\n"
-    "           description='stand up and wave'\n"
-    "       [2] direct_control, target_robot_ids=['crawler-alpha-patrol-002'],\n"
-    "           description='push up'\n"
-    "       [3] direct_control, target_robot_ids=['crawler-alpha-patrol-001'],\n"
-    "           description='stand up'\n"
-    "\nRULES for splitting into phases:\n"
-    "- Each phase's description MUST contain ONLY that phase's action (never the whole compound).\n"
-    "- Per-robot commands: ONE phase per robot. Each phase's target_robot_ids has exactly that robot.\n"
-    "- 'All robots X and Y': SAME target for both phases (empty list = all online).\n"
-    "- Match short names like 'robot 006', '006', 'zone A' to the full robot ID from AVAILABLE ROBOTS."
+    "(one phase per robot, each phase's target_robot_ids has exactly that robot):\n"
+    "  'robot 006 wave, robot 005 sit down' → 2 phases:\n"
+    "    [1] direct_control, target_robot_ids=['crawler-alpha-patrol-006'], description='wave'\n"
+    "    [2] direct_control, target_robot_ids=['crawler-alpha-patrol-005'], description='sit down'\n"
+    "  'robot 006 stand up and wave, robot 005 push up, robot 001 stand up' → 3 phases\n"
+    "    (robot 006's compound stays as ONE phase; Pi brain handles the sub-sequence):\n"
+    "    [1] direct_control, target_robot_ids=['crawler-alpha-patrol-006'],\n"
+    "        description='stand up and wave'\n"
+    "    [2] direct_control, target_robot_ids=['crawler-alpha-patrol-005'], description='push up'\n"
+    "    [3] direct_control, target_robot_ids=['crawler-alpha-patrol-001'], description='stand up'\n\n"
+    "PHASE-SPLITTING RULES:\n"
+    "- Each phase's description contains ONLY that phase's action (never the whole compound).\n"
+    "- Per-robot commands: exactly one phase per robot, target_robot_ids has that robot.\n"
+    "- 'All robots X and Y': same (empty) target list across phases.\n"
+    "- Match short names ('robot 006', '006', 'zone A') to the full robot IDs below."
 )
 
 
@@ -183,49 +215,26 @@ def build_parse_prompt(online_robots: list[dict]) -> str:
 # LLM parse call
 # ---------------------------------------------------------------------------
 
-async def parse_intent(prompt: str, online_robots: list[dict]) -> tuple[TaskIntent | None, dict]:
-    """Parse user prompt into TaskIntent via LLM.
+async def parse_intent(prompt: str, online_robots: list[dict]) -> TaskIntent | None:
+    """Parse user prompt into TaskIntent via a single structured-output LLM call.
 
-    Uses two-step process:
-    1. LLM decides whether to call VLM tools (tool calling)
-    2. LLM outputs structured TaskIntent
-
-    Returns: (TaskIntent or None, vlm_config: dict)
-        vlm_config: {"verify": bool, "describe": bool}
+    The TaskIntent schema embeds all output-capability flags (report_all,
+    vlm_describe_objects, vlm_describe_scene, vlm_verify, alarm_on_detection)
+    as orthogonal booleans on each phase, so one call fills the entire plan
+    and no secondary tool call can disagree with it.
     """
     parse_prompt = build_parse_prompt(online_robots)
-    vlm_config = {"verify": False, "describe": False}
-
     try:
         llm = create_llm()
-
-        # Step 1: Let LLM decide which VLM tools to enable
-        from .tools import OPENAI_VLM_TOOLS
-        llm_with_tools = llm.bind_tools(OPENAI_VLM_TOOLS)
-        tool_response = await llm_with_tools.ainvoke([
-            SystemMessage(content=parse_prompt),
-            HumanMessage(content=prompt),
-        ])
-
-        for tool_call in tool_response.tool_calls:
-            if tool_call["name"] == "enable_vlm":
-                mode = tool_call["args"].get("mode", "verify")
-                reason = tool_call["args"].get("reason", "")
-                vlm_config[mode] = True
-                logger.info(f"LLM called enable_vlm(mode={mode}): {reason}")
-
-        # Step 2: Parse intent with structured output
         intent_llm = llm.with_structured_output(TaskIntent, strict=True)
         intent = await intent_llm.ainvoke([
             SystemMessage(content=parse_prompt),
             HumanMessage(content=prompt),
         ])
-
-        return intent, vlm_config
-
+        return intent
     except Exception as e:
         logger.warning(f"LLM parse failed: {e}, using fallback")
-        return None, vlm_config
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -233,7 +242,11 @@ async def parse_intent(prompt: str, online_robots: list[dict]) -> tuple[TaskInte
 # ---------------------------------------------------------------------------
 
 def fallback_intent(prompt: str) -> dict:
-    """Fallback keyword-based intent classification."""
+    """Keyword-based fallback when the LLM parse fails.
+
+    Sets each output-capability flag from its own independent keyword set,
+    mirroring the orthogonality the LLM prompt enforces.
+    """
     p = prompt.lower()
 
     _DIRECT_KEYWORDS = [
@@ -249,32 +262,70 @@ def fallback_intent(prompt: str) -> dict:
         "dance", "dancing",
     ]
 
+    # Independent flag checks — each flag gets its own keyword set.
+    report_all = any(kw in p for kw in [
+        "report", "describe", "tell me", "tell us",
+        "what do you see", "what you see", "what you saw",
+        "what's there", "whats there", "look around", "observe",
+    ])
+    # Scene keywords win over object keywords when both could apply, because
+    # scene-level language (environment / surroundings / setting) is more specific.
+    _SCENE_KW = [
+        "environment", "surroundings", "setting", "scene",
+        "where you are", "where we are", "the place", "the area",
+        "the room", "the space", "what kind of place",
+    ]
+    vlm_describe_scene = "describe" in p and any(kw in p for kw in _SCENE_KW)
+    # Object-level: "describe" with object-ish complements or generic "in detail".
+    _OBJECT_KW = [
+        "what you see", "what you saw", "what do you see",
+        "it", "them", "the person", "the object",
+        "appearance", "what does it look like",
+    ]
+    vlm_describe_objects = (
+        ("describe" in p and any(kw in p for kw in _OBJECT_KW) and not vlm_describe_scene)
+        or any(kw in p for kw in ["appearance", "in detail", "details", "characterize"])
+    )
+    vlm_verify = any(kw in p for kw in [
+        "wearing", "colored", "color ", "holding", "carrying",
+        "red ", "blue ", "green ", "yellow ", "black ", "white ",
+    ])
+    alarm_on_detection = any(kw in p for kw in [
+        "watch", "alert", "alarm", "notify", "warn", "guard",
+    ])
+
     is_direct = any(kw in p for kw in _DIRECT_KEYWORDS)
     is_detection = any(kw in p for kw in ["detect", "search", "find", "patrol", "scan", "look for"])
 
-    if is_direct and not is_detection:
+    # Pure movement with no perception intent → direct_control.
+    if is_direct and not is_detection and not report_all and not alarm_on_detection:
         return {
-            "phases": [{"target_robot_ids": [], "task_type": "direct_control", "target_type": "none",
-                        "description": prompt}],
+            "phases": [{
+                "target_robot_ids": [], "task_type": "direct_control",
+                "target_type": "none", "description": prompt,
+            }],
             "urgency": "medium",
         }
 
     if any(kw in p for kw in ["face", "faces"]):
         target = "face"
-    elif any(kw in p for kw in ["person", "people", "human"]):
+    elif any(kw in p for kw in ["person", "people", "human", "intruder", "suspect", "stranger"]):
         target = "object"
-    elif any(kw in p for kw in ["red", "blue", "green", "color"]):
-        target = "color"
     elif any(kw in p for kw in ["qr", "barcode", "code"]):
         target = "qr_code"
     else:
         target = "any"
 
-    is_report = any(kw in p for kw in ["report", "observe", "what do you see", "look around"])
-
     return {
-        "phases": [{"target_robot_ids": [], "task_type": "agent", "target_type": target,
-                    "description": prompt, "report_all": is_report}],
+        "phases": [{
+            "target_robot_ids": [], "task_type": "agent", "target_type": target,
+            "description": prompt,
+            "report_all": report_all,
+            "vlm_describe_objects": vlm_describe_objects,
+            "vlm_describe_scene": vlm_describe_scene,
+            "vlm_verify": vlm_verify,
+            "alarm_on_detection": alarm_on_detection,
+        }],
         "urgency": "medium",
     }
 

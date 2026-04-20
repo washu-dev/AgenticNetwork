@@ -353,12 +353,18 @@ class LLMClient:
                       When provided, LLM will use it to plan an informed route.
                       When None, uses predefined routes (no spatial awareness).
         """
-        # Step 1: LLM decides which pattern to use
-        pattern = await self._classify_patrol_pattern(task_goal)
+        # Step 1: LLM decides which pattern to use AND explains why
+        pattern, llm_reason = await self._classify_patrol_pattern(task_goal)
 
-        # Step 2: Generate steps based on pattern
+        # Step 2: Generate steps based on pattern. The LLM's rationale is
+        # preserved verbatim so the reasoning trace reflects the actual
+        # decision instead of a boilerplate string.
         if pattern == "stationary":
-            return {"pattern": "stationary", "steps": [], "reason": "Stationary observation"}
+            return {
+                "pattern": "stationary",
+                "steps": [],
+                "reason": llm_reason or "Stationary observation",
+            }
 
         if pattern == "spin":
             return {
@@ -369,7 +375,7 @@ class LLMClient:
                     {"action": "turn_left", "value": 90},
                     {"action": "turn_left", "value": 90},
                 ],
-                "reason": "360° scan in place",
+                "reason": llm_reason or "360° scan in place",
             }
 
         # pattern == "area"
@@ -386,32 +392,46 @@ class LLMClient:
                 {"action": "turn_left", "value": 90},
                 {"action": "forward", "value": 5},
             ],
-            "reason": "Default patrol route (no map available)",
+            "reason": llm_reason or "Default patrol route (no map available)",
         }
 
-    async def _classify_patrol_pattern(self, task_goal: str) -> str:
-        """Use LLM to classify task_goal into a patrol pattern: stationary, spin, or area."""
+    async def _classify_patrol_pattern(self, task_goal: str) -> tuple[str, str]:
+        """Use LLM to classify task_goal into (pattern, reason).
+
+        Patterns: stationary, spin, area.
+        The reason is a one-sentence rationale tying the chosen pattern back to
+        the user's request — it gets surfaced in the robot's reasoning trace so
+        the agent path has the same interpretability as direct_control's
+        decompose step.
+        """
         system = (
-            "Classify the mission goal into one of three patrol patterns. "
-            "Reply with ONLY the pattern name.\n\n"
-            "- 'stationary': stay in place (for 'check here', 'report what you see', 'describe', 'detect in front')\n"
+            "Classify the mission goal into one of three patrol patterns AND explain why.\n\n"
+            "Patterns:\n"
+            "- 'stationary': stay in place (for 'check here', 'report what you see', "
+            "'describe', 'detect in front')\n"
             "- 'spin': turn 360° in place (for 'look around', 'scan area', 'turn around', 'spin')\n"
-            "- 'area': walk a route (for 'patrol', 'search', 'find', 'explore')\n"
+            "- 'area': walk a route (for 'patrol', 'search', 'find', 'explore')\n\n"
+            "Fill the structured output:\n"
+            "- pattern: one of 'stationary' / 'spin' / 'area'\n"
+            "- steps: [] for stationary; the LLM caller supplies concrete steps for spin/area, "
+            "so you can leave this empty\n"
+            "- reason: one short sentence linking the user's words to the chosen pattern "
+            "(e.g. \"User asked to describe what they see in front, so no locomotion is needed\")"
         )
         try:
             result = await self._patrol_route_llm.ainvoke([
                 SystemMessage(content=system),
                 HumanMessage(content=f"Mission goal: {task_goal}"),
             ])
-            # Extract pattern from structured output
             pattern = result.pattern.strip().lower()
             if pattern not in ("stationary", "spin", "area"):
                 pattern = "area"
-            logger.info(f"Patrol pattern classified: {pattern} for goal: {task_goal[:50]}")
-            return pattern
+            reason = (result.reason or "").strip()
+            logger.info(f"Patrol pattern classified: {pattern} — {reason} (goal: {task_goal[:50]})")
+            return pattern, reason
         except Exception as e:
             logger.warning(f"Pattern classification failed: {e}, defaulting to area")
-            return "area"
+            return "area", "Pattern classification failed — defaulted to area patrol"
 
     async def generate_patrol_report(self, task_goal: str, detections_log: list) -> dict:
         """

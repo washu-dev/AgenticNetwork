@@ -257,6 +257,41 @@ async def _vlm_resolve_label(crop_jpeg: bytes, candidate_labels: list) -> str:
     return candidate_labels[0]
 
 
+async def _vlm_describe_scene(frame_bytes: bytes, task_goal: str) -> str:
+    """Use the VLM to describe the overall scene / environment in a full frame.
+
+    Input is a FULL JPEG frame (not a crop) so the VLM can reason about the
+    setting as a whole — room type, indoor/outdoor, layout, lighting, general
+    context — rather than individual object appearance.
+    """
+    import base64
+    from langchain_core.messages import HumanMessage
+
+    vlm = create_vision_llm()
+    img_b64 = base64.b64encode(frame_bytes).decode()
+    # Prompt is deliberately scene-centric. The task_goal is included so a user
+    # prompt like "describe where you are briefly" can tune length/tone.
+    prompt_text = (
+        "Describe the ENVIRONMENT / SCENE shown in this image in 2-3 sentences. "
+        "Focus on: location type (indoor/outdoor, street/room/corridor/lab/etc.), "
+        "overall layout, lighting, notable features of the setting, and general "
+        "context. Do NOT enumerate or describe individual objects' clothing or "
+        "appearance — that is handled separately. Be factual and concise."
+    )
+    if task_goal:
+        prompt_text += f"\n\nUser's original request: {task_goal!r}"
+    msg = HumanMessage(content=[
+        {"type": "text", "text": prompt_text},
+        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}},
+    ])
+    try:
+        response = await vlm.ainvoke([msg])
+        return response.content.strip()
+    except Exception as e:
+        logger.warning(f"VLM describe_scene failed: {e}")
+        return ""
+
+
 async def _vlm_describe_objects(track_crops: dict) -> dict:
     """Use VLM to describe the appearance of each detected object.
 
@@ -427,8 +462,9 @@ class SearchMission:
     target_name: str = ""
     task_goal: str = ""
     report_all: bool = False
-    vlm_verify: bool = False    # VLM verifies attributes (e.g. "wearing green shirt")
-    vlm_describe: bool = False  # VLM describes detected objects in detail
+    vlm_verify: bool = False             # VLM verifies attributes (e.g. "wearing green shirt")
+    vlm_describe_objects: bool = False   # VLM describes each detected object's appearance
+    vlm_describe_scene: bool = False     # VLM describes the overall scene/environment from a full frame
     alarm_on_detection: bool = False  # Watch/alarm mode: emit Alarm: events, don't approach
     duration_s: int = 0  # 0 = use default timeout
     threshold: float = 0.7
@@ -445,6 +481,7 @@ class SearchMission:
     _alarmed_track_keys: set = field(default_factory=set)   # every track that has been alarmed (for dedup)
     _alarm_last_seen: dict = field(default_factory=dict)    # alarm_key → last-seen unix ts (to detect "gone")
     _active_alarm_keys: set = field(default_factory=set)    # currently-visible alarmed tracks
+    _scene_frame: Optional[bytes] = None                     # most recent full JPEG frame, for vlm_describe_scene
     match_result: Optional[dict] = None
     error: Optional[str] = None
     _cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
@@ -488,6 +525,8 @@ class SearchMission:
             result["dedup_counts"] = self.dedup_counts
         if hasattr(self, "vlm_descriptions") and self.vlm_descriptions:
             result["vlm_descriptions"] = self.vlm_descriptions
+        if hasattr(self, "scene_description") and self.scene_description:
+            result["scene_description"] = self.scene_description
         return result
 
 
@@ -758,6 +797,12 @@ async def run_search_mission(mission: SearchMission, existing_udp_receiver=None)
                 continue
 
             mission.frames_analyzed += 1
+            # Keep the latest full JPEG frame around in case scene-level VLM
+            # description is requested at mission end. Always overwriting (vs.
+            # saving the first frame) gives us a frame from when detections
+            # have stabilized rather than the instant the mission started.
+            if mission.vlm_describe_scene:
+                mission._scene_frame = frame
 
             # Only run YOLO for non-face tasks (with ByteTrack for counting)
             yolo_result = None
@@ -1055,14 +1100,26 @@ async def run_search_mission(mission: SearchMission, existing_udp_receiver=None)
             except Exception as e:
                 logger.warning(f"Mission {mission.mission_id}: VLM dedup failed: {e}")
 
-        # VLM describe: describe each detected object's appearance
-        if mission._track_crops and mission.vlm_describe:
+        # VLM describe: describe each detected object's appearance (per-crop).
+        if mission._track_crops and mission.vlm_describe_objects:
             try:
                 descriptions = await _vlm_describe_objects(mission._track_crops)
                 mission.vlm_descriptions = descriptions
                 logger.info(f"Mission {mission.mission_id}: VLM descriptions: {list(descriptions.keys())}")
             except Exception as e:
-                logger.warning(f"Mission {mission.mission_id}: VLM describe failed: {e}")
+                logger.warning(f"Mission {mission.mission_id}: VLM describe_objects failed: {e}")
+
+        # VLM scene description: describe the overall environment from a full
+        # frame. Runs independently of vlm_describe_objects and does NOT require
+        # detections — even an empty hallway gets described.
+        if mission.vlm_describe_scene and mission._scene_frame:
+            try:
+                scene_desc = await _vlm_describe_scene(mission._scene_frame, mission.task_goal)
+                if scene_desc:
+                    mission.scene_description = scene_desc
+                    logger.info(f"Mission {mission.mission_id}: scene description: {scene_desc[:100]}")
+            except Exception as e:
+                logger.warning(f"Mission {mission.mission_id}: VLM describe_scene failed: {e}")
 
         return mission.to_dict()
 
