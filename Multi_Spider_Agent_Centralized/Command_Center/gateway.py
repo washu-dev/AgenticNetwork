@@ -43,14 +43,16 @@ _background_tasks: list[asyncio.Task] = []
 @app.on_event("startup")
 async def startup_event():
     """Run initial ADS discovery, preload models, connect transport, and start background cleanup."""
-    # Optional mock mode: the mock/ folder is gitignored and absent in production.
-    # When present, loading plugin.apply() mounts debug endpoints and patches
-    # the registry + planner to treat synthetic robots as first-class.
-    try:
-        from .mock import plugin as _mock_plugin
-        _mock_plugin.apply(app)
-    except ImportError:
-        pass  # production: no mock folder, nothing to do
+    # Optional mock mode (dev/demo only). Requires BOTH the mock/ folder
+    # (gitignored, absent in production) AND env MOCK_MODE=1. Either alone
+    # does nothing — so you can keep the mock/ folder locally without it
+    # contaminating real-robot runs.
+    if os.environ.get("MOCK_MODE") == "1":
+        try:
+            from .mock import plugin as _mock_plugin
+            _mock_plugin.apply(app)
+        except ImportError:
+            logger.warning("MOCK_MODE=1 set but mock/ folder not found — ignoring")
     # Pre-load YOLO model so first detection is instant
     from .detection.yolo_detector import preload_model
     await asyncio.to_thread(preload_model)
@@ -702,9 +704,20 @@ async def video_stream_ws(websocket: WebSocket, agent_id: str):
     robots doesn't exhaust Chrome's 6-per-host HTTP/1.1 connection limit."""
     from .robot_agent import _ws_port_for
 
+    # Accept first (so uvicorn logs a clean connection-close instead of HTTP 403),
+    # then wait up to 5s for the robot to appear in the registry. This smooths
+    # over the startup race: the browser can reconnect the moment uvicorn binds
+    # the port, but initial ADS discovery takes a few seconds to populate.
+    await websocket.accept()
+
     robot = robot_registry.get_robot(agent_id)
+    for _ in range(10):
+        if robot:
+            break
+        await asyncio.sleep(0.5)
+        robot = robot_registry.get_robot(agent_id)
     if not robot:
-        await websocket.close(code=1008)
+        await websocket.close(code=1008, reason="robot not registered")
         return
 
     try:
@@ -716,8 +729,6 @@ async def video_stream_ws(websocket: WebSocket, agent_id: str):
 
     ws_port = _ws_port_for(agent_id)
     ws_url = f"ws://localhost:{ws_port}"
-
-    await websocket.accept()
     client_alive = True
     while client_alive:
         try:

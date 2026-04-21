@@ -226,6 +226,24 @@
   .tp-sonar-ring.delay { animation-delay: 0.6s; }
   .tp-sonar-ring.delay2 { animation-delay: 1.2s; }
 
+  /* TARGET ACQUIRED shockwave — looping while alarm is active on this robot.
+     Three concentric red rings exploding outward on a staggered cadence for
+     a continuous "radar has lock" pulse. Stops the moment AlarmCleared
+     fires and the robot drops out of alarmedRobots. */
+  @keyframes tp-target-ping {
+    0%   { r: 10; opacity: 1;    stroke-width: 3.5; }
+    55%  { r: 50; opacity: 0.7;  stroke-width: 2.5; }
+    100% { r: 80; opacity: 0;    stroke-width: 1;   }
+  }
+  .tp-target-ping {
+    fill: none;
+    stroke: #ef4444;
+    animation: tp-target-ping 1.6s ease-out infinite;
+    filter: drop-shadow(0 0 10px rgba(239, 68, 68, 0.9));
+  }
+  .tp-target-ping.delay1 { animation-delay: 0.53s; }
+  .tp-target-ping.delay2 { animation-delay: 1.06s; }
+
   /* Inner map grid (very faint) */
   .tp-map-grid { stroke: rgba(56, 189, 248, 0.07); stroke-width: 0.5; }
 
@@ -298,6 +316,68 @@
 
   .spinner { width: 14px; height: 14px; border: 2px solid #334155; border-top-color: #38bdf8; border-radius: 50%; animation: spin 0.8s linear infinite; display: inline-block; }
   @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── Panel expand/collapse (fullscreen overlay) ─────────────── */
+  .expand-btn {
+    background: transparent;
+    border: 1px solid #334155;
+    color: #94a3b8;
+    border-radius: 4px;
+    padding: 1px 6px;
+    font-size: 11px;
+    line-height: 1.2;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    font-family: inherit;
+  }
+  .expand-btn:hover {
+    border-color: #38bdf8;
+    color: #38bdf8;
+    background: rgba(56, 189, 248, 0.12);
+  }
+  .expand-btn.active {
+    border-color: #38bdf8;
+    color: #38bdf8;
+    background: rgba(56, 189, 248, 0.15);
+  }
+  /* Reusable: any element with this class covers nearly the whole viewport,
+     leaving a thin margin so the backdrop is clickable for dismiss. */
+  .panel-fullscreen {
+    position: fixed !important;
+    top: 2vh !important; left: 2vw !important;
+    right: 2vw !important; bottom: 2vh !important;
+    width: 96vw !important; height: 96vh !important;
+    max-height: none !important; max-width: none !important;
+    z-index: 9999 !important;
+    border-radius: 8px !important;
+    margin: 0 !important;
+    overflow: auto;
+    display: flex; flex-direction: column;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+  }
+  /* Dimmed backdrop behind the fullscreen panel */
+  .fullscreen-backdrop {
+    position: fixed; inset: 0;
+    background: rgba(5, 10, 20, 0.82);
+    backdrop-filter: blur(3px);
+    z-index: 9998;
+  }
+  /* Content scaling inside fullscreen panels (use flex so content fills
+     whatever viewport the panel occupies). */
+  .topology-panel.panel-fullscreen .topo-svg {
+    flex: 1; height: auto !important; min-height: 0;
+  }
+  .planner-panel.panel-fullscreen .pp-body {
+    max-height: none !important; flex: 1; min-height: 0;
+  }
+  .result-panel.panel-fullscreen { max-height: none !important; }
+  .robot-card.panel-fullscreen .robot-card-video {
+    flex: 7; height: auto !important; min-height: 0;
+  }
+  .robot-card.panel-fullscreen .robot-card-reasoning {
+    flex: 3; height: auto !important; max-height: none;
+    overflow-y: auto; min-height: 0;
+  }
 </style>
 </head>
 <body>
@@ -308,6 +388,9 @@
     <span><span class="icon">&#9888;</span> ALARM &mdash; {{ alarmSummary }}</span>
     <button class="dismiss" @click="dismissAlarms">Dismiss</button>
   </div>
+
+  <!-- Fullscreen backdrop (dims the layout behind any expanded panel) -->
+  <div v-if="fullscreenPanel" class="fullscreen-backdrop" @click="exitFullscreen"></div>
 
   <!-- Header -->
   <div class="header">
@@ -325,11 +408,19 @@
     <div class="row-top">
       <div class="robots-strip">
         <div v-for="a in agents" :key="'v-'+a.id"
-             :class="['robot-card', alarmedRobots.has(a.id) ? 'alarmed' : '']">
+             :class="['robot-card',
+                      alarmedRobots.has(a.id) ? 'alarmed' : '',
+                      isFullscreen('robot-'+a.id) ? 'panel-fullscreen' : '']">
           <div class="robot-card-header">
             <span :class="['dot', a.status === 'online' ? 'online' : 'offline']"></span>
             <span class="name">{{ a.id.replace('crawler-alpha-patrol-','') }}</span>
             <span class="zone" v-if="a.zone">Zone {{ a.zone }}</span>
+            <button class="expand-btn" :class="{active: isFullscreen('robot-'+a.id)}"
+                    style="margin-left:auto"
+                    @click="toggleFullscreen('robot-'+a.id)"
+                    :title="isFullscreen('robot-'+a.id) ? 'Collapse (Esc)' : 'Expand'">
+              {{ isFullscreen('robot-'+a.id) ? '&times;' : '&#9974;' }}
+            </button>
           </div>
           <div class="robot-card-video">
             <img v-if="a.status === 'online'" :id="'stream-'+a.id" />
@@ -372,11 +463,17 @@
       <!-- Bottom Left -->
       <div class="bottom-left">
         <!-- Planner Reasoning -->
-        <div class="planner-panel">
+        <div :class="['planner-panel', isFullscreen('planner') ? 'panel-fullscreen' : '']">
           <div class="pp-header" @click="plannerOpen = !plannerOpen">
             <span style="font-size:10px">{{ plannerOpen ? '&#9660;' : '&#9654;' }}</span>
             Planner Reasoning ({{ reasoning.length }} steps{{ taskRunning ? ' — live' : '' }})
             <span v-if="taskRunning" class="spinner" style="margin-left:auto"></span>
+            <button class="expand-btn" :class="{active: isFullscreen('planner')}"
+                    :style="{marginLeft: taskRunning ? '8px' : 'auto'}"
+                    @click.stop="toggleFullscreen('planner')"
+                    :title="isFullscreen('planner') ? 'Collapse (Esc)' : 'Expand'">
+              {{ isFullscreen('planner') ? '&times;' : '&#9974;' }}
+            </button>
           </div>
           <div class="pp-body" v-show="plannerOpen" ref="plannerBody">
             <div v-for="(step, i) in reasoning" :key="i" :class="['planner-step', stepClass(step)]">
@@ -406,10 +503,18 @@
       <!-- Bottom Right -->
       <div class="bottom-right">
         <!-- Agent Topology: Command Plane (Planner) + Physical Battle Plane (Map + Robots) -->
-        <div class="topology-panel" v-if="agents.length > 0">
+        <div :class="['topology-panel', isFullscreen('topology') ? 'panel-fullscreen' : '']"
+             v-if="agents.length > 0">
           <div class="tp-title">
             <span>&#9670; Agent Topology</span>
-            <span class="tp-sub">{{ onlineAgents.length }} ROBOT{{ onlineAgents.length === 1 ? '' : 'S' }} &#183; {{ plannerStatus.toUpperCase() }}</span>
+            <span style="display:flex; align-items:center; gap:8px;">
+              <span class="tp-sub">{{ onlineAgents.length }} ROBOT{{ onlineAgents.length === 1 ? '' : 'S' }} &#183; {{ plannerStatus.toUpperCase() }}</span>
+              <button class="expand-btn" :class="{active: isFullscreen('topology')}"
+                      @click="toggleFullscreen('topology')"
+                      :title="isFullscreen('topology') ? 'Collapse (Esc)' : 'Expand'">
+                {{ isFullscreen('topology') ? '&times;' : '&#9974;' }}
+              </button>
+            </span>
           </div>
           <svg class="topo-svg" viewBox="0 0 640 400" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg">
             <defs>
@@ -602,6 +707,16 @@
                 <circle cx="0" cy="0" r="8" :stroke="robotDotColor(a.id)"
                         class="tp-sonar-ring delay2"/>
               </g>
+              <!-- Target-acquired shockwave: continuous red rings while this
+                   robot has either an active watch alarm OR a find-mode
+                   target lock. Three staggered rings give a rolling "radar
+                   lock" look. Stops when AlarmCleared fires (watch) or
+                   "(target reached)" fires (find mode) or task ends. -->
+              <g v-if="pingingRobots.has(a.id)">
+                <circle class="tp-target-ping"        cx="0" cy="0"/>
+                <circle class="tp-target-ping delay1" cx="0" cy="0"/>
+                <circle class="tp-target-ping delay2" cx="0" cy="0"/>
+              </g>
               <!-- Field of view cone -->
               <path :d="viewConePath(a)"
                     :fill="coneFillColor(a.id)"
@@ -638,10 +753,17 @@
         </div>
 
         <!-- Results (moved from left side) -->
-        <div class="result-panel" v-if="result" style="flex:1;max-height:none;">
+        <div :class="['result-panel', isFullscreen('result') ? 'panel-fullscreen' : '']"
+             v-if="result" style="flex:1;max-height:none;">
           <div class="result-header">
             <h3>Result</h3>
             <span :class="['badge', result.status]">{{ result.status }}</span>
+            <button class="expand-btn" :class="{active: isFullscreen('result')}"
+                    style="margin-left:auto"
+                    @click="toggleFullscreen('result')"
+                    :title="isFullscreen('result') ? 'Collapse (Esc)' : 'Expand'">
+              {{ isFullscreen('result') ? '&times;' : '&#9974;' }}
+            </button>
           </div>
           <div v-if="result.summary" class="result-summary" style="border-top:none; padding-top:0; margin-top:0;">{{ result.summary }}</div>
           <div v-else-if="result.error" class="error-msg">{{ result.error }}</div>
@@ -683,6 +805,16 @@ createApp({
     const robotReasoning = reactive({});
     const _detectionSSEs = {};
 
+    // ── Fullscreen panel state ────────────────────────────────
+    // Only one panel can be expanded at a time. Keys: 'topology', 'planner',
+    // 'result', or 'robot-<agent_id>'. null = normal layout.
+    const fullscreenPanel = ref(null);
+    function toggleFullscreen(key) {
+      fullscreenPanel.value = fullscreenPanel.value === key ? null : key;
+    }
+    function isFullscreen(key) { return fullscreenPanel.value === key; }
+    function exitFullscreen() { fullscreenPanel.value = null; }
+
     // ── Alarm state ──
     // Banner + flashing border are both driven by the *current* detection
     // state: if a target is visible now → show; if it leaves the frame →
@@ -699,6 +831,14 @@ createApp({
         const slot = activeAlarmsByRobot[rid];
         if (slot && Object.keys(slot).length > 0) s.add(rid);
       }
+      return s;
+    });
+
+    // Which robots should pulse the red target-acquired shockwave on the
+    // topology map. Union of watch-mode alarms and find-mode target locks.
+    const pingingRobots = computed(() => {
+      const s = new Set(alarmedRobots.value);
+      for (const rid in findTargetLocks) s.add(rid);
       return s;
     });
 
@@ -762,29 +902,77 @@ createApp({
       return m ? m[1].trim() : step;
     }
 
+    // Target-acquired shockwave is driven by two signals:
+    //   (a) Watch/alarm mode — alarmedRobots (cleared by AlarmCleared)
+    //   (b) Find mode        — findTargetLocks (cleared ~2.5s after
+    //                          "target reached" or on task end)
+    // Both feed into pingingRobots which the SVG uses.
+    const findTargetLocks = reactive({});     // robot_id → true while locked
+    const _findLockClearTimers = {};          // robot_id → setTimeout handle
+
+    function _scheduleFindLockClear(rid) {
+      // Delay the clear so the ping is visible for at least 2.5s even when
+      // Intent: Target and the final "(target reached)" step both arrive in
+      // the same poll tick (fast approach → action happens in <1s).
+      if (_findLockClearTimers[rid]) clearTimeout(_findLockClearTimers[rid]);
+      _findLockClearTimers[rid] = setTimeout(() => {
+        delete findTargetLocks[rid];
+        delete _findLockClearTimers[rid];
+      }, 2500);
+    }
+
+    function _clearAllFindLocks() {
+      for (const rid in _findLockClearTimers) {
+        clearTimeout(_findLockClearTimers[rid]);
+        delete _findLockClearTimers[rid];
+      }
+      for (const k of Object.keys(findTargetLocks)) delete findTargetLocks[k];
+    }
+
     function scanReasoningForAlarms(robotId, steps) {
       for (const step of steps) {
         if (typeof step !== 'string') continue;
         const dedupKey = robotId + '|' + step;
 
-        if (step.startsWith('Alarm:')) {
-          // Add to the live active set (banner + flash both driven by this)
-          if (_alarmSeenStepKeys.has(dedupKey)) continue;
-          _alarmSeenStepKeys.add(dedupKey);
+        const isAlarm         = step.startsWith('Alarm:');
+        const isCleared       = step.startsWith('AlarmCleared:');
+        const isFindLock      = step.startsWith('Intent: Target ');
+        const isTargetReached = step.startsWith('Tool:') && step.includes('(target reached)');
+
+        // Skip irrelevant steps without polluting the dedup set.
+        if (!isAlarm && !isCleared && !isFindLock && !isTargetReached) continue;
+        // Each step is processed exactly once across re-polls — otherwise
+        // Intent and target-reached would both fire every tick, causing the
+        // lock to be set+cleared repeatedly.
+        if (_alarmSeenStepKeys.has(dedupKey)) continue;
+        _alarmSeenStepKeys.add(dedupKey);
+
+        if (isAlarm) {
           const key = _alarmKeyFromMessage(step);
           if (!activeAlarmsByRobot[robotId]) activeAlarmsByRobot[robotId] = {};
           activeAlarmsByRobot[robotId][key] = _cleanAlarmMessage(step.substring(6).trim());
-        } else if (step.startsWith('AlarmCleared:')) {
-          // Target left the frame — remove from live set. Banner shrinks
-          // automatically and disappears when all robots are clear.
-          if (_alarmSeenStepKeys.has(dedupKey)) continue;
-          _alarmSeenStepKeys.add(dedupKey);
+        } else if (isCleared) {
+          // Target left the frame — remove from live set.
           const key = _alarmKeyFromMessage(step);
           const slot = activeAlarmsByRobot[robotId];
           if (slot && key in slot) {
             delete slot[key];
             if (Object.keys(slot).length === 0) delete activeAlarmsByRobot[robotId];
           }
+        } else if (isFindLock) {
+          // Find-mode target lock: "Intent: Target 'person' → wave (...)".
+          // Emitted once when the robot first spots a matching target.
+          // Cancel any pending clear so a repeated lock extends the ping.
+          if (_findLockClearTimers[robotId]) {
+            clearTimeout(_findLockClearTimers[robotId]);
+            delete _findLockClearTimers[robotId];
+          }
+          findTargetLocks[robotId] = true;
+        } else if (isTargetReached) {
+          // "Tool: wave (target reached)" — robot completed its action at
+          // the target. Delay the lock-clear so the ping stays visible for
+          // at least 2.5s even if the approach was very fast.
+          _scheduleFindLockClear(robotId);
         }
       }
     }
@@ -1449,6 +1637,7 @@ createApp({
       commEvents.value = [];
       _alarmSeenStepKeys.clear();
       for (const k of Object.keys(activeAlarmsByRobot)) delete activeAlarmsByRobot[k];
+      _clearAllFindLocks();
       // Close detection SSE streams to free HTTP connections
       for (const key in _detectionSSEs) { _detectionSSEs[key].close(); delete _detectionSSEs[key]; }
 
@@ -1536,6 +1725,7 @@ createApp({
               if (!taskRunning.value) {
                 commEvents.value = [];
                 taskStartTs.value = 0;
+                _clearAllFindLocks();
               }
             }, 5000);
             loadAgents();
@@ -1655,11 +1845,18 @@ createApp({
         _resizeObserver = new ResizeObserver(() => drawMap());
         _resizeObserver.observe(mapContainer.value);
       }
+
+      // Esc exits any fullscreen panel
+      document.addEventListener('keydown', _onEscKey);
     });
+    function _onEscKey(e) {
+      if (e.key === 'Escape') fullscreenPanel.value = null;
+    }
     onUnmounted(() => {
       clearInterval(pollInterval);
       clearInterval(mapPollInterval);
       if (_resizeObserver) _resizeObserver.disconnect();
+      document.removeEventListener('keydown', _onEscKey);
     });
 
     return {
@@ -1681,6 +1878,10 @@ createApp({
       mapContainer, mapImg, mapCanvas, mapMeta, onMapLoaded,
       // Alarm system
       alarmList, alarmedRobots, alarmSummary, dismissAlarms,
+      // Target-acquired ping (watch + find modes)
+      pingingRobots,
+      // Fullscreen panel system
+      fullscreenPanel, toggleFullscreen, isFullscreen, exitFullscreen,
     };
   }
 }).mount('#app');
