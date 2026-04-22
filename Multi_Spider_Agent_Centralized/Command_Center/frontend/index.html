@@ -120,6 +120,30 @@
   .btn-cancel { background: #ef4444; color: white; margin-left: 6px; }
   .btn-cancel:hover { background: #dc2626; }
 
+  /* Voice input button */
+  .btn-mic {
+    background: #334155; color: #e2e8f0; padding: 8px 14px;
+    font-size: 16px; min-width: 44px;
+    transition: background 0.2s, box-shadow 0.2s;
+  }
+  .btn-mic:hover:not(:disabled) { background: #475569; }
+  .btn-mic.recording {
+    background: #dc2626; color: white;
+    animation: mic-pulse 1.2s ease-in-out infinite;
+  }
+  .btn-mic.transcribing {
+    background: #1e40af; color: white;
+  }
+  @keyframes mic-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.6); }
+    50%      { box-shadow: 0 0 0 10px rgba(239, 68, 68, 0); }
+  }
+  .voice-toggle {
+    cursor: pointer; user-select: none;
+    display: inline-flex; align-items: center; gap: 4px;
+  }
+  .voice-toggle.active { border-color: #22c55e !important; color: #86efac !important; }
+
   /* Quick commands */
   .quick-cmds { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 8px; }
   .qcmd { background: #0f172a; border: 1px solid #1e293b; border-radius: 6px; padding: 5px 10px; color: #94a3b8; cursor: pointer; font-size: 11px; }
@@ -322,13 +346,118 @@
     border-top: 1px solid #334155; padding-top: 8px; margin-top: 8px;
     font-size: 12px; color: #cbd5e1;
     white-space: pre-wrap; line-height: 1.5;
-    /* Monospace so the ▌ column markers in tactical SITREPs stay aligned,
-       while prose still reads fine. System mono falls through to a nicer
-       rendering where available. */
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
   }
-  /* Headings in tactical output (### Robot ...) get a stronger accent */
   .result-summary { tab-size: 2; }
+
+  /* ── Tactical dashboard cards (parsed from structured summary) ─── */
+  .tactical-total {
+    font-size: 13px; font-weight: 700; color: #38bdf8;
+    letter-spacing: 1px; text-transform: uppercase;
+    padding: 6px 10px; margin-bottom: 10px;
+    background: linear-gradient(90deg, rgba(56,189,248,0.15), transparent);
+    border-left: 3px solid #38bdf8; border-radius: 2px;
+  }
+  .tactical-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 8px;
+  }
+  /* Fullscreen layout: larger cards, 2 or 3 per row */
+  .result-panel.panel-fullscreen .tactical-grid {
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    gap: 14px;
+  }
+  /* Fullscreen: bump ONLY the text sizes for readability. Icons + padding
+     + layout stay the same as the compact view. */
+  .result-panel.panel-fullscreen .tc-id          { font-size: 16px; }
+  .result-panel.panel-fullscreen .tc-zone        { font-size: 12px; }
+  .result-panel.panel-fullscreen .tc-badge       { font-size: 12px; }
+  .result-panel.panel-fullscreen .tc-stat-num    { font-size: 22px; }
+  .result-panel.panel-fullscreen .tc-stat-label  { font-size: 11px; }
+  .result-panel.panel-fullscreen .tc-details     { font-size: 13px; }
+  .result-panel.panel-fullscreen .tc-bullets-label { font-size: 11px; }
+  .result-panel.panel-fullscreen .tc-bullet      { font-size: 13px; line-height: 1.55; }
+  .result-panel.panel-fullscreen .tc-scene       { font-size: 12px; }
+  .result-panel.panel-fullscreen .tc-rec         { font-size: 13px; }
+  .result-panel.panel-fullscreen .tc-rec-label   { font-size: 10px; }
+  .result-panel.panel-fullscreen .tactical-total { font-size: 15px; }
+
+  .tactical-card {
+    background: #0f172a;
+    border: 1px solid #334155;
+    border-radius: 8px;
+    padding: 10px 12px;
+    display: flex; flex-direction: column; gap: 8px;
+    position: relative; overflow: hidden;
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+  }
+  .tactical-card::before {
+    content: ''; position: absolute; top: 0; left: 0; width: 4px; height: 100%;
+  }
+  .tactical-card.level-secure::before   { background: #22c55e; }
+  .tactical-card.level-elevated::before { background: #f59e0b; }
+  .tactical-card.level-critical::before {
+    background: #ef4444;
+    box-shadow: 0 0 14px rgba(239, 68, 68, 0.6);
+  }
+  .tactical-card.level-critical { border-color: rgba(239,68,68,0.35); }
+  .tactical-card.level-elevated { border-color: rgba(245,158,11,0.35); }
+  .tactical-card.level-secure   { border-color: rgba(34,197,94,0.35); }
+
+  .tc-header {
+    display: flex; align-items: center; justify-content: space-between; gap: 6px;
+    font-size: 11px;
+  }
+  .tc-id {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-weight: 700; color: #e2e8f0; font-size: 13px;
+  }
+  .tc-zone {
+    color: #64748b; font-size: 10px; letter-spacing: 1px; text-transform: uppercase;
+  }
+  .tc-badge {
+    padding: 2px 8px; border-radius: 10px; font-weight: 700; font-size: 10px;
+    letter-spacing: 1.2px;
+  }
+  .level-secure .tc-badge   { background: rgba(34,197,94,0.15);  color: #86efac; }
+  .level-elevated .tc-badge { background: rgba(245,158,11,0.18); color: #fcd34d; }
+  .level-critical .tc-badge { background: rgba(239,68,68,0.2);   color: #fca5a5;
+                              animation: tc-badge-pulse 1.8s ease-in-out infinite; }
+  @keyframes tc-badge-pulse {
+    0%,100% { box-shadow: 0 0 0 0 rgba(239,68,68,0.5); }
+    50%     { box-shadow: 0 0 0 6px rgba(239,68,68,0); }
+  }
+
+  .tc-stats {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px;
+  }
+  .tc-stat {
+    display: flex; flex-direction: column; align-items: center;
+    padding: 6px 4px; border-radius: 5px;
+    background: #1e293b; border: 1px solid #334155;
+    transition: background 0.15s, border-color 0.15s;
+  }
+  .tc-stat.hot {
+    background: rgba(239,68,68,0.12); border-color: rgba(239,68,68,0.4);
+  }
+  .tc-stat-icon { font-size: 15px; line-height: 1; }
+  .tc-stat-num { font-size: 18px; font-weight: 800; color: #e2e8f0; line-height: 1.1; margin-top: 2px; }
+  .tc-stat.hot .tc-stat-num { color: #fca5a5; }
+  .tc-stat-label { font-size: 9px; color: #64748b; letter-spacing: 0.5px; text-transform: uppercase; margin-top: 2px; }
+
+  /* Expanded details (visible only when fullscreen) */
+  .tc-details { border-top: 1px solid #334155; padding-top: 8px; margin-top: 2px;
+                font-size: 11px; color: #cbd5e1; display: flex; flex-direction: column; gap: 6px; }
+  .tc-bullets-label { font-size: 9px; color: #94a3b8; letter-spacing: 1px; text-transform: uppercase; }
+  .tc-bullet { padding-left: 10px; line-height: 1.4; color: #cbd5e1; }
+  .tc-scene { font-size: 10px; color: #94a3b8; font-style: italic;
+              padding: 4px 0; border-top: 1px dashed #334155; }
+  .tc-rec { font-size: 11px; color: #e2e8f0;
+            padding: 6px 8px; background: rgba(56,189,248,0.08);
+            border-left: 3px solid #38bdf8; border-radius: 3px; }
+  .tc-rec-label { color: #38bdf8; font-weight: 700; letter-spacing: 1px;
+                   font-size: 9px; text-transform: uppercase; display: block; margin-bottom: 2px; }
   .error-msg { color: #fca5a5; font-size: 11px; padding: 8px; background: #450a0a; border-radius: 6px; }
   .placeholder { color: #334155; text-align: center; padding: 20px; font-size: 12px; }
 
@@ -478,8 +607,124 @@
     <!-- BOTTOM: Left (Planner + Input + Results) | Right (Topology + Map) -->
     <div class="row-bottom">
 
-      <!-- Bottom Left -->
+      <!-- Bottom Left — Input (top) + Result (bottom) -->
       <div class="bottom-left">
+        <!-- Input -->
+        <div class="input-panel">
+          <div class="input-row">
+            <button class="btn btn-mic"
+                    :class="{recording: isRecording, transcribing: isTranscribing}"
+                    :disabled="taskRunning || isTranscribing"
+                    :title="isRecording ? 'Click to stop and transcribe' : 'Click to speak a command'"
+                    @click="toggleRecording">
+              <span v-if="isTranscribing">&hellip;</span>
+              <span v-else-if="isRecording">&#9632;</span>
+              <span v-else>&#127908;</span>
+            </button>
+            <input v-model="prompt" @keyup.enter="sendTask" placeholder="Type a command, or click the mic..." :disabled="taskRunning" />
+            <button class="btn btn-send" @click="sendTask" :disabled="taskRunning || !prompt.trim()">
+              {{ taskRunning ? '...' : 'Send' }}
+            </button>
+            <button v-if="taskRunning && currentTaskId" class="btn btn-cancel" @click="cancelTask">Cancel</button>
+          </div>
+          <div class="quick-cmds">
+            <span v-for="cmd in quickCmds" :key="cmd.label" class="qcmd" @click="prompt = cmd.prompt">
+              {{ cmd.icon }} {{ cmd.label }}
+            </span>
+            <label class="qcmd voice-toggle" :class="{active: autoSpeak}">
+              <input type="checkbox" v-model="autoSpeak" style="display:none">
+              <span>&#128266;</span> Auto-speak: {{ autoSpeak ? 'ON' : 'OFF' }}
+            </label>
+          </div>
+        </div>
+
+        <!-- Result -->
+        <div :class="['result-panel', isFullscreen('result') ? 'panel-fullscreen' : '']"
+             v-if="result" style="flex:1;max-height:none;">
+          <div class="result-header">
+            <h3>Result</h3>
+            <span :class="['badge', result.status]">{{ result.status }}</span>
+            <button class="expand-btn" :class="{active: isFullscreen('result')}"
+                    style="margin-left:auto"
+                    @click="toggleFullscreen('result')"
+                    :title="isFullscreen('result') ? 'Collapse (Esc)' : 'Expand'">
+              {{ isFullscreen('result') ? '&times;' : '&#9974;' }}
+            </button>
+          </div>
+          <!-- Tactical dashboard: cards per robot, compact by default,
+               expanded when result panel is fullscreened -->
+          <template v-if="parsedTactical">
+            <div v-if="parsedTactical.totalLine" class="tactical-total">
+              {{ parsedTactical.totalLine }}
+            </div>
+            <div class="tactical-grid">
+              <div v-for="r in parsedTactical.robots" :key="r.id"
+                   :class="['tactical-card', 'level-' + r.threatLevel]">
+                <div class="tc-header">
+                  <span class="tc-id">{{ r.id }}</span>
+                  <span class="tc-zone">Zone {{ r.zone }}</span>
+                  <span class="tc-badge">{{ r.threatEmoji }} {{ r.threatLabel }}</span>
+                </div>
+                <div class="tc-stats">
+                  <div :class="['tc-stat', r.armorCount > 0 ? 'hot' : '']">
+                    <span class="tc-stat-icon">&#128737;</span>
+                    <span class="tc-stat-num">{{ r.armorCount }}</span>
+                    <span class="tc-stat-label">Armor</span>
+                  </div>
+                  <div :class="['tc-stat', r.casualtiesCount > 0 ? 'hot' : '']">
+                    <span class="tc-stat-icon">&#9760;</span>
+                    <span class="tc-stat-num">{{ r.casualtiesCount }}</span>
+                    <span class="tc-stat-label">Casualty</span>
+                  </div>
+                  <div class="tc-stat">
+                    <span class="tc-stat-icon">&#128101;</span>
+                    <span class="tc-stat-num">{{ r.civiliansCount }}</span>
+                    <span class="tc-stat-label">Civilian</span>
+                  </div>
+                </div>
+                <!-- Details only when the result panel is fullscreened -->
+                <div v-if="isFullscreen('result')" class="tc-details">
+                  <div v-if="r.armorBullets.length" class="tc-bullets">
+                    <div class="tc-bullets-label">Armor detail</div>
+                    <div v-for="(b, i) in r.armorBullets" :key="'ab'+i" class="tc-bullet">&bull; {{ b }}</div>
+                  </div>
+                  <div v-if="r.casualtiesBullets.length" class="tc-bullets">
+                    <div class="tc-bullets-label">Casualty detail</div>
+                    <div v-for="(b, i) in r.casualtiesBullets" :key="'cb'+i" class="tc-bullet">&bull; {{ b }}</div>
+                  </div>
+                  <div v-if="r.civiliansBullets.length" class="tc-bullets">
+                    <div class="tc-bullets-label">Civilian detail</div>
+                    <div v-for="(b, i) in r.civiliansBullets" :key="'cvb'+i" class="tc-bullet">&bull; {{ b }}</div>
+                  </div>
+                  <div v-if="r.sceneContext" class="tc-scene">{{ r.sceneContext }}</div>
+                  <div v-if="r.recommendation" class="tc-rec">
+                    <span class="tc-rec-label">Recommend</span>{{ r.recommendation }}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </template>
+          <!-- Fallback: non-tactical summary (prose describe etc.) -->
+          <div v-else-if="result.summary" class="result-summary" style="border-top:none; padding-top:0; margin-top:0;">{{ result.summary }}</div>
+          <div v-else-if="result.error" class="error-msg">{{ result.error }}</div>
+          <div v-else-if="result.results && result.results.length > 0">
+            <div v-for="r in result.results" :key="r.agent_id" class="result-agent">
+              <div class="agent-name">
+                {{ r.agent_id }}
+                <span :style="{color: r.status === 'success' ? '#22c55e' : '#ef4444'}">[{{ r.status }}]</span>
+              </div>
+              <div class="agent-response">{{ r.response || r.error || 'No response' }}</div>
+            </div>
+          </div>
+        </div>
+        <div v-else class="result-panel" style="flex:1;max-height:none;">
+          <div class="placeholder">Send a command to see results here</div>
+        </div>
+
+      </div>
+
+      <!-- Bottom Right — Planner Reasoning (top) + Agent Topology (bottom) -->
+      <div class="bottom-right">
         <!-- Planner Reasoning -->
         <div :class="['planner-panel', isFullscreen('planner') ? 'panel-fullscreen' : '']">
           <div class="pp-header" @click="plannerOpen = !plannerOpen">
@@ -500,26 +745,6 @@
           </div>
         </div>
 
-        <!-- Input -->
-        <div class="input-panel">
-          <div class="input-row">
-            <input v-model="prompt" @keyup.enter="sendTask" placeholder="Type a command..." :disabled="taskRunning" />
-            <button class="btn btn-send" @click="sendTask" :disabled="taskRunning || !prompt.trim()">
-              {{ taskRunning ? '...' : 'Send' }}
-            </button>
-            <button v-if="taskRunning && currentTaskId" class="btn btn-cancel" @click="cancelTask">Cancel</button>
-          </div>
-          <div class="quick-cmds">
-            <span v-for="cmd in quickCmds" :key="cmd.label" class="qcmd" @click="prompt = cmd.prompt">
-              {{ cmd.icon }} {{ cmd.label }}
-            </span>
-          </div>
-        </div>
-
-      </div>
-
-      <!-- Bottom Right -->
-      <div class="bottom-right">
         <!-- Agent Topology: Command Plane (Planner) + Physical Battle Plane (Map + Robots) -->
         <div :class="['topology-panel', isFullscreen('topology') ? 'panel-fullscreen' : '']"
              v-if="agents.length > 0">
@@ -775,34 +1000,6 @@
           </svg>
         </div>
 
-        <!-- Results (moved from left side) -->
-        <div :class="['result-panel', isFullscreen('result') ? 'panel-fullscreen' : '']"
-             v-if="result" style="flex:1;max-height:none;">
-          <div class="result-header">
-            <h3>Result</h3>
-            <span :class="['badge', result.status]">{{ result.status }}</span>
-            <button class="expand-btn" :class="{active: isFullscreen('result')}"
-                    style="margin-left:auto"
-                    @click="toggleFullscreen('result')"
-                    :title="isFullscreen('result') ? 'Collapse (Esc)' : 'Expand'">
-              {{ isFullscreen('result') ? '&times;' : '&#9974;' }}
-            </button>
-          </div>
-          <div v-if="result.summary" class="result-summary" style="border-top:none; padding-top:0; margin-top:0;">{{ result.summary }}</div>
-          <div v-else-if="result.error" class="error-msg">{{ result.error }}</div>
-          <div v-else-if="result.results && result.results.length > 0">
-            <div v-for="r in result.results" :key="r.agent_id" class="result-agent">
-              <div class="agent-name">
-                {{ r.agent_id }}
-                <span :style="{color: r.status === 'success' ? '#22c55e' : '#ef4444'}">[{{ r.status }}]</span>
-              </div>
-              <div class="agent-response">{{ r.response || r.error || 'No response' }}</div>
-            </div>
-          </div>
-        </div>
-        <div v-else class="result-panel" style="flex:1;max-height:none;">
-          <div class="placeholder">Send a command to see results here</div>
-        </div>
       </div>
 
     </div>
@@ -823,10 +1020,208 @@ createApp({
     const currentTaskId = ref(null);
     const reasoning = ref([]);
     const result = ref(null);
+    const parsedTactical = computed(() =>
+      result.value ? parseTacticalSummary(result.value.summary || '') : null
+    );
     const plannerOpen = ref(true);
     const plannerBody = ref(null);
     const robotReasoning = reactive({});
     const _detectionSSEs = {};
+
+    // ── Tactical summary parser ─────────────────────────────────
+    // Takes the LLM's structured SITREP text and breaks it into per-robot
+    // cards the UI can render as a dashboard. Falls through to raw-text
+    // display when the text isn't tactical (e.g. pure describe prompts).
+    function parseTacticalSummary(text) {
+      if (!text || typeof text !== 'string') return null;
+      // Use /u flag consistently — output contains BMP and non-BMP codepoints
+      // (▌ is U+2590, 🔴/🟡/🟢 are U+1F534/U+1F7E1/U+1F7E2 surrogate pairs).
+      if (!/▌\s*THREAT LEVEL/iu.test(text)) return null;
+
+      const totalMatch = text.match(/^###\s+Total:\s+(.+)$/m);
+      const totalLine = totalMatch ? totalMatch[0].replace(/^###\s+/, '').trim() : null;
+
+      // Split by the Robot section header; each chunk has one robot's report
+      const chunks = text.split(/\n(?=###\s+Robot)/).filter(c => /###\s+Robot/.test(c));
+      const robots = [];
+      const labelToLevel = { SECURE: 'secure', ELEVATED: 'elevated', CRITICAL: 'critical' };
+
+      for (const chunk of chunks) {
+        // Needs /u flag — the threat emojis are astral-plane codepoints
+        // (U+1F534 etc.) that don't match from a regular class without it.
+        const header = chunk.match(/###\s+Robot\s+([^(]+)\(Zone\s+([^)]+)\)\s+[-–—]+\s+([🟢🟡🔴])\s+(\w+)/u);
+        if (!header) continue;
+
+        const idFull = header[1].trim();
+        const zone = header[2].trim();
+        const threatEmoji = header[3];
+        const threatLabel = header[4].toUpperCase();
+        const threatLevel = labelToLevel[threatLabel] || 'unknown';
+
+        // Helper: extract a count + descriptor from a row like
+        //   "🔴 Hostile Armor: 1 tank"  or  "✓ Casualties:    None"
+        const parseCount = (raw) => {
+          const s = (raw || '').trim();
+          if (!s || /^none$/i.test(s)) return { count: 0, desc: 'None' };
+          const m = s.match(/^(\d+)/);
+          return { count: m ? parseInt(m[1], 10) : (s ? 1 : 0), desc: s };
+        };
+
+        const armorRow = chunk.match(/(?:🔴|✓)\s+Hostile Armor:\s+(.+?)(?:\r|\n|$)/);
+        const armor = parseCount(armorRow && armorRow[1]);
+        const casRow = chunk.match(/(?:🔴|✓)\s+Casualties:\s+(.+?)(?:\r|\n|$)/);
+        const casualties = parseCount(casRow && casRow[1]);
+        const civRow = chunk.match(/🟢\s+Civilians:\s+(\d+)/);
+        const civiliansCount = civRow ? parseInt(civRow[1], 10) : 0;
+
+        // Split bullets across three sections: Armor → Casualty → Civilian
+        const lines = chunk.split('\n');
+        const iArm = lines.findIndex(l => /Hostile Armor:/.test(l));
+        const iCas = lines.findIndex(l => /Casualties:/.test(l));
+        const iCiv = lines.findIndex(l => /🟢\s+Civilians:/.test(l));
+        const iEnd = lines.findIndex(l => /(?:Scene context:|RECOMMENDATION:)/.test(l));
+        const endIdx = iEnd === -1 ? lines.length : iEnd;
+
+        const collectBullets = (from, to) => {
+          const out = [];
+          for (let i = from + 1; i < to; i++) {
+            const m = lines[i].match(/^\s*•\s+(.+)/);
+            if (m) out.push(m[1].trim());
+          }
+          return out;
+        };
+        const armorBullets = iArm >= 0
+          ? collectBullets(iArm, iCas > 0 ? iCas : (iCiv > 0 ? iCiv : endIdx)) : [];
+        const casualtiesBullets = iCas >= 0
+          ? collectBullets(iCas, iCiv > 0 ? iCiv : endIdx) : [];
+        const civiliansBullets = iCiv >= 0
+          ? collectBullets(iCiv, endIdx) : [];
+
+        const sceneMatch = chunk.match(/▌\s+Scene context:\s+(.+?)(?:\r|\n|$)/);
+        const recMatch = chunk.match(/▌\s+RECOMMENDATION:\s+(.+?)(?:\r|\n|$)/);
+
+        robots.push({
+          id: idFull.replace('crawler-alpha-patrol-', '').trim(),
+          zone,
+          threatEmoji,
+          threatLabel,
+          threatLevel,
+          armorCount: armor.count,
+          armorDesc: armor.desc,
+          armorBullets,
+          casualtiesCount: casualties.count,
+          casualtiesDesc: casualties.desc,
+          casualtiesBullets,
+          civiliansCount,
+          civiliansBullets,
+          sceneContext: sceneMatch ? sceneMatch[1].trim() : null,
+          recommendation: recMatch ? recMatch[1].trim() : null,
+        });
+      }
+      return robots.length ? { totalLine, robots } : null;
+    }
+
+    // ── Voice I/O state ─────────────────────────────────────────
+    // Browser MediaRecorder → /api/voice/transcribe (Whisper) → prompt.
+    // Summary arrives → /api/voice/speak (TTS) → audio playback.
+    const isRecording = ref(false);
+    const isTranscribing = ref(false);
+    const autoSpeak = ref(true);  // default ON so the demo feels alive
+    const _recorder = { mr: null, chunks: [], stream: null };
+    const _ttsAudio = { el: null, lastUrl: null };
+
+    async function toggleRecording() {
+      if (isRecording.value) {
+        // Stop → triggers transcription in onstop handler
+        try { if (_recorder.mr) _recorder.mr.stop(); } catch (_) {}
+        return;
+      }
+      // Start
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        _recorder.stream = stream;
+        const mr = new MediaRecorder(stream);
+        _recorder.mr = mr;
+        _recorder.chunks = [];
+        mr.ondataavailable = (e) => {
+          if (e.data && e.data.size > 0) _recorder.chunks.push(e.data);
+        };
+        mr.onstop = async () => {
+          isRecording.value = false;
+          try {
+            const blob = new Blob(_recorder.chunks, { type: 'audio/webm' });
+            if (blob.size < 200) {
+              // Too short — probably accidental click
+              return;
+            }
+            isTranscribing.value = true;
+            const form = new FormData();
+            form.append('file', blob, 'recording.webm');
+            const resp = await fetch(`${API}/api/voice/transcribe`, {
+              method: 'POST', body: form,
+            });
+            const data = await resp.json();
+            isTranscribing.value = false;
+            if (data.text) {
+              prompt.value = data.text;
+              // Auto-send so the demo is hands-free
+              sendTask();
+            } else if (data.error) {
+              console.warn('Transcribe error:', data.error);
+            }
+          } finally {
+            // Release mic
+            if (_recorder.stream) {
+              _recorder.stream.getTracks().forEach(t => t.stop());
+            }
+            _recorder.stream = null;
+          }
+        };
+        mr.start();
+        isRecording.value = true;
+      } catch (e) {
+        console.error('Mic access failed:', e);
+        const name = e && e.name ? e.name : 'Error';
+        const msg = e && e.message ? e.message : '';
+        const hint = {
+          NotAllowedError: "Site is blocked from using the mic. Click the lock icon in the address bar → Microphone → Allow, then reload.",
+          NotFoundError:   "No microphone device found. Check OS audio settings for a working mic.",
+          NotReadableError:"The mic is in use by another app (Zoom / Meet / Teams). Close it and retry.",
+          SecurityError:   "Browser context is insecure. Use HTTPS or localhost, or enable Chrome flag 'Insecure origins treated as secure' for this URL and relaunch.",
+        }[name] || "Unknown — open DevTools Console, run navigator.mediaDevices.getUserMedia({audio:true}) and inspect the error.";
+        alert(`Microphone unavailable.\n\n${name}: ${msg}\n\n→ ${hint}`);
+      }
+    }
+
+    async function speakSummary(text) {
+      if (!autoSpeak.value || !text) return;
+      // Strip markdown / box chars so TTS reads cleanly
+      const clean = String(text)
+        .replace(/[#▌•]/g, '')
+        .replace(/[🔴🟡🟢⚠✓✗]/g, '')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 600);
+      if (!clean) return;
+      try {
+        const resp = await fetch(`${API}/api/voice/speak`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: clean, voice: 'onyx', speed: 1.05 }),
+        });
+        if (!resp.ok) return;
+        const blob = await resp.blob();
+        if (_ttsAudio.lastUrl) URL.revokeObjectURL(_ttsAudio.lastUrl);
+        const url = URL.createObjectURL(blob);
+        _ttsAudio.lastUrl = url;
+        if (_ttsAudio.el) { try { _ttsAudio.el.pause(); } catch (_) {} }
+        const audio = new Audio(url);
+        _ttsAudio.el = audio;
+        audio.play().catch(e => console.warn('TTS play blocked:', e));
+      } catch (e) {
+        console.warn('TTS failed:', e);
+      }
+    }
 
     // ── Fullscreen panel state ────────────────────────────────
     // Only one panel can be expanded at a time. Keys: 'topology', 'planner',
@@ -1584,10 +1979,11 @@ createApp({
       // Hardware action tags
       if (step.startsWith('Auto:')) return 'auto';
       if (step.startsWith('Tool:')) return 'tool';
-      // Planner / LLM reasoning tags
+      // Planner / LLM reasoning tags (purple)
       if (step.startsWith('Coordinator:') || step.startsWith('Coordination:')
           || step.startsWith('Parse') || step.startsWith('Intent:')
-          || step.startsWith('Reflection:') || step.startsWith('Discovery:')) {
+          || step.startsWith('Reflection:') || step.startsWith('Discovery:')
+          || step.startsWith('VLM:') || step.startsWith('VLM ')) {
         return 'think';
       }
       // Outcome / status tags
@@ -1882,6 +2278,14 @@ createApp({
 
       // Esc exits any fullscreen panel
       document.addEventListener('keydown', _onEscKey);
+
+      // Auto-speak result summaries when they arrive (if autoSpeak is on).
+      // We watch `result` and fire once per terminal status change.
+      watch(result, (r) => {
+        if (!r) return;
+        if (r.status === 'running') return;
+        if (r.summary) speakSummary(r.summary);
+      });
     });
     function _onEscKey(e) {
       if (e.key === 'Escape') fullscreenPanel.value = null;
@@ -1917,6 +2321,10 @@ createApp({
       pingingRobots,
       // Fullscreen panel system
       fullscreenPanel, toggleFullscreen, isFullscreen, exitFullscreen,
+      // Voice I/O
+      isRecording, isTranscribing, autoSpeak, toggleRecording,
+      // Tactical dashboard (parsed from structured summary)
+      parsedTactical,
     };
   }
 }).mount('#app');

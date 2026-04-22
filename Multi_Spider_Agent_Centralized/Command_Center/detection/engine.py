@@ -11,6 +11,7 @@ Commands: Robot Agent → HTTP POST → Pi
 
 import asyncio
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Optional
@@ -34,7 +35,7 @@ logger = logging.getLogger(__name__)
 _vlm_cache: dict[str, bool] = {}  # cache to avoid repeated calls for same frame
 
 
-async def _vlm_verify_attribute(frame: bytes, bbox: dict, task_goal: str, label: str = "") -> bool:
+async def _vlm_verify_attribute(frame: bytes, bbox: dict, task_goal: str, label: str = "", emit_fn=None) -> bool:
     """Use VLM to verify if a detected object matches the task description.
 
     Works on any COCO class — person, apple, dog, car, etc. VLM is asked
@@ -92,6 +93,13 @@ async def _vlm_verify_attribute(frame: bytes, bbox: dict, task_goal: str, label:
         answer = response.content.strip().lower()
         matched = answer.startswith("yes")
         logger.info(f"VLM verify ({subject}): '{task_goal}' → {answer} (matched={matched})")
+        if emit_fn:
+            try:
+                verdict = "MATCH" if matched else "no match"
+                goal_preview = task_goal if len(task_goal) <= 80 else task_goal[:77].rstrip() + "..."
+                await emit_fn(f"VLM verify: {subject} against '{goal_preview}' → {verdict}")
+            except Exception:
+                pass
         return matched
 
     except Exception as e:
@@ -121,7 +129,7 @@ def _crop_bbox(frame_jpeg: bytes, bbox: dict) -> Optional[bytes]:
         return None
 
 
-async def _vlm_dedup_objects(track_crops: dict, cooccurrences: set = None) -> dict:
+async def _vlm_dedup_objects(track_crops: dict, cooccurrences: set = None, emit_fn=None) -> dict:
     """Use VLM to deduplicate tracked objects and return accurate counts.
 
     Args:
@@ -144,6 +152,13 @@ async def _vlm_dedup_objects(track_crops: dict, cooccurrences: set = None) -> di
         label_groups[label].append((key, crop_bytes))
 
     result_counts = {}
+
+    if emit_fn and label_groups:
+        classes_str = ", ".join(f"{k}×{len(v)}" for k, v in label_groups.items())
+        try:
+            await emit_fn(f"VLM dedup: starting — {classes_str}")
+        except Exception:
+            pass
 
     for label, crops in label_groups.items():
         if len(crops) <= 1:
@@ -218,6 +233,12 @@ async def _vlm_dedup_objects(track_crops: dict, cooccurrences: set = None) -> di
             logger.warning(f"VLM dedup failed for {label}: {e}, falling back to track count")
             result_counts[label] = max(min_unique, len(crops))
 
+    if emit_fn and result_counts:
+        summary = ", ".join(f"{k}={v}" for k, v in result_counts.items())
+        try:
+            await emit_fn(f"VLM dedup: result — {summary}")
+        except Exception:
+            pass
     return result_counts
 
 
@@ -292,7 +313,7 @@ async def _vlm_describe_scene(frame_bytes: bytes, task_goal: str) -> str:
         return ""
 
 
-async def _vlm_describe_objects(track_crops: dict) -> dict:
+async def _vlm_describe_objects(track_crops: dict, emit_fn=None) -> dict:
     """Use VLM to describe the appearance of each detected object.
 
     Args:
@@ -307,7 +328,14 @@ async def _vlm_describe_objects(track_crops: dict) -> dict:
     descriptions = {}
     vlm = create_vision_llm()
 
-    for key, crop_bytes in track_crops.items():
+    if emit_fn and track_crops:
+        try:
+            await emit_fn(f"VLM describe: analyzing {len(track_crops)} unique object(s) in parallel...")
+        except Exception:
+            pass
+
+    # ── Per-object coroutine — gets gather()'d so all VLMs run concurrently ──
+    async def _describe_one(key: str, crop_bytes: bytes):
         label = key.split(":")[0]
         img_b64 = base64.b64encode(crop_bytes).decode()
         posture_hint = ""
@@ -335,8 +363,9 @@ async def _vlm_describe_objects(track_crops: dict) -> dict:
             {"type": "text", "text": (
                 f"Briefly describe this {label}'s appearance in 1-2 sentences. "
                 f"Include colors, clothing, size, distinguishing features, "
-                f"and any notable state or posture.{posture_hint} "
-                "Be factual and concise."
+                f"and any notable state or posture. Also mention if this "
+                f"object is clearly NOT a {label} (e.g. a misclassification "
+                f"by the object detector).{posture_hint} Be factual and concise."
             )},
             {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}},
         ])
@@ -344,13 +373,73 @@ async def _vlm_describe_objects(track_crops: dict) -> dict:
         try:
             response = await vlm.ainvoke([msg])
             desc = response.content.strip()
-            descriptions[key] = desc
             logger.info(f"VLM describe: {key} → {desc[:80]}")
+            if emit_fn:
+                try:
+                    preview = desc if len(desc) <= 220 else desc[:217].rstrip() + "..."
+                    await emit_fn(f"VLM describe: {key} → {preview}")
+                except Exception:
+                    pass
+            return key, desc
         except Exception as e:
             logger.warning(f"VLM describe failed for {key}: {e}")
-            descriptions[key] = label
+            return key, label
+
+    # Kick every VLM call off in parallel, wait for them all.
+    # Total latency drops from N × T (sequential) to ~T (max of N calls).
+    results = await asyncio.gather(
+        *[_describe_one(k, c) for k, c in track_crops.items()]
+    )
+    for key, desc in results:
+        descriptions[key] = desc
 
     return descriptions
+
+
+# ── Post-processing: reconcile YOLO counts with VLM descriptions ──
+
+
+def _is_misclassified(description: str, yolo_label: str) -> bool:
+    """True if the VLM description explicitly rejects the YOLO class.
+
+    Matches patterns like 'not a bird', 'is not a person', 'does not appear to
+    be a car', 'this is a figurine rather than a bird', etc. Label is escaped
+    so multi-word classes ('sports ball') work too.
+    """
+    if not description or not yolo_label:
+        return False
+    label_esc = re.escape(yolo_label.strip().lower())
+    patterns = [
+        rf"\b(?:not|is\s+not|not\s+actually)\s+an?\s+{label_esc}\b",
+        rf"\bdoes(?:n'?t|\s+not)\s+appear\s+to\s+be\s+an?\s+{label_esc}\b",
+        rf"\brather\s+than\s+an?\s+{label_esc}\b",
+        rf"\binstead\s+of\s+an?\s+{label_esc}\b",
+    ]
+    text = description.lower()
+    return any(re.search(p, text) for p in patterns)
+
+
+def apply_vlm_corrections_to_counts(
+    descriptions: dict, dedup_counts: dict
+) -> tuple[dict, list]:
+    """If VLM describe declared 'not a <label>' for a track, drop that track
+    from the label's count. Returns (corrected_counts, corrections_log).
+
+    corrections_log is a list of (track_key, yolo_label) for logging.
+    """
+    if not descriptions or not dedup_counts:
+        return dict(dedup_counts), []
+
+    corrected = dict(dedup_counts)
+    corrections = []
+    for key, desc in descriptions.items():
+        label = key.split(":")[0]
+        if _is_misclassified(desc, label) and corrected.get(label, 0) > 0:
+            corrected[label] -= 1
+            corrections.append((key, label))
+            if corrected[label] <= 0:
+                del corrected[label]
+    return corrected, corrections
 
 
 class TrackRemapper:
@@ -598,7 +687,8 @@ async def grab_single_frame(host: str, port: int) -> Optional[bytes]:
 
 async def _detect_in_frame(frame: bytes, target_type: str, target_name: str = "",
                            threshold: float = 0.7, yolo_result: dict = None,
-                           task_goal: str = "", use_vlm: bool = False) -> list[dict]:
+                           task_goal: str = "", use_vlm: bool = False,
+                           emit_fn=None) -> list[dict]:
     """Run detection on a single frame. Returns list of detections.
 
     If use_vlm=True (decided by planner LLM), VLM is used to verify
@@ -661,7 +751,7 @@ async def _detect_in_frame(frame: bytes, target_type: str, target_name: str = ""
                 if cache_key and cache_key in _vlm_cache:
                     is_target = _vlm_cache[cache_key]
                 else:
-                    is_target = await _vlm_verify_attribute(frame, d["bbox"], task_goal, d["label"])
+                    is_target = await _vlm_verify_attribute(frame, d["bbox"], task_goal, d["label"], emit_fn=emit_fn)
                     if cache_key:
                         _vlm_cache[cache_key] = is_target
                 # Record VLM confirmation as a separate flag (don't mutate d["label"] —
@@ -895,6 +985,7 @@ async def run_search_mission(mission: SearchMission, existing_udp_receiver=None)
                 mission.threshold, yolo_result,
                 task_goal=mission.task_goal,
                 use_vlm=mission.vlm_verify,
+                emit_fn=agent._emit,
             )
 
             # Accumulate detections (deduplicate by track_id)
@@ -1116,7 +1207,7 @@ async def run_search_mission(mission: SearchMission, existing_udp_receiver=None)
         # when the same object enters/leaves the frame several times.
         if mission._track_crops and not mission.alarm_on_detection:
             try:
-                dedup_counts = await _vlm_dedup_objects(mission._track_crops, mission._cooccurrences)
+                dedup_counts = await _vlm_dedup_objects(mission._track_crops, mission._cooccurrences, emit_fn=agent._emit)
                 mission.dedup_counts = dedup_counts
                 logger.info(f"Mission {mission.mission_id}: VLM dedup counts: {dedup_counts}")
             except Exception as e:
@@ -1125,9 +1216,37 @@ async def run_search_mission(mission: SearchMission, existing_udp_receiver=None)
         # VLM describe: describe each detected object's appearance (per-crop).
         if mission._track_crops and mission.vlm_describe_objects:
             try:
-                descriptions = await _vlm_describe_objects(mission._track_crops)
+                descriptions = await _vlm_describe_objects(mission._track_crops, emit_fn=agent._emit)
                 mission.vlm_descriptions = descriptions
                 logger.info(f"Mission {mission.mission_id}: VLM descriptions: {list(descriptions.keys())}")
+
+                # If VLM describe flagged a track as 'not a <YOLO-label>' (e.g.
+                # a lying mannequin misread as 'bird'), decrement that label's
+                # count so the Summary LLM and Tactical dashboard see clean
+                # numbers. Surface the correction in the reasoning trace so the
+                # commander can see the self-correction happen.
+                if hasattr(mission, "dedup_counts") and mission.dedup_counts:
+                    corrected, corrections = apply_vlm_corrections_to_counts(
+                        descriptions, mission.dedup_counts
+                    )
+                    if corrections:
+                        mission.dedup_counts = corrected
+                        corrected_tracks = ", ".join(f"{k} was not a '{l}'" for k, l in corrections)
+                        logger.info(
+                            f"Mission {mission.mission_id}: VLM corrected counts: "
+                            f"{corrected_tracks} → counts now {corrected}"
+                        )
+                        try:
+                            await agent._emit(
+                                f"VLM correction: dropped {len(corrections)} "
+                                f"misclassified track(s) — {corrected_tracks}"
+                            )
+                            await agent._emit(
+                                f"VLM correction: counts now → "
+                                + ", ".join(f"{k}={v}" for k, v in corrected.items())
+                            )
+                        except Exception:
+                            pass
             except Exception as e:
                 logger.warning(f"Mission {mission.mission_id}: VLM describe_objects failed: {e}")
 

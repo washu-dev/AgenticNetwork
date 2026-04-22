@@ -75,6 +75,9 @@ async def startup_event():
                         _emit_comm_event(_current_task_id, rid, "hardware", "execute", step[5:].strip())
                     elif step.startswith("Auto:"):
                         _emit_comm_event(_current_task_id, rid, "hardware", "auto", step[5:].strip())
+                    elif step.startswith("VLM:") or step.startswith("VLM "):
+                        # Vision-LLM is a robot-side reasoning event
+                        _emit_comm_event(_current_task_id, rid, rid, "think", step.strip())
                     elif step.startswith("Result:"):
                         # Detection results are observations, not task completion
                         if "detected" in step or "Mission finished" in step:
@@ -822,6 +825,74 @@ async def vision_analyze(
         return {"error": f"Vision analysis failed: {e}"}
 
 
+# ---------------------------------------------------------------------------
+# Browser-origin voice I/O (commander at the Command Center, not Pi mic)
+# ---------------------------------------------------------------------------
+
+
+@app.post("/api/voice/transcribe")
+async def voice_transcribe(request: FastAPIRequest):
+    """Transcribe an audio blob POSTed from the frontend.
+
+    Expected: multipart/form-data with a 'file' field (audio blob from
+    browser MediaRecorder — typically webm/opus but Whisper auto-detects).
+    Returns: {"text": "<transcribed text>"}
+    """
+    try:
+        form = await request.form()
+        upload = form.get("file")
+        if upload is None:
+            return {"error": "missing 'file' field"}
+        audio_bytes = await upload.read()
+        if not audio_bytes:
+            return {"error": "empty audio"}
+
+        # Whisper needs a filename for format detection
+        suffix = ".webm"
+        if hasattr(upload, "filename") and upload.filename and "." in upload.filename:
+            suffix = "." + upload.filename.rsplit(".", 1)[1]
+
+        client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        import io
+        audio_file = io.BytesIO(audio_bytes)
+        audio_file.name = f"recording{suffix}"
+        transcript = await client.audio.transcriptions.create(
+            model="whisper-1",
+            file=audio_file,
+        )
+        text = (transcript.text or "").strip()
+        logger.info(f"Voice transcribe: {len(audio_bytes)}B → {text!r}")
+        return {"text": text}
+    except Exception as e:
+        logger.error(f"Voice transcribe failed: {e}")
+        return {"error": str(e)}
+
+
+class VoiceSpeakRequest(BaseModel):
+    text: str
+    voice: str = "onyx"       # onyx / echo / fable / nova / shimmer / alloy
+    speed: float = 1.0
+
+
+@app.post("/api/voice/speak")
+async def voice_speak(req: VoiceSpeakRequest):
+    """Turn text into mp3 audio via OpenAI TTS; returned as audio/mpeg."""
+    from fastapi.responses import Response as _Resp
+    try:
+        client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        async with client.audio.speech.with_streaming_response.create(
+            model="tts-1",
+            voice=req.voice,
+            input=req.text[:4000],     # Whisper TTS caps at 4096 chars
+            speed=max(0.5, min(2.0, req.speed)),
+        ) as response:
+            audio_bytes = await response.read()
+        return _Resp(content=audio_bytes, media_type="audio/mpeg")
+    except Exception as e:
+        logger.error(f"Voice speak failed: {e}")
+        return {"error": str(e)}
+
+
 @app.post("/api/voice")
 async def voice_command(
     duration: int = Query(default=5, ge=1, le=30, description="Recording duration in seconds"),
@@ -1028,6 +1099,9 @@ def _parse_reasoning_to_comm_event(task_id: str, content: str):
     elif content.startswith("Coordinator:"):
         _emit_comm_event(task_id, "planner", "planner", "think", content[12:].strip())
     elif content.startswith("ReAct"):
+        _emit_comm_event(task_id, "planner", "planner", "think", content.strip())
+    elif content.startswith("VLM:") or content.startswith("VLM "):
+        # Vision-LLM reasoning — treat as planner 'think' for topology pulses
         _emit_comm_event(task_id, "planner", "planner", "think", content.strip())
 
 

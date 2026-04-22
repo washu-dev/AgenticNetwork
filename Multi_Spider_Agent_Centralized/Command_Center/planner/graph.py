@@ -123,6 +123,19 @@ async def parse_and_discover(state: PlannerState) -> dict:
         if ph.get("description"): details.append(f"desc='{ph['description']}'")
         messages_log.append(AIMessage(content=f"Intent: {', '.join(details)}"))
 
+        # Surface which vision-LLM capabilities the Planner turned on, and
+        # why (keyword-driven). Lets the reasoning panel show commander what
+        # perception features were enabled for this request.
+        vlm_enabled = []
+        if ph.get("vlm_verify"):          vlm_enabled.append("verify (attribute check)")
+        if ph.get("vlm_describe_objects"):vlm_enabled.append("describe objects")
+        if ph.get("vlm_describe_scene"):  vlm_enabled.append("describe scene")
+        if ph.get("alarm_on_detection"):  vlm_enabled.append("alarm watch")
+        if vlm_enabled:
+            messages_log.append(AIMessage(
+                content=f"VLM: enabled → {', '.join(vlm_enabled)}"
+            ))
+
         logger.info(f"Parsed intent: {intent}")
 
     if not online_agents:
@@ -749,6 +762,26 @@ async def summarize(state: PlannerState) -> dict:
             context_parts.append(part)
         context = "\n\n".join(context_parts)
 
+        # Let the reasoning panel see which summary mode got picked.
+        _tactical_kws = (
+            "sitrep", "tactical", "recon", "reconnaissance", "hostile",
+            "combatant", "civilian", "non-combatant", "armor", "threat",
+            "casualty", "casualties", "wounded", "downed", "evacuation",
+            "military", "enemy", "perimeter", "sector", "engage",
+        )
+        _count_kws = ("count", "how many", "number of", "tally", "total")
+        _prompt_lc = (prompt or "").lower()
+        is_tactical = any(k in _prompt_lc for k in _tactical_kws)
+        is_count = any(k in _prompt_lc for k in _count_kws)
+        mode_bits = []
+        mode_bits.append("tactical SITREP" if is_tactical else "neutral prose")
+        if is_count:
+            mode_bits.append("count aggregation")
+        messages_log.append(AIMessage(
+            content=f"Summary: drafting — mode={' + '.join(mode_bits)}, "
+                    f"aggregating {len(success_results)} robot(s)"
+        ))
+
         system_msg = (
             "You are a multi-robot command center. The user gave a command to several robots and the mission is complete. "
             "Write a structured report with ONE section per robot, clearly separated. Use this exact format:\n\n"
@@ -817,58 +850,125 @@ async def summarize(state: PlannerState) -> dict:
             "subject's physical medium.\n"
             "\n"
             "STRUCTURED OUTPUT FORMAT (tactical mode ONLY):\n"
-            "Don't write a prose paragraph. Use the structured format below —\n"
-            "commanders scan these left-to-right for threat level + status + counts.\n"
-            "Use plain text (no markdown), with these exact emoji prefixes so the UI\n"
-            "renders consistent visual hierarchy:\n"
+            "Don't write a prose paragraph. Use the compact structure below —\n"
+            "commanders scan left-to-right for level + three counts.\n"
+            "Plain text (no markdown), exact emoji prefixes for consistent rendering:\n"
             "\n"
             "  ### Robot <id> (Zone <X>) — <overall threat emoji> <OVERALL LABEL>\n"
             "  \n"
-            "  ▌ THREAT LEVEL:   <🟢 CLEAR | 🟡 ELEVATED | 🔴 CRITICAL>\n"
-            "  ▌ Hostile Armor:  <✓ None | 🔴 <count> tank(s) / armored vehicle(s)>\n"
-            "  ▌ Combatants:     <✓ None | 🔴 <count> confirmed hostile(s)>\n"
+            "  ▌ THREAT LEVEL:   <🟢 SECURE | 🟡 ELEVATED | 🔴 CRITICAL>\n"
             "  \n"
-            "  🔴 CASUALTIES:    <X KIA presumed | X WIA | None>\n"
-            "    • <one bullet per casualty with one line detail>\n"
-            "  \n"
-            "  🟢 Civilians:     <count>\n"
-            "    • <one bullet per distinguishing civilian, e.g. 'wheelchair user — evac priority'>\n"
-            "  \n"
-            "  ▌ Vehicles:       <count civilian | none>\n"
+            "  <armor emoji> Hostile Armor: <N> tank(s)   |or|   ✓ None\n"
+            "    • <one short bullet per armor unit: type + distinguishing detail\n"
+            "       (color, orientation, posture — e.g. 'Tracked tank, olive-green,\n"
+            "       turret facing west', 'Wheeled APC, sand-colored, stationary').\n"
+            "       Skip bullet entirely when N=0.>\n"
+            "  <cas   emoji> Casualties:    <N> wounded/downed/KIA   |or|   ✓ None\n"
+            "    • <one short bullet per casualty: state + distinguishing detail>\n"
+            "  🟢 Civilians:     <N>\n"
+            "    • <one short bullet per civilian (or one overall bullet if more than ~3);\n"
+            "       mention distinguishing appearance, clothing color, activity, and — if\n"
+            "       applicable — vulnerability (wheelchair, mobility limitation, etc.).\n"
+            "       Examples: 'Individual in teal top and blue pants, standing',\n"
+            "       'Adult in red shirt beside vehicle', 'Person in wheelchair —\n"
+            "       evacuation priority'. NEVER mention the words 'mannequin',\n"
+            "       'figurine', 'wooden figure', 'toy' — remain in tactical character.>\n"
             "  \n"
             "  ▌ RECOMMENDATION: <one line action, e.g. 'Dispatch recovery team'>\n"
             "\n"
-            "Rules for choosing the OVERALL threat emoji & label:\n"
-            "  🔴 CRITICAL — hostile armor visible, OR casualties present, OR active threat\n"
-            "  🟡 ELEVATED — non-combatants at risk OR vulnerable civilians present, no active threat\n"
-            "  🟢 SECURE   — no threats, no casualties, no vulnerable civilians\n"
+            "Emoji rules per row:\n"
+            "  Hostile Armor:  🔴 if N>0,  ✓ if 0\n"
+            "  Casualties:     🔴 if N>0,  ✓ if 0\n"
+            "  Civilians:      🟢 always (count of friendly non-combatants)\n"
             "\n"
-            "Skip lines that are trivially None to keep the report dense (e.g. if no\n"
-            "casualties, collapse the CASUALTIES section to a single '✓ None'). Always\n"
-            "keep THREAT LEVEL, Hostile Armor, Combatants, and RECOMMENDATION lines.\n"
+            "Threat-level rule (computed from the three counts):\n"
+            "  🔴 CRITICAL — Hostile Armor >0  OR  Casualties >0\n"
+            "  🟡 ELEVATED — 0 armor + 0 casualties, BUT vulnerable civilian present\n"
+            "                (wheelchair / limited-mobility / elderly / child)\n"
+            "  🟢 SECURE   — 0 armor + 0 casualties + no vulnerable civilians\n"
             "\n"
-            "HARD RULE — NO DOUBLE COUNTING: every person is counted in EXACTLY ONE\n"
-            "section. A downed / prone / casualty / KIA person goes under CASUALTIES and\n"
-            "is NOT re-counted under Civilians. Only upright, non-injured persons count\n"
-            "as Civilians. Example: 1 lying mannequin + 1 standing mannequin → CASUALTIES:\n"
-            "1, Civilians: 1 (not 2). If the only person in the scene is prone →\n"
-            "Civilians: 0, CASUALTIES: 1.\n"
+            "ALWAYS show all three rows (Hostile Armor, Casualties, Civilians), even when 0.\n"
+            "That's the commander's quick-scan dashboard — blanks would be misread.\n"
             "\n"
-            "Example (single robot, moderate scene):\n"
+            "SCENE CONTEXT (one-line, ALWAYS add when possible):\n"
+            "Right before RECOMMENDATION, add a '▌ Scene context:' line describing\n"
+            "the environment and ANY non-tactical objects/features the sensors saw —\n"
+            "walls, flooring, lighting, furniture, windows, urban props (bicycles,\n"
+            "dogs, civilian vehicles, traffic lights, traffic signs, backpacks), etc.\n"
+            "Keep it to one concise line (≤ 90 chars), describing the setting with a\n"
+            "brief qualitative tag. Only OMIT the line if the scene is a featureless\n"
+            "empty void with literally nothing visible.\n"
+            "  Examples:\n"
+            "    ▌ Scene context: indoor room, wooden flooring, moderate light — quiet\n"
+            "    ▌ Scene context: 1 dog, 1 traffic light — residential street\n"
+            "    ▌ Scene context: 2 bicycles, 1 civilian car, traffic signs — urban block\n"
+            "    ▌ Scene context: narrow corridor, uncluttered — indoor sector\n"
+            "NEVER put tanks, casualties, or civilians in this line — they belong\n"
+            "to the three main rows above. Use urban / environmental vocabulary;\n"
+            "don't mention the subject-matter props directly (no 'wooden figures' or\n"
+            "'figurines').\n"
+            "\n"
+            "HARD RULE — NO DOUBLE COUNTING: each person is counted in EXACTLY one of\n"
+            "Casualties OR Civilians. Downed / prone / partial body → Casualties. Upright,\n"
+            "uninjured → Civilians. Example: 1 lying mannequin + 2 standing mannequins →\n"
+            "Casualties: 1, Civilians: 2 (not 3+1 mixed). The Total (for count queries)\n"
+            "is still the UNION so 'count civilians' returns 3 overall.\n"
+            "\n"
+            "Example — tank + civilians + urban props:\n"
+            "  ### Robot 006 (Zone E) — 🔴 CRITICAL\n"
+            "  \n"
+            "  ▌ THREAT LEVEL:   🔴 CRITICAL\n"
+            "  \n"
+            "  🔴 Hostile Armor: 1 tank\n"
+            "    • Tracked tank, olive-green, turret facing west — hull down on open ground\n"
+            "  ✓ Casualties:    None\n"
+            "  🟢 Civilians:     2\n"
+            "    • Two adults in the open, in close proximity to the armor — collateral risk\n"
+            "  \n"
+            "  ▌ Scene context: 1 bicycle, 1 traffic light — urban street, good visibility\n"
+            "  ▌ RECOMMENDATION: Evacuate civilians from Sector E; track armor movement.\n"
+            "\n"
+            "Example — wounded civilian, no armor:\n"
             "  ### Robot 004 (Zone C) — 🔴 CRITICAL\n"
             "  \n"
             "  ▌ THREAT LEVEL:   🔴 CRITICAL\n"
-            "  ▌ Hostile Armor:  ✓ None\n"
-            "  ▌ Combatants:     ✓ None\n"
             "  \n"
-            "  🔴 CASUALTIES:    1 KIA presumed\n"
-            "    • Severe casualty — partial body, no lower limbs visible; body recovery\n"
-            "      required, not medevac\n"
-            "  \n"
+            "  ✓ Hostile Armor: None\n"
+            "  🔴 Casualties:    1 KIA presumed\n"
+            "    • Partial body, no lower limbs visible — body recovery required\n"
             "  🟢 Civilians:     0\n"
-            "  ▌ Vehicles:       None\n"
             "  \n"
-            "  ▌ RECOMMENDATION: Dispatch recovery team to Sector C; secure perimeter.\n"
+            "  ▌ Scene context: indoor room, wooden flooring, moderate light\n"
+            "  ▌ RECOMMENDATION: Dispatch recovery team to Sector C.\n"
+            "\n"
+            "Example — quiet civilian scene:\n"
+            "  ### Robot 001 (Zone A) — 🟢 SECURE\n"
+            "  \n"
+            "  ▌ THREAT LEVEL:   🟢 SECURE\n"
+            "  \n"
+            "  ✓ Hostile Armor: None\n"
+            "  ✓ Casualties:    None\n"
+            "  🟢 Civilians:     3\n"
+            "    • Adult in red shirt standing near a bicycle\n"
+            "    • Adult in dark jacket, walking\n"
+            "    • Adult in light-colored top, stationary\n"
+            "  \n"
+            "  ▌ Scene context: 1 dog, 1 bicycle — residential block, clear sightlines\n"
+            "  ▌ RECOMMENDATION: Continue ISR; maintain watch.\n"
+            "\n"
+            "Example — wheelchair civilian, no threat:\n"
+            "  ### Robot 005 (Zone D) — 🟡 ELEVATED\n"
+            "  \n"
+            "  ▌ THREAT LEVEL:   🟡 ELEVATED\n"
+            "  \n"
+            "  ✓ Hostile Armor: None\n"
+            "  ✓ Casualties:    None\n"
+            "  🟢 Civilians:     2\n"
+            "    • Adult in a wheelchair, wearing blue jacket — evacuation priority\n"
+            "    • Standing adult in beige top nearby — likely caregiver\n"
+            "  \n"
+            "  ▌ Scene context: indoor hall, smooth flooring — limited exits\n"
+            "  ▌ RECOMMENDATION: Prepare assisted-evac route for mobility-limited civilian.\n"
             "\n"
             "If NO tactical keyword appears, use neutral descriptive voice (paragraph format, default).\n\n"
             "WATCH/ALARM MODE SPECIAL RULES:\n"

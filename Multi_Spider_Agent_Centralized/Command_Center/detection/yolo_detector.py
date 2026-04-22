@@ -7,6 +7,7 @@ Pi doesn't need YOLO installed - Central handles all inference.
 
 import io
 import logging
+import os
 import time
 from typing import Optional
 
@@ -14,9 +15,12 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-# Lazy-loaded YOLO model (singleton)
+# Lazy-loaded YOLO model (singleton).
+# Path comes from YOLO_MODEL_PATH env var; falls back to yolov8s.pt (COCO).
+# Custom fine-tuned weights (e.g. a tank-detector) can be pointed here by
+# setting YOLO_MODEL_PATH in .env.
 _model = None
-_model_name = "yolov8s.pt"  # nano model for speed; change to yolov8s.pt for accuracy
+_model_name = os.getenv("YOLO_MODEL_PATH", "yolov8s.pt")
 
 
 def _get_model():
