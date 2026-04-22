@@ -310,10 +310,32 @@ async def _vlm_describe_objects(track_crops: dict) -> dict:
     for key, crop_bytes in track_crops.items():
         label = key.split(":")[0]
         img_b64 = base64.b64encode(crop_bytes).decode()
+        posture_hint = ""
+        if label == "person":
+            posture_hint = (
+                " Explicitly state: (1) posture (standing / sitting / lying / "
+                "in a wheelchair / other); (2) body integrity — WHICH body parts "
+                "are visible (head / torso / arms / legs). Be literal: if you "
+                "don't see legs, say so ('no legs visible', 'only torso and "
+                "arms present'). If the body appears incomplete, dismembered, "
+                "or severed, say that directly. Distinguish 'occluded by an "
+                "object' from 'the body itself is incomplete'."
+                "\n\n"
+                "HARD CONSTRAINT — DO NOT HALLUCINATE CONTEXT: describe ONLY "
+                "the person, not surrounding objects. Never describe the "
+                "person as being 'part of', 'integrated into', 'attached to', "
+                "'merging with', or 'forming' any larger structure. Do NOT "
+                "invent metaphors like 'maritime structure', 'boat-like "
+                "platform', 'wooden figurehead', etc. If the background is a "
+                "floor or table, just say 'on the floor' or 'on a surface' "
+                "and move on. Stick to: body parts visible, posture, clothing, "
+                "colors, visible injuries. Nothing else."
+            )
         msg = HumanMessage(content=[
             {"type": "text", "text": (
-                f"Briefly describe this {label}'s appearance in 1 sentence. "
-                "Include colors, clothing, size, or distinguishing features. "
+                f"Briefly describe this {label}'s appearance in 1-2 sentences. "
+                f"Include colors, clothing, size, distinguishing features, "
+                f"and any notable state or posture.{posture_hint} "
                 "Be factual and concise."
             )},
             {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}},

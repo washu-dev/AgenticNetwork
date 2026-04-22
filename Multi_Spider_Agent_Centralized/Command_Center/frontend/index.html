@@ -187,6 +187,14 @@
                         transform-origin: center; transform-box: fill-box; }
   .tp-cone.done { opacity: 0.5; }
 
+  /* Smooth rotation when a robot's dead-reckoned heading updates (poll arrives
+     once a second, transform eases over ~0.6s to the new angle). */
+  .tp-heading-rotate {
+    transition: transform 0.6s cubic-bezier(0.25, 0.1, 0.25, 1);
+    transform-origin: 0 0;
+    transform-box: view-box;
+  }
+
   /* Robot dot halo when executing */
   @keyframes tp-halo-pulse {
     0%, 100% { r: 13; opacity: 0.35; }
@@ -310,7 +318,17 @@
   .result-agent { background: #0f172a; border-radius: 6px; padding: 8px; margin-bottom: 6px; font-size: 11px; }
   .result-agent .agent-name { font-weight: 500; color: #38bdf8; margin-bottom: 3px; }
   .result-agent .agent-response { color: #94a3b8; white-space: pre-wrap; line-height: 1.4; }
-  .result-summary { border-top: 1px solid #334155; padding-top: 8px; margin-top: 8px; font-size: 11px; color: #cbd5e1; white-space: pre-wrap; line-height: 1.5; }
+  .result-summary {
+    border-top: 1px solid #334155; padding-top: 8px; margin-top: 8px;
+    font-size: 12px; color: #cbd5e1;
+    white-space: pre-wrap; line-height: 1.5;
+    /* Monospace so the ▌ column markers in tactical SITREPs stay aligned,
+       while prose still reads fine. System mono falls through to a nicer
+       rendering where available. */
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  }
+  /* Headings in tactical output (### Robot ...) get a stronger accent */
+  .result-summary { tab-size: 2; }
   .error-msg { color: #fca5a5; font-size: 11px; padding: 8px; background: #450a0a; border-radius: 6px; }
   .placeholder { color: #334155; text-align: center; padding: 20px; font-size: 12px; }
 
@@ -717,11 +735,18 @@
                 <circle class="tp-target-ping delay1" cx="0" cy="0"/>
                 <circle class="tp-target-ping delay2" cx="0" cy="0"/>
               </g>
-              <!-- Field of view cone -->
-              <path :d="viewConePath(a)"
-                    :fill="coneFillColor(a.id)"
-                    :class="['tp-cone', robotStatus(a.id)]"/>
-              <!-- Halo (pulsing when executing) -->
+              <!-- Cone + heading arrow — both authored pointing east and then
+                   rotated by the live heading. CSS transitions the transform
+                   for a smooth swing when the robot turns. -->
+              <g class="tp-heading-rotate"
+                 :style="{transform: `rotate(${robotHeadingDeg(a)}deg)`}">
+                <path :d="viewConePath(a)"
+                      :fill="coneFillColor(a.id)"
+                      :class="['tp-cone', robotStatus(a.id)]"/>
+                <polygon :points="headingTipPoints(a)"
+                         :fill="robotDotColor(a.id)" opacity="0.85"/>
+              </g>
+              <!-- Halo (pulsing when executing) — orientation-agnostic -->
               <circle cx="0" cy="0" r="13"
                       :fill="robotDotColor(a.id)"
                       :class="['tp-halo', isRobotLive(a.id) ? 'active' : '']"
@@ -731,8 +756,6 @@
                       :stroke="robotRingColorSvg(a.id)" stroke-width="2" opacity="0.9"/>
               <!-- Inner solid dot -->
               <circle cx="0" cy="0" r="4.5" :fill="robotDotColor(a.id)"/>
-              <!-- Heading arrow tip (small triangle at front of cone) -->
-              <polygon :points="headingTipPoints(a)" :fill="robotDotColor(a.id)" opacity="0.85"/>
 
               <!-- Label plate -->
               <g transform="translate(0, 22)">
@@ -1416,29 +1439,40 @@ createApp({
       return (rid || '').replace('crawler-alpha-patrol-', '');
     }
 
-    // Build an SVG arc path for the ~60° field-of-view cone.
-    function viewConePath(agent) {
-      const { heading } = robotMapPos(agent);
+    // Live heading in degrees = zone's initial heading + dead-reckoned turn
+    // offset (sent by the backend via /api/positions, polled every 1s).
+    // Zone heading is SVG-frame (0=east, +90°=south); turn_offset_deg uses
+    // the same frame (left turn is negative). Robots never seen yet → 0.
+    function robotHeadingDeg(agent) {
+      const zoneDeg = robotMapPos(agent).heading * 180 / Math.PI;
+      const pos = (robotPositions.value || []).find(p => p.robot_id === agent.id);
+      const offsetDeg = pos && typeof pos.turn_offset_deg === 'number' ? pos.turn_offset_deg : 0;
+      return zoneDeg + offsetDeg;
+    }
+
+    // The cone path and arrow tip are built once pointing east (heading=0).
+    // A wrapping <g transform="rotate(headingDeg)"> rotates them into place,
+    // and CSS transitions the transform smoothly when the offset updates.
+    function viewConePath(_agent) {
       const r = 42;
       const half = 0.55;  // ~63° total, matching camera H_FOV=62°
-      const x1 = (Math.cos(heading - half) * r).toFixed(1);
-      const y1 = (Math.sin(heading - half) * r).toFixed(1);
-      const x2 = (Math.cos(heading + half) * r).toFixed(1);
-      const y2 = (Math.sin(heading + half) * r).toFixed(1);
+      const x1 = (Math.cos(-half) * r).toFixed(1);
+      const y1 = (Math.sin(-half) * r).toFixed(1);
+      const x2 = (Math.cos(+half) * r).toFixed(1);
+      const y2 = (Math.sin(+half) * r).toFixed(1);
       return `M 0 0 L ${x1} ${y1} A ${r} ${r} 0 0 1 ${x2} ${y2} Z`;
     }
 
-    // Small arrow tip at the front of the cone (indicates heading).
-    function headingTipPoints(agent) {
-      const { heading } = robotMapPos(agent);
+    // Arrow tip at the front of the cone (heading=0, east).
+    function headingTipPoints(_agent) {
       const tip = 13;   // distance from center to tip
       const side = 4;   // half-width
-      const tipX = Math.cos(heading) * tip;
-      const tipY = Math.sin(heading) * tip;
-      const lx = Math.cos(heading + Math.PI / 2) * side;
-      const ly = Math.sin(heading + Math.PI / 2) * side;
-      const bx = Math.cos(heading) * 5;
-      const by = Math.sin(heading) * 5;
+      const tipX = tip;
+      const tipY = 0;
+      const lx = 0;
+      const ly = side;
+      const bx = 5;
+      const by = 0;
       const p1 = `${tipX.toFixed(1)},${tipY.toFixed(1)}`;
       const p2 = `${(bx + lx).toFixed(1)},${(by + ly).toFixed(1)}`;
       const p3 = `${(bx - lx).toFixed(1)},${(by - ly).toFixed(1)}`;
@@ -1871,6 +1905,7 @@ createApp({
       edgeColor, edgeMarker, edgeLabel,
       // New map-based topology
       robotMapPos, shortRobotId, viewConePath, headingTipPoints,
+      robotHeadingDeg,
       busToRobotPath, isRobotLive, coneFillColor, robotDotColor,
       robotRingColorSvg, pulseSpeed,
       plannerNodeFill, plannerNodeStroke, plannerStatusColor,

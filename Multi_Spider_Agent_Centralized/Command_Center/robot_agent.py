@@ -71,7 +71,19 @@ def reasoning_topic(robot_id: str) -> str:
     return f"{TASK_TOPIC_PREFIX}.{robot_id}.reasoning"
 
 
+def state_topic(robot_id: str) -> str:
+    """NATS topic for publishing state deltas (heading offset, etc.).
+
+    State changes happen in the Robot Agent's in-memory registry, which
+    is a separate process from the Command Center. Publishing on this
+    topic lets the gateway keep its own registry in sync so /api/positions
+    reflects live heading on the frontend.
+    """
+    return f"{TASK_TOPIC_PREFIX}.{robot_id}.state"
+
+
 REASONING_TOPIC_WILDCARD = f"{TASK_TOPIC_PREFIX}.*.reasoning"
+STATE_TOPIC_WILDCARD = f"{TASK_TOPIC_PREFIX}.*.state"
 
 
 def _ws_port_for(robot_id: str) -> int:
@@ -156,6 +168,18 @@ class RobotAgentService:
                     pass  # fire-and-forget, don't break execution
 
         self._agent.on_reasoning = _publish_reasoning
+
+        # Wire state callback — publishes live state (heading offset, etc.)
+        # so the Command Center's registry stays in sync with ours.
+        async def _publish_state(robot_id: str, state: dict):
+            if self._transport:
+                try:
+                    payload = {"robot_id": robot_id, **state}
+                    await self._transport.publish(state_topic(robot_id), json.dumps(payload).encode())
+                except Exception:
+                    pass
+
+        self._agent.on_state_update = _publish_state
 
         # Start UDP receiver for video
         self._udp_receiver = UDPFrameReceiver(listen_port=0)

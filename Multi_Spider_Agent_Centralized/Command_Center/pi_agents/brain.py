@@ -344,14 +344,24 @@ class LLMClient:
         """
         Generate a patrol route based on the user's task goal.
 
+        NOTE: "area" (walking route) is currently DISABLED. With no SLAM /
+        localization and a fixed mp4-replay demo pipeline, translating the
+        robot physically is both unreliable and pointless — the recorded
+        frames won't track with movement anyway. Any request that would have
+        been classified as "area" is folded into "spin" so the robot at
+        least rotates in place to convey activity, and the detection
+        pipeline still fires normally.
+
+        Re-enable the area branch once localization + replay-aware motion
+        exists. All related code is kept below, just commented out.
+
         Called once at mission start. Returns route steps for the robot to follow.
-        Returns: {"pattern": "spin"|"area"|"stationary", "steps": [...], "reason": "..."}
+        Returns: {"pattern": "spin"|"stationary", "steps": [...], "reason": "..."}
 
         Args:
             task_goal: Natural language mission goal.
-            map_data: Optional map/spatial data for route planning.
-                      When provided, LLM will use it to plan an informed route.
-                      When None, uses predefined routes (no spatial awareness).
+            map_data: Optional map/spatial data for route planning (unused while
+                      area patrol is disabled).
         """
         # Step 1: LLM decides which pattern to use AND explains why
         pattern, llm_reason = await self._classify_patrol_pattern(task_goal)
@@ -366,7 +376,13 @@ class LLMClient:
                 "reason": llm_reason or "Stationary observation",
             }
 
-        if pattern == "spin":
+        # "area" is currently folded into "spin" — the classifier may still
+        # return "area" if the user said 'patrol'/'search'/'explore', but we
+        # treat it as spin so the robot doesn't try to physically walk.
+        if pattern in ("spin", "area"):
+            note = ""
+            if pattern == "area":
+                note = " (area→spin: locomotion disabled in this build)"
             return {
                 "pattern": "spin",
                 "steps": [
@@ -375,24 +391,31 @@ class LLMClient:
                     {"action": "turn_left", "value": 90},
                     {"action": "turn_left", "value": 90},
                 ],
-                "reason": llm_reason or "360° scan in place",
+                "reason": (llm_reason or "360° scan in place") + note,
             }
 
-        # pattern == "area"
-        if map_data:
-            # TODO: Use LLM + map_data to plan an informed route
-            # e.g. LLM sees room layout, obstacles, POIs and plans accordingly
-            logger.info("Map data provided — LLM-based route planning (not yet implemented)")
+        # --- Disabled: area patrol (forward + turn route) ---
+        # if map_data:
+        #     # TODO: Use LLM + map_data to plan an informed route
+        #     logger.info("Map data provided — LLM-based route planning (not yet implemented)")
+        #
+        # # Default fixed route: forward 10, turn left 90°, forward 5
+        # return {
+        #     "pattern": "area",
+        #     "steps": [
+        #         {"action": "forward", "value": 10},
+        #         {"action": "turn_left", "value": 90},
+        #         {"action": "forward", "value": 5},
+        #     ],
+        #     "reason": llm_reason or "Default patrol route (no map available)",
+        # }
 
-        # Default fixed route: forward 10, turn left 90°, forward 5
+        # Unreachable in practice (pattern is one of the three above), but
+        # keep a safe default just in case.
         return {
-            "pattern": "area",
-            "steps": [
-                {"action": "forward", "value": 10},
-                {"action": "turn_left", "value": 90},
-                {"action": "forward", "value": 5},
-            ],
-            "reason": llm_reason or "Default patrol route (no map available)",
+            "pattern": "stationary",
+            "steps": [],
+            "reason": llm_reason or "Defaulted to stationary (unknown pattern)",
         }
 
     async def _classify_patrol_pattern(self, task_goal: str) -> tuple[str, str]:
@@ -405,18 +428,20 @@ class LLMClient:
         decompose step.
         """
         system = (
-            "Classify the mission goal into one of three patrol patterns AND explain why.\n\n"
+            "Classify the mission goal into one of TWO patrol patterns AND explain why.\n\n"
             "Patterns:\n"
-            "- 'stationary': stay in place (for 'check here', 'report what you see', "
-            "'describe', 'detect in front')\n"
-            "- 'spin': turn 360° in place (for 'look around', 'scan area', 'turn around', 'spin')\n"
-            "- 'area': walk a route (for 'patrol', 'search', 'find', 'explore')\n\n"
+            "- 'stationary': stay in place. Use for 'check here', 'report what you see',\n"
+            "  'describe', 'detect in front', 'watch', 'monitor', 'alert on X', 'SITREP'.\n"
+            "- 'spin': rotate 360° in place. Use for 'look around', 'scan the area',\n"
+            "  'sweep', 'search the sector', 'patrol', 'explore'. (Physical locomotion\n"
+            "  like walking to another room is disabled — any 'patrol' / 'search' /\n"
+            "  'find' / 'explore' intent is satisfied with an in-place 360° sweep so\n"
+            "  the robot covers its full field of view without translating.)\n\n"
             "Fill the structured output:\n"
-            "- pattern: one of 'stationary' / 'spin' / 'area'\n"
-            "- steps: [] for stationary; the LLM caller supplies concrete steps for spin/area, "
-            "so you can leave this empty\n"
-            "- reason: one short sentence linking the user's words to the chosen pattern "
-            "(e.g. \"User asked to describe what they see in front, so no locomotion is needed\")"
+            "- pattern: one of 'stationary' / 'spin'\n"
+            "- steps: [] (the caller supplies concrete steps)\n"
+            "- reason: one short sentence linking the user's words to the chosen pattern.\n\n"
+            "DO NOT emit 'area' — it's disabled in this build."
         )
         try:
             result = await self._patrol_route_llm.ainvoke([
@@ -424,14 +449,17 @@ class LLMClient:
                 HumanMessage(content=f"Mission goal: {task_goal}"),
             ])
             pattern = result.pattern.strip().lower()
-            if pattern not in ("stationary", "spin", "area"):
-                pattern = "area"
+            # 'area' may still slip through from older schema — fold into spin.
+            if pattern == "area":
+                pattern = "spin"
+            if pattern not in ("stationary", "spin"):
+                pattern = "stationary"
             reason = (result.reason or "").strip()
             logger.info(f"Patrol pattern classified: {pattern} — {reason} (goal: {task_goal[:50]})")
             return pattern, reason
         except Exception as e:
-            logger.warning(f"Pattern classification failed: {e}, defaulting to area")
-            return "area", "Pattern classification failed — defaulted to area patrol"
+            logger.warning(f"Pattern classification failed: {e}, defaulting to stationary")
+            return "stationary", "Pattern classification failed — defaulted to stationary"
 
     async def generate_patrol_report(self, task_goal: str, detections_log: list) -> dict:
         """

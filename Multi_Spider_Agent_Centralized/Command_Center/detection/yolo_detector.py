@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 # Lazy-loaded YOLO model (singleton)
 _model = None
-_model_name = "yolov8n.pt"  # nano model for speed; change to yolov8s.pt for accuracy
+_model_name = "yolov8s.pt"  # nano model for speed; change to yolov8s.pt for accuracy
 
 
 def _get_model():

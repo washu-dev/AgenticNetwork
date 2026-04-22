@@ -43,16 +43,6 @@ _background_tasks: list[asyncio.Task] = []
 @app.on_event("startup")
 async def startup_event():
     """Run initial ADS discovery, preload models, connect transport, and start background cleanup."""
-    # Optional mock mode (dev/demo only). Requires BOTH the mock/ folder
-    # (gitignored, absent in production) AND env MOCK_MODE=1. Either alone
-    # does nothing — so you can keep the mock/ folder locally without it
-    # contaminating real-robot runs.
-    if os.environ.get("MOCK_MODE") == "1":
-        try:
-            from .mock import plugin as _mock_plugin
-            _mock_plugin.apply(app)
-        except ImportError:
-            logger.warning("MOCK_MODE=1 set but mock/ folder not found — ignoring")
     # Pre-load YOLO model so first detection is instant
     from .detection.yolo_detector import preload_model
     await asyncio.to_thread(preload_model)
@@ -96,6 +86,32 @@ async def startup_event():
         logger.info(f"Subscribed to robot reasoning: {REASONING_TOPIC_WILDCARD}")
     except Exception as e:
         logger.warning(f"Robot reasoning subscription failed: {e}")
+
+    # Subscribe to Robot Agent state deltas (heading offset, etc.) so the
+    # gateway's registry mirrors live robot state published from the RA
+    # process. Without this, /api/positions serves stale heading.
+    try:
+        from .robot_agent import STATE_TOPIC_WILDCARD
+        transport = await ensure_connected()
+
+        async def _on_robot_state(payload: bytes, reply_fn):
+            try:
+                data = json.loads(payload)
+                rid = data.get("robot_id", "")
+                if not rid:
+                    return
+                robot = robot_registry.get_robot(rid)
+                if not robot:
+                    return
+                if "turn_offset_deg" in data:
+                    robot.turn_offset_deg = float(data["turn_offset_deg"])
+            except Exception as e:
+                logger.debug(f"state update parse failed: {e}")
+
+        await transport.subscribe([STATE_TOPIC_WILDCARD], _on_robot_state)
+        logger.info(f"Subscribed to robot state: {STATE_TOPIC_WILDCARD}")
+    except Exception as e:
+        logger.warning(f"Robot state subscription failed: {e}")
 
     # Initial discovery: populate registry from ADS/static config
     _background_tasks.append(asyncio.create_task(_initial_discovery()))
@@ -332,6 +348,7 @@ async def robot_positions():
                 "position": list(r.position) if r.position else None,
                 "last_tag_id": r.last_tag_id,
                 "updated_at": r.position_updated_at,
+                "turn_offset_deg": r.turn_offset_deg,
                 "busy": r.busy,
             }
             for r in online

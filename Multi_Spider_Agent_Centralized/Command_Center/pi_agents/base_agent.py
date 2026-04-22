@@ -294,7 +294,8 @@ class CentralPiAgent:
     def __init__(self, robot: RegisteredRobot, brain: LLMClient):
         self.robot = robot
         self.brain = brain
-        self.on_reasoning = None  # async callback(robot_id, step_str)
+        self.on_reasoning = None      # async callback(robot_id, step_str)
+        self.on_state_update = None   # async callback(robot_id, state_dict)
         self.mission_graph = MissionGraph(robot, brain)
 
         # Target approach module (Role 2 — portable, will move to turtlebot)
@@ -569,56 +570,70 @@ class CentralPiAgent:
         if first_plan:
             await self._emit(f"Intent: Target '{detected_label}' → {plan['final_action']} (approach={plan['approach']}) — {plan['reason']}")
 
-        # No approach needed → execute immediately and finish
-        if not plan["approach"]:
-            action = plan["final_action"]
-            await self._target_approach.execute_action(action)
-            if self.mission_id:
-                self._completed_mission_ids.add(self.mission_id)
-            return {"status": "ok", "action_taken": action, "reason": plan["reason"], "mission_ended": True}
-
-        # Stage 3: Approach step (rules, per frame)
-        ultrasonic_cm = await self._ultrasonic()
-        action = self._target_approach.approach_step(detections, ultrasonic_cm)
-
-        if action == "stop":
-            # Target lost — wait for next frame
-            return {"status": "ok", "action_taken": "stop", "reason": "target lost, waiting"}
-
-        # Check if it's the final action (close enough)
-        if action == plan["final_action"]:
-            # Ensure standing before gesture
+        # ── Approach is DISABLED in this build ───────────────────────
+        # No physical locomotion and no head-tracking turns toward the target.
+        # The moment a target is detected, we execute the plan's final_action
+        # from where the robot stands and end the mission. This keeps find +
+        # act prompts useful (e.g. "find person, if found wave") while
+        # guaranteeing the robot never tries to reposition.
+        action = plan["final_action"]
+        if action != "MISSION_COMPLETE":
+            # Ensure standing before a gesture
             if not self.robot.standing:
                 await self._execute_robot_action("stand_up")
-            await self._emit(f"Tool: {action} (target reached)")
+            await self._emit(f"Tool: {action} (target detected — no-approach build)")
             await self._target_approach.execute_action(action)
-            self._consecutive_turns = 0
-            if self.mission_id:
-                self._completed_mission_ids.add(self.mission_id)
-            return {"status": "ok", "action_taken": action, "reason": "target reached", "mission_ended": True}
-
-        # Navigation action (turn / forward) — only emit when action changes
-        if action in ("turn_left", "turn_right"):
-            self._consecutive_turns += 1
-            degrees = self._target_approach.get_turn_degrees(detections)
-            direction = "left" if action == "turn_left" else "right"
-            logger.info(f"[{self._rid}] Approach: turn {direction} ~{degrees}° [#{self._consecutive_turns}]")
-            emit_key = f"turn_{direction}"
-            if emit_key != self._last_approach_emit:
-                await self._emit(f"Auto: turn {direction} ~{degrees}° (approaching)")
-                self._last_approach_emit = emit_key
-            await self._turn_by_degrees(direction, degrees)
-        elif action == "forward":
-            self._consecutive_turns = 0
-            if self._last_approach_emit != "forward":
-                await self._emit("Auto: forward (approaching)")
-                self._last_approach_emit = "forward"
-            await self._execute_robot_action("forward")
         else:
-            await self._emit(f"Auto: {action} (approaching)")
-            await self._execute_robot_action(action)
+            await self._emit("Auto: target detected — mission complete (no-approach build)")
+        self._consecutive_turns = 0
+        if self.mission_id:
+            self._completed_mission_ids.add(self.mission_id)
+        return {
+            "status": "ok",
+            "action_taken": action,
+            "reason": plan.get("reason", "target detected"),
+            "mission_ended": True,
+        }
 
-        return {"status": "ok", "action_taken": action, "reason": "approaching target"}
+        # --- Disabled path: full approach loop (turn/forward toward target) ---
+        # # No approach needed → execute immediately and finish
+        # if not plan["approach"]:
+        #     action = plan["final_action"]
+        #     await self._target_approach.execute_action(action)
+        #     if self.mission_id:
+        #         self._completed_mission_ids.add(self.mission_id)
+        #     return {"status": "ok", "action_taken": action, "reason": plan["reason"], "mission_ended": True}
+        #
+        # # Stage 3: Approach step (rules, per frame)
+        # ultrasonic_cm = await self._ultrasonic()
+        # action = self._target_approach.approach_step(detections, ultrasonic_cm)
+        #
+        # if action == "stop":
+        #     return {"status": "ok", "action_taken": "stop", "reason": "target lost, waiting"}
+        #
+        # if action == plan["final_action"]:
+        #     if not self.robot.standing:
+        #         await self._execute_robot_action("stand_up")
+        #     await self._emit(f"Tool: {action} (target reached)")
+        #     await self._target_approach.execute_action(action)
+        #     self._consecutive_turns = 0
+        #     if self.mission_id:
+        #         self._completed_mission_ids.add(self.mission_id)
+        #     return {"status": "ok", "action_taken": action, "reason": "target reached", "mission_ended": True}
+        #
+        # if action in ("turn_left", "turn_right"):
+        #     self._consecutive_turns += 1
+        #     degrees = self._target_approach.get_turn_degrees(detections)
+        #     direction = "left" if action == "turn_left" else "right"
+        #     await self._emit(f"Auto: turn {direction} ~{degrees}° (approaching)")
+        #     await self._turn_by_degrees(direction, degrees)
+        # elif action in ("forward", "backward"):
+        #     await self._emit(f"Auto: {action} skipped — locomotion disabled")
+        # else:
+        #     await self._emit(f"Auto: {action} (approaching)")
+        #     await self._execute_robot_action(action)
+        #
+        # return {"status": "ok", "action_taken": action, "reason": "approaching target"}
 
     async def _handle_finished(self, data: dict, detections: list, has_target: bool) -> dict:
         """Handle mission finished — just clear mission state.
@@ -705,10 +720,20 @@ class CentralPiAgent:
                 logger.info(f"[{self.robot.robot_id}] Patrol step {i+1}/{len(route)}: {action}({count})")
                 await self._emit(f"Tool: {action}({count})")
 
-                if action == "forward":
-                    await self._patrol_forward(count)
-                elif action == "backward":
-                    await self._exec("backward", {"steps": count})
+                # Translational motion (forward/backward) is disabled in this
+                # build — the patrol planner is already restricted to
+                # stationary/spin, but we defensively skip any forward/backward
+                # step that slips through so the robot never tries to walk.
+                if action in ("forward", "backward"):
+                    logger.info(
+                        f"[{self.robot.robot_id}] Skipping {action}({count}) — translation disabled"
+                    )
+                    await self._emit(f"Auto: {action}({count}) skipped — locomotion disabled")
+                    # --- Disabled path ---
+                    # if action == "forward":
+                    #     await self._patrol_forward(count)
+                    # else:
+                    #     await self._exec("backward", {"steps": count})
                 elif action == "turn_left":
                     await self._turn_by_degrees("left", count)
                 elif action == "turn_right":
@@ -872,6 +897,10 @@ class CentralPiAgent:
 
         with_pause: pause 1.5s between steps for camera stabilization (patrol/spin only).
                     Direct control turns should pass with_pause=False for instant response.
+
+        Side effect: updates robot.turn_offset_deg (dead-reckoned heading) by
+        the number of steps ACTUALLY executed, so a cancel mid-turn still
+        leaves the heading consistent.
         """
         deg_per_step = self.robot.deg_per_step
         angle_param = self.robot.angle_param
@@ -880,12 +909,41 @@ class CentralPiAgent:
         steps = min(steps, 12)  # cap at 12 steps (360°)
 
         action = "turn_left_angle" if direction == "left" else "turn_right_angle"
+        executed = 0
         for _ in range(steps):
             if self._stop_requested:
-                return
+                break
             await self._exec(action, {"steps": 1, "angle": angle_param})
+            executed += 1
             if with_pause:
                 await asyncio.sleep(1.5)
+
+        # Dead-reckon heading update (SVG convention: 0°=east, left turn
+        # reduces the angle — SVG y-axis is flipped vs math CCW).
+        # Deliberately in-memory only: a restart resets to the zone default.
+        # Persisting across restarts would preserve stale values if the robot
+        # was moved/rotated while powered down, which is worse than starting
+        # fresh and letting the commander recalibrate if needed.
+        if executed > 0:
+            delta_deg = executed * deg_per_step
+            if direction == "left":
+                self.robot.turn_offset_deg -= delta_deg
+            else:
+                self.robot.turn_offset_deg += delta_deg
+            # Normalize to (-180, 180] so the UI doesn't show monster numbers
+            off = self.robot.turn_offset_deg % 360
+            if off > 180:
+                off -= 360
+            self.robot.turn_offset_deg = off
+            # Push the new offset to the Command Center. The RA and CC are
+            # separate processes, so updating self.robot here only touches
+            # the RA's registry — the gateway has its own copy that serves
+            # /api/positions. This callback bridges the two via NATS.
+            if self.on_state_update:
+                try:
+                    await self.on_state_update(self.robot.robot_id, {"turn_offset_deg": off})
+                except Exception as e:
+                    logger.debug(f"state push failed: {e}")
 
     # ── State builder ────────────────────────────────────
 
