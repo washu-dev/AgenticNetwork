@@ -1465,45 +1465,15 @@ createApp({
     }
 
     async function loadMapData() {
-      try {
-        const [metaR, tagsR] = await Promise.all([
-          fetch('/api/map_meta').then(r => r.json()),
-          fetch('/api/tag_positions').then(r => r.json()),
-        ]);
-        if (metaR && metaR.image_width) mapMeta.value = metaR;
-        if (tagsR && tagsR.tags) tagPositions.value = tagsR.tags;
-        drawMap();
-      } catch (e) {
-        console.warn('Failed to load map data:', e);
-      }
+      // LOCALIZATION: /api/map_meta + /api/tag_positions disabled — no-op.
+      return;
     }
 
     async function pollMapOverlay() {
+      // LOCALIZATION: /api/positions disabled; keep only detection overlay.
       try {
-        const [posR, detR] = await Promise.all([
-          fetch('/api/positions').then(r => r.json()),
-          fetch('/api/latest_detections').then(r => r.json()),
-        ]);
-        if (posR && posR.positions) {
-          // Detect position changes and schedule animations
-          for (const r of posR.positions) {
-            if (!r.position) continue;
-            const [tpx, tpy] = worldToPixel(r.position[0], r.position[1]);
-            const prev = _renderedPositions[r.robot_id];
-            if (prev && (Math.abs(prev[0] - tpx) > 1 || Math.abs(prev[1] - tpy) > 1)) {
-              _animations[r.robot_id] = {
-                fromPx: prev[0], fromPy: prev[1],
-                toPx: tpx, toPy: tpy,
-                startTime: performance.now(),
-              };
-            } else if (!prev) {
-              _renderedPositions[r.robot_id] = [tpx, tpy];
-            }
-          }
-          robotPositions.value = posR.positions;
-        }
+        const detR = await fetch('/api/latest_detections').then(r => r.json());
         if (detR && detR.detections) mapDetections.value = detR.detections;
-        _startAnimLoop();  // kick off rAF loop; it exits on its own when done
         drawMap();
       } catch (e) {
         // silently ignore transient polling errors

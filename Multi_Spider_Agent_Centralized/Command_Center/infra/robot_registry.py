@@ -64,15 +64,12 @@ class RegisteredRobot:
     standing: bool = False
     busy: bool = False
     current_mission_id: Optional[str] = None
-    # Position anchor from the most recent AprilTag sighting (world frame, meters)
-    position: Optional[tuple] = None
-    last_tag_id: Optional[int] = None
-    position_updated_at: Optional[float] = None
-    # Heading tracked via dead reckoning — cumulative turn since the robot
-    # was placed at its zone's initial heading. Frontend adds this to the
-    # zone's default heading to render the view cone. Turn LEFT decreases
-    # (SVG/screen convention: 0=east, +90=south, -90=north).
-    turn_offset_deg: float = 0.0
+    # LOCALIZATION: AprilTag-based position anchors + dead-reckoned heading.
+    # Moved to unused/ along with position_tracker.py / apriltag_detector.py.
+    # position: Optional[tuple] = None
+    # last_tag_id: Optional[int] = None
+    # position_updated_at: Optional[float] = None
+    # turn_offset_deg: float = 0.0
 
     def to_dict(self) -> dict:
         return {
@@ -88,10 +85,8 @@ class RegisteredRobot:
             "standing": self.standing,
             "busy": self.busy,
             "current_mission_id": self.current_mission_id,
-            "position": list(self.position) if self.position else None,
-            "last_tag_id": self.last_tag_id,
-            "position_updated_at": self.position_updated_at,
-            "turn_offset_deg": self.turn_offset_deg,
+            # LOCALIZATION: position / last_tag_id / position_updated_at /
+            # turn_offset_deg removed along with the rest of localization.
             "registered_at": self.registered_at,
             "last_heartbeat": self.last_heartbeat,
         }

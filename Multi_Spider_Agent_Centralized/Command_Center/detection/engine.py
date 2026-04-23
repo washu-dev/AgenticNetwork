@@ -20,12 +20,13 @@ import httpx
 
 from .udp_receiver import UDPFrameReceiver
 from .yolo_detector import detect_frame, detect_frame_with_tracking, reset_tracker, get_unique_count
-from .apriltag_detector import detect_tags, get_tag_info
+# LOCALIZATION: AprilTag-based position tracking is disabled — files moved to unused/.
+# from .apriltag_detector import detect_tags, get_tag_info
 from ..config import MISSION_TIMEOUT_STATIONARY, MISSION_TIMEOUT_PATROL, create_vision_llm
-from ..infra.position_tracker import update_robot_position
+# LOCALIZATION: from ..infra.position_tracker import update_robot_position
 
-# Track unknown AprilTag IDs we've already warned about, to avoid log spam.
-_logged_unknown_tags: set = set()
+# LOCALIZATION: Track unknown AprilTag IDs we've already warned about.
+# _logged_unknown_tags: set = set()
 
 logger = logging.getLogger(__name__)
 
@@ -946,33 +947,34 @@ async def run_search_mission(mission: SearchMission, existing_udp_receiver=None)
                     "image_height": yolo_result.get("image_height", 480),
                 }
 
-            # AprilTag position update: any tag visible → refresh this robot's position anchor
-            try:
-                tags = await asyncio.to_thread(detect_tags, frame)
-            except Exception as e:
-                logger.warning(f"AprilTag detection failed: {type(e).__name__}: {e}")
-                tags = []
-
-            if tags:
-                best = max(tags, key=lambda t: t.get("decision_margin", 0.0))
-                tag_id = best["tag_id"]
-                info = get_tag_info(tag_id)
-                if info and info.get("pos"):
-                    try:
-                        update_robot_position(
-                            mission.agent_id,
-                            tag_id=tag_id,
-                            pos=tuple(info["pos"]),
-                            zone=info.get("zone"),
-                        )
-                    except Exception as e:
-                        logger.error(f"Failed to update robot position from tag#{tag_id}: {e}")
-                elif tag_id not in _logged_unknown_tags:
-                    logger.warning(
-                        f"AprilTag #{tag_id} detected but not in tag_positions.json; "
-                        "add it to enable localization"
-                    )
-                    _logged_unknown_tags.add(tag_id)
+            # LOCALIZATION: AprilTag position update block — disabled.
+            # See unused/detection/apriltag_detector.py + unused/infra/position_tracker.py.
+            # try:
+            #     tags = await asyncio.to_thread(detect_tags, frame)
+            # except Exception as e:
+            #     logger.warning(f"AprilTag detection failed: {type(e).__name__}: {e}")
+            #     tags = []
+            #
+            # if tags:
+            #     best = max(tags, key=lambda t: t.get("decision_margin", 0.0))
+            #     tag_id = best["tag_id"]
+            #     info = get_tag_info(tag_id)
+            #     if info and info.get("pos"):
+            #         try:
+            #             update_robot_position(
+            #                 mission.agent_id,
+            #                 tag_id=tag_id,
+            #                 pos=tuple(info["pos"]),
+            #                 zone=info.get("zone"),
+            #             )
+            #         except Exception as e:
+            #             logger.error(f"Failed to update robot position from tag#{tag_id}: {e}")
+            #     elif tag_id not in _logged_unknown_tags:
+            #         logger.warning(
+            #             f"AprilTag #{tag_id} detected but not in tag_positions.json; "
+            #             "add it to enable localization"
+            #         )
+            #         _logged_unknown_tags.add(tag_id)
 
             # Notify stream subscribers
             evt = _frame_events.get(mission.agent_id)

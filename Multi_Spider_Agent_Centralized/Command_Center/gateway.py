@@ -92,29 +92,30 @@ async def startup_event():
 
     # Subscribe to Robot Agent state deltas (heading offset, etc.) so the
     # gateway's registry mirrors live robot state published from the RA
-    # process. Without this, /api/positions serves stale heading.
-    try:
-        from .robot_agent import STATE_TOPIC_WILDCARD
-        transport = await ensure_connected()
-
-        async def _on_robot_state(payload: bytes, reply_fn):
-            try:
-                data = json.loads(payload)
-                rid = data.get("robot_id", "")
-                if not rid:
-                    return
-                robot = robot_registry.get_robot(rid)
-                if not robot:
-                    return
-                if "turn_offset_deg" in data:
-                    robot.turn_offset_deg = float(data["turn_offset_deg"])
-            except Exception as e:
-                logger.debug(f"state update parse failed: {e}")
-
-        await transport.subscribe([STATE_TOPIC_WILDCARD], _on_robot_state)
-        logger.info(f"Subscribed to robot state: {STATE_TOPIC_WILDCARD}")
-    except Exception as e:
-        logger.warning(f"Robot state subscription failed: {e}")
+    # LOCALIZATION: robot-state subscriber only carried turn_offset_deg —
+    # disabled along with the rest of localization.
+    # try:
+    #     from .robot_agent import STATE_TOPIC_WILDCARD
+    #     transport = await ensure_connected()
+    #
+    #     async def _on_robot_state(payload: bytes, reply_fn):
+    #         try:
+    #             data = json.loads(payload)
+    #             rid = data.get("robot_id", "")
+    #             if not rid:
+    #                 return
+    #             robot = robot_registry.get_robot(rid)
+    #             if not robot:
+    #                 return
+    #             if "turn_offset_deg" in data:
+    #                 robot.turn_offset_deg = float(data["turn_offset_deg"])
+    #         except Exception as e:
+    #             logger.debug(f"state update parse failed: {e}")
+    #
+    #     await transport.subscribe([STATE_TOPIC_WILDCARD], _on_robot_state)
+    #     logger.info(f"Subscribed to robot state: {STATE_TOPIC_WILDCARD}")
+    # except Exception as e:
+    #     logger.warning(f"Robot state subscription failed: {e}")
 
     # Initial discovery: populate registry from ADS/static config
     _background_tasks.append(asyncio.create_task(_initial_discovery()))
@@ -341,48 +342,46 @@ async def list_agents():
     return await list_robots()
 
 
-@app.get("/api/positions")
-async def robot_positions():
-    """Lightweight endpoint: just positions for map overlay (safe to poll).
-
-    Returns each online robot's latest (x, y) anchor from AprilTag sightings.
-    """
-    online = robot_registry.get_online_robots()
-    return {
-        "positions": [
-            {
-                "robot_id": r.robot_id,
-                "zone": r.zone,
-                "position": list(r.position) if r.position else None,
-                "last_tag_id": r.last_tag_id,
-                "updated_at": r.position_updated_at,
-                "turn_offset_deg": r.turn_offset_deg,
-                "busy": r.busy,
-            }
-            for r in online
-        ],
-    }
-
-
-@app.get("/api/map_meta")
-async def map_meta():
-    """Return map metadata (for frontend to translate world coords ↔ pixels)."""
-    import json as _json
-    from pathlib import Path
-    meta_path = Path(__file__).resolve().parent / "frontend" / "map_meta.json"
-    try:
-        with open(meta_path) as f:
-            return _json.load(f)
-    except FileNotFoundError:
-        return {"error": "map_meta.json not found"}
-
-
-@app.get("/api/tag_positions")
-async def tag_positions():
-    """Expose configured AprilTag positions to the frontend."""
-    from .detection.apriltag_detector import _tag_positions, load_tag_positions
-    # Reload each call to pick up live edits during development
-    return {"tags": load_tag_positions()}
+# LOCALIZATION: /api/positions, /api/map_meta, /api/tag_positions —
+# disabled along with the rest of localization.
+# @app.get("/api/positions")
+# async def robot_positions():
+#     """Lightweight endpoint: just positions for map overlay (safe to poll)."""
+#     online = robot_registry.get_online_robots()
+#     return {
+#         "positions": [
+#             {
+#                 "robot_id": r.robot_id,
+#                 "zone": r.zone,
+#                 "position": list(r.position) if r.position else None,
+#                 "last_tag_id": r.last_tag_id,
+#                 "updated_at": r.position_updated_at,
+#                 "turn_offset_deg": r.turn_offset_deg,
+#                 "busy": r.busy,
+#             }
+#             for r in online
+#         ],
+#     }
+#
+#
+# @app.get("/api/map_meta")
+# async def map_meta():
+#     """Return map metadata (for frontend to translate world coords ↔ pixels)."""
+#     import json as _json
+#     from pathlib import Path
+#     meta_path = Path(__file__).resolve().parent / "frontend" / "map_meta.json"
+#     try:
+#         with open(meta_path) as f:
+#             return _json.load(f)
+#     except FileNotFoundError:
+#         return {"error": "map_meta.json not found"}
+#
+#
+# @app.get("/api/tag_positions")
+# async def tag_positions():
+#     """Expose configured AprilTag positions to the frontend."""
+#     from .detection.apriltag_detector import _tag_positions, load_tag_positions
+#     return {"tags": load_tag_positions()}
 
 
 @app.get("/api/latest_detections")
@@ -423,42 +422,37 @@ async def latest_detections():
 # ---------------------------------------------------------------------------
 
 
-@app.post("/api/debug/simulate_tag")
-async def debug_simulate_tag(data: dict):
-    """Simulate a robot seeing an AprilTag, updating its position accordingly.
-
-    Body: {"robot_id": "...", "tag_id": 10}
-    Effect: robot.position ← tag_positions[tag_id].pos; heartbeat refreshed.
-    """
-    import time
-    from .detection.apriltag_detector import get_tag_info
-    from .infra.position_tracker import update_robot_position
-
-    robot_id = data.get("robot_id")
-    tag_id = data.get("tag_id")
-    if not robot_id or tag_id is None:
-        return {"status": "error", "error": "robot_id and tag_id required"}
-
-    info = get_tag_info(int(tag_id))
-    if not info or not info.get("pos"):
-        return {"status": "error", "error": f"tag #{tag_id} not in tag_positions.json"}
-
-    robot = robot_registry.get_robot(robot_id)
-    if robot is None:
-        return {"status": "error", "error": f"robot {robot_id} not registered"}
-
-    # Refresh heartbeat so the robot remains "online"
-    robot.last_heartbeat = time.time()
-    robot.status = "online"
-
-    update_robot_position(robot_id, tag_id=int(tag_id), pos=tuple(info["pos"]), zone=info.get("zone"))
-    return {
-        "status": "ok",
-        "robot_id": robot_id,
-        "tag_id": int(tag_id),
-        "position": list(info["pos"]),
-        "zone": info.get("zone"),
-    }
+# LOCALIZATION: /api/debug/simulate_tag — disabled.
+# @app.post("/api/debug/simulate_tag")
+# async def debug_simulate_tag(data: dict):
+#     """Simulate a robot seeing an AprilTag, updating its position accordingly."""
+#     import time
+#     from .detection.apriltag_detector import get_tag_info
+#     from .infra.position_tracker import update_robot_position
+#
+#     robot_id = data.get("robot_id")
+#     tag_id = data.get("tag_id")
+#     if not robot_id or tag_id is None:
+#         return {"status": "error", "error": "robot_id and tag_id required"}
+#
+#     info = get_tag_info(int(tag_id))
+#     if not info or not info.get("pos"):
+#         return {"status": "error", "error": f"tag #{tag_id} not in tag_positions.json"}
+#
+#     robot = robot_registry.get_robot(robot_id)
+#     if robot is None:
+#         return {"status": "error", "error": f"robot {robot_id} not registered"}
+#
+#     robot.last_heartbeat = time.time()
+#     robot.status = "online"
+#     update_robot_position(robot_id, tag_id=int(tag_id), pos=tuple(info["pos"]), zone=info.get("zone"))
+#     return {
+#         "status": "ok",
+#         "robot_id": robot_id,
+#         "tag_id": int(tag_id),
+#         "position": list(info["pos"]),
+#         "zone": info.get("zone"),
+#     }
 
 
 @app.post("/api/debug/fake_target")
@@ -501,47 +495,37 @@ async def debug_clear_target(data: dict):
     return {"status": "ok", "cleared": cleared}
 
 
-@app.get("/api/debug/nearest_support")
-async def debug_nearest_support(finder_robot_id: str):
-    """Dry-run the nearest-support selection without dispatching.
-
-    Returns which idle robot would be chosen to support `finder_robot_id`.
-    Useful for verifying the distance math + adjacency logic.
-    """
-    from .infra.position_tracker import find_nearest_robot, are_adjacent, get_position
-
-    finder_pos = get_position(finder_robot_id)
-    if finder_pos is None:
-        return {"status": "error", "error": f"{finder_robot_id} has no known position"}
-
-    # Build a "candidates" list with distances to each other robot
-    candidates = []
-    finder_robot = robot_registry.get_robot(finder_robot_id)
-    for r in robot_registry.get_online_robots():
-        if r.robot_id == finder_robot_id or r.position is None:
-            continue
-        from .infra.position_tracker import euclidean
-        dist = euclidean(finder_pos, r.position)
-        adj = True
-        if finder_robot and finder_robot.zone and r.zone:
-            adj = are_adjacent(r.zone, finder_robot.zone)
-        candidates.append({
-            "robot_id": r.robot_id,
-            "zone": r.zone,
-            "position": list(r.position),
-            "distance_m": round(dist, 3),
-            "busy": r.busy,
-            "zone_adjacent_to_finder": adj,
-        })
-    candidates.sort(key=lambda c: c["distance_m"])
-
-    nearest = find_nearest_robot(finder_pos, exclude_ids=[finder_robot_id], require_idle=True)
-    return {
-        "status": "ok",
-        "finder": {"robot_id": finder_robot_id, "position": list(finder_pos), "zone": finder_robot.zone if finder_robot else None},
-        "chosen": {"robot_id": nearest["robot_id"], "distance_m": round(nearest["distance"], 3)} if nearest else None,
-        "all_candidates": candidates,
-    }
+# LOCALIZATION: /api/debug/nearest_support — disabled.
+# @app.get("/api/debug/nearest_support")
+# async def debug_nearest_support(finder_robot_id: str):
+#     from .infra.position_tracker import find_nearest_robot, are_adjacent, get_position
+#     finder_pos = get_position(finder_robot_id)
+#     if finder_pos is None:
+#         return {"status": "error", "error": f"{finder_robot_id} has no known position"}
+#
+#     candidates = []
+#     finder_robot = robot_registry.get_robot(finder_robot_id)
+#     for r in robot_registry.get_online_robots():
+#         if r.robot_id == finder_robot_id or r.position is None:
+#             continue
+#         from .infra.position_tracker import euclidean
+#         dist = euclidean(finder_pos, r.position)
+#         adj = True
+#         if finder_robot and finder_robot.zone and r.zone:
+#             adj = are_adjacent(r.zone, finder_robot.zone)
+#         candidates.append({
+#             "robot_id": r.robot_id, "zone": r.zone,
+#             "position": list(r.position), "distance_m": round(dist, 3),
+#             "busy": r.busy, "zone_adjacent_to_finder": adj,
+#         })
+#     candidates.sort(key=lambda c: c["distance_m"])
+#     nearest = find_nearest_robot(finder_pos, exclude_ids=[finder_robot_id], require_idle=True)
+#     return {
+#         "status": "ok",
+#         "finder": {"robot_id": finder_robot_id, "position": list(finder_pos), "zone": finder_robot.zone if finder_robot else None},
+#         "chosen": {"robot_id": nearest["robot_id"], "distance_m": round(nearest["distance"], 3)} if nearest else None,
+#         "all_candidates": candidates,
+#     }
 
 
 @app.get("/api/agents/{agent_id}/health")

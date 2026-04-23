@@ -918,32 +918,23 @@ class CentralPiAgent:
             if with_pause:
                 await asyncio.sleep(1.5)
 
-        # Dead-reckon heading update (SVG convention: 0°=east, left turn
-        # reduces the angle — SVG y-axis is flipped vs math CCW).
-        # Deliberately in-memory only: a restart resets to the zone default.
-        # Persisting across restarts would preserve stale values if the robot
-        # was moved/rotated while powered down, which is worse than starting
-        # fresh and letting the commander recalibrate if needed.
-        if executed > 0:
-            delta_deg = executed * deg_per_step
-            if direction == "left":
-                self.robot.turn_offset_deg -= delta_deg
-            else:
-                self.robot.turn_offset_deg += delta_deg
-            # Normalize to (-180, 180] so the UI doesn't show monster numbers
-            off = self.robot.turn_offset_deg % 360
-            if off > 180:
-                off -= 360
-            self.robot.turn_offset_deg = off
-            # Push the new offset to the Command Center. The RA and CC are
-            # separate processes, so updating self.robot here only touches
-            # the RA's registry — the gateway has its own copy that serves
-            # /api/positions. This callback bridges the two via NATS.
-            if self.on_state_update:
-                try:
-                    await self.on_state_update(self.robot.robot_id, {"turn_offset_deg": off})
-                except Exception as e:
-                    logger.debug(f"state push failed: {e}")
+        # LOCALIZATION: dead-reckoned heading update — disabled with the
+        # rest of localization.  See unused/infra/position_tracker.py.
+        # if executed > 0:
+        #     delta_deg = executed * deg_per_step
+        #     if direction == "left":
+        #         self.robot.turn_offset_deg -= delta_deg
+        #     else:
+        #         self.robot.turn_offset_deg += delta_deg
+        #     off = self.robot.turn_offset_deg % 360
+        #     if off > 180:
+        #         off -= 360
+        #     self.robot.turn_offset_deg = off
+        #     if self.on_state_update:
+        #         try:
+        #             await self.on_state_update(self.robot.robot_id, {"turn_offset_deg": off})
+        #         except Exception as e:
+        #             logger.debug(f"state push failed: {e}")
 
     # ── State builder ────────────────────────────────────
 

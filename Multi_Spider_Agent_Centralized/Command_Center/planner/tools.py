@@ -9,7 +9,8 @@ import json
 import logging
 import uuid
 
-from ..infra.position_tracker import find_nearest_robot, are_adjacent, get_position
+# LOCALIZATION: nearest-robot / zone-adjacency helpers disabled.
+# from ..infra.position_tracker import find_nearest_robot, are_adjacent, get_position
 from ..infra.robot_registry import robot_registry
 
 logger = logging.getLogger(__name__)
@@ -63,28 +64,29 @@ TOOL_SPECS = [
             "required": ["robot_id"],
         },
     },
-    {
-        "name": "dispatch_nearest_support",
-        "description": (
-            "Dispatch the nearest idle robot to support another robot that found a target. "
-            "Use this after wait_for_detection reports a hit. The nearest available robot "
-            "will travel to the target's location to assist."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "finder_robot_id": {
-                    "type": "string",
-                    "description": "The robot that found the target (stays on-site)."
-                },
-                "reason": {
-                    "type": "string",
-                    "description": "Brief reason for requesting support."
-                },
-            },
-            "required": ["finder_robot_id"],
-        },
-    },
+    # LOCALIZATION: dispatch_nearest_support depends on AprilTag positions.
+    # {
+    #     "name": "dispatch_nearest_support",
+    #     "description": (
+    #         "Dispatch the nearest idle robot to support another robot that found a target. "
+    #         "Use this after wait_for_detection reports a hit. The nearest available robot "
+    #         "will travel to the target's location to assist."
+    #     ),
+    #     "parameters": {
+    #         "type": "object",
+    #         "properties": {
+    #             "finder_robot_id": {
+    #                 "type": "string",
+    #                 "description": "The robot that found the target (stays on-site)."
+    #             },
+    #             "reason": {
+    #                 "type": "string",
+    #                 "description": "Brief reason for requesting support."
+    #             },
+    #         },
+    #         "required": ["finder_robot_id"],
+    #     },
+    # },
     {
         "name": "finish",
         "description": "End the coordination. Call this when the mission is complete.",
@@ -137,11 +139,12 @@ class CoordinationToolExecutor:
             return await self._execute_action(arguments["robot_id"], arguments["action"])
         elif tool_name == "cancel_robot":
             return await self._cancel(arguments["robot_id"])
-        elif tool_name == "dispatch_nearest_support":
-            return await self._dispatch_nearest_support(
-                arguments["finder_robot_id"],
-                arguments.get("reason", ""),
-            )
+        # LOCALIZATION: dispatch_nearest_support disabled.
+        # elif tool_name == "dispatch_nearest_support":
+        #     return await self._dispatch_nearest_support(
+        #         arguments["finder_robot_id"],
+        #         arguments.get("reason", ""),
+        #     )
         elif tool_name == "finish":
             return arguments.get("summary", "done")
         else:
@@ -219,84 +222,76 @@ class CoordinationToolExecutor:
             task.cancel()
         return f"{robot_id}: cancelled"
 
-    async def _dispatch_nearest_support(self, finder_robot_id: str, reason: str) -> str:
-        """Find the nearest idle robot and dispatch it to the finder's location."""
-        finder_pos = get_position(finder_robot_id)
-        if finder_pos is None:
-            return (
-                f"Cannot dispatch support: finder {finder_robot_id} has no known position. "
-                "Make sure AprilTags are visible and tag_positions.json is configured."
-            )
-
-        # Exclude the finder, anyone currently patrolling, and anyone we've already
-        # dispatched as support in this session (they're on their way).
-        exclude = (
-            [finder_robot_id]
-            + list(self.patrol_tasks.keys())
-            + list(self.support_tasks.keys())
-        )
-        nearest = find_nearest_robot(finder_pos, exclude_ids=exclude, require_idle=True)
-        if nearest is None:
-            return f"No idle robot available to support {finder_robot_id}."
-
-        support_id = nearest["robot_id"]
-        support_robot = robot_registry.get_robot(support_id)
-        if support_robot is None:
-            return f"Support robot {support_id} was unregistered before dispatch."
-        finder_robot = robot_registry.get_robot(finder_robot_id)
-
-        # Zone adjacency sanity check (informational — we don't block the dispatch)
-        adj_note = ""
-        if finder_robot and support_robot.zone and finder_robot.zone:
-            if not are_adjacent(support_robot.zone, finder_robot.zone):
-                adj_note = (
-                    f" (note: {support_robot.zone} and {finder_robot.zone} are not "
-                    "marked adjacent in zone_adjacency.json; traversal may need a relay)"
-                )
-
-        # Dispatch the support robot toward the finder position.
-        # direct_control takes a free-text prompt; the robot brain decomposes it into actions.
-        support_dict = {
-            "id": support_id,
-            "host": support_robot.host,
-            "port": support_robot.port,
-            "zone": support_robot.zone,
-            "robot_type": support_robot.robot_type,
-        }
-        finder_zone = finder_robot.zone if finder_robot else "?"
-        nav_prompt = (
-            f"Head to zone {finder_zone} to support {finder_robot_id}. "
-            f"Move toward world position ({finder_pos[0]:.2f}, {finder_pos[1]:.2f}). "
-            f"Use visible AprilTags as waypoints."
-        )
-
-        # Mark the support robot busy immediately so subsequent
-        # dispatch_nearest_support calls don't pick it again.
-        support_mission_id = f"support-{uuid.uuid4().hex[:8]}"
-        robot_registry.set_busy(support_id, support_mission_id)
-
-        # Track the dispatch task so we can log failures and cancel on shutdown.
-        async def _do_support_dispatch():
-            try:
-                await asyncio.wait_for(
-                    self._dispatch_direct_control(support_dict, nav_prompt),
-                    timeout=30,
-                )
-                logger.info(f"Support dispatch to {support_id} acknowledged")
-            except asyncio.TimeoutError:
-                logger.warning(f"Support dispatch to {support_id} timed out after 30s")
-            except asyncio.CancelledError:
-                logger.info(f"Support dispatch to {support_id} cancelled")
-                raise
-            except Exception as e:
-                logger.error(f"Support dispatch to {support_id} failed: {e}")
-            finally:
-                # Release busy flag when the dispatch completes or fails.
-                robot_registry.clear_busy(support_id)
-
-        self.support_tasks[support_id] = asyncio.create_task(_do_support_dispatch())
-
-        return (
-            f"Support dispatched: {support_id} → {finder_robot_id} "
-            f"(distance={nearest['distance']:.2f}m){adj_note}"
-        )
+    # LOCALIZATION: _dispatch_nearest_support depends on position/zone helpers.
+    # async def _dispatch_nearest_support(self, finder_robot_id: str, reason: str) -> str:
+    #     """Find the nearest idle robot and dispatch it to the finder's location."""
+    #     finder_pos = get_position(finder_robot_id)
+    #     if finder_pos is None:
+    #         return (
+    #             f"Cannot dispatch support: finder {finder_robot_id} has no known position. "
+    #             "Make sure AprilTags are visible and tag_positions.json is configured."
+    #         )
+    #
+    #     exclude = (
+    #         [finder_robot_id]
+    #         + list(self.patrol_tasks.keys())
+    #         + list(self.support_tasks.keys())
+    #     )
+    #     nearest = find_nearest_robot(finder_pos, exclude_ids=exclude, require_idle=True)
+    #     if nearest is None:
+    #         return f"No idle robot available to support {finder_robot_id}."
+    #
+    #     support_id = nearest["robot_id"]
+    #     support_robot = robot_registry.get_robot(support_id)
+    #     if support_robot is None:
+    #         return f"Support robot {support_id} was unregistered before dispatch."
+    #     finder_robot = robot_registry.get_robot(finder_robot_id)
+    #
+    #     adj_note = ""
+    #     if finder_robot and support_robot.zone and finder_robot.zone:
+    #         if not are_adjacent(support_robot.zone, finder_robot.zone):
+    #             adj_note = (
+    #                 f" (note: {support_robot.zone} and {finder_robot.zone} are not "
+    #                 "marked adjacent in zone_adjacency.json; traversal may need a relay)"
+    #             )
+    #
+    #     support_dict = {
+    #         "id": support_id,
+    #         "host": support_robot.host,
+    #         "port": support_robot.port,
+    #         "zone": support_robot.zone,
+    #         "robot_type": support_robot.robot_type,
+    #     }
+    #     finder_zone = finder_robot.zone if finder_robot else "?"
+    #     nav_prompt = (
+    #         f"Head to zone {finder_zone} to support {finder_robot_id}. "
+    #         f"Move toward world position ({finder_pos[0]:.2f}, {finder_pos[1]:.2f}). "
+    #         f"Use visible AprilTags as waypoints."
+    #     )
+    #
+    #     support_mission_id = f"support-{uuid.uuid4().hex[:8]}"
+    #     robot_registry.set_busy(support_id, support_mission_id)
+    #
+    #     async def _do_support_dispatch():
+    #         try:
+    #             await asyncio.wait_for(
+    #                 self._dispatch_direct_control(support_dict, nav_prompt),
+    #                 timeout=30,
+    #             )
+    #             logger.info(f"Support dispatch to {support_id} acknowledged")
+    #         except asyncio.TimeoutError:
+    #             logger.warning(f"Support dispatch to {support_id} timed out after 30s")
+    #         except asyncio.CancelledError:
+    #             logger.info(f"Support dispatch to {support_id} cancelled")
+    #             raise
+    #         except Exception as e:
+    #             logger.error(f"Support dispatch to {support_id} failed: {e}")
+    #         finally:
+    #             robot_registry.clear_busy(support_id)
+    #
+    #     self.support_tasks[support_id] = asyncio.create_task(_do_support_dispatch())
+    #
+    #     return (
+    #         f"Support dispatched: {support_id} → {finder_robot_id} "
+    #         f"(distance={nearest['distance']:.2f}m){adj_note}"
+    #     )
