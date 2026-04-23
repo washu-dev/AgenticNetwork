@@ -52,9 +52,56 @@ else:
 # === Robot defaults ===
 DEFAULT_CAMERA_PORT = int(os.getenv("DEFAULT_CAMERA_PORT", "9000"))
 
-# === NATS Transport (Planner ↔ Robot Agent) ===
-DEFAULT_MESSAGE_TRANSPORT = os.getenv("DEFAULT_MESSAGE_TRANSPORT", "NATS")
-TRANSPORT_SERVER_ENDPOINT = os.getenv("TRANSPORT_SERVER_ENDPOINT", "nats://localhost:4222")
+# === A2A Transport selection ================================================
+# ``DEFAULT_MESSAGE_TRANSPORT`` picks which transport is the AgentCard's
+# ``preferred_transport`` — i.e. the default transport A2A clients will
+# use when talking to each Robot Agent.  All enabled transports are
+# served simultaneously and appear in ``card.additional_interfaces``, so
+# clients with other capabilities can negotiate a different one.
+#
+# Accepted values: NATS | SLIM | HTTP
+DEFAULT_MESSAGE_TRANSPORT = os.getenv("DEFAULT_MESSAGE_TRANSPORT", "NATS").upper()
+
+
+def _envbool(name: str, default: bool) -> bool:
+    val = os.getenv(name)
+    if val is None:
+        return default
+    return val.strip().lower() in ("1", "true", "yes", "y", "on")
+
+
+# By default we always expose HTTP (useful for local debugging / ADS card
+# resolution) plus whichever of NATS/SLIM is the preferred transport.
+A2A_ENABLE_HTTP = _envbool("A2A_ENABLE_HTTP", True)
+A2A_ENABLE_NATS = _envbool("A2A_ENABLE_NATS", DEFAULT_MESSAGE_TRANSPORT == "NATS")
+A2A_ENABLE_SLIM = _envbool("A2A_ENABLE_SLIM", DEFAULT_MESSAGE_TRANSPORT == "SLIM")
+
+# Transport endpoints.  ``NATS_ENDPOINT`` / ``SLIM_ENDPOINT`` mirror the
+# env-var names used by ``agntcy_app_sdk``'s ``CardBuilder``.
+NATS_ENDPOINT = os.getenv(
+    "NATS_ENDPOINT",
+    os.getenv("TRANSPORT_SERVER_ENDPOINT", "nats://localhost:4222"),
+)
+SLIM_ENDPOINT = os.getenv("SLIM_ENDPOINT", "http://localhost:46357")
+SLIM_SHARED_SECRET = os.getenv(
+    "SLIM_SHARED_SECRET",
+    "multi-spider-shared-secret-REPLACE-WITH-RANDOM-32PLUS-CHARS",
+)
+
+# Backward-compat alias used by the reasoning/state NATS pub/sub path in
+# gateway.py / robot_agent.py.  Same broker as A2A's NATS transport.
+TRANSPORT_SERVER_ENDPOINT = NATS_ENDPOINT
+
+# === A2A HTTP endpoint (Planner ↔ Robot Agent) ==============================
+# Each Robot Agent runs its own a2a-sdk A2AStarletteApplication on HTTP.
+# The port is picked deterministically per robot_id from this base +
+# modulo of the range (see robot_a2a.ports).
+A2A_HTTP_PORT_BASE = int(os.getenv("A2A_HTTP_PORT_BASE", "9100"))
+A2A_HTTP_PORT_RANGE = int(os.getenv("A2A_HTTP_PORT_RANGE", "100"))
+# Host used by the planner to call Robot Agents when no ADS-provided URL
+# is available (i.e. static discovery mode).  In single-machine setups
+# this defaults to "localhost".
+PLANNER_A2A_HOST_DEFAULT = os.getenv("PLANNER_A2A_HOST_DEFAULT", "localhost")
 
 # === Detection engine ===
 MISSION_TIMEOUT_STATIONARY = int(os.getenv("MISSION_TIMEOUT_STATIONARY", "10"))

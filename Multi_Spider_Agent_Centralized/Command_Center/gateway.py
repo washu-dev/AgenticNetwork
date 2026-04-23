@@ -124,13 +124,18 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    """Cancel all active missions, close transport, and stop background tasks."""
+    """Cancel active missions, close transports, and stop background tasks."""
     cancel_all_missions()
     from .infra.shared import get_transport
     try:
         transport = get_transport()
         if transport.is_connected:
             await transport.close()
+    except Exception:
+        pass
+    try:
+        from .planner.a2a_client import close_a2a_client
+        await close_a2a_client()
     except Exception:
         pass
     for task in _background_tasks:

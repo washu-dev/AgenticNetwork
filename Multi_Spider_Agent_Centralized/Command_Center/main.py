@@ -48,34 +48,8 @@ def main():
         host="0.0.0.0",
         port=GATEWAY_PORT,
         reload=False,
-        log_config=_uvicorn_log_config(),
+        access_log=False,
     )
-
-
-def _uvicorn_log_config():
-    import copy
-    from uvicorn.config import LOGGING_CONFIG
-
-    config = copy.deepcopy(LOGGING_CONFIG)
-    config["filters"] = {
-        "skip_polls": {
-            "()": "Command_Center.main.PollFilter",
-        },
-    }
-    config["handlers"]["access"]["filters"] = ["skip_polls"]
-    return config
-
-
-class PollFilter(logging.Filter):
-    """Filter out noisy polling endpoints from access logs."""
-    _SKIP = (
-        "/api/robots", "/api/agents", "/sw.js", "/api/mission/active",
-        "/api/positions", "/api/latest_detections",
-    )
-
-    def filter(self, record: logging.LogRecord) -> bool:
-        msg = record.getMessage()
-        return not any(p in msg for p in self._SKIP)
 
 
 if __name__ == "__main__":

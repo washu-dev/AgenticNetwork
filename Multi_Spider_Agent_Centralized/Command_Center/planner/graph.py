@@ -1,13 +1,15 @@
 """
 LangGraph-based Planner for Multi-Robot System.
 
-Dispatches tasks to Robot Agents via NATS (each Robot Agent is an independent process).
-Falls back to in-process execution if NATS dispatch fails.
+Dispatches tasks to Robot Agents via A2A JSON-RPC over HTTP.
 
 Architecture:
-- Planner discovers Robot Agents via ADS
-- Planner sends tasks to Robot Agents via NATS request/reply
+- Planner discovers Robot Agents via ADS (static config as fallback)
+- Planner sends tasks to each Robot Agent's A2A HTTP endpoint
+  (a2a-sdk Client → Robot Agent's A2AStarletteApplication)
 - Each Robot Agent manages its own CentralPiAgent + Detection Engine
+- NATS is still used (by Robot Agents → Gateway) for fire-and-forget
+  reasoning/state pub/sub; the planner does not use NATS for tasks.
 """
 
 import asyncio
@@ -22,6 +24,8 @@ from langgraph.graph import END, START, StateGraph
 
 from ..infra.discovery import AgentDiscovery
 from ..infra.robot_registry import robot_registry
+from ..robot_a2a import a2a_http_port
+from .a2a_client import RobotA2AError, get_a2a_client
 from .schemas import PlannerState
 from .brain import parse_intent, fallback_intent, build_coordinator_prompt
 
@@ -337,15 +341,16 @@ async def _execute_single_phase(phase: dict, robots: list[dict], prompt: str, me
 
 
 async def _cancel_robot(robot_id: str):
-    """Send cancel command to a Robot Agent via NATS."""
-    from ..robot_agent import cancel_topic
-    from ..infra.shared import ensure_connected
+    """Send a broadcast-cancel to a Robot Agent via A2A."""
     try:
-        transport = await ensure_connected()
-        reply = await transport.request(
-            cancel_topic(robot_id), json.dumps({"command": "cancel"}).encode(), timeout=5
+        client = get_a2a_client()
+        result = await client.send_task(
+            base_url=_robot_a2a_url(robot_id),
+            task_payload={"task_type": "cancel"},
+            prompt="cancel",
+            timeout=10,
         )
-        logger.info(f"Cancel sent to {robot_id}: {json.loads(reply).get('status')}")
+        logger.info(f"Cancel sent to {robot_id}: {result.get('status', '?')}")
     except Exception as e:
         logger.warning(f"Cancel to {robot_id} failed: {e}")
 
@@ -478,45 +483,65 @@ async def _execute_coordinated_patrol(phase: dict, robots: list[dict], prompt: s
     return {"agent_results": executor.agent_results}
 
 
+import os as _os
+
+_DEFAULT_A2A_HOST = _os.getenv("PLANNER_A2A_HOST_DEFAULT", "localhost")
+
+
+def _a2a_url_for(robot_id: str, override: Optional[str] = None) -> str:
+    """Resolve the A2A HTTP base URL for a given robot.
+
+    Priority:
+      1. ``override`` (usually the ``a2a_url`` captured at discovery).
+      2. ``http://{PLANNER_A2A_HOST_DEFAULT}:{hash(robot_id)}`` — matches
+         the deterministic port scheme used by ``robot_agent.py`` when
+         the robot runs on the same host as the planner.
+    """
+    if override:
+        return override
+    return f"http://{_DEFAULT_A2A_HOST}:{a2a_http_port(robot_id)}"
+
+
+def _robot_a2a_url(robot_id: str) -> str:
+    """Look up a robot's A2A URL, preferring the one captured at discovery."""
+    reg = robot_registry.get_robot(robot_id)
+    override = getattr(reg, "a2a_url", None) if reg else None
+    return _a2a_url_for(robot_id, override=override)
+
+
 async def _ping_robot(robot_id: str, timeout: float = 3) -> bool:
-    """Quick check if Robot Agent is reachable via NATS."""
-    from ..robot_agent import ping_topic
-    from ..infra.shared import ensure_connected
-    try:
-        transport = await ensure_connected()
-        reply = await transport.request(
-            ping_topic(robot_id), b'{}', timeout=timeout
-        )
-        return True
-    except Exception:
-        return False
+    """Quick check that the Robot Agent's A2A endpoint is serving its card."""
+    client = get_a2a_client()
+    return await client.ping(_robot_a2a_url(robot_id), timeout=timeout)
 
 
 async def _dispatch_to_robot_agent(robot_id: str, task_payload: dict, timeout: float = 180) -> dict:
-    """Send task to Robot Agent via NATS request/reply.
-
-    Falls back to in-process execution if NATS fails.
-    """
-    from ..robot_agent import task_topic
-    from ..infra.shared import ensure_connected
-
-    # Quick ping to avoid long timeout on disconnected robots
+    """Send task to Robot Agent via A2A JSON-RPC (HTTP)."""
     if not await _ping_robot(robot_id):
-        logger.warning(f"Robot {robot_id} not reachable (ping failed), skipping")
+        logger.warning(f"Robot {robot_id} not reachable (A2A ping failed), skipping")
         return {"status": "error", "error": f"Robot {robot_id} not reachable"}
 
-    topic = task_topic(robot_id)
-    payload_bytes = json.dumps(task_payload).encode()
+    base_url = _robot_a2a_url(robot_id)
+    prompt = task_payload.get("task_goal") or task_payload.get("prompt") or ""
 
     try:
-        transport = await ensure_connected()
-        reply_bytes = await transport.request(topic, payload_bytes, timeout=timeout)
-        result = json.loads(reply_bytes)
-        logger.info(f"NATS dispatch to {robot_id}: {result.get('status', '?')}")
+        client = get_a2a_client()
+        result = await client.send_task(
+            base_url=base_url,
+            task_payload=task_payload,
+            prompt=prompt,
+            timeout=timeout,
+        )
+        logger.info(f"A2A dispatch to {robot_id}: {result.get('status', '?')}")
+        # Ensure agent_id is present for downstream reflection logic.
+        result.setdefault("agent_id", robot_id)
         return result
+    except RobotA2AError as e:
+        logger.error(f"A2A dispatch to {robot_id} failed: {e}")
+        return {"status": "error", "agent_id": robot_id, "error": str(e)}
     except Exception as e:
-        logger.error(f"NATS dispatch to {robot_id} failed: {e}")
-        return {"status": "error", "agent_id": robot_id, "error": f"Robot Agent unreachable: {e}"}
+        logger.exception(f"A2A dispatch to {robot_id} unexpected error: {e}")
+        return {"status": "error", "agent_id": robot_id, "error": f"Unexpected: {e}"}
 
 
 async def _dispatch_agent_task(agent: dict, phase: dict, task_goal: str, messages_log: list) -> dict:

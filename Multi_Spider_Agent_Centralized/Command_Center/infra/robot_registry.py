@@ -48,8 +48,9 @@ def _generate_actions_description(capabilities: dict) -> str:
 class RegisteredRobot:
     robot_id: str
     host: str
-    port: int = 9004                                     # A2A port
+    port: int = 9004                                     # Pi HTTP port
     camera_port: int = DEFAULT_CAMERA_PORT
+    a2a_url: str = ""                                    # Robot Agent A2A HTTP endpoint
     robot_type: str = "spider"                           # spider / turtlebot / car
     capabilities: dict = field(default_factory=dict)
     actions: list = field(default_factory=list)           # action name strings
@@ -163,11 +164,14 @@ class RobotRegistry:
         robot_type = agent_info.get("robot_type", "spider")
 
         now = time.time()
+        a2a_url = agent_info.get("a2a_url", "")
         existing = self._robots.get(robot_id)
         if existing:
             # Update existing — keep state (standing, busy, mission)
             existing.host = agent_info.get("host", existing.host)
             existing.port = agent_info.get("port", existing.port)
+            if a2a_url:
+                existing.a2a_url = a2a_url
             existing.last_heartbeat = now
             existing.status = agent_info.get("status", "online")
             existing.robot_type = robot_type
@@ -185,6 +189,7 @@ class RobotRegistry:
                 host=agent_info.get("host", ""),
                 port=agent_info.get("port", 9004),
                 camera_port=agent_info.get("camera_port", DEFAULT_CAMERA_PORT),
+                a2a_url=a2a_url,
                 robot_type=robot_type,
                 capabilities=capabilities,
                 actions=actions,
@@ -197,7 +202,7 @@ class RobotRegistry:
                 status=agent_info.get("status", "online"),
             )
             self._robots[robot_id] = robot
-            logger.info(f"Robot registered from discovery: {robot_id} [{robot_type}] (zone={zone}, status={robot.status})")
+            logger.info(f"Robot registered from discovery: {robot_id} [{robot_type}] (zone={zone}, status={robot.status}, a2a={a2a_url or 'default'})")
 
     async def _fetch_capabilities(self, robot_id: str, host: str, port: int):
         """Fetch capabilities from Pi's /capabilities endpoint and update registry.

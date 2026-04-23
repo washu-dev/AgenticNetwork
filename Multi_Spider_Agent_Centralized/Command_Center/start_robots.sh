@@ -9,10 +9,16 @@ if [ ! -f "$CONFIG" ]; then
     exit 1
 fi
 
-PYTHON="$SCRIPT_DIR/venv/bin/python"
+PYTHON="${PYTHON_BIN:-$SCRIPT_DIR/venv/bin/python}"
 if [ ! -e "$PYTHON" ]; then
-    PYTHON=python
+    # Default to the mas_spider conda env (Python 3.12) for A2A support.
+    if [ -e "/home/server2/miniconda3/envs/mas_spider/bin/python" ]; then
+        PYTHON="/home/server2/miniconda3/envs/mas_spider/bin/python"
+    else
+        PYTHON=python
+    fi
 fi
+echo "Using Python: $PYTHON"
 
 PIDS=()
 COUNT=$("$PYTHON" -c "import json; print(len(json.load(open('$CONFIG'))))")
