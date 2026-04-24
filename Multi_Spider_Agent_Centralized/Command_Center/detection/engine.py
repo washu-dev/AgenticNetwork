@@ -134,6 +134,7 @@ async def _vlm_dedup_objects(
     track_crops: dict, cooccurrences=None, emit_fn=None,
     cooccur_persistence: int = 3,
     peak_per_label: dict = None,
+    bbox_areas: dict = None,
 ) -> tuple[dict, dict]:
     """Use VLM to deduplicate tracked objects and return counts + groups.
 
@@ -193,6 +194,29 @@ async def _vlm_dedup_objects(
 
     peak_per_label = peak_per_label or {}
 
+    # ── CLIP pre-clustering ──
+    # Before touching VLM, embed every crop with CLIP (one GPU batch, ~60 ms
+    # for 40 crops on a 4090) and agglomerate into clusters by cosine
+    # similarity.  When the clustering is confident (tight intra, clean
+    # inter separation), use CLIP groups directly and skip the VLM call for
+    # that label entirely.  Otherwise fall back to VLM with no change in
+    # behavior.  Net: typical mission drops from ~N VLM dedup calls to 0-2.
+    from . import clip_dedup
+    all_keys = [k for k, _ in (
+        (entry for entries in label_groups.values() for entry in entries)
+    )]
+    embeddings: dict = {}
+    try:
+        all_crops = {}
+        for entries in label_groups.values():
+            for key, cb in entries:
+                all_crops[key] = cb
+        if all_crops:
+            embeddings = clip_dedup.embed_crops(all_crops)
+    except Exception as e:
+        logger.warning(f"VLM dedup: CLIP pre-clustering disabled (error: {e})")
+        embeddings = {}
+
     # Pre-processing: merge the vehicle family (tank/truck/car/bus/motorcycle)
     # into one unified "vehicle" pseudo-group before dedup.  YOLO/COCO
     # inconsistently splits one physical Humvee across truck + bus tracks,
@@ -209,6 +233,33 @@ async def _vlm_dedup_objects(
             vehicle_crops.extend(label_groups[fam_label])
             del label_groups[fam_label]
 
+    # Helper: try CLIP clustering first; return (groups, used_clip_bool).
+    # Returns (groups, True) only when confidence is high enough to skip VLM.
+    def _try_clip(keys: list, min_floor: int, tag: str):
+        if not embeddings or len(keys) < 2:
+            return None
+        clips = clip_dedup.cluster_keys(keys, embeddings, merge_threshold=0.90)
+        if not clips:
+            return None
+        # Enforce co-occurrence lower bound: if CLIP merged too aggressively,
+        # split the largest cluster into singletons until count >= min_floor.
+        while len(clips) < min_floor and any(len(c) > 1 for c in clips):
+            idx = max(range(len(clips)), key=lambda i: len(clips[i]))
+            largest = clips[idx]
+            clips[idx] = largest[:1]
+            for k in largest[1:]:
+                clips.append([k])
+        conf = clip_dedup.confidence(clips, embeddings)
+        logger.info(
+            f"CLIP dedup: {tag} — {len(keys)} keys → {len(clips)} clusters "
+            f"(confidence={conf:.3f})"
+        )
+        # Accept CLIP when all intra-cluster pairs are noticeably tighter
+        # than any inter-cluster pair.  0.05 margin = typical safe zone.
+        if conf >= 0.05:
+            return clips
+        return None
+
     vlm_jobs = []  # [(label, crops, min_unique, cooccur_note, is_family)]
     if vehicle_crops:
         # peak across all vehicle labels combined (underestimates truth
@@ -218,6 +269,20 @@ async def _vlm_dedup_objects(
             default=1,
         )
         v_min = max(1, min(v_min, len(vehicle_crops)))
+
+        def _split_back_by_label(groups):
+            from collections import Counter as _Cnt
+            for grp in groups:
+                if not grp:
+                    continue
+                label_votes = _Cnt(k.split(":", 1)[0] for k in grp)
+                if "tank" in label_votes:
+                    bucket = "tank"
+                else:
+                    bucket = label_votes.most_common(1)[0][0]
+                result_counts[bucket] = result_counts.get(bucket, 0) + 1
+                result_groups.setdefault(bucket, []).append(grp)
+
         if len(vehicle_crops) == 1:
             fam_label = vehicle_crops[0][0].split(":", 1)[0]
             result_counts[fam_label] = 1
@@ -231,6 +296,10 @@ async def _vlm_dedup_objects(
             logger.info(
                 f"VLM dedup: vehicle family — all {len(vehicle_crops)} co-occurred, skipping VLM"
             )
+        elif (clip_groups := _try_clip(
+            [k for k, _ in vehicle_crops], v_min, "vehicle family"
+        )) is not None:
+            _split_back_by_label(clip_groups)
         else:
             cooccur_note = (
                 " None of these appeared in the same frame at the same "
@@ -276,6 +345,13 @@ async def _vlm_dedup_objects(
             result_counts[label] = len(crops)
             result_groups[label] = [[key] for key, _ in crops]
             logger.info(f"VLM dedup: {label} — all {len(crops)} co-occurred, skipping VLM")
+            continue
+
+        # CLIP pre-clustering — if confident, skip VLM for this label.
+        clip_groups = _try_clip([k for k, _ in crops], min_unique, label)
+        if clip_groups is not None:
+            result_counts[label] = len(clip_groups)
+            result_groups[label] = clip_groups
             continue
 
         if min_unique > 1:
@@ -425,10 +501,67 @@ async def _vlm_dedup_objects(
                 result_counts[label] = count
                 result_groups[label] = groups
 
+    # ── Outlier absorption ──
+    # Extreme close-up crops (area ≫ median) visually don't resemble the
+    # normal mid-range views of the same object, so both VLM and CLIP
+    # dedup tend to put them in their own singleton group.  That inflates
+    # the count (tank=2 when there's really 1 tank).  Absorb them back
+    # into the biggest non-singleton group of the same bucket.
+    bbox_areas = bbox_areas or {}
+    VEHICLE_FAMILY_AFTER = {"tank", "truck", "car", "bus", "motorcycle"}
+    absorbed_any = False
+    for bucket in list(result_groups.keys()):
+        groups = result_groups[bucket]
+        if not groups or len(groups) < 2:
+            continue
+        # Median of max-area per group (gives a per-group "representative area")
+        def _grp_max_area(g):
+            return max((bbox_areas.get(k, 0) for k in g), default=0)
+        group_areas = [_grp_max_area(g) for g in groups]
+        sorted_areas = sorted(group_areas)
+        median = sorted_areas[len(sorted_areas) // 2]
+        if median <= 0:
+            continue
+        # Find the biggest non-singleton group as absorption target
+        target_idx = None
+        for i, g in enumerate(groups):
+            if len(g) > 1 and (
+                target_idx is None or len(g) > len(groups[target_idx])
+            ):
+                target_idx = i
+        if target_idx is None:
+            continue
+        # Absorb singleton groups whose area is > 3× median
+        to_absorb = [
+            i for i, g in enumerate(groups)
+            if i != target_idx and len(g) == 1 and group_areas[i] > 3 * median
+        ]
+        # Only apply to the vehicle family (tactical relevance + typical
+        # where this bites); persons/plants shouldn't get auto-merged.
+        if bucket not in VEHICLE_FAMILY_AFTER:
+            continue
+        if not to_absorb:
+            continue
+        absorbed_keys = []
+        for i in to_absorb:
+            groups[target_idx].extend(groups[i])
+            absorbed_keys.extend(groups[i])
+        # Remove absorbed groups (in reverse to keep indices valid)
+        for i in sorted(to_absorb, reverse=True):
+            groups.pop(i)
+        result_counts[bucket] = len(groups)
+        absorbed_any = True
+        logger.info(
+            f"VLM dedup: absorbed {len(absorbed_keys)} outlier close-up "
+            f"singleton(s) into {bucket} main group: {absorbed_keys}"
+        )
+
     if emit_fn and result_counts:
         summary = ", ".join(f"{k}={v}" for k, v in result_counts.items())
         try:
             await emit_fn(f"VLM dedup: result — {summary}")
+            if absorbed_any:
+                await emit_fn("VLM dedup: merged outlier close-up groups")
         except Exception:
             pass
     return result_counts, result_groups
@@ -2050,6 +2183,7 @@ async def run_search_mission(mission: SearchMission, existing_udp_receiver=None)
                     mission._cooccurrences,
                     emit_fn=agent._emit,
                     peak_per_label=mission._peak_per_label,
+                    bbox_areas=mission._track_bbox_areas,
                 )
                 mission.dedup_counts = dedup_counts
                 mission.dedup_groups = dedup_groups
