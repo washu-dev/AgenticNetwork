@@ -293,26 +293,46 @@ async def _execute_single_phase(phase: dict, robots: list[dict], prompt: str, me
         return await _execute_coordinated_patrol(phase, robots, prompt, messages_log)
 
     if task_type == "agent":
-        # Agent mode: dispatch to all target robots in parallel
+        # Agent mode: dispatch to all target robots in parallel.
+        # Each _dispatch_agent_task appends directly to the SHARED messages_log
+        # (a _LiveMessagesList injected by gateway.py that parses every
+        # .append() into an immediate comm_event).  This means:
+        #   • "Agent: X watching for Y" fires at dispatch time (t≈0 for all)
+        #     — Agent Topology marks that robot as active instantly.
+        #   • "Agent result: X: ..." fires at THAT robot's completion time
+        #     (31s for fastest, 81s for slowest) — topology flips that
+        #     specific node to done, one at a time, as they finish.
+        # asyncio.gather still collects the final results; the incremental
+        # updates happen through the side-effect of messages_log.append.
         if len(robots) == 1:
             return await _dispatch_agent_task(robots[0], phase, prompt, messages_log)
-        # Snapshot each robot's log from the same baseline so we can diff later.
-        baseline_len = len(messages_log)
-        per_robot_logs = [list(messages_log) for _ in robots]
-        results = await asyncio.gather(*[
-            _dispatch_agent_task(robot, phase, prompt, per_robot_logs[i])
-            for i, robot in enumerate(robots)
-        ])
-        # Merge agent_results and per-robot messages back into the shared log.
-        # Use the fixed baseline — NOT len(messages_log) — because the shared
-        # log grows as we append, which would cause all but the first robot's
-        # messages to be skipped (their logs are still at baseline + 2 while
-        # messages_log has already passed that length).
+        import time
+        _t0 = time.monotonic()
+        tasks = [
+            asyncio.create_task(
+                _dispatch_agent_task(robot, phase, prompt, messages_log)
+            )
+            for robot in robots
+        ]
         merged = []
-        for i, r in enumerate(results):
-            merged.extend(r.get("agent_results", []))
-            for msg in per_robot_logs[i][baseline_len:]:
-                messages_log.append(msg)
+        for coro in asyncio.as_completed(tasks):
+            try:
+                r = await coro
+            except Exception as e:
+                # Isolate failures — don't let one robot's crash lose the
+                # already-completed results from other robots.
+                logger.warning(f"Phase task raised: {e}")
+                continue
+            result_list = r.get("agent_results", [])
+            merged.extend(result_list)
+            rid = result_list[0].get("agent_id") if result_list else "?"
+            elapsed = time.monotonic() - _t0
+            # Timing marker (purely informational — does NOT match any
+            # gateway-side startswith() patterns, so it won't emit a
+            # spurious comm_event).
+            messages_log.append(AIMessage(
+                content=f"Timing: {rid} finished at t+{elapsed:.1f}s"
+            ))
         return {"agent_results": merged, "messages": messages_log}
     else:
         # Direct control: dispatch to all target robots in parallel

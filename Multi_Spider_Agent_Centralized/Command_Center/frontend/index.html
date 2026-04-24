@@ -1686,22 +1686,18 @@ createApp({
         if (e.from === rid && e.type === 'think' && ts > latestThink) latestThink = ts;
       }
 
-      // Key rule: a robot only shows "done" once the PLANNER has marked the
-      // whole task done (emitted Done: / Summary: to user). Between phases
-      // of a compound command, a robot may have an "Agent result:" entry
-      // but the task isn't actually over — the next phase is about to
-      // dispatch it again. In that window, keep showing "executing".
-      const plannerAlsoDone = (function() {
-        for (let i = evts.length - 1; i >= 0; i--) {
-          const e = evts[i];
-          if (e.from === 'planner' && e.to === 'user') return true;
-          if (e.from === 'planner' && e.type === 'dispatch') return false;
-          if (e.from === 'planner' && e.type === 'think') return false;
-        }
-        return false;
-      })();
-
-      if (plannerAlsoDone && latestResult > 0) return 'done';
+      // Per-robot done rule: a robot shows "done" as soon as IT emits a
+      // result event AND no newer dispatch has been sent to it.  This lets
+      // fast zones flip to done the moment they finish, without waiting
+      // for the slowest zone or for the planner to emit Summary.
+      //
+      // Compound-command safety: if there's a LATER dispatch to this
+      // robot (phase 2 is about to run it again), latestDispatch will be
+      // greater than latestResult, so the first condition below fails
+      // and we fall back to 'executing' — same protection the old
+      // plannerAlsoDone rule gave, but without blocking single-phase
+      // tasks from showing done incrementally.
+      if (latestResult > 0 && latestResult >= latestDispatch) return 'done';
       if (latestExec > 0 && latestExec >= latestDispatch) return 'executing';
       if (latestThink > 0 && latestThink >= latestDispatch) return 'thinking';
       if (latestDispatch > 0) return 'executing';

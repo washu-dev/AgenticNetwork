@@ -1082,9 +1082,20 @@ def _parse_reasoning_to_comm_event(task_id: str, content: str):
         if not robot_ids:
             _emit_comm_event(task_id, "planner", "planner", "think", content[6:].strip())
     elif content.startswith("Done:"):
-        _emit_comm_event(task_id, "planner", "user", "result", content[5:].strip())
+        # "Done: N/N succeeded" is an intermediate milestone — all agents
+        # have returned results, but the planner is still about to run the
+        # summarize step.  Emit as planner-thinking so topology stays in
+        # 'thinking' until the true terminal event (Summary: generated).
+        _emit_comm_event(task_id, "planner", "planner", "think", content[5:].strip())
     elif content.startswith("Summary:"):
-        _emit_comm_event(task_id, "planner", "user", "summary", content[8:].strip())
+        # Two sub-events — distinguish between in-progress and terminal:
+        #   'Summary: drafting …'   → planner is still composing → think
+        #   'Summary: generated …'  → done, emit planner → user
+        body = content[8:].strip()
+        if body.startswith("generated"):
+            _emit_comm_event(task_id, "planner", "user", "summary", body)
+        else:
+            _emit_comm_event(task_id, "planner", "planner", "think", body)
     elif content.startswith("Coordinator:"):
         _emit_comm_event(task_id, "planner", "planner", "think", content[12:].strip())
     elif content.startswith("ReAct"):
