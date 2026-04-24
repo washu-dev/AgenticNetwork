@@ -133,6 +133,7 @@ def _crop_bbox(frame_jpeg: bytes, bbox: dict) -> Optional[bytes]:
 async def _vlm_dedup_objects(
     track_crops: dict, cooccurrences=None, emit_fn=None,
     cooccur_persistence: int = 3,
+    peak_per_label: dict = None,
 ) -> tuple[dict, dict]:
     """Use VLM to deduplicate tracked objects and return counts + groups.
 
@@ -188,29 +189,88 @@ async def _vlm_dedup_objects(
     # Fast path for trivial labels (0-1 crops, or all co-occurred) — no VLM
     # call, no gather needed.  Also pre-compute min_unique so the expensive
     # VLM branch below can run in parallel across all labels.
-    from itertools import combinations as _combinations
     from langchain_core.messages import HumanMessage
 
-    vlm_jobs = []  # [(label, crops, min_unique, cooccur_note)]
+    peak_per_label = peak_per_label or {}
+
+    # Pre-processing: merge the vehicle family (tank/truck/car/bus/motorcycle)
+    # into one unified "vehicle" pseudo-group before dedup.  YOLO/COCO
+    # inconsistently splits one physical Humvee across truck + bus tracks,
+    # and per-label dedup can't merge them — we used to fix this with a
+    # second "cross-label merge" VLM call at the end.  Doing it up-front
+    # here replaces those 4+ per-label calls + 1 cross-label merge call
+    # with ONE unified-family call.  Result groups are split back to the
+    # correct YOLO label based on the majority label of each group's
+    # members (describe + apply_vlm_corrections may re-label further later).
+    VEHICLE_FAMILY = {"tank", "truck", "car", "bus", "motorcycle"}
+    vehicle_crops = []
+    for fam_label in list(label_groups.keys()):
+        if fam_label in VEHICLE_FAMILY:
+            vehicle_crops.extend(label_groups[fam_label])
+            del label_groups[fam_label]
+
+    vlm_jobs = []  # [(label, crops, min_unique, cooccur_note, is_family)]
+    if vehicle_crops:
+        # peak across all vehicle labels combined (underestimates truth
+        # slightly but safe — tends toward under-counting, not over).
+        v_min = max(
+            (peak_per_label.get(fam, 0) for fam in VEHICLE_FAMILY),
+            default=1,
+        )
+        v_min = max(1, min(v_min, len(vehicle_crops)))
+        if len(vehicle_crops) == 1:
+            fam_label = vehicle_crops[0][0].split(":", 1)[0]
+            result_counts[fam_label] = 1
+            result_groups[fam_label] = [[vehicle_crops[0][0]]]
+        elif v_min >= len(vehicle_crops):
+            # All co-occurred: every crop is its own object, split back by label
+            for key, _ in vehicle_crops:
+                lbl = key.split(":", 1)[0]
+                result_counts[lbl] = result_counts.get(lbl, 0) + 1
+                result_groups.setdefault(lbl, []).append([key])
+            logger.info(
+                f"VLM dedup: vehicle family — all {len(vehicle_crops)} co-occurred, skipping VLM"
+            )
+        else:
+            cooccur_note = (
+                " None of these appeared in the same frame at the same "
+                "time.  This is a STRONG prior that they are all the SAME "
+                "physical vehicle seen at different moments/angles/"
+                "distances — the tracker assigns a fresh ID each time an "
+                "object briefly leaves and re-enters view.  Humvees are "
+                "often inconsistently labeled by the detector (one Humvee "
+                "shows up as 'truck' from one angle and 'bus' or 'car' "
+                "from another), so IGNORE the YOLO label when comparing "
+                "crops.  DEFAULT answer when in doubt: same group.  Only "
+                "split into separate groups when you see a CONCRETE "
+                "visual difference (distinct camouflage patterns, clearly "
+                "different colors, tracked vs wheeled chassis, turret "
+                "with cannon vs no turret) that could NOT be explained by "
+                "angle/distance/lighting."
+            )
+            if v_min > 1:
+                cooccur_note += (
+                    f"  Note: at least {v_min} vehicles were seen "
+                    f"simultaneously in one frame, so there are at least "
+                    f"{v_min} unique ones."
+                )
+            vlm_jobs.append(("vehicle", vehicle_crops, v_min, cooccur_note, True))
+
     for label, crops in label_groups.items():
         if len(crops) <= 1:
             result_counts[label] = len(crops)
             result_groups[label] = [[key] for key, _ in crops]
             continue
 
-        crop_keys = [key for key, _ in crops]
-        min_unique = 1
-        for size in range(len(crop_keys), 1, -1):
-            found = False
-            for combo in _combinations(crop_keys, size):
-                if all(frozenset({a, b}) in cooccurrences for a, b in _combinations(combo, 2)):
-                    min_unique = size
-                    found = True
-                    break
-            if found:
-                break
+        # min_unique = peak simultaneous same-label tracks in any single
+        # frame (excluding NMS overlap slips).  Computed in mission loop
+        # via mission._peak_per_label — O(frames), vs the old O(2^n)
+        # max-clique search over the pairwise co-occurrence graph.
+        min_unique = min(peak_per_label.get(label, 1), len(crops))
+        if min_unique < 1:
+            min_unique = 1
 
-        logger.info(f"VLM dedup: {label} — {len(crops)} tracks, min {min_unique} from co-occurrence")
+        logger.info(f"VLM dedup: {label} — {len(crops)} tracks, min {min_unique} from peak-frame count")
 
         if min_unique >= len(crops):
             result_counts[label] = len(crops)
@@ -242,20 +302,21 @@ async def _vlm_dedup_objects(
                 "Partial occlusion, angle change, or different zoom levels "
                 "are NEVER enough to justify >1."
             )
-        vlm_jobs.append((label, crops, min_unique, cooccur_note))
+        vlm_jobs.append((label, crops, min_unique, cooccur_note, False))
 
-    async def _dedup_one_label(label, crops, min_unique, cooccur_note):
+    async def _dedup_one_label(label, crops, min_unique, cooccur_note, is_family=False):
+        subject = "vehicles" if is_family else f"'{label}'(s)"
         vlm = create_vision_llm()
         content = [{"type": "text", "text": (
-            f"I have {len(crops)} cropped images of '{label}' detected by a "
+            f"I have {len(crops)} cropped images of {subject} detected by a "
             f"robot camera during a short patrol sequence (often under a "
-            f"minute). Some are very likely the same {label} seen at "
+            f"minute). Some are very likely the same object seen at "
             f"different times/angles — the tracker frequently loses and "
             f"re-acquires the same object, creating multiple track IDs for "
-            f"one physical {label}.\n\n"
+            f"one physical object.\n\n"
             f"GROUP the images: each group must contain all images that "
-            f"depict the SAME physical {label}.  Two images belong in the "
-            f"same group if they could plausibly be the same {label} seen "
+            f"depict the SAME physical object.  Two images belong in the "
+            f"same group if they could plausibly be the same object seen "
             f"at different moments/angles/distances — identical or very "
             f"similar colors, clothing, camouflage, vehicle shape, etc.  "
             f"Only place them in different groups when you can point to a "
@@ -336,11 +397,33 @@ async def _vlm_dedup_objects(
             return label, max(min_unique, len(crops)), [[k] for k, _ in crops]
 
     if vlm_jobs:
-        # One VLM call per label in parallel — all jobs are independent.
+        # One VLM call per job (per-label OR unified vehicle-family) in
+        # parallel — all jobs are independent.
         vlm_results = await asyncio.gather(*[_dedup_one_label(*j) for j in vlm_jobs])
+        job_is_family = {j[0]: j[4] for j in vlm_jobs}
         for label, count, groups in vlm_results:
-            result_counts[label] = count
-            result_groups[label] = groups
+            if job_is_family.get(label, False):
+                # Vehicle family result: split the groups back into per-label
+                # buckets based on the majority YOLO label of each group.
+                # Prefer 'tank' when present — safest (over-reporting tanks
+                # is worse than under-reporting, but if any member tracked
+                # as tank we trust that over truck/car).
+                from collections import Counter as _Cnt
+                for grp in groups:
+                    label_votes = _Cnt(k.split(":", 1)[0] for k in grp)
+                    if "tank" in label_votes:
+                        bucket = "tank"
+                    else:
+                        bucket = label_votes.most_common(1)[0][0]
+                    result_counts[bucket] = result_counts.get(bucket, 0) + 1
+                    result_groups.setdefault(bucket, []).append(grp)
+                logger.info(
+                    f"VLM dedup: vehicle family — split into "
+                    f"{ {b: c for b, c in result_counts.items() if b in VEHICLE_FAMILY} }"
+                )
+            else:
+                result_counts[label] = count
+                result_groups[label] = groups
 
     if emit_fn and result_counts:
         summary = ", ".join(f"{k}={v}" for k, v in result_counts.items())
@@ -1208,6 +1291,16 @@ class SearchMission:
     # dedup's min_unique floor up.  Counting requires a persistence
     # threshold before a pair is trusted as "truly different objects".
     _cooccurrences: dict = field(default_factory=dict)  # frozenset({k1,k2}) → frame_count
+    # Peak simultaneous same-label track count observed in any single frame,
+    # per label. This IS the correct min_unique lower bound for dedup —
+    # computed in O(frames) instead of the O(2^n) max-clique search the old
+    # dedup code ran. Only incremented by pairs that survived the IoU < 0.3
+    # filter, i.e. pairs that are really distinct bboxes on distinct objects.
+    _peak_per_label: dict = field(default_factory=dict)  # label → int
+    # Laplacian-variance sharpness per saved track crop — used as a
+    # tiebreaker when multiple crops in the same dedup group have similar
+    # bbox areas. Bigger isn't always clearer.
+    _track_sharpness: dict = field(default_factory=dict)  # track_key → float
     _track_bbox_areas: dict = field(default_factory=dict)  # track_key → bbox area of saved crop
     _track_remapper: TrackRemapper = field(default_factory=TrackRemapper)
     _alarmed_track_keys: set = field(default_factory=set)   # every track that has been alarmed (for dedup)
@@ -1625,6 +1718,21 @@ async def run_search_mission(mission: SearchMission, existing_udp_receiver=None)
                     key = f"{label}:{track_id}"
                     bbox = d.get("bbox")
                     crop = _crop_bbox(frame, bbox) if bbox and frame is not None else None
+
+                    def _sharpness(crop_bytes):
+                        # Laplacian variance — higher = sharper.  Cheap
+                        # (one Sobel-like op on a small crop).
+                        try:
+                            import cv2 as _cv2
+                            import numpy as _np
+                            nparr = _np.frombuffer(crop_bytes, _np.uint8)
+                            img = _cv2.imdecode(nparr, _cv2.IMREAD_GRAYSCALE)
+                            if img is None or img.size == 0:
+                                return 0.0
+                            return float(_cv2.Laplacian(img, _cv2.CV_64F).var())
+                        except Exception:
+                            return 0.0
+
                     if key in mission._seen_track_ids:
                         # Update crop if this bbox is significantly larger (closer, clearer view)
                         if crop is not None and bbox:
@@ -1632,12 +1740,14 @@ async def run_search_mission(mission: SearchMission, existing_udp_receiver=None)
                             if new_area > mission._track_bbox_areas.get(key, 0) * 1.2:
                                 mission._track_crops[key] = crop
                                 mission._track_bbox_areas[key] = new_area
+                                mission._track_sharpness[key] = _sharpness(crop)
                         continue
                     mission._seen_track_ids.add(key)
                     if crop is not None:
                         mission._track_crops[key] = crop
                         if bbox:
                             mission._track_bbox_areas[key] = (bbox["x2"] - bbox["x1"]) * (bbox["y2"] - bbox["y1"])
+                        mission._track_sharpness[key] = _sharpness(crop)
                 mission.detections.append(d)
 
             # Record co-occurrences: track keys that appear in same frame →
@@ -1671,6 +1781,26 @@ async def run_search_mission(mission: SearchMission, existing_udp_receiver=None)
                 return inter / union if union > 0 else 0.0
 
             for label, keys in frame_keys_by_label.items():
+                # Count keys that have distinct bboxes (exclude NMS slips)
+                distinct_keys = []
+                for i, ki in enumerate(keys):
+                    bi = frame_bbox_by_key.get(ki)
+                    if bi is None:
+                        distinct_keys.append(ki)
+                        continue
+                    is_dup = False
+                    for kj in distinct_keys:
+                        bj = frame_bbox_by_key.get(kj)
+                        if bj and _bbox_iou(bi, bj) > 0.3:
+                            is_dup = True
+                            break
+                    if not is_dup:
+                        distinct_keys.append(ki)
+                # Peak same-label concurrency = correct min_unique lower
+                # bound (O(1) update, vs old O(2^n) clique search).
+                n_distinct = len(distinct_keys)
+                if n_distinct > mission._peak_per_label.get(label, 0):
+                    mission._peak_per_label[label] = n_distinct
                 if len(keys) > 1:
                     for i in range(len(keys)):
                         for j in range(i + 1, len(keys)):
@@ -1822,6 +1952,26 @@ async def run_search_mission(mission: SearchMission, existing_udp_receiver=None)
 
         agent.clear_mission()
 
+        # Quality score for picking the best crop from a set of candidates
+        # (same track_id with multiple labels, or same dedup group).
+        #
+        # History — we tried combining bbox area with Laplacian-variance
+        # sharpness as `area × (1 + sharpness/100)`, the idea being that a
+        # clear medium crop should beat a motion-blurred big close-up.  In
+        # practice it regressed: extreme close-ups win on area strongly
+        # enough that even a low sharpness multiplier lets them through,
+        # AND high-contrast noise in a blurry crop registers as "sharp" to
+        # Laplacian.  Result: a massive unreadable close-up was picked as
+        # the tank rep, VLM described it as "blurry metal, OTHER", Summary
+        # LLM refused to render it as a tank bullet, and ARMOR count lost
+        # a tank.
+        #
+        # Reverted to area-only.  Previously working behavior.  Proper
+        # sharpness-aware selection would need an eval harness and a more
+        # robust formula (e.g. hard reject below a motion-blur threshold).
+        def _crop_quality(key: str) -> float:
+            return mission._track_bbox_areas.get(key, 0.0)
+
         # Resolve label conflicts: same track_id with different labels → use
         # VLM to decide.  Runs in parallel (asyncio.gather) — each conflict
         # is an independent VLM call, serializing them wastes wall time.
@@ -1831,12 +1981,17 @@ async def run_search_mission(mission: SearchMission, existing_udp_receiver=None)
                 if len(label_freq) <= 1:
                     continue
                 labels = list(label_freq.keys())
-                best_crop_key = None
-                for label in labels:
-                    k = f"{label}:{tid}"
-                    if k in mission._track_crops:
-                        best_crop_key = k
-                        break
+                # Pick the crop with highest quality (area × sharpness),
+                # not just the first one — motion-blurred side views give
+                # poor VLM answers even when they're "first" in iteration.
+                candidate_keys = [
+                    f"{label}:{tid}" for label in labels
+                    if f"{label}:{tid}" in mission._track_crops
+                ]
+                best_crop_key = (
+                    max(candidate_keys, key=_crop_quality)
+                    if candidate_keys else None
+                )
                 conflicts.append((tid, labels, best_crop_key, label_freq))
 
             async def _resolve_one(tid, labels, best_crop_key, label_freq):
@@ -1891,7 +2046,10 @@ async def run_search_mission(mission: SearchMission, existing_udp_receiver=None)
         if mission._track_crops and not mission.alarm_on_detection:
             try:
                 dedup_counts, dedup_groups = await _vlm_dedup_objects(
-                    mission._track_crops, mission._cooccurrences, emit_fn=agent._emit
+                    mission._track_crops,
+                    mission._cooccurrences,
+                    emit_fn=agent._emit,
+                    peak_per_label=mission._peak_per_label,
                 )
                 mission.dedup_counts = dedup_counts
                 mission.dedup_groups = dedup_groups
@@ -1911,16 +2069,35 @@ async def run_search_mission(mission: SearchMission, existing_udp_receiver=None)
                 groups = getattr(mission, "dedup_groups", None)
                 if groups:
                     representatives: dict = {}
+
+                    def _pick_rep(grp):
+                        # Biggest-area is the default — usually closest /
+                        # clearest view.  But the ABSOLUTE biggest in a
+                        # dense group is often an extreme close-up that
+                        # cuts off important context (tracks, turret, full
+                        # silhouette).  When the biggest is a clear outlier
+                        # (>3× the median), step down to the 2nd biggest —
+                        # it's usually a proper mid-range view that VLM
+                        # can classify confidently.
+                        areas = sorted(
+                            [(k, _crop_quality(k)) for k in grp],
+                            key=lambda x: x[1],
+                            reverse=True,
+                        )
+                        if not areas:
+                            return None
+                        if len(areas) >= 3:
+                            median = areas[len(areas) // 2][1]
+                            if median > 0 and areas[0][1] > 3 * median:
+                                return areas[1][0]  # skip the outlier
+                        return areas[0][0]
+
                     for label, grp_list in groups.items():
                         for grp in grp_list:
                             if not grp:
                                 continue
-                            # Pick rep by largest bbox area within the group.
-                            rep = max(
-                                grp,
-                                key=lambda kk: mission._track_bbox_areas.get(kk, 0),
-                            )
-                            if rep in mission._track_crops:
+                            rep = _pick_rep(grp)
+                            if rep and rep in mission._track_crops:
                                 representatives[rep] = mission._track_crops[rep]
                     describe_input = representatives
                     logger.info(
@@ -1974,87 +2151,13 @@ async def run_search_mission(mission: SearchMission, existing_udp_receiver=None)
                         except Exception:
                             pass
 
-                # ── Cross-label vehicle family dedup ──
-                # Per-label dedup can leave one physical Humvee counted twice:
-                # once under 'truck' (tracks YOLO called truck) and once under
-                # 'bus' or 'car' (tracks YOLO called bus/car).  The earlier
-                # relabel migrations moved those into the correct bucket, but
-                # they're still separate GROUPS inside that bucket.  Run a
-                # final cross-label VLM pass on all vehicle reps and merge
-                # groups the VLM confirms as the same physical vehicle.
-                VEHICLE_FAMILY = {"tank", "truck", "car", "bus", "motorcycle"}
-                vehicle_reps = {
-                    k: mission._track_crops[k]
-                    for k in list(mission.vlm_descriptions.keys())
-                    if k.split(":", 1)[0] in VEHICLE_FAMILY
-                    and k in mission._track_crops
-                }
-                if len(vehicle_reps) >= 2:
-                    try:
-                        merge_groups = await _vlm_group_cross_label(
-                            vehicle_reps, emit_fn=agent._emit
-                        )
-                        # merge_groups: list[list[key]] — each inner list is
-                        # one physical vehicle, collapsing across labels.
-                        # Rebuild dedup_counts for the vehicle family.
-                        if merge_groups:
-                            from collections import Counter as _Cnt
-                            new_vehicle_counts: dict = {}
-                            keep_reps: set = set()
-                            drop_descs: list = []
-                            for grp in merge_groups:
-                                if not grp:
-                                    continue
-                                # Pick the rep whose current label matches
-                                # the majority verdict, else the first key.
-                                label_votes = _Cnt(k.split(":", 1)[0] for k in grp)
-                                # Prefer tank if any member is tank (highest
-                                # tactical severity); otherwise majority.
-                                if "tank" in label_votes:
-                                    chosen_label = "tank"
-                                else:
-                                    chosen_label = label_votes.most_common(1)[0][0]
-                                # Keep the member whose label == chosen_label.
-                                keeper = next(
-                                    (k for k in grp if k.split(":", 1)[0] == chosen_label),
-                                    grp[0],
-                                )
-                                keep_reps.add(keeper)
-                                new_vehicle_counts[chosen_label] = (
-                                    new_vehicle_counts.get(chosen_label, 0) + 1
-                                )
-                                # Any non-keeper members' descriptions get
-                                # dropped so Summary doesn't render ghost bullets.
-                                for k in grp:
-                                    if k != keeper:
-                                        drop_descs.append(k)
-                            # Replace vehicle-family counts in dedup_counts.
-                            for fam_label in list(mission.dedup_counts.keys()):
-                                if fam_label in VEHICLE_FAMILY:
-                                    mission.dedup_counts.pop(fam_label, None)
-                            for fam_label, cnt in new_vehicle_counts.items():
-                                mission.dedup_counts[fam_label] = cnt
-                            # Drop ghost descriptions.
-                            for k in drop_descs:
-                                mission.vlm_descriptions.pop(k, None)
-                            logger.info(
-                                f"Mission {mission.mission_id}: vehicle family "
-                                f"merge → kept {len(keep_reps)} rep(s), "
-                                f"dropped {len(drop_descs)} duplicate(s); "
-                                f"new vehicle counts={new_vehicle_counts}"
-                            )
-                            try:
-                                await agent._emit(
-                                    f"VLM vehicle merge: {len(vehicle_reps)} reps → "
-                                    f"{len(keep_reps)} unique vehicles; "
-                                    f"{', '.join(f'{k}={v}' for k,v in new_vehicle_counts.items())}"
-                                )
-                            except Exception:
-                                pass
-                    except Exception as e:
-                        logger.warning(
-                            f"Mission {mission.mission_id}: vehicle family merge failed: {e}"
-                        )
+                # Note: the separate "cross-label vehicle family merge" pass
+                # that used to run here is GONE — `_vlm_dedup_objects` now
+                # dedups the vehicle family (tank/truck/car/bus) unified in
+                # a single VLM call, so Humvees can't end up split across
+                # truck and bus buckets anymore.  One less VLM call per
+                # mission + more accurate because the VLM sees all vehicle
+                # crops at once instead of splitting per-label first.
             except Exception as e:
                 logger.warning(f"Mission {mission.mission_id}: VLM describe_objects failed: {e}")
 
@@ -2064,9 +2167,17 @@ async def run_search_mission(mission: SearchMission, existing_udp_receiver=None)
         # doesn't double-count, and append any missed casualties as synthetic
         # person tracks — they flow through the Summary LLM's normal KIA /
         # wounded routing via the 'Body integrity: INCOMPLETE' marker.
+        # SKIP when no person tracks exist — if YOLO saw zero people, the
+        # scene almost certainly has none (even lying), and the sweep would
+        # just be wasted latency.
+        has_any_person = (
+            getattr(mission, "dedup_counts", None)
+            and mission.dedup_counts.get("person", 0) > 0
+        )
         if (
             mission.vlm_describe_objects
             and mission._scene_frame is not None
+            and has_any_person
         ):
             try:
                 known_person_descs = [
