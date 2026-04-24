@@ -1,8 +1,6 @@
-import asyncio
 import logging
 import os
 import signal
-import time
 
 import uvicorn
 
@@ -32,6 +30,34 @@ def _handle_sigint(_signum, _frame):
     raise KeyboardInterrupt
 
 
+# Custom logging config for uvicorn that completely silences uvicorn.access.
+# uvicorn applies this via logging.config.dictConfig() at server start, so
+# whatever handler structlog / fastapi install on uvicorn.access gets
+# overwritten here.
+_UVICORN_LOG_CONFIG = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "default": {
+            "format": "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        },
+    },
+    "handlers": {
+        "default": {
+            "class": "logging.StreamHandler",
+            "formatter": "default",
+            "stream": "ext://sys.stdout",
+        },
+    },
+    "loggers": {
+        "uvicorn":       {"handlers": ["default"], "level": "INFO", "propagate": False},
+        "uvicorn.error": {"level": "INFO"},
+        # Nuke access logger: no handlers, highest level, no propagation.
+        "uvicorn.access": {"handlers": [], "level": "CRITICAL", "propagate": False},
+    },
+}
+
+
 def main():
     signal.signal(signal.SIGINT, _handle_sigint)
 
@@ -49,6 +75,10 @@ def main():
         port=GATEWAY_PORT,
         reload=False,
         access_log=False,
+        log_config=_UVICORN_LOG_CONFIG,
+        # Force-close any lingering connections (idle WebSockets, etc.)
+        # 3s after Ctrl+C, so one ^C is enough to actually exit.
+        timeout_graceful_shutdown=3,
     )
 
 

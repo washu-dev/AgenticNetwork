@@ -37,6 +37,25 @@ from agntcy_app_sdk.semantic.a2a.client.config import (
 )
 from agntcy_app_sdk.semantic.a2a.client.factory import A2AClientFactory
 
+# ── NATS patterns request/reply timeout patch ───────────────────────────
+# agntcy_app_sdk's NatsTransport.request() hard-codes a 60 s reply
+# timeout (see transport/nats/transport.py).  The PatternsClientTransport
+# that wraps it for A2A does NOT pass through a timeout override, so
+# every A2A-over-NATS request waits at most 60 s.  Mock missions (and
+# real Pi patrols) can run 3-10 minutes, so we globally raise the default
+# by monkey-patching the class method at import time.  No effect on the
+# HTTP/JSONRPC path.
+try:  # pragma: no cover — env-dependent import guard
+    from agntcy_app_sdk.transport.nats.transport import NatsTransport as _NatsTransport
+    _orig_nats_request = _NatsTransport.request
+
+    async def _patched_nats_request(self, recipient, message, timeout: int = 600, **kwargs):
+        return await _orig_nats_request(self, recipient, message, timeout=timeout, **kwargs)
+
+    _NatsTransport.request = _patched_nats_request
+except Exception:
+    pass
+
 from ..config import (
     DEFAULT_MESSAGE_TRANSPORT,
     NATS_ENDPOINT,

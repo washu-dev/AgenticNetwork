@@ -87,6 +87,44 @@ class RobotClient:
             logger.warning(f"Failed to stop video stream: {e}")
             return {"status": "error", "error": str(e)}
 
+    async def trigger_video_playback(self, host: str, camera_port: int) -> Optional[float]:
+        """Mock-only: tell mock_pi to play its recorded video from frame 0.
+
+        Real Pi camera never has a /stream/play endpoint — it returns 404
+        and we ignore it.  Mock Pi honours it by unfreezing its video for
+        one full play-through and reports the clip duration back.
+
+        Returns:
+            The video's duration in seconds when the endpoint exists and
+            responds with ``playback_seconds`` (mock Pi path).
+            ``None`` for real Pi / unreachable / response without the key.
+        """
+        try:
+            async with httpx.AsyncClient(timeout=2) as client:
+                r = await client.post(f"http://{host}:{camera_port}/stream/play")
+                if r.status_code == 200:
+                    data = r.json()
+                    secs = data.get("playback_seconds")
+                    if isinstance(secs, (int, float)) and secs > 0:
+                        return float(secs)
+        except Exception:
+            # Real Pi / unreachable / not a mock — silently ignore.
+            pass
+        return None
+
+    async def pause_video_playback(self, host: str, camera_port: int) -> None:
+        """Mock-only: tell mock_pi to pause its recorded video and rewind
+        to frame 0.  Called on mission cancel so the next task starts from
+        a clean opener instead of mid-playback.
+
+        Real Pi has no /stream/pause endpoint — 404 is silently ignored.
+        """
+        try:
+            async with httpx.AsyncClient(timeout=2) as client:
+                await client.post(f"http://{host}:{camera_port}/stream/pause")
+        except Exception:
+            pass
+
     async def _post_command(self, host: str, port: int, payload: dict) -> dict:
         """POST a command to Pi's /command endpoint."""
         try:

@@ -305,6 +305,20 @@ class RobotAgentService:
     # ── Task handlers (invoked by RobotAgentExecutor) ────────────────────
 
     async def run_agent_task(self, request: dict) -> dict:
+        # Trigger mock_pi to play its recorded video from frame 0 (no-op on
+        # real Pi — they don't have /stream/play).  Mock Pi reports the
+        # video's length back; we use that to extend the mission observation
+        # window so every recorded scenario runs to completion, independent
+        # of whatever duration the prompt happened to specify.
+        video_s = await robot_client.trigger_video_playback(self.pi_host, self.camera_port)
+        if video_s and not request.get("duration_s"):
+            # +2 s guard so YOLO still sees the final frames before mission ends.
+            request = {**request, "duration_s": int(video_s) + 2}
+            logger.info(
+                f"[{self.robot_id}] mock-mode: extending mission to {request['duration_s']}s "
+                f"to cover the full {video_s:.1f}s video"
+            )
+
         from .pi_agents.base_agent import pi_agent_manager
         mgr_agent = pi_agent_manager.get_or_create(self._robot)
         if not mgr_agent.on_reasoning and self._agent and self._agent.on_reasoning:
@@ -354,6 +368,9 @@ class RobotAgentService:
         }
 
     async def run_direct_control(self, request: dict) -> dict:
+        # Trigger mock_pi playback for direct-control missions too.
+        await robot_client.trigger_video_playback(self.pi_host, self.camera_port)
+
         prompt = request.get("prompt", "")
         actions = request.get("actions", [])
         if actions:
@@ -382,6 +399,10 @@ class RobotAgentService:
             )
         except Exception as e:
             logger.warning(f"[{self.robot_id}] Pi stop failed: {e}")
+        # Mock-only: tell mock_pi to rewind the video to frame 0 so the UI
+        # stops showing stale footage from the cancelled run.  Real Pi has
+        # no /stream/pause endpoint — 404 is silently ignored.
+        await robot_client.pause_video_playback(self.pi_host, self.camera_port)
         return {"status": "cancelled", "agent_id": self.robot_id}
 
     # ── WebSocket server (unchanged) ─────────────────────────────────────

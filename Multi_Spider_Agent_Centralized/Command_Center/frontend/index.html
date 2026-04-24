@@ -1060,11 +1060,15 @@ createApp({
 
         // Helper: extract a count + descriptor from a row like
         //   "🔴 Hostile Armor: 1 tank"  or  "✓ Casualties:    None"
+        // Strict: only a leading digit counts as non-zero.  Anything else
+        // ("None", "No armor present", "No casualties", "N/A", empty) → 0.
+        // Previous version fell back to `s ? 1 : 0`, which let any free-form
+        // "no X" phrasing ghost-inflate the count to 1 with no bullet.
         const parseCount = (raw) => {
           const s = (raw || '').trim();
-          if (!s || /^none$/i.test(s)) return { count: 0, desc: 'None' };
           const m = s.match(/^(\d+)/);
-          return { count: m ? parseInt(m[1], 10) : (s ? 1 : 0), desc: s };
+          if (m) return { count: parseInt(m[1], 10), desc: s };
+          return { count: 0, desc: s || 'None' };
         };
 
         const armorRow = chunk.match(/(?:🔴|✓)\s+Hostile Armor:\s+(.+?)(?:\r|\n|$)/);

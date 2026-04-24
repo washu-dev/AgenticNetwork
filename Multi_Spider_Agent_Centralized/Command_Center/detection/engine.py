@@ -130,8 +130,11 @@ def _crop_bbox(frame_jpeg: bytes, bbox: dict) -> Optional[bytes]:
         return None
 
 
-async def _vlm_dedup_objects(track_crops: dict, cooccurrences: set = None, emit_fn=None) -> dict:
-    """Use VLM to deduplicate tracked objects and return accurate counts.
+async def _vlm_dedup_objects(
+    track_crops: dict, cooccurrences=None, emit_fn=None,
+    cooccur_persistence: int = 3,
+) -> tuple[dict, dict]:
+    """Use VLM to deduplicate tracked objects and return counts + groups.
 
     Args:
         track_crops: dict of {label:track_id → JPEG bytes}
@@ -139,12 +142,32 @@ async def _vlm_dedup_objects(track_crops: dict, cooccurrences: set = None, emit_
                        (these are definitely different objects, no need to ask VLM)
 
     Returns:
-        dict of {label: count} with deduplicated counts
+        (counts, groups) where:
+          counts — dict of {label: unique_count}
+          groups — dict of {label: list[list[key]]} — one inner list per
+                   unique physical object.  E.g. {"person": [["person:5",
+                   "person:18"], ["person:2"], ...]} means track 5 and 18
+                   are the SAME person and should be collapsed to one
+                   bullet in the final report.  Callers use the first key
+                   of each inner list as the "representative" crop.
     """
     import base64
     from collections import defaultdict
 
-    cooccurrences = cooccurrences or set()
+    # Normalize cooccurrences: accept either a legacy set-of-pairs or the
+    # new dict-of-pair→count.  Only pairs that co-occurred for
+    # `cooccur_persistence` frames or more are trusted as "really different
+    # objects" — one-off YOLO NMS slips don't count.
+    if cooccurrences is None:
+        trusted_cooccurs = set()
+    elif isinstance(cooccurrences, dict):
+        trusted_cooccurs = {
+            p for p, cnt in cooccurrences.items()
+            if cnt >= cooccur_persistence
+        }
+    else:
+        trusted_cooccurs = set(cooccurrences)
+    cooccurrences = trusted_cooccurs
 
     # Group crops by label
     label_groups = defaultdict(list)
@@ -153,6 +176,7 @@ async def _vlm_dedup_objects(track_crops: dict, cooccurrences: set = None, emit_
         label_groups[label].append((key, crop_bytes))
 
     result_counts = {}
+    result_groups: dict = {}  # label → list[list[key]]
 
     if emit_fn and label_groups:
         classes_str = ", ".join(f"{k}×{len(v)}" for k, v in label_groups.items())
@@ -161,25 +185,25 @@ async def _vlm_dedup_objects(track_crops: dict, cooccurrences: set = None, emit_
         except Exception:
             pass
 
+    # Fast path for trivial labels (0-1 crops, or all co-occurred) — no VLM
+    # call, no gather needed.  Also pre-compute min_unique so the expensive
+    # VLM branch below can run in parallel across all labels.
+    from itertools import combinations as _combinations
+    from langchain_core.messages import HumanMessage
+
+    vlm_jobs = []  # [(label, crops, min_unique, cooccur_note)]
     for label, crops in label_groups.items():
         if len(crops) <= 1:
             result_counts[label] = len(crops)
+            result_groups[label] = [[key] for key, _ in crops]
             continue
 
-        # Check co-occurrences: find the largest group that ALL appeared in the same single frame.
-        # cooccurrences stores pairwise co-occurrences, but we need the max clique.
-        # For small N, check each frame's contribution directly.
-        # We stored pairwise, so find the largest subset where every pair co-occurred.
         crop_keys = [key for key, _ in crops]
         min_unique = 1
-        # Simple approach: for each pair that co-occurred, that's at least 2.
-        # Then check if any triple all co-occurred, etc.
-        from itertools import combinations
         for size in range(len(crop_keys), 1, -1):
             found = False
-            for combo in combinations(crop_keys, size):
-                # Check if every pair in this combo co-occurred
-                if all(frozenset({a, b}) in cooccurrences for a, b in combinations(combo, 2)):
+            for combo in _combinations(crop_keys, size):
+                if all(frozenset({a, b}) in cooccurrences for a, b in _combinations(combo, 2)):
                     min_unique = size
                     found = True
                     break
@@ -188,51 +212,135 @@ async def _vlm_dedup_objects(track_crops: dict, cooccurrences: set = None, emit_
 
         logger.info(f"VLM dedup: {label} — {len(crops)} tracks, min {min_unique} from co-occurrence")
 
-        # If all tracks co-occurred, no need to ask VLM
         if min_unique >= len(crops):
             result_counts[label] = len(crops)
+            result_groups[label] = [[key] for key, _ in crops]
             logger.info(f"VLM dedup: {label} — all {len(crops)} co-occurred, skipping VLM")
             continue
 
-        # Ask VLM, but tell it about the minimum
-        from langchain_core.messages import HumanMessage
-        vlm = create_vision_llm()
-
-        cooccur_note = ""
         if min_unique > 1:
-            cooccur_note = f" Note: at least {min_unique} of these were seen simultaneously, so there are at least {min_unique} unique ones."
+            cooccur_note = (
+                f" Note: at least {min_unique} of these were seen "
+                f"simultaneously in one frame, so there are at least "
+                f"{min_unique} unique ones."
+            )
+        else:
+            # No crops co-occurred → strong prior that every crop is the
+            # SAME physical object seen at different moments/angles/zoom.
+            cooccur_note = (
+                " None of these appeared in the same frame at the same "
+                "time.  This is a STRONG prior that they are all the SAME "
+                "physical object seen at different moments, angles, "
+                "distances, or lighting — the tracker assigns a fresh ID "
+                "each time an object briefly leaves and re-enters view.  "
+                "DEFAULT answer: 1.  Only raise the count above 1 if you "
+                "can point to a CONCRETE visual difference that could NOT "
+                "be explained by angle/distance/lighting — e.g. distinctly "
+                "different camouflage patterns, different colors, different "
+                "turret/hull shapes, different vehicle classes (a tank vs a "
+                "truck), clearly different clothing on a person.  "
+                "Partial occlusion, angle change, or different zoom levels "
+                "are NEVER enough to justify >1."
+            )
+        vlm_jobs.append((label, crops, min_unique, cooccur_note))
 
+    async def _dedup_one_label(label, crops, min_unique, cooccur_note):
+        vlm = create_vision_llm()
         content = [{"type": "text", "text": (
-            f"I have {len(crops)} cropped images of '{label}' detected by a robot camera during patrol. "
-            f"Some may be the same {label} seen at different times/angles. "
-            f"Look at each image and determine how many UNIQUE {label}(s) there are.{cooccur_note} "
-            f"Reply with ONLY a number."
+            f"I have {len(crops)} cropped images of '{label}' detected by a "
+            f"robot camera during a short patrol sequence (often under a "
+            f"minute). Some are very likely the same {label} seen at "
+            f"different times/angles — the tracker frequently loses and "
+            f"re-acquires the same object, creating multiple track IDs for "
+            f"one physical {label}.\n\n"
+            f"GROUP the images: each group must contain all images that "
+            f"depict the SAME physical {label}.  Two images belong in the "
+            f"same group if they could plausibly be the same {label} seen "
+            f"at different moments/angles/distances — identical or very "
+            f"similar colors, clothing, camouflage, vehicle shape, etc.  "
+            f"Only place them in different groups when you can point to a "
+            f"CONCRETE visual difference that could NOT be explained by "
+            f"angle/distance/lighting (distinct clothing colors for people, "
+            f"different vehicle classes, clearly different camouflage "
+            f"patterns).\n\n"
+            f"Partial occlusion, angle change, or different zoom are "
+            f"NEVER enough to split into separate groups.{cooccur_note}\n\n"
+            f"Respond with ONLY a JSON array of arrays of 1-based image "
+            f"indices.  Example for 5 images where 1+3 are the same and "
+            f"2+4+5 are the same: [[1,3],[2,4,5]].  If every image is "
+            f"different: [[1],[2],[3],[4],[5]].  If all are the same one "
+            f"object: [[1,2,3,4,5]].  No prose, just the JSON."
         )}]
-
         for i, (key, crop_bytes) in enumerate(crops):
             img_b64 = base64.b64encode(crop_bytes).decode()
-            content.append({
-                "type": "text",
-                "text": f"Image {i+1} (track: {key}):"
-            })
+            content.append({"type": "text", "text": f"Image {i+1} (track: {key}):"})
             content.append({
                 "type": "image_url",
                 "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}
             })
-
         try:
             response = await vlm.ainvoke([HumanMessage(content=content)])
             answer = response.content.strip()
-            import re
-            nums = re.findall(r'\d+', answer)
-            count = int(nums[0]) if nums else len(crops)
-            # Ensure count is at least the co-occurrence minimum
-            count = max(count, min_unique)
-            result_counts[label] = count
-            logger.info(f"VLM dedup: {label} — {len(crops)} tracks → {count} unique (min {min_unique})")
+            import json as _json
+            import re as _re
+            m = _re.search(r"\[\s*\[.*?\]\s*\]", answer, _re.DOTALL)
+            groups: list = []
+            if m:
+                try:
+                    raw_groups = _json.loads(m.group(0))
+                    if isinstance(raw_groups, list):
+                        seen_idx = set()
+                        for g in raw_groups:
+                            if not isinstance(g, list):
+                                continue
+                            cluster = []
+                            for idx in g:
+                                try:
+                                    i0 = int(idx) - 1
+                                except (TypeError, ValueError):
+                                    continue
+                                if 0 <= i0 < len(crops) and i0 not in seen_idx:
+                                    seen_idx.add(i0)
+                                    cluster.append(crops[i0][0])
+                            if cluster:
+                                groups.append(cluster)
+                        for i0, (k, _) in enumerate(crops):
+                            if i0 not in seen_idx:
+                                groups.append([k])
+                except Exception as e:
+                    logger.warning(f"VLM dedup: JSON parse failed for {label}: {e}")
+            if not groups:
+                nums = _re.findall(r'\d+', answer)
+                count = int(nums[0]) if nums else len(crops)
+                count = max(count, min_unique)
+                crop_keys_only = [k for k, _ in crops]
+                groups = [[k] for k in crop_keys_only[:count]]
+                if len(crop_keys_only) > count and groups:
+                    groups[0].extend(crop_keys_only[count:])
+            while len(groups) < min_unique and any(len(g) > 1 for g in groups):
+                largest_idx = max(range(len(groups)), key=lambda i: len(groups[i]))
+                largest = groups[largest_idx]
+                groups[largest_idx] = largest[:1]
+                for k in largest[1:]:
+                    groups.append([k])
+                if len(groups) >= min_unique:
+                    break
+            count = len(groups)
+            logger.info(
+                f"VLM dedup: {label} — {len(crops)} tracks → {count} unique "
+                f"(min {min_unique}); groups={groups}"
+            )
+            return label, count, groups
         except Exception as e:
             logger.warning(f"VLM dedup failed for {label}: {e}, falling back to track count")
-            result_counts[label] = max(min_unique, len(crops))
+            return label, max(min_unique, len(crops)), [[k] for k, _ in crops]
+
+    if vlm_jobs:
+        # One VLM call per label in parallel — all jobs are independent.
+        vlm_results = await asyncio.gather(*[_dedup_one_label(*j) for j in vlm_jobs])
+        for label, count, groups in vlm_results:
+            result_counts[label] = count
+            result_groups[label] = groups
 
     if emit_fn and result_counts:
         summary = ", ".join(f"{k}={v}" for k, v in result_counts.items())
@@ -240,7 +348,7 @@ async def _vlm_dedup_objects(track_crops: dict, cooccurrences: set = None, emit_
             await emit_fn(f"VLM dedup: result — {summary}")
         except Exception:
             pass
-    return result_counts
+    return result_counts, result_groups
 
 
 async def _vlm_resolve_label(crop_jpeg: bytes, candidate_labels: list) -> str:
@@ -260,10 +368,34 @@ async def _vlm_resolve_label(crop_jpeg: bytes, candidate_labels: list) -> str:
     vlm = create_vision_llm()
 
     labels_str = " or ".join(candidate_labels)
+
+    # Extra guidance when the candidates include vehicle-class ambiguities
+    # that the COCO-style tracker routinely gets wrong — a wheeled Humvee
+    # with a roof-mounted gun keeps flip-flopping between 'truck' and 'tank'.
+    vehicle_labels = {"tank", "truck", "car", "bus"}
+    has_vehicle_conflict = (
+        sum(1 for l in candidate_labels if l.lower() in vehicle_labels) >= 2
+    )
+    vehicle_guidance = ""
+    if has_vehicle_conflict:
+        vehicle_guidance = (
+            "\n\nIMPORTANT — vehicle disambiguation rules:\n"
+            "• TANK = continuous metal TRACKS/TREADS on both sides, NO wheels visible, "
+            "large rotating TURRET with a long main cannon.\n"
+            "• TRUCK = WHEELS (four or more, rubber tires), boxy cargo/cabin. "
+            "A Humvee, armored personnel transport, or any military-style vehicle with "
+            "a ROOF-MOUNTED gun but NO turret-with-cannon is still a TRUCK, NOT a tank.\n"
+            "• CAR = WHEELS, smaller passenger vehicle (sedan, hatchback, coupe).\n"
+            "If the vehicle has WHEELS, it is NEVER a tank. When in doubt between tank "
+            "and truck, answer TRUCK — false positives on 'tank' are more costly.\n"
+        )
+
     msg = HumanMessage(content=[
         {"type": "text", "text": (
             f"The detection system is confused about this object. "
-            f"Is this a {labels_str}? Reply with ONLY one of: {', '.join(candidate_labels)}"
+            f"Is this a {labels_str}? Reply with ONLY one of: "
+            f"{', '.join(candidate_labels)}."
+            f"{vehicle_guidance}"
         )},
         {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}},
     ])
@@ -314,6 +446,217 @@ async def _vlm_describe_scene(frame_bytes: bytes, task_goal: str) -> str:
         return ""
 
 
+async def _vlm_group_cross_label(
+    crops: dict, emit_fn=None
+) -> list[list[str]]:
+    """Cross-label grouping pass — given a mixed-label dict of crops, return
+    groups of keys the VLM believes represent the SAME physical object.
+
+    Used specifically for the vehicle family (tank/truck/car/bus) where
+    YOLO's inconsistent labeling can split one physical Humvee across two
+    or more YOLO classes.  The per-label dedup can't merge these because
+    it only compares within one label.
+
+    Returns list[list[key]] — one inner list per physical object.  On any
+    parse failure, falls back to each key being its own group (no merge).
+    """
+    import base64
+    import json as _json
+    import re as _re
+    from langchain_core.messages import HumanMessage
+
+    if not crops:
+        return []
+    if len(crops) == 1:
+        return [[next(iter(crops))]]
+
+    items = list(crops.items())  # [(key, bytes), ...]
+    vlm = create_vision_llm()
+
+    content = [{"type": "text", "text": (
+        f"I have {len(items)} cropped images of vehicles detected by a "
+        f"robot camera during a short patrol sequence.  The object "
+        f"detector is inconsistent and may label the same physical "
+        f"vehicle as different classes (tank/truck/car/bus) across frames "
+        f"— e.g. a Humvee might appear as 'truck' from one angle and "
+        f"'bus' from another.\n\n"
+        f"GROUP the images: each group contains all crops that depict "
+        f"the SAME physical vehicle, regardless of what label the "
+        f"detector assigned.  Two crops belong in the same group if they "
+        f"could plausibly be the same vehicle at different moments/"
+        f"angles/distances — same colors, same camouflage, same general "
+        f"silhouette.  Only split into different groups when you can "
+        f"point to a CONCRETE visual difference: different camouflage "
+        f"patterns, clearly different colors, different chassis type "
+        f"(tracked vs wheeled), different vehicle classes (e.g. a tank "
+        f"vs a Humvee).\n\n"
+        f"Partial occlusion, angle change, or different zoom are NEVER "
+        f"enough to split into separate groups.\n\n"
+        f"Respond with ONLY a JSON array of arrays of 1-based image "
+        f"indices.  Example: [[1,3,5],[2,4]].  No prose."
+    )}]
+    for i, (key, crop_bytes) in enumerate(items):
+        img_b64 = base64.b64encode(crop_bytes).decode()
+        content.append({
+            "type": "text",
+            "text": f"Image {i+1} (track: {key}):"
+        })
+        content.append({
+            "type": "image_url",
+            "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"},
+        })
+    try:
+        response = await vlm.ainvoke([HumanMessage(content=content)])
+        answer = response.content.strip()
+        m = _re.search(r"\[\s*\[.*?\]\s*\]", answer, _re.DOTALL)
+        if not m:
+            logger.info(f"VLM vehicle group: no JSON in answer → {answer[:200]}")
+            return [[k] for k, _ in items]
+        raw = _json.loads(m.group(0))
+        if not isinstance(raw, list):
+            return [[k] for k, _ in items]
+        groups: list[list[str]] = []
+        seen = set()
+        for g in raw:
+            if not isinstance(g, list):
+                continue
+            cluster = []
+            for idx in g:
+                try:
+                    i0 = int(idx) - 1
+                except (TypeError, ValueError):
+                    continue
+                if 0 <= i0 < len(items) and i0 not in seen:
+                    seen.add(i0)
+                    cluster.append(items[i0][0])
+            if cluster:
+                groups.append(cluster)
+        # Anything not grouped → singleton
+        for i0 in range(len(items)):
+            if i0 not in seen:
+                groups.append([items[i0][0]])
+        logger.info(f"VLM vehicle group: {len(items)} reps → {len(groups)} physical vehicles; groups={groups}")
+        return groups
+    except Exception as e:
+        logger.warning(f"VLM cross-label group failed: {e}")
+        return [[k] for k, _ in items]
+
+
+async def _vlm_casualty_sweep(
+    frame_bytes: bytes, known_person_descriptions: list[str]
+) -> list[dict]:
+    """Full-frame VLM pass looking for casualties the object detector missed.
+
+    YOLO/COCO's 'person' class was trained almost exclusively on upright
+    subjects — a body lying flat, severed torsos, dismembered limbs, or
+    partial bodies on the ground often fall outside its distribution and
+    go undetected.  VLM, being a general vision model, has no such
+    constraint: it can see a pink half-torso on the floor the same way a
+    human would.
+
+    We hand the VLM the full frame plus a list of persons the object
+    detector DID find (so it can skip those) and ask it to enumerate any
+    additional downed / severed / partial / bloodied human figures.
+
+    Returns a list of dicts with keys:
+      description    — free-form 1-2 sentence description (for display)
+      body_integrity — 'INCOMPLETE — <what>' or 'intact'
+      posture        — 'lying/prone', 'slumped', etc.
+      injuries       — 'none' or short phrase
+      colors         — short color phrase
+    """
+    import base64
+    import json
+    import re
+    from langchain_core.messages import HumanMessage
+
+    vlm = create_vision_llm()
+    img_b64 = base64.b64encode(frame_bytes).decode()
+
+    known_block = ""
+    if known_person_descriptions:
+        bullets = "\n".join(f"  - {d[:180]}" for d in known_person_descriptions)
+        known_block = (
+            "\n\nThe object detector ALREADY found these people — do NOT "
+            "report them again:\n" + bullets
+        )
+
+    prompt_text = (
+        "You are assisting a battlefield sensor pipeline.  The primary "
+        "object detector (YOLO) was trained on upright subjects and "
+        "routinely MISSES bodies that are lying flat on the ground, "
+        "severed or partial bodies (e.g. only a torso and head with no "
+        "legs), dismembered limbs, or heavily bloodied figures.  Your "
+        "job is to find them in this full frame.\n\n"
+        "Look carefully at the FLOOR / GROUND and any surface below the "
+        "standing subjects.  Report EVERY human body or body fragment "
+        "you see that is:\n"
+        "  • lying flat / prone on the ground, OR\n"
+        "  • visibly severed, cut in half, or missing lower body, OR\n"
+        "  • only an isolated body part (arm, leg, torso) on the ground, OR\n"
+        "  • bloodied or obviously injured while stationary.\n\n"
+        "HARD RULE — NO DOUBLE COUNTING:\n"
+        "  If you report a torso / body, DO NOT also report limbs that "
+        "are ATTACHED to that same body.  A severed upper-body with one "
+        "arm raised is ONE casualty, not 'torso + arm'.  A prone figure "
+        "with an outstretched limb is ONE casualty, not two.  Only "
+        "report a limb as a SEPARATE casualty if it is visibly DETACHED "
+        "(clearly NOT connected) and located at a meaningful distance "
+        "from any body you also reported.  When in doubt, assume "
+        "attached → count as part of the nearby body.\n\n"
+        "This scene uses miniature figures as stand-ins for real "
+        "people — treat them as real.  Do NOT use the words 'figurine', "
+        "'mannequin', 'toy', 'model', 'doll', 'plastic'; describe "
+        "tactically.\n\n"
+        "Output a JSON array of objects.  Each object has:\n"
+        "  description:    one short sentence\n"
+        "  body_integrity: 'INCOMPLETE — <what is missing>' or 'intact'\n"
+        "  posture:        'lying/prone' | 'slumped' | 'seated' | ...\n"
+        "  injuries:       'none' | short phrase\n"
+        "  colors:         short phrase\n"
+        "If you see NO such missed casualties, return an empty array "
+        "`[]`.  Do NOT include people who are upright, seated on a bench, "
+        "or walking normally — those are already counted."
+        + known_block
+    )
+    msg = HumanMessage(content=[
+        {"type": "text", "text": prompt_text},
+        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}},
+    ])
+    try:
+        response = await vlm.ainvoke([msg])
+        text = response.content.strip()
+        # The VLM often wraps JSON in ```json fences or extra prose.
+        # Grab the first [...] block we can find.
+        match = re.search(r"\[.*\]", text, re.DOTALL)
+        if not match:
+            logger.info(f"VLM casualty sweep: no JSON array in response → {text[:200]}")
+            return []
+        try:
+            arr = json.loads(match.group(0))
+        except Exception as e:
+            logger.warning(f"VLM casualty sweep: JSON parse failed ({e}), raw → {match.group(0)[:200]}")
+            return []
+        if not isinstance(arr, list):
+            return []
+        # Normalize entries
+        results = []
+        for item in arr:
+            if not isinstance(item, dict):
+                continue
+            results.append({
+                "description":    str(item.get("description", "")).strip(),
+                "body_integrity": str(item.get("body_integrity", "intact")).strip(),
+                "posture":        str(item.get("posture", "")).strip(),
+                "injuries":       str(item.get("injuries", "none")).strip(),
+                "colors":         str(item.get("colors", "")).strip(),
+            })
+        return results
+    except Exception as e:
+        logger.warning(f"VLM casualty sweep failed: {e}")
+        return []
+
+
 async def _vlm_describe_objects(track_crops: dict, emit_fn=None) -> dict:
     """Use VLM to describe the appearance of each detected object.
 
@@ -342,31 +685,124 @@ async def _vlm_describe_objects(track_crops: dict, emit_fn=None) -> dict:
         posture_hint = ""
         if label == "person":
             posture_hint = (
-                " Explicitly state: (1) posture (standing / sitting / lying / "
-                "in a wheelchair / other); (2) body integrity — WHICH body parts "
-                "are visible (head / torso / arms / legs). Be literal: if you "
-                "don't see legs, say so ('no legs visible', 'only torso and "
-                "arms present'). If the body appears incomplete, dismembered, "
-                "or severed, say that directly. Distinguish 'occluded by an "
-                "object' from 'the body itself is incomplete'."
                 "\n\n"
-                "HARD CONSTRAINT — DO NOT HALLUCINATE CONTEXT: describe ONLY "
+                "MANDATORY STRUCTURED OUTPUT — answer EVERY line below, in "
+                "this exact order, each on its own line. Do NOT skip a line "
+                "even if the answer is 'intact' or 'none':\n"
+                "  Body parts visible: <list: head / torso / arms (left/right) / "
+                "legs (left/right)>\n"
+                "  Body integrity: <intact | INCOMPLETE — describe what is "
+                "missing, e.g. 'no lower body / severed at waist', 'left arm "
+                "missing', 'only upper torso and head'. Distinguish truly "
+                "missing parts from three NON-missing cases — only call it "
+                "INCOMPLETE when the body ITSELF visibly ends:\n"
+                "      (1) parts merely occluded by an object (wall/table/"
+                "floor/bench hiding them) → intact\n"
+                "      (2) parts outside the crop/frame edges (the image is "
+                "cut off at the shoulders/waist, so you cannot see arms or "
+                "legs — but there is no visible STUMP or severance) → "
+                "intact.  A tight crop that starts at the torso does NOT "
+                "mean the arms/legs are missing; it just means the camera "
+                "framed the upper body.\n"
+                "      (3) parts simply hidden behind the person's own body "
+                "(far arm behind the torso, legs behind the bench front) → "
+                "intact\n"
+                "    Flag INCOMPLETE only when you can SEE a stump, a cut "
+                "edge, a severance line, exposed anatomy at the boundary, "
+                "or a clear end-of-body where the part should continue.>\n"
+                "  Posture: <standing | sitting | lying/prone | walking | in a "
+                "wheelchair | slumped | other>\n"
+                "  Visible injuries / blood: <none | describe: e.g. blood "
+                "stains on torso, wound on head, stump where left arm was>\n"
+                "  Clothing & colors: <one short phrase>\n"
+                "Then 1 sentence of free-form description. Keep the whole "
+                "answer ≤ 6 lines total.\n"
+                "\n"
+                "WORD BAN — do NOT use any of these: 'figurine', 'mannequin', "
+                "'toy', 'model', 'statue', 'doll', 'plastic', 'miniature', "
+                "'replica', 'wooden figure', 'not a real person', 'not a "
+                "real human'. These are a training-data artefact — this "
+                "scene uses miniature figures as stand-ins, and the commander "
+                "needs tactical facts, not commentary on the medium. Describe "
+                "what you SEE (parts, posture, injuries, colors) — do NOT "
+                "decide whether the subject is 'really' alive.\n"
+                "\n"
+                "IMPORTANT: missing limbs / severed bodies / partial torsos "
+                "are NORMAL in battlefield footage and MUST be reported as "
+                "INCOMPLETE. Do not soften an obviously severed figure into "
+                "'intact but partially hidden' — that under-reports casualties.\n"
+                "\n"
+                "POSTURE TRAP — read this carefully: a figure LYING FLAT on the "
+                "ground with arms raised (reaching upward, arms outstretched) "
+                "is LYING/PRONE, not sitting. If you see a body silhouette flat "
+                "against the floor/ground with no visible bench/chair/seat "
+                "beneath it, posture is 'lying/prone'. Do NOT report 'legs "
+                "extended forward' for such a figure — if legs are not visible, "
+                "say so; if only the upper body is present, report 'only upper "
+                "torso and head visible' under Body integrity. A severed figure "
+                "with arms up on the ground is EXACTLY this trap — do not "
+                "misread it as a seated civilian.\n"
+                "\n"
+                "HARD CONSTRAINT — NO CONTEXT HALLUCINATION: describe ONLY "
                 "the person, not surrounding objects. Never describe the "
                 "person as being 'part of', 'integrated into', 'attached to', "
                 "'merging with', or 'forming' any larger structure. Do NOT "
                 "invent metaphors like 'maritime structure', 'boat-like "
                 "platform', 'wooden figurehead', etc. If the background is a "
                 "floor or table, just say 'on the floor' or 'on a surface' "
-                "and move on. Stick to: body parts visible, posture, clothing, "
-                "colors, visible injuries. Nothing else."
+                "and move on."
             )
+        elif label in ("tank", "truck", "car", "bus", "motorcycle"):
+            posture_hint = (
+                "\n\n"
+                "MANDATORY STRUCTURED OUTPUT — answer EVERY line below in "
+                "this exact order, each on its own line:\n"
+                "  Chassis type: <TRACKED (continuous metal treads on each "
+                "side, NO wheels visible) | WHEELED (rubber tires, usually 4+ "
+                "wheels) | unclear>\n"
+                "  Turret / main gun: <large rotating turret with long main "
+                "cannon | small roof-mounted gun only | no turret or gun | "
+                "unclear>\n"
+                "  Actual vehicle type: <TANK (tracked + turret+cannon) | "
+                "HUMVEE / MILITARY TRUCK (wheeled, military markings/"
+                "camouflage/armored, may have roof-mounted gun but NO "
+                "turret-cannon) | CIVILIAN TRUCK / PICKUP | CIVILIAN CAR / "
+                "SEDAN / SUV | OTHER>\n"
+                "  Colors / markings: <short phrase, e.g. 'olive-green "
+                "camouflage', 'tan sand-color, military star marking', "
+                "'white civilian sedan'>\n"
+                "  Orientation / state: <short phrase, e.g. 'turret facing "
+                "west, stationary', 'parked facing road'>\n"
+                "Then 1 sentence of free-form description. Keep total ≤ 6 "
+                "lines.\n"
+                "\n"
+                "DISAMBIGUATION RULES — READ CAREFULLY:\n"
+                "  • If WHEELS are visible, the vehicle is NEVER a tank. A "
+                "Humvee / armored transport / military truck with a ROOF-"
+                "MOUNTED gun is NOT a tank — it is a HUMVEE / MILITARY TRUCK.\n"
+                "  • A TANK requires BOTH continuous tracks AND a turret with "
+                "a long main cannon. Missing either → not a tank.\n"
+                "  • When uncertain between TANK and MILITARY TRUCK, answer "
+                "MILITARY TRUCK — false positives on 'tank' inflate hostile-"
+                "armor counts and cost the commander credibility.\n"
+            )
+        # De-bias the subject noun for vehicle classes — YOLO/COCO has no
+        # Humvee / APC class so wheeled military vehicles land in the 'tank'
+        # bucket, and priming the VLM with "describe this tank" causes it to
+        # confirm 'tracked tank' on a clear Humvee.  For vehicle labels we
+        # hand the VLM the generic word 'vehicle' and let the structured
+        # output force a Chassis type / Actual vehicle type verdict.  Other
+        # classes keep the specific label since it helps accuracy.
+        subject = "vehicle" if label in ("tank", "truck", "car", "bus", "motorcycle") else label
         msg = HumanMessage(content=[
             {"type": "text", "text": (
-                f"Briefly describe this {label}'s appearance in 1-2 sentences. "
-                f"Include colors, clothing, size, distinguishing features, "
-                f"and any notable state or posture. Also mention if this "
-                f"object is clearly NOT a {label} (e.g. a misclassification "
-                f"by the object detector).{posture_hint} Be factual and concise."
+                f"Briefly describe this {subject}'s appearance in 1-2 sentences. "
+                f"Include colors, size, distinguishing features, "
+                f"and any notable state or posture. Only flag this as 'not a "
+                f"{subject}' when the detector has boxed something that clearly "
+                f"has no {subject}-like form at all (e.g. an actual object such "
+                f"as a traffic light or bush, not a miniature version of a "
+                f"{subject}).{posture_hint} Be factual and concise."
             )},
             {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}},
         ])
@@ -374,7 +810,16 @@ async def _vlm_describe_objects(track_crops: dict, emit_fn=None) -> dict:
         try:
             response = await vlm.ainvoke([msg])
             desc = response.content.strip()
-            logger.info(f"VLM describe: {key} → {desc[:80]}")
+            # Log full description so diagnostics (e.g. "Body integrity:
+            # INCOMPLETE" for a severed body, or "Chassis type: WHEELED" for
+            # a mis-IDed Humvee) are visible in the server log. Use explicit
+            # line markers so multi-line structured output is easy to read.
+            logger.info(
+                f"VLM describe: {key} →\n"
+                f"----- begin description -----\n"
+                f"{desc}\n"
+                f"----- end description -----"
+            )
             if emit_fn:
                 try:
                     preview = desc if len(desc) <= 220 else desc[:217].rstrip() + "..."
@@ -401,46 +846,215 @@ async def _vlm_describe_objects(track_crops: dict, emit_fn=None) -> dict:
 
 
 def _is_misclassified(description: str, yolo_label: str) -> bool:
-    """True if the VLM description explicitly rejects the YOLO class.
+    """True if the VLM description explicitly OR softly rejects the YOLO class.
 
-    Matches patterns like 'not a bird', 'is not a person', 'does not appear to
-    be a car', 'this is a figurine rather than a bird', etc. Label is escaped
-    so multi-word classes ('sports ball') work too.
+    - Hard rejections: 'not a bird', 'is not a person', 'does not appear to be
+      a car', 'figurine rather than a bird', etc.
+    - Soft rejections for high-stakes labels (tank): 'resembling a tank',
+      'tank-like', 'looks like a tank', 'similar to a tank'.  The VLM uses
+      these phrasings when it sees something that isn't clearly the class
+      — for "tank" specifically we take soft doubt as a rejection because
+      false positives on armor are expensive (inflates ARMOR count).
+
+    Label is escaped so multi-word classes ('sports ball') work too.
     """
     if not description or not yolo_label:
         return False
-    label_esc = re.escape(yolo_label.strip().lower())
-    patterns = [
+    label = yolo_label.strip().lower()
+    label_esc = re.escape(label)
+    text = description.lower()
+
+    # Hard rejections — description contradicts the label outright.
+    hard = [
         rf"\b(?:not|is\s+not|not\s+actually)\s+an?\s+{label_esc}\b",
         rf"\bdoes(?:n'?t|\s+not)\s+appear\s+to\s+be\s+an?\s+{label_esc}\b",
+        rf"\bdoes(?:n'?t|\s+not)\s+show\s+an?\s+{label_esc}\b",
+        rf"\bdoes(?:n'?t|\s+not)\s+contain\s+an?\s+{label_esc}\b",
         rf"\brather\s+than\s+an?\s+{label_esc}\b",
         rf"\binstead\s+of\s+an?\s+{label_esc}\b",
+        rf"\bno\s+{label_esc}\s+(?:is\s+)?(?:visible|shown|present)\b",
     ]
+    if any(re.search(p, text) for p in hard):
+        return True
+
+    # Soft rejections — only for classes where over-counting is very costly.
+    # "tank" is the canonical case: a Humvee with a roof-mounted gun often
+    # comes back as "dark-colored armored vehicle resembling a tank".
+    HIGH_STAKES = {"tank"}
+    if label in HIGH_STAKES:
+        soft = [
+            rf"\bresembling\s+an?\s+{label_esc}\b",   # "resembling a tank"
+            rf"\b{label_esc}-like\b",                 # "tank-like"
+            rf"\bsimilar\s+to\s+an?\s+{label_esc}\b", # "similar to a tank"
+            rf"\blooks?\s+like\s+an?\s+{label_esc}\b",# "looks like a tank"
+            rf"\bappears?\s+like\s+an?\s+{label_esc}\b",
+            # "armored vehicle resembling a tank" — catch armored-vehicle phrasing
+            rf"\barmored\s+vehicle\s+(?:resembling|similar|that\s+looks)",
+        ]
+        if any(re.search(p, text) for p in soft):
+            return True
+
+    # NOTE: we deliberately do NOT treat "not a real person / mannequin /
+    # figurine" as a rejection.  This mini-city uses miniature figures to
+    # represent real subjects — dropping those counts would systematically
+    # under-count valid targets.  The describe prompt asks the VLM to stay
+    # in character and not use that phrasing; residual slips are handled
+    # at the Summary LLM layer, which has its own "REMAIN IN CHARACTER"
+    # rule and rewrites any medium-meta-commentary into tactical language.
+    return False
+
+
+def _vehicle_relabel_target(description: str, yolo_label: str) -> Optional[str]:
+    """If a vehicle-labeled track's VLM describe clearly identifies it as a
+    different vehicle class, return the correct label. Otherwise None.
+
+    Reads the structured 'Actual vehicle type: <X>' line produced by the
+    describe prompt, maps it to a target YOLO-compatible bucket, and
+    returns that if it differs from the YOLO label.  Handles all common
+    mislabel directions:
+      tank ↔ truck  (most frequent: COCO has no Humvee/APC)
+      car  → tank   (small tanks/APCs sometimes collapse into 'car')
+      bus  → truck  (Humvee can look like a short bus from the rear)
+      truck → tank  (turreted tracked vehicles occasionally land in 'truck')
+    """
+    if not description or not yolo_label:
+        return None
     text = description.lower()
-    return any(re.search(p, text) for p in patterns)
+    yolo = yolo_label.strip().lower()
+
+    VEHICLE_LABELS = {"tank", "truck", "car", "bus"}
+    if yolo not in VEHICLE_LABELS:
+        return None
+
+    # Extract the VLM's verdict from the structured line it's asked to produce.
+    actual = None
+    m = re.search(r"actual\s+vehicle\s+type\s*:\s*([^\n]+)", text)
+    if m:
+        actual = m.group(1).strip()
+    chassis = None
+    m2 = re.search(r"chassis\s+type\s*:\s*([^\n]+)", text)
+    if m2:
+        chassis = m2.group(1).strip()
+
+    # Map VLM verdict → target bucket.
+    target: Optional[str] = None
+    if actual:
+        if "tank" in actual and "not" not in actual and "no tank" not in actual:
+            target = "tank"
+        elif "humvee" in actual or "military truck" in actual or "military-style" in actual:
+            target = "truck"
+        elif "civilian car" in actual or "sedan" in actual or "suv" in actual or "hatchback" in actual:
+            target = "car"
+        elif "civilian truck" in actual or "pickup" in actual:
+            target = "truck"
+    # Fallback: prose signals.  Only use when the structured line is missing
+    # or ambiguous so we don't override the VLM's own verdict.
+    if target is None:
+        if re.search(r"\bhumvee\b", text) or re.search(r"\bmilitary[-\s]+truck\b", text):
+            target = "truck"
+        elif (
+            chassis and "tracked" in chassis and
+            re.search(r"(turret|main\s+cannon|main\s+gun)", text)
+        ):
+            target = "tank"
+
+    if target and target != yolo:
+        return target
+    return None
 
 
 def apply_vlm_corrections_to_counts(
     descriptions: dict, dedup_counts: dict
-) -> tuple[dict, list]:
-    """If VLM describe declared 'not a <label>' for a track, drop that track
-    from the label's count. Returns (corrected_counts, corrections_log).
+) -> tuple[dict, list, dict]:
+    """Post-process VLM describe output to clean up counts.
 
-    corrections_log is a list of (track_key, yolo_label) for logging.
+    Two kinds of corrections, both applied PROPORTIONALLY — the describe
+    output is per-crop (multiple crops can represent one unique vehicle),
+    but dedup_counts is per-unique-vehicle.  So for N crops of label L
+    where K of them are rejected/relabeled, we migrate round(K/N * count)
+    units, not K.  Otherwise multiple crops of the same Humvee would
+    decrement 'tank' once per crop and wipe the bucket.
+
+      1. Hard rejection — VLM said 'not a <label>' for a crop.
+      2. Vehicle re-label — VLM says 'tank' crop is actually wheeled/Humvee.
+
+    Returns:
+      (corrected_counts, corrections_log, key_renames)
+        corrections_log — list of (example_keys_str, reason_string) entries,
+          one per aggregated migration pair, for display.
+        key_renames — dict of {old_key: new_key} for vlm_descriptions so
+          the Summary LLM renders bullets under the correct class.  ALL
+          migrated crops get renamed (not just the example subset) so
+          the label prefix stays consistent; Summary caps bullet count
+          at dedup_counts anyway.
     """
     if not descriptions or not dedup_counts:
-        return dict(dedup_counts), []
+        return dict(dedup_counts), [], {}
+
+    from collections import defaultdict
+
+    # Tally per-label: how many crops total, how many want to migrate or reject.
+    crops_per_label: dict = defaultdict(int)
+    reject_per_label: dict = defaultdict(list)   # label → [track_key, ...]
+    migrate_per_pair: dict = defaultdict(list)   # (src, dst) → [track_key, ...]
+
+    for key, desc in descriptions.items():
+        label = key.split(":")[0]
+        crops_per_label[label] += 1
+        if _is_misclassified(desc, label):
+            reject_per_label[label].append(key)
+            continue
+        new_label = _vehicle_relabel_target(desc, label)
+        if new_label and new_label != label:
+            migrate_per_pair[(label, new_label)].append(key)
 
     corrected = dict(dedup_counts)
     corrections = []
-    for key, desc in descriptions.items():
-        label = key.split(":")[0]
-        if _is_misclassified(desc, label) and corrected.get(label, 0) > 0:
-            corrected[label] -= 1
-            corrections.append((key, label))
-            if corrected[label] <= 0:
-                del corrected[label]
-    return corrected, corrections
+    key_renames: dict = {}
+
+    # Apply rejections first, proportionally.
+    for label, bad_keys in reject_per_label.items():
+        total = crops_per_label.get(label, 0)
+        base = dedup_counts.get(label, 0)
+        if total <= 0 or base <= 0:
+            continue
+        drop = round(len(bad_keys) / total * base)
+        if drop <= 0:
+            continue
+        drop = min(drop, corrected.get(label, 0))
+        if drop <= 0:
+            continue
+        corrected[label] -= drop
+        if corrected[label] <= 0:
+            del corrected[label]
+        example_keys = ", ".join(bad_keys[:3]) + (" …" if len(bad_keys) > 3 else "")
+        corrections.append((example_keys, f"not a '{label}' ×{drop}"))
+
+    # Apply re-labels, proportionally.
+    for (src, dst), migrate_keys in migrate_per_pair.items():
+        total = crops_per_label.get(src, 0)
+        base = dedup_counts.get(src, 0)
+        if total <= 0 or base <= 0:
+            continue
+        move = round(len(migrate_keys) / total * base)
+        if move <= 0:
+            continue
+        move = min(move, corrected.get(src, 0))
+        if move <= 0:
+            continue
+        corrected[src] -= move
+        corrected[dst] = corrected.get(dst, 0) + move
+        if corrected[src] <= 0:
+            del corrected[src]
+        example_keys = ", ".join(migrate_keys[:3]) + (" …" if len(migrate_keys) > 3 else "")
+        corrections.append((example_keys, f"'{src}' → '{dst}' ×{move}"))
+        # Rename ALL migrated crops so Summary iterates them under the new
+        # label.  Dedup cap (handled in graph.py) still limits bullet count.
+        for old_k in migrate_keys:
+            _, _, tid_str = old_k.partition(":")
+            key_renames[old_k] = f"{dst}:{tid_str}"
+
+    return corrected, corrections, key_renames
 
 
 class TrackRemapper:
@@ -587,7 +1201,13 @@ class SearchMission:
     _seen_track_ids: set = field(default_factory=set)
     _track_crops: dict = field(default_factory=dict)  # track_key → JPEG bytes of cropped detection
     _tid_label_counts: dict = field(default_factory=dict)  # track_id → Counter of labels
-    _cooccurrences: set = field(default_factory=set)  # set of frozenset({key1, key2}) that appeared in same frame
+    # Counter of frames where two track keys appeared in the SAME frame.
+    # Was a set (any co-occurrence → definitely different), but one spurious
+    # YOLO double-detection (two overlapping boxes on the same physical
+    # object) could permanently mark a pair as different — wrongly forcing
+    # dedup's min_unique floor up.  Counting requires a persistence
+    # threshold before a pair is trusted as "truly different objects".
+    _cooccurrences: dict = field(default_factory=dict)  # frozenset({k1,k2}) → frame_count
     _track_bbox_areas: dict = field(default_factory=dict)  # track_key → bbox area of saved crop
     _track_remapper: TrackRemapper = field(default_factory=TrackRemapper)
     _alarmed_track_keys: set = field(default_factory=set)   # every track that has been alarmed (for dedup)
@@ -910,11 +1530,13 @@ async def run_search_mission(mission: SearchMission, existing_udp_receiver=None)
                 continue
 
             mission.frames_analyzed += 1
-            # Keep the latest full JPEG frame around in case scene-level VLM
-            # description is requested at mission end. Always overwriting (vs.
-            # saving the first frame) gives us a frame from when detections
-            # have stabilized rather than the instant the mission started.
-            if mission.vlm_describe_scene:
+            # Keep the latest full JPEG frame around — used by (a) scene-
+            # level VLM description when requested, and (b) the casualty
+            # sweep that runs whenever object-describe is on, to catch
+            # downed/severed bodies YOLO missed.  Always overwriting gives
+            # us a frame from after detections have stabilized rather than
+            # the instant the mission started.
+            if mission.vlm_describe_scene or mission.vlm_describe_objects:
                 mission._scene_frame = frame
 
             # Only run YOLO for non-face tasks (with ByteTrack for counting)
@@ -1018,18 +1640,49 @@ async def run_search_mission(mission: SearchMission, existing_udp_receiver=None)
                             mission._track_bbox_areas[key] = (bbox["x2"] - bbox["x1"]) * (bbox["y2"] - bbox["y1"])
                 mission.detections.append(d)
 
-            # Record co-occurrences: track keys that appear in same frame → definitely different objects
+            # Record co-occurrences: track keys that appear in same frame →
+            # definitely different objects.  EXCLUDE pairs whose bboxes
+            # overlap heavily (IoU > 0.3) — that's YOLO NMS failing and
+            # emitting two boxes on the same physical object, not two
+            # different objects.  Counting those as co-occurrence would
+            # force the dedup min_unique floor up incorrectly.
             from collections import defaultdict as _dd
             frame_keys_by_label = _dd(list)
+            frame_bbox_by_key: dict = {}
             for d in detections:
                 tid = d.get("track_id")
-                if tid is not None:
-                    frame_keys_by_label[d.get("label", "unknown")].append(f"{d.get('label', 'unknown')}:{tid}")
+                if tid is None:
+                    continue
+                lbl = d.get("label", "unknown")
+                k = f"{lbl}:{tid}"
+                frame_keys_by_label[lbl].append(k)
+                if d.get("bbox"):
+                    frame_bbox_by_key[k] = d["bbox"]
+
+            def _bbox_iou(a, b):
+                ix1 = max(a["x1"], b["x1"]); iy1 = max(a["y1"], b["y1"])
+                ix2 = min(a["x2"], b["x2"]); iy2 = min(a["y2"], b["y2"])
+                inter = max(0, ix2 - ix1) * max(0, iy2 - iy1)
+                if inter == 0:
+                    return 0.0
+                area_a = (a["x2"] - a["x1"]) * (a["y2"] - a["y1"])
+                area_b = (b["x2"] - b["x1"]) * (b["y2"] - b["y1"])
+                union = area_a + area_b - inter
+                return inter / union if union > 0 else 0.0
+
             for label, keys in frame_keys_by_label.items():
                 if len(keys) > 1:
                     for i in range(len(keys)):
                         for j in range(i + 1, len(keys)):
-                            mission._cooccurrences.add(frozenset({keys[i], keys[j]}))
+                            ki, kj = keys[i], keys[j]
+                            bi = frame_bbox_by_key.get(ki)
+                            bj = frame_bbox_by_key.get(kj)
+                            if bi and bj and _bbox_iou(bi, bj) > 0.3:
+                                continue  # same physical object, NMS slip
+                            pair = frozenset({ki, kj})
+                            mission._cooccurrences[pair] = (
+                                mission._cooccurrences.get(pair, 0) + 1
+                            )
 
             # Record first target match
             if mission.match_result is None:
@@ -1169,39 +1822,67 @@ async def run_search_mission(mission: SearchMission, existing_udp_receiver=None)
 
         agent.clear_mission()
 
-        # Resolve label conflicts: same track_id with different labels → use VLM to decide
+        # Resolve label conflicts: same track_id with different labels → use
+        # VLM to decide.  Runs in parallel (asyncio.gather) — each conflict
+        # is an independent VLM call, serializing them wastes wall time.
         if mission._tid_label_counts:
+            conflicts = []  # [(tid, labels, best_crop_key_or_None, label_freq)]
             for tid, label_freq in mission._tid_label_counts.items():
                 if len(label_freq) <= 1:
                     continue
                 labels = list(label_freq.keys())
-                # Pick the crop with highest confidence to ask VLM
                 best_crop_key = None
                 for label in labels:
-                    key = f"{label}:{tid}"
-                    if key in mission._track_crops:
-                        best_crop_key = key
+                    k = f"{label}:{tid}"
+                    if k in mission._track_crops:
+                        best_crop_key = k
                         break
-                if best_crop_key:
-                    try:
-                        resolved = await _vlm_resolve_label(mission._track_crops[best_crop_key], labels)
-                        logger.info(f"Mission {mission.mission_id}: VLM resolved track#{tid}: {labels} → {resolved}")
-                    except Exception as e:
-                        # Fallback to most frequent
-                        resolved = max(label_freq, key=label_freq.get)
-                        logger.warning(f"Mission {mission.mission_id}: VLM resolve failed for track#{tid}: {e}, using {resolved}")
-                else:
-                    resolved = max(label_freq, key=label_freq.get)
+                conflicts.append((tid, labels, best_crop_key, label_freq))
 
-                for label in labels:
-                    if label != resolved:
-                        bad_key = f"{label}:{tid}"
-                        mission._track_crops.pop(bad_key, None)
-                        mission._seen_track_ids.discard(bad_key)
-                        mission.detections = [
-                            d for d in mission.detections
-                            if not (d.get("track_id") == tid and d.get("label") == label)
-                        ]
+            async def _resolve_one(tid, labels, best_crop_key, label_freq):
+                if not best_crop_key:
+                    return tid, max(label_freq, key=label_freq.get)
+                try:
+                    r = await _vlm_resolve_label(mission._track_crops[best_crop_key], labels)
+                    logger.info(f"Mission {mission.mission_id}: VLM resolved track#{tid}: {labels} → {r}")
+                    return tid, r
+                except Exception as e:
+                    r = max(label_freq, key=label_freq.get)
+                    logger.warning(f"Mission {mission.mission_id}: VLM resolve failed for track#{tid}: {e}, using {r}")
+                    return tid, r
+
+            if conflicts:
+                resolved_pairs = await asyncio.gather(
+                    *[_resolve_one(*c) for c in conflicts]
+                )
+                resolution_map = dict(resolved_pairs)  # tid → resolved_label
+                for tid, labels, _best, _freq in conflicts:
+                    resolved = resolution_map[tid]
+                    for label in labels:
+                        if label != resolved:
+                            bad_key = f"{label}:{tid}"
+                            mission._track_crops.pop(bad_key, None)
+                            mission._seen_track_ids.discard(bad_key)
+                            mission.detections = [
+                                d for d in mission.detections
+                                if not (d.get("track_id") == tid and d.get("label") == label)
+                            ]
+
+        # Diagnostic: how many track crops survived label-conflict resolution?
+        # Helps answer "did YOLO even see it?" before we blame VLM.
+        if mission._track_crops:
+            from collections import Counter as _C
+            _label_counter = _C(k.split(":", 1)[0] for k in mission._track_crops)
+            logger.info(
+                f"Mission {mission.mission_id}: track crops before VLM dedup — "
+                f"{dict(_label_counter)} | keys={sorted(mission._track_crops.keys())}"
+            )
+            try:
+                await agent._emit(
+                    f"Tracks before VLM: {dict(_label_counter)}"
+                )
+            except Exception:
+                pass
 
         # VLM dedup: get accurate object counts by comparing cropped images.
         # Skip in alarm/watch mode — we care whether the target was ever seen,
@@ -1209,16 +1890,53 @@ async def run_search_mission(mission: SearchMission, existing_udp_receiver=None)
         # when the same object enters/leaves the frame several times.
         if mission._track_crops and not mission.alarm_on_detection:
             try:
-                dedup_counts = await _vlm_dedup_objects(mission._track_crops, mission._cooccurrences, emit_fn=agent._emit)
+                dedup_counts, dedup_groups = await _vlm_dedup_objects(
+                    mission._track_crops, mission._cooccurrences, emit_fn=agent._emit
+                )
                 mission.dedup_counts = dedup_counts
+                mission.dedup_groups = dedup_groups
                 logger.info(f"Mission {mission.mission_id}: VLM dedup counts: {dedup_counts}")
             except Exception as e:
                 logger.warning(f"Mission {mission.mission_id}: VLM dedup failed: {e}")
 
-        # VLM describe: describe each detected object's appearance (per-crop).
+        # VLM describe: describe each detected UNIQUE object's appearance.
+        # Describe is expensive (one VLM call per crop), so we only run it on
+        # the representative crops — one per dedup GROUP, where each group
+        # is a set of track IDs VLM confirmed as the same physical object.
+        # Within each group we pick the biggest-bbox crop as the rep (closest
+        # / clearest view).
         if mission._track_crops and mission.vlm_describe_objects:
             try:
-                descriptions = await _vlm_describe_objects(mission._track_crops, emit_fn=agent._emit)
+                describe_input = mission._track_crops
+                groups = getattr(mission, "dedup_groups", None)
+                if groups:
+                    representatives: dict = {}
+                    for label, grp_list in groups.items():
+                        for grp in grp_list:
+                            if not grp:
+                                continue
+                            # Pick rep by largest bbox area within the group.
+                            rep = max(
+                                grp,
+                                key=lambda kk: mission._track_bbox_areas.get(kk, 0),
+                            )
+                            if rep in mission._track_crops:
+                                representatives[rep] = mission._track_crops[rep]
+                    describe_input = representatives
+                    logger.info(
+                        f"Mission {mission.mission_id}: describe on "
+                        f"{len(representatives)} representative crop(s) "
+                        f"(vs {len(mission._track_crops)} raw tracks, "
+                        f"1 per dedup group)"
+                    )
+                    try:
+                        await agent._emit(
+                            f"VLM describe: reduced to {len(representatives)} "
+                            f"representative crop(s) from {len(mission._track_crops)} raw tracks"
+                        )
+                    except Exception:
+                        pass
+                descriptions = await _vlm_describe_objects(describe_input, emit_fn=agent._emit)
                 mission.vlm_descriptions = descriptions
                 logger.info(f"Mission {mission.mission_id}: VLM descriptions: {list(descriptions.keys())}")
 
@@ -1228,20 +1946,26 @@ async def run_search_mission(mission: SearchMission, existing_udp_receiver=None)
                 # numbers. Surface the correction in the reasoning trace so the
                 # commander can see the self-correction happen.
                 if hasattr(mission, "dedup_counts") and mission.dedup_counts:
-                    corrected, corrections = apply_vlm_corrections_to_counts(
+                    corrected, corrections, key_renames = apply_vlm_corrections_to_counts(
                         descriptions, mission.dedup_counts
                     )
                     if corrections:
                         mission.dedup_counts = corrected
-                        corrected_tracks = ", ".join(f"{k} was not a '{l}'" for k, l in corrections)
+                        # Apply key renames so Summary iterates re-labeled
+                        # crops under the correct class prefix.  dedup cap
+                        # in graph.py limits bullet count to corrected[dst].
+                        for old_k, new_k in key_renames.items():
+                            desc = mission.vlm_descriptions.pop(old_k, None)
+                            if desc is not None:
+                                mission.vlm_descriptions[new_k] = desc
+                        corrected_tracks = "; ".join(f"{r}" for _, r in corrections)
                         logger.info(
                             f"Mission {mission.mission_id}: VLM corrected counts: "
                             f"{corrected_tracks} → counts now {corrected}"
                         )
                         try:
                             await agent._emit(
-                                f"VLM correction: dropped {len(corrections)} "
-                                f"misclassified track(s) — {corrected_tracks}"
+                                f"VLM correction: {corrected_tracks}"
                             )
                             await agent._emit(
                                 f"VLM correction: counts now → "
@@ -1249,8 +1973,155 @@ async def run_search_mission(mission: SearchMission, existing_udp_receiver=None)
                             )
                         except Exception:
                             pass
+
+                # ── Cross-label vehicle family dedup ──
+                # Per-label dedup can leave one physical Humvee counted twice:
+                # once under 'truck' (tracks YOLO called truck) and once under
+                # 'bus' or 'car' (tracks YOLO called bus/car).  The earlier
+                # relabel migrations moved those into the correct bucket, but
+                # they're still separate GROUPS inside that bucket.  Run a
+                # final cross-label VLM pass on all vehicle reps and merge
+                # groups the VLM confirms as the same physical vehicle.
+                VEHICLE_FAMILY = {"tank", "truck", "car", "bus", "motorcycle"}
+                vehicle_reps = {
+                    k: mission._track_crops[k]
+                    for k in list(mission.vlm_descriptions.keys())
+                    if k.split(":", 1)[0] in VEHICLE_FAMILY
+                    and k in mission._track_crops
+                }
+                if len(vehicle_reps) >= 2:
+                    try:
+                        merge_groups = await _vlm_group_cross_label(
+                            vehicle_reps, emit_fn=agent._emit
+                        )
+                        # merge_groups: list[list[key]] — each inner list is
+                        # one physical vehicle, collapsing across labels.
+                        # Rebuild dedup_counts for the vehicle family.
+                        if merge_groups:
+                            from collections import Counter as _Cnt
+                            new_vehicle_counts: dict = {}
+                            keep_reps: set = set()
+                            drop_descs: list = []
+                            for grp in merge_groups:
+                                if not grp:
+                                    continue
+                                # Pick the rep whose current label matches
+                                # the majority verdict, else the first key.
+                                label_votes = _Cnt(k.split(":", 1)[0] for k in grp)
+                                # Prefer tank if any member is tank (highest
+                                # tactical severity); otherwise majority.
+                                if "tank" in label_votes:
+                                    chosen_label = "tank"
+                                else:
+                                    chosen_label = label_votes.most_common(1)[0][0]
+                                # Keep the member whose label == chosen_label.
+                                keeper = next(
+                                    (k for k in grp if k.split(":", 1)[0] == chosen_label),
+                                    grp[0],
+                                )
+                                keep_reps.add(keeper)
+                                new_vehicle_counts[chosen_label] = (
+                                    new_vehicle_counts.get(chosen_label, 0) + 1
+                                )
+                                # Any non-keeper members' descriptions get
+                                # dropped so Summary doesn't render ghost bullets.
+                                for k in grp:
+                                    if k != keeper:
+                                        drop_descs.append(k)
+                            # Replace vehicle-family counts in dedup_counts.
+                            for fam_label in list(mission.dedup_counts.keys()):
+                                if fam_label in VEHICLE_FAMILY:
+                                    mission.dedup_counts.pop(fam_label, None)
+                            for fam_label, cnt in new_vehicle_counts.items():
+                                mission.dedup_counts[fam_label] = cnt
+                            # Drop ghost descriptions.
+                            for k in drop_descs:
+                                mission.vlm_descriptions.pop(k, None)
+                            logger.info(
+                                f"Mission {mission.mission_id}: vehicle family "
+                                f"merge → kept {len(keep_reps)} rep(s), "
+                                f"dropped {len(drop_descs)} duplicate(s); "
+                                f"new vehicle counts={new_vehicle_counts}"
+                            )
+                            try:
+                                await agent._emit(
+                                    f"VLM vehicle merge: {len(vehicle_reps)} reps → "
+                                    f"{len(keep_reps)} unique vehicles; "
+                                    f"{', '.join(f'{k}={v}' for k,v in new_vehicle_counts.items())}"
+                                )
+                            except Exception:
+                                pass
+                    except Exception as e:
+                        logger.warning(
+                            f"Mission {mission.mission_id}: vehicle family merge failed: {e}"
+                        )
             except Exception as e:
                 logger.warning(f"Mission {mission.mission_id}: VLM describe_objects failed: {e}")
+
+        # Casualty sweep: YOLO misses bodies lying flat / severed / dismembered
+        # because its 'person' class was trained on upright subjects.  Run a
+        # full-frame VLM pass with the list of already-found persons so VLM
+        # doesn't double-count, and append any missed casualties as synthetic
+        # person tracks — they flow through the Summary LLM's normal KIA /
+        # wounded routing via the 'Body integrity: INCOMPLETE' marker.
+        if (
+            mission.vlm_describe_objects
+            and mission._scene_frame is not None
+        ):
+            try:
+                known_person_descs = [
+                    d for k, d in getattr(mission, "vlm_descriptions", {}).items()
+                    if k.split(":", 1)[0] == "person"
+                ]
+                sweep = await _vlm_casualty_sweep(
+                    mission._scene_frame, known_person_descs
+                )
+                if sweep:
+                    logger.info(
+                        f"Mission {mission.mission_id}: casualty sweep found "
+                        f"{len(sweep)} missed casualty(ies)"
+                    )
+                    try:
+                        await agent._emit(
+                            f"VLM casualty sweep: {len(sweep)} missed casualty(ies) found"
+                        )
+                    except Exception:
+                        pass
+                    if not hasattr(mission, "vlm_descriptions") or mission.vlm_descriptions is None:
+                        mission.vlm_descriptions = {}
+                    if not hasattr(mission, "dedup_counts") or mission.dedup_counts is None:
+                        mission.dedup_counts = {}
+                    for i, item in enumerate(sweep):
+                        synthetic_key = f"person:sweep{i}"
+                        # Format structurally so the Summary LLM reads it the
+                        # same way as per-object describes.
+                        struct_desc = (
+                            f"Body parts visible: (full frame - not cropped)\n"
+                            f"Body integrity: {item['body_integrity']}\n"
+                            f"Posture: {item['posture']}\n"
+                            f"Visible injuries / blood: {item['injuries']}\n"
+                            f"Clothing & colors: {item['colors']}\n"
+                            f"\n{item['description']} (detected via full-frame VLM sweep — YOLO missed)"
+                        )
+                        mission.vlm_descriptions[synthetic_key] = struct_desc
+                        logger.info(
+                            f"  sweep add: {synthetic_key} →\n"
+                            f"----- begin description -----\n"
+                            f"{struct_desc}\n"
+                            f"----- end description -----"
+                        )
+                        try:
+                            await agent._emit(
+                                f"VLM sweep add: {synthetic_key} — "
+                                f"{item['body_integrity']} / {item['posture']}"
+                            )
+                        except Exception:
+                            pass
+                    mission.dedup_counts["person"] = (
+                        mission.dedup_counts.get("person", 0) + len(sweep)
+                    )
+            except Exception as e:
+                logger.warning(f"Mission {mission.mission_id}: casualty sweep failed: {e}")
 
         # VLM scene description: describe the overall environment from a full
         # frame. Runs independently of vlm_describe_objects and does NOT require

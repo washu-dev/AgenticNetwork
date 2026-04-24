@@ -787,19 +787,21 @@ async def summarize(state: PlannerState) -> dict:
             context_parts.append(part)
         context = "\n\n".join(context_parts)
 
-        # Let the reasoning panel see which summary mode got picked.
-        _tactical_kws = (
-            "sitrep", "tactical", "recon", "reconnaissance", "hostile",
-            "combatant", "civilian", "non-combatant", "armor", "threat",
-            "casualty", "casualties", "wounded", "downed", "evacuation",
-            "military", "enemy", "perimeter", "sector", "engage",
+        # Default scenario: battlefield / tactical framing is ON.
+        # Opt out only when the user's prompt explicitly requests a
+        # neutral / civilian / non-tactical voice.
+        _neutral_kws = (
+            "non-tactical", "non tactical", "civilian setting",
+            "neutral voice", "neutral tone", "plain description",
+            "urban setting", "no tactical", "no military",
         )
         _count_kws = ("count", "how many", "number of", "tally", "total")
         _prompt_lc = (prompt or "").lower()
-        is_tactical = any(k in _prompt_lc for k in _tactical_kws)
+        is_neutral = any(k in _prompt_lc for k in _neutral_kws)
+        is_tactical = not is_neutral  # battlefield is the default
         is_count = any(k in _prompt_lc for k in _count_kws)
         mode_bits = []
-        mode_bits.append("tactical SITREP" if is_tactical else "neutral prose")
+        mode_bits.append("tactical SITREP (default)" if is_tactical else "neutral prose (opt-out)")
         if is_count:
             mode_bits.append("count aggregation")
         messages_log.append(AIMessage(
@@ -834,14 +836,17 @@ async def summarize(state: PlannerState) -> dict:
             "If the user specified attributes (e.g. 'count civilians in plain clothes') and VLM\n"
             "verification ran, the counts already exclude non-matches — trust them, do not\n"
             "hedge with 'of these, X appeared to be...'.\n\n"
-            "TACTICAL / MILITARY FRAMING:\n"
-            "If the user's command contains ANY of these tactical keywords — 'SITREP',\n"
-            "'tactical', 'operational', 'recon', 'reconnaissance', 'hostile', 'combatant',\n"
-            "'civilian', 'non-combatant', 'armor', 'threat', 'casualty', 'casualties',\n"
-            "'wounded', 'downed', 'evacuation', 'military', 'enemy', 'perimeter', 'sector',\n"
-            "'clear' (as in 'zone clear'), 'secure', 'engage' — switch to a military\n"
-            "situational-awareness voice and TRANSLATE literal observations into tactical\n"
-            "language. Mapping guide:\n"
+            "TACTICAL / MILITARY FRAMING — DEFAULT SCENARIO IS BATTLEFIELD:\n"
+            "This command center operates on a battlefield by default.  ALWAYS\n"
+            "use a military situational-awareness voice and TRANSLATE literal\n"
+            "observations into tactical language.  The only exception is if\n"
+            "the user's prompt explicitly contains one of the opt-out phrases\n"
+            "'non-tactical', 'civilian setting', 'neutral voice', 'neutral\n"
+            "tone', 'plain description', 'urban setting', 'no tactical', or\n"
+            "'no military' — in that case, fall back to neutral prose.\n"
+            "Otherwise (including for generic prompts like 'describe the\n"
+            "scene', 'report what you see', 'count the people'), stay in\n"
+            "tactical mode.  Mapping guide:\n"
             "  Posture → status:\n"
             "    'person standing' / 'person walking' → 'civilian' / 'non-combatant'\n"
             "    'person in wheelchair' → 'civilian with limited mobility, evacuation priority'\n"
@@ -850,16 +855,65 @@ async def summarize(state: PlannerState) -> dict:
             "         medical assessment (medevac priority)'\n"
             "    'person with visible wounds or blood' → 'wounded personnel, urgent medevac'\n"
             "  Body integrity → casualty severity (IMPORTANT, don't flatten):\n"
-            "    'partial body' / 'only torso and arms visible' / 'no lower body' /\n"
-            "    'dismembered' / 'severed' / 'incomplete body' (and NOT merely occluded\n"
-            "    by an object) → 'severe casualty, presumed KIA (killed in action);\n"
-            "    body recovery required, not medevac' — this is a MUCH more serious\n"
-            "    status than a simple 'downed personnel' and must be reported distinctly.\n"
-            "  Vehicles:\n"
-            "    'toy tank' / 'model tank' / 'tank' → 'hostile armor' / 'enemy armor'\n"
-            "    'car' / 'vehicle' (civilian-looking) → 'civilian vehicle'\n"
+            "    Each person's VLM description contains a structured line\n"
+            "    'Body integrity: <intact | INCOMPLETE — ...>'.  Trust it.\n"
+            "    'INCOMPLETE' / 'partial body' / 'only torso and arms visible' /\n"
+            "    'no lower body' / 'severed at waist' / 'dismembered' /\n"
+            "    'missing both legs' / 'only upper torso and head' (and NOT\n"
+            "    merely occluded by an object) → 'severe casualty, presumed KIA\n"
+            "    (killed in action); body recovery required, not medevac' —\n"
+            "    this is a MUCH more serious status than a simple 'downed\n"
+            "    personnel' and must be reported distinctly.\n"
+            "    'left arm missing' / 'missing an arm' / 'stump where left arm\n"
+            "    was' / 'one arm missing' (i.e. limb-loss but body otherwise\n"
+            "    upright and ambulatory) → 'wounded personnel — limb loss,\n"
+            "    urgent medevac'. Counts as a CASUALTY, never a civilian,\n"
+            "    even if the figure is walking or standing.\n"
+            "    'Visible injuries / blood' line shows anything other than\n"
+            "    'none' (blood stains, wound on head, etc.) → wounded,\n"
+            "    counts as a casualty.\n"
+            "  Vehicles — hostile classification is STRICT:\n"
+            "    Tanks (tracked, turret+gun):\n"
+            "      'tank' / 'toy tank' / 'model tank' / 'tracked vehicle with\n"
+            "       turret' → hostile armor.  Label bullets as\n"
+            "       'Tracked tank, <colour/pattern/orientation>'.\n"
+            "    Wheeled military vehicles (WHEELS, NOT tracks):\n"
+            "      'Humvee' / 'military-style truck' / 'military truck' /\n"
+            "       'tactical vehicle' / 'armored transport' / 'truck with\n"
+            "       military markings' / 'beige/tan truck with boxy front' →\n"
+            "       hostile logistics vehicle.  Label bullets as\n"
+            "       'Wheeled military vehicle / Humvee, <colour/description>'.\n"
+            "       Do NOT call these 'tracked' — they have wheels.\n"
+            "    Civilian vehicles:\n"
+            "      'car' / 'sedan' / 'SUV' / 'pickup' / 'passenger vehicle' →\n"
+            "       civilian vehicle → scene context ONLY, never 'Hostile Armor'.\n"
+            "    Promotion trigger (unambiguous): a 'truck' track qualifies as\n"
+            "    hostile ONLY when that track's VLM description (from the raw\n"
+            "    observation data) contains one of: 'military-style', 'Humvee',\n"
+            "    'camouflage', 'camo', 'tactical', 'armored', or 'military\n"
+            "    vehicle'.  A plain 'truck' or 'beige truck/SUV' without those\n"
+            "    keywords stays civilian.\n"
+            "  COUNTING DISCIPLINE — READ CAREFULLY:\n"
+            "    The 'Hostile Armor' count = (# tank tracks promoted above) +\n"
+            "    (# wheeled-military-vehicle tracks promoted above).\n"
+            "    DO NOT synthesise an 'additional tracked hostile armor'\n"
+            "    entry from a 'car' track, a civilian 'truck' track, or any\n"
+            "    object you describe as 'misclassified as X earlier'.  Every\n"
+            "    bullet under 'Hostile Armor' MUST correspond 1-to-1 to a\n"
+            "    specific track that the mission's detection data contains —\n"
+            "    no invented duplicates, no inferred extras.\n"
             "  Scene context (mention only if relevant, never lead with):\n"
             "    'traffic light' / 'stop sign' / 'bicycle' / 'dog' → urban context\n"
+            "\n"
+            "NO DETECTOR META-COMMENTARY: describe each subject as what it IS,\n"
+            "never as what the detector got wrong. NEVER use phrasings like\n"
+            "'misclassified as X', 'detected as X but actually Y', 'originally\n"
+            "labeled X', '(mislabeled as X)', 'classified as X in error', etc.\n"
+            "If the VLM description contradicts the YOLO prefix, TRUST the VLM\n"
+            "description and report the VLM's verdict directly — the commander\n"
+            "does not need to see the internal detection debate. Just write\n"
+            "'Tracked tank, olive-green, ...' — never 'Tracked tank (misclassified\n"
+            "as car)'.\n"
             "\n"
             "CRITICAL — REMAIN IN CHARACTER: the mini-city uses figurines and toy props\n"
             "to stand in for real battlefield subjects. Your report MUST commit to the\n"
@@ -934,10 +988,19 @@ async def summarize(state: PlannerState) -> dict:
             "'figurines').\n"
             "\n"
             "HARD RULE — NO DOUBLE COUNTING: each person is counted in EXACTLY one of\n"
-            "Casualties OR Civilians. Downed / prone / partial body → Casualties. Upright,\n"
-            "uninjured → Civilians. Example: 1 lying mannequin + 2 standing mannequins →\n"
-            "Casualties: 1, Civilians: 2 (not 3+1 mixed). The Total (for count queries)\n"
-            "is still the UNION so 'count civilians' returns 3 overall.\n"
+            "Casualties OR Civilians. Routing rule:\n"
+            "  Casualties = any one of the following is true for that person:\n"
+            "    • Body integrity is INCOMPLETE (severed, partial body, missing\n"
+            "      legs, only upper torso, etc.) — KIA/recovery.\n"
+            "    • Any limb is missing OR visible injuries/blood reported —\n"
+            "      wounded, even if the figure is upright/walking.\n"
+            "    • Posture is lying/prone/slumped with no visible movement cue.\n"
+            "  Civilians = upright/walking/sitting AND body integrity intact AND\n"
+            "              no visible injuries.\n"
+            "Example: 1 severed figure + 1 walking figure with an arm missing +\n"
+            "6 standing intact figures → Casualties: 2, Civilians: 6 (not 0+8).\n"
+            "The Total (for count queries) is still the UNION so 'count persons'\n"
+            "returns 8 overall.\n"
             "\n"
             "Example — tank + civilians + urban props:\n"
             "  ### Robot 006 (Zone E) — 🔴 CRITICAL\n"
