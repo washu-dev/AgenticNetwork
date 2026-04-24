@@ -570,6 +570,22 @@ async def _dispatch_agent_task(agent: dict, phase: dict, task_goal: str, message
         logger.info(f"[{agent['id']}] report_all=true → forcing vlm_describe_objects=true")
         describe_flag = True
 
+    # Reverse rule: for alarm/watch tasks, VLM describe is unnecessary and
+    # just adds latency + cost.  LLM sometimes enables it anyway for a pure
+    # 'watch for X' prompt with no describe verb — override it off here,
+    # unless the user explicitly asked to describe (e.g. 'watch for tank
+    # and describe it').  Keyword check is cheap and conservative.
+    _DESCRIBE_KW = ("describe", "detail", "appearance", "what does it look",
+                    "characterize", "what it looks like")
+    if alarm_flag and describe_flag and not any(
+        kw in goal_lower for kw in _DESCRIBE_KW
+    ):
+        logger.info(
+            f"[{agent['id']}] alarm_on_detection=true + no describe verb → "
+            f"forcing vlm_describe_objects=false"
+        )
+        describe_flag = False
+
     task_payload = {
         "task_type": "agent",
         "mission_id": str(uuid.uuid4())[:8],

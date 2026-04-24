@@ -1650,7 +1650,8 @@ async def run_search_mission(mission: SearchMission, existing_udp_receiver=None)
             return mission.to_dict()
 
         agent = pi_agent_manager.get_or_create(robot)
-        agent.set_mission(mission.mission_id, mission.task_goal, mission.report_all, mission.duration_s)
+        agent.set_mission(mission.mission_id, mission.task_goal, mission.report_all, mission.duration_s,
+                          alarm_on_detection=mission.alarm_on_detection)
 
         # Step 2: Start patrol (Robot Agent LLM decides movement pattern)
         logger.info(f"Mission {mission.mission_id}: starting on {mission.agent_id}")
@@ -1980,6 +1981,41 @@ async def run_search_mission(mission: SearchMission, existing_udp_receiver=None)
                 "report_all": mission.report_all,
             })
 
+        # Halt the Pi once the mission ends — find-target missions finish
+        # the moment the target is matched, but no 'stop' action is emitted
+        # by the brain (only the planned gesture or MISSION_COMPLETE), so
+        # the video keeps playing in mock and the real robot would still
+        # be in its last commanded motion state.  Sending stop here halts
+        # the robot AND (in mock) freezes the video on the frame where the
+        # target was found — giving a clear visual confirmation.
+        # Skip for cancellation (already halted via cancel_current_mission
+        # which rewinds video) and for alarm mode (passive observer).
+        logger.info(
+            f"Mission {mission.mission_id}: end-of-mission state — "
+            f"mission_ended={mission_ended}, is_cancelled={mission.is_cancelled}, "
+            f"alarm_on_detection={mission.alarm_on_detection}"
+        )
+        if (
+            mission_ended
+            and not mission.is_cancelled
+            and not mission.alarm_on_detection
+        ):
+            from ..infra.robot_client import robot_client
+            reg_robot = robot_registry.get_robot(mission.agent_id)
+            logger.info(
+                f"Mission {mission.mission_id}: sending final stop to Pi — "
+                f"reg_robot={'present' if reg_robot else 'MISSING'}"
+            )
+            if reg_robot is not None:
+                try:
+                    r = await robot_client.execute_action(
+                        reg_robot.host, reg_robot.port,
+                        "stop", robot_id=mission.agent_id,
+                    )
+                    logger.info(f"Mission {mission.mission_id}: final stop result={r}")
+                except Exception as e:
+                    logger.warning(f"Mission {mission.mission_id}: final stop failed: {e}")
+
         # Stop patrol if running
         agent.stop_patrol()
         if patrol_task and not patrol_task.done():
@@ -2046,6 +2082,9 @@ async def run_search_mission(mission: SearchMission, existing_udp_receiver=None)
 
         # Diagnostic: how many track crops survived label-conflict resolution?
         # Helps answer "did YOLO even see it?" before we blame VLM.
+        # Only emit to the reasoning panel when we're actually going to run
+        # the downstream VLM dedup/describe pipeline — alarm mode doesn't,
+        # so the line is just noise there.
         if mission._track_crops:
             from collections import Counter as _C
             _label_counter = _C(k.split(":", 1)[0] for k in mission._track_crops)
@@ -2053,12 +2092,13 @@ async def run_search_mission(mission: SearchMission, existing_udp_receiver=None)
                 f"Mission {mission.mission_id}: track crops before VLM dedup — "
                 f"{dict(_label_counter)} | keys={sorted(mission._track_crops.keys())}"
             )
-            try:
-                await agent._emit(
-                    f"Tracks before VLM: {dict(_label_counter)}"
-                )
-            except Exception:
-                pass
+            if not mission.alarm_on_detection:
+                try:
+                    await agent._emit(
+                        f"Tracks before VLM: {dict(_label_counter)}"
+                    )
+                except Exception:
+                    pass
 
         # VLM dedup: get accurate object counts by comparing cropped images.
         # Skip in alarm/watch mode — we care whether the target was ever seen,

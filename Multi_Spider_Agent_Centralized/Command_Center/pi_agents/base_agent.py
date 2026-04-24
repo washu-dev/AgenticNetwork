@@ -306,6 +306,7 @@ class CentralPiAgent:
         self.task_goal: Optional[str] = None
         self.mission_active = False
         self.report_all = False
+        self.alarm_on_detection = False
         self.mission_duration_s: int = 0   # user-specified duration (0 = use defaults)
 
         # Shortcuts for robot_client calls (auto-fills host/port/robot_id)
@@ -375,11 +376,13 @@ class CentralPiAgent:
 
     # ── Mission lifecycle ────────────────────────────────
 
-    def set_mission(self, mission_id: str, task_goal: str, report_all: bool = False, duration_s: int = 0):
+    def set_mission(self, mission_id: str, task_goal: str, report_all: bool = False, duration_s: int = 0,
+                    alarm_on_detection: bool = False):
         self.mission_id = mission_id
         self.task_goal = task_goal
         self.mission_active = True
         self.report_all = report_all
+        self.alarm_on_detection = alarm_on_detection
         self.mission_duration_s = int(duration_s or 0)
         self._consecutive_turns = 0
         self._stop_requested = False
@@ -390,7 +393,8 @@ class CentralPiAgent:
         self._last_approach_emit = ""
         logger.info(
             f"[{self.robot.robot_id}] Mission set: {mission_id}, goal={task_goal}, "
-            f"report_all={report_all}, duration_s={self.mission_duration_s}"
+            f"report_all={report_all}, alarm_on_detection={alarm_on_detection}, "
+            f"duration_s={self.mission_duration_s}"
         )
 
     def clear_mission(self):
@@ -469,11 +473,15 @@ class CentralPiAgent:
                         "position": _describe_bbox(d.get("bbox", [])),
                         "track_id": track_id,
                     })
-                # Only emit when new unique detections were added
+                # Only emit when new unique detections were added.  In
+                # alarm/watch mode, suppress this — the Alarm / AlarmCleared
+                # events are the relevant signal; per-frame raw detection
+                # lists just clutter the reasoning panel.
                 new_labels = sorted(set(d.get("label", "?") for d in detections))
                 if new_labels != self._last_report_labels:
                     logger.info(f"[{self._rid}] Report: detected {new_labels}")
-                    await self._emit(f"Result: detected {new_labels}")
+                    if not self.alarm_on_detection:
+                        await self._emit(f"Result: detected {new_labels}")
                     self._last_report_labels = new_labels
             return {"status": "ok", "action_taken": "stop", "reason": "logged"}
 
