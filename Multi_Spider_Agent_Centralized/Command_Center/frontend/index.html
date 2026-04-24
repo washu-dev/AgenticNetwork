@@ -858,11 +858,15 @@
               <animate attributeName="opacity" values="0;1;0" dur="1.2s" repeatCount="indefinite"/>
             </circle>
 
-            <!-- ═══ NATS Transport Bus ═══ -->
+            <!-- ═══ A2A Protocol Bus ═══
+                 A2A (Agent-to-Agent) is the architectural primitive via
+                 agntcy-app-sdk.  NATS is the current transport, JSONRPC
+                 over HTTP is an alternative, SLIM is planned.  The label
+                 reflects the protocol layer, not the transport. -->
             <line x1="30" y1="110" x2="610" y2="110" class="tp-bus-glow"/>
             <line x1="30" y1="110" x2="610" y2="110" class="tp-bus"/>
             <text x="320" y="124" text-anchor="middle" fill="#38bdf8"
-                  font-size="7.5" letter-spacing="3" font-weight="600">&#8605; NATS TRANSPORT &#8605;</text>
+                  font-size="7.5" letter-spacing="3" font-weight="600">&#8605; A2A PROTOCOL &#8605;</text>
 
             <!-- ═══ Physical Battle Plane ═══ -->
             <rect x="0" y="132" width="640" height="268" fill="url(#tp-phys-grad)"/>
