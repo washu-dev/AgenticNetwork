@@ -589,10 +589,10 @@ class CentralPiAgent:
             # Ensure standing before a gesture
             if not self.robot.standing:
                 await self._execute_robot_action("stand_up")
-            await self._emit(f"Tool: {action} (target detected — no-approach build)")
+            await self._emit(f"Tool: {action} (executed on target)")
             await self._target_approach.execute_action(action)
         else:
-            await self._emit("Auto: target detected — mission complete (no-approach build)")
+            await self._emit("Auto: target detected — mission complete")
         self._consecutive_turns = 0
         if self.mission_id:
             self._completed_mission_ids.add(self.mission_id)

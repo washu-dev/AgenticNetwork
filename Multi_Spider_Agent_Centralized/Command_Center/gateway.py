@@ -1088,11 +1088,14 @@ def _parse_reasoning_to_comm_event(task_id: str, content: str):
         # 'thinking' until the true terminal event (Summary: generated).
         _emit_comm_event(task_id, "planner", "planner", "think", content[5:].strip())
     elif content.startswith("Summary:"):
-        # Two sub-events — distinguish between in-progress and terminal:
-        #   'Summary: drafting …'   → planner is still composing → think
-        #   'Summary: generated …'  → done, emit planner → user
+        # Three sub-events — distinguish in-progress from terminal:
+        #   'Summary: drafting …'                   → still composing → think
+        #   'Summary: generated …'                  → agent task done → planner→user
+        #   'Summary: direct_control completed …'   → direct ctrl done → planner→user
+        # Anything else starting with 'Summary:' is treated as think (safe fallback).
         body = content[8:].strip()
-        if body.startswith("generated"):
+        TERMINAL_PREFIXES = ("generated", "direct_control completed")
+        if body.startswith(TERMINAL_PREFIXES):
             _emit_comm_event(task_id, "planner", "user", "summary", body)
         else:
             _emit_comm_event(task_id, "planner", "planner", "think", body)
@@ -1103,6 +1106,14 @@ def _parse_reasoning_to_comm_event(task_id: str, content: str):
     elif content.startswith("VLM:") or content.startswith("VLM "):
         # Vision-LLM reasoning — treat as planner 'think' for topology pulses
         _emit_comm_event(task_id, "planner", "planner", "think", content.strip())
+    elif content.startswith("Rejected:") or content.startswith("Error:"):
+        # Terminal failure path — the planner rejected the prompt as not a
+        # robot task, or execution failed.  Emit a planner → user event so
+        # the topology leaves 'thinking' and shows the planner as finished
+        # (with failure status), instead of staying stuck mid-flight until
+        # the 5s grace window clears everything.
+        label = content.split(":", 1)[1].strip()
+        _emit_comm_event(task_id, "planner", "user", "result", label, status="error")
 
 
 @app.post("/api/search", response_model=SearchResponse)
