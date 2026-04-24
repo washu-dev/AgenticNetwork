@@ -852,8 +852,25 @@ async def summarize(state: PlannerState) -> dict:
         is_neutral = any(k in _prompt_lc for k in _neutral_kws)
         is_tactical = not is_neutral  # battlefield is the default
         is_count = any(k in _prompt_lc for k in _count_kws)
+        # Find mode: phase has a specific target_name but is NOT an alarm/watch
+        # task (alarm also has target_name but different semantics).  Find
+        # exits on first match → scene observation is inherently incomplete
+        # → computing a zone THREAT LEVEL from such limited data is misleading
+        # (e.g. "🟢 SECURE" reported when a tank was literally in the video,
+        # just unseen because mission ended before it entered frame).
+        # Replace the threat badge with a TARGET CONFIRMED / NOT FOUND badge
+        # so the main dashboard signal is the target outcome itself.
+        is_find = any(
+            p.get("task_type") == "agent"
+            and p.get("target_name", "")
+            and not p.get("report_all", False)
+            and not p.get("alarm_on_detection", False)
+            for p in phases_list
+        )
         mode_bits = []
         mode_bits.append("tactical SITREP (default)" if is_tactical else "neutral prose (opt-out)")
+        if is_find:
+            mode_bits.append("find-target (no threat level)")
         if is_count:
             mode_bits.append("count aggregation")
         messages_log.append(AIMessage(
@@ -1170,7 +1187,28 @@ async def summarize(state: PlannerState) -> dict:
             "  the description was verified.\n"
             "- If the task said 'Target NOT detected', say plainly the target did not appear during the watch.\n"
             "- Do NOT speculate about counts of distinct instances (e.g. 'two apples') in watch mode — the same "
-            "  target appearing/disappearing multiple times is NOT multiple targets."
+            "  target appearing/disappearing multiple times is NOT multiple targets.\n\n"
+            + (
+                "FIND-MODE OVERRIDE — APPLIES TO THIS REPORT:\n"
+                "The user asked the robot to LOCATE a specific target; observation\n"
+                "ended as soon as the target was matched, so the zone was NOT\n"
+                "fully surveyed.  Do NOT render a THREAT LEVEL line — any value\n"
+                "would be misleading given the partial view.  Replace the entire\n"
+                "'▌ THREAT LEVEL: ...' line with EXACTLY ONE of:\n"
+                "  ▌ TARGET: 🎯 CONFIRMED — <short target descriptor>\n"
+                "  ▌ TARGET: ✗ NOT FOUND\n"
+                "Use 🎯 CONFIRMED when any matching person/object bullet exists\n"
+                "in this robot's data (the VLM verified the attribute match).\n"
+                "Use ✗ NOT FOUND otherwise.  Also change the line at the very\n"
+                "top of the section from '### Robot <id> (Zone <X>) — <emoji>\n"
+                "<LABEL>' to '### Robot <id> (Zone <X>) — 🎯 TARGET CONFIRMED'\n"
+                "or '### Robot <id> (Zone <X>) — ✗ TARGET NOT FOUND', matching\n"
+                "the body.  Keep the three-count dashboard rows (Armor/Casualty/\n"
+                "Civilian) so any other objects the robot happened to notice\n"
+                "still appear — but they are secondary context, not a threat\n"
+                "assessment.\n"
+                if is_find else ""
+            )
         )
         user_msg = f"User command: {prompt}\n\nRobot data:\n{context}"
 

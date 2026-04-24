@@ -1036,7 +1036,10 @@ createApp({
       if (!text || typeof text !== 'string') return null;
       // Use /u flag consistently — output contains BMP and non-BMP codepoints
       // (▌ is U+2590, 🔴/🟡/🟢 are U+1F534/U+1F7E1/U+1F7E2 surrogate pairs).
-      if (!/▌\s*THREAT LEVEL/iu.test(text)) return null;
+      // Accept either the standard zone-assessment header ('▌ THREAT LEVEL')
+      // or the find-mode header ('▌ TARGET:').  Missing both means the
+      // response isn't a structured SITREP — fall back to raw text.
+      if (!/▌\s*(THREAT LEVEL|TARGET)[:\s]/iu.test(text)) return null;
 
       const totalMatch = text.match(/^###\s+Total:\s+(.+)$/m);
       const totalLine = totalMatch ? totalMatch[0].replace(/^###\s+/, '').trim() : null;
@@ -1044,19 +1047,38 @@ createApp({
       // Split by the Robot section header; each chunk has one robot's report
       const chunks = text.split(/\n(?=###\s+Robot)/).filter(c => /###\s+Robot/.test(c));
       const robots = [];
-      const labelToLevel = { SECURE: 'secure', ELEVATED: 'elevated', CRITICAL: 'critical' };
+      // Standard zone-assessment levels.  Find-mode adds a separate
+      // find outcome ("TARGET CONFIRMED" / "TARGET NOT FOUND") that we
+      // map onto the colour palette for visual consistency:
+      //   confirmed → green (good — we got the target)
+      //   not-found → elevated amber (attention — nothing matched)
+      const labelToLevel = {
+        SECURE: 'secure',
+        ELEVATED: 'elevated',
+        CRITICAL: 'critical',
+        CONFIRMED: 'secure',
+        FOUND: 'elevated',
+      };
 
       for (const chunk of chunks) {
-        // Needs /u flag — the threat emojis are astral-plane codepoints
-        // (U+1F534 etc.) that don't match from a regular class without it.
-        const header = chunk.match(/###\s+Robot\s+([^(]+)\(Zone\s+([^)]+)\)\s+[-–—]+\s+([🟢🟡🔴])\s+(\w+)/u);
+        // Needs /u flag — the emojis are astral-plane codepoints.
+        // Accepts both classic threat emojis (🟢🟡🔴) and find-mode
+        // target badges (🎯 / ✗).  Label is one or more uppercase words.
+        const header = chunk.match(
+          /###\s+Robot\s+([^(]+)\(Zone\s+([^)]+)\)\s+[-–—]+\s+(\S+)\s+([A-Z][A-Z ]*)/u
+        );
         if (!header) continue;
 
         const idFull = header[1].trim();
         const zone = header[2].trim();
         const threatEmoji = header[3];
-        const threatLabel = header[4].toUpperCase();
-        const threatLevel = labelToLevel[threatLabel] || 'unknown';
+        const threatLabel = header[4].trim().toUpperCase();
+        // Find-mode labels come as "TARGET CONFIRMED" or "TARGET NOT FOUND".
+        // Pick the descriptor word (last token) for the colour lookup so
+        // 'TARGET CONFIRMED' → CONFIRMED → 'secure' and
+        // 'TARGET NOT FOUND' → FOUND → 'elevated'.
+        const lookupKey = threatLabel.split(/\s+/).pop();
+        const threatLevel = labelToLevel[lookupKey] || labelToLevel[threatLabel] || 'unknown';
 
         // Helper: extract a count + descriptor from a row like
         //   "🔴 Hostile Armor: 1 tank"  or  "✓ Casualties:    None"
