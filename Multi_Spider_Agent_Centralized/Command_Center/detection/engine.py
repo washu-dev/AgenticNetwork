@@ -20,13 +20,9 @@ import httpx
 
 from .udp_receiver import UDPFrameReceiver
 from .yolo_detector import detect_frame, detect_frame_with_tracking, reset_tracker, get_unique_count
-# LOCALIZATION: AprilTag-based position tracking is disabled — files moved to unused/.
-# from .apriltag_detector import detect_tags, get_tag_info
 from ..config import MISSION_TIMEOUT_STATIONARY, MISSION_TIMEOUT_PATROL, create_vision_llm
-# LOCALIZATION: from ..infra.position_tracker import update_robot_position
 
-# LOCALIZATION: Track unknown AprilTag IDs we've already warned about.
-# _logged_unknown_tags: set = set()
+# AprilTag-based localization is disabled; source files moved to unused/.
 
 logger = logging.getLogger(__name__)
 
@@ -202,15 +198,13 @@ async def _vlm_dedup_objects(
     # that label entirely.  Otherwise fall back to VLM with no change in
     # behavior.  Net: typical mission drops from ~N VLM dedup calls to 0-2.
     from . import clip_dedup
-    all_keys = [k for k, _ in (
-        (entry for entries in label_groups.values() for entry in entries)
-    )]
     embeddings: dict = {}
     try:
-        all_crops = {}
-        for entries in label_groups.values():
-            for key, cb in entries:
-                all_crops[key] = cb
+        all_crops = {
+            key: cb
+            for entries in label_groups.values()
+            for key, cb in entries
+        }
         if all_crops:
             embeddings = clip_dedup.embed_crops(all_crops)
     except Exception as e:
@@ -254,9 +248,11 @@ async def _vlm_dedup_objects(
             f"CLIP dedup: {tag} — {len(keys)} keys → {len(clips)} clusters "
             f"(confidence={conf:.3f})"
         )
-        # Accept CLIP when all intra-cluster pairs are noticeably tighter
-        # than any inter-cluster pair.  0.05 margin = typical safe zone.
-        if conf >= 0.05:
+        # Accept CLIP when intra-cluster pairs are clearly tighter than
+        # inter-cluster pairs.  Threshold 0.15 — borderline values (e.g.
+        # 0.06) historically gave wrong answers for persons whose
+        # clothing differences were subtle; let VLM handle those.
+        if conf >= 0.15:
             return clips
         return None
 
@@ -502,11 +498,12 @@ async def _vlm_dedup_objects(
                 result_groups[label] = groups
 
     # ── Outlier absorption ──
-    # Extreme close-up crops (area ≫ median) visually don't resemble the
-    # normal mid-range views of the same object, so both VLM and CLIP
-    # dedup tend to put them in their own singleton group.  That inflates
-    # the count (tank=2 when there's really 1 tank).  Absorb them back
-    # into the biggest non-singleton group of the same bucket.
+    # Extreme close-up crops (area ≫ a normal view) visually don't resemble
+    # the mid-range views of the same object, so both VLM and CLIP dedup
+    # tend to put them in their own singleton group.  That inflates the
+    # count (tank=2 when there's really 1 tank, with tank:50 as a ghost
+    # group of a blurry close-up).  Absorb the singleton back into the
+    # biggest non-singleton group of the same bucket.
     bbox_areas = bbox_areas or {}
     VEHICLE_FAMILY_AFTER = {"tank", "truck", "car", "bus", "motorcycle"}
     absorbed_any = False
@@ -514,32 +511,29 @@ async def _vlm_dedup_objects(
         groups = result_groups[bucket]
         if not groups or len(groups) < 2:
             continue
-        # Median of max-area per group (gives a per-group "representative area")
+        # Only apply to the vehicle family; persons/plants shouldn't auto-merge.
+        if bucket not in VEHICLE_FAMILY_AFTER:
+            continue
         def _grp_max_area(g):
             return max((bbox_areas.get(k, 0) for k in g), default=0)
         group_areas = [_grp_max_area(g) for g in groups]
-        sorted_areas = sorted(group_areas)
-        median = sorted_areas[len(sorted_areas) // 2]
-        if median <= 0:
+        # Pick the biggest non-singleton group as absorption target and use
+        # its area as the "normal view" reference.  Using the median breaks
+        # with only 2 groups (median = larger one → singleton can never
+        # pass 3× test).  Using max-of-non-singleton correctly anchors on
+        # a real multi-view group and flags singletons with extreme close-
+        # up bboxes (area ≫ normal view).
+        non_singleton_indices = [i for i, g in enumerate(groups) if len(g) > 1]
+        if not non_singleton_indices:
             continue
-        # Find the biggest non-singleton group as absorption target
-        target_idx = None
-        for i, g in enumerate(groups):
-            if len(g) > 1 and (
-                target_idx is None or len(g) > len(groups[target_idx])
-            ):
-                target_idx = i
-        if target_idx is None:
+        target_idx = max(non_singleton_indices, key=lambda i: len(groups[i]))
+        ref_area = max(group_areas[i] for i in non_singleton_indices)
+        if ref_area <= 0:
             continue
-        # Absorb singleton groups whose area is > 3× median
         to_absorb = [
             i for i, g in enumerate(groups)
-            if i != target_idx and len(g) == 1 and group_areas[i] > 3 * median
+            if i != target_idx and len(g) == 1 and group_areas[i] > 3 * ref_area
         ]
-        # Only apply to the vehicle family (tactical relevance + typical
-        # where this bites); persons/plants shouldn't get auto-merged.
-        if bucket not in VEHICLE_FAMILY_AFTER:
-            continue
         if not to_absorb:
             continue
         absorbed_keys = []
@@ -662,102 +656,6 @@ async def _vlm_describe_scene(frame_bytes: bytes, task_goal: str) -> str:
         return ""
 
 
-async def _vlm_group_cross_label(
-    crops: dict, emit_fn=None
-) -> list[list[str]]:
-    """Cross-label grouping pass — given a mixed-label dict of crops, return
-    groups of keys the VLM believes represent the SAME physical object.
-
-    Used specifically for the vehicle family (tank/truck/car/bus) where
-    YOLO's inconsistent labeling can split one physical Humvee across two
-    or more YOLO classes.  The per-label dedup can't merge these because
-    it only compares within one label.
-
-    Returns list[list[key]] — one inner list per physical object.  On any
-    parse failure, falls back to each key being its own group (no merge).
-    """
-    import base64
-    import json as _json
-    import re as _re
-    from langchain_core.messages import HumanMessage
-
-    if not crops:
-        return []
-    if len(crops) == 1:
-        return [[next(iter(crops))]]
-
-    items = list(crops.items())  # [(key, bytes), ...]
-    vlm = create_vision_llm()
-
-    content = [{"type": "text", "text": (
-        f"I have {len(items)} cropped images of vehicles detected by a "
-        f"robot camera during a short patrol sequence.  The object "
-        f"detector is inconsistent and may label the same physical "
-        f"vehicle as different classes (tank/truck/car/bus) across frames "
-        f"— e.g. a Humvee might appear as 'truck' from one angle and "
-        f"'bus' from another.\n\n"
-        f"GROUP the images: each group contains all crops that depict "
-        f"the SAME physical vehicle, regardless of what label the "
-        f"detector assigned.  Two crops belong in the same group if they "
-        f"could plausibly be the same vehicle at different moments/"
-        f"angles/distances — same colors, same camouflage, same general "
-        f"silhouette.  Only split into different groups when you can "
-        f"point to a CONCRETE visual difference: different camouflage "
-        f"patterns, clearly different colors, different chassis type "
-        f"(tracked vs wheeled), different vehicle classes (e.g. a tank "
-        f"vs a Humvee).\n\n"
-        f"Partial occlusion, angle change, or different zoom are NEVER "
-        f"enough to split into separate groups.\n\n"
-        f"Respond with ONLY a JSON array of arrays of 1-based image "
-        f"indices.  Example: [[1,3,5],[2,4]].  No prose."
-    )}]
-    for i, (key, crop_bytes) in enumerate(items):
-        img_b64 = base64.b64encode(crop_bytes).decode()
-        content.append({
-            "type": "text",
-            "text": f"Image {i+1} (track: {key}):"
-        })
-        content.append({
-            "type": "image_url",
-            "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"},
-        })
-    try:
-        response = await vlm.ainvoke([HumanMessage(content=content)])
-        answer = response.content.strip()
-        m = _re.search(r"\[\s*\[.*?\]\s*\]", answer, _re.DOTALL)
-        if not m:
-            logger.info(f"VLM vehicle group: no JSON in answer → {answer[:200]}")
-            return [[k] for k, _ in items]
-        raw = _json.loads(m.group(0))
-        if not isinstance(raw, list):
-            return [[k] for k, _ in items]
-        groups: list[list[str]] = []
-        seen = set()
-        for g in raw:
-            if not isinstance(g, list):
-                continue
-            cluster = []
-            for idx in g:
-                try:
-                    i0 = int(idx) - 1
-                except (TypeError, ValueError):
-                    continue
-                if 0 <= i0 < len(items) and i0 not in seen:
-                    seen.add(i0)
-                    cluster.append(items[i0][0])
-            if cluster:
-                groups.append(cluster)
-        # Anything not grouped → singleton
-        for i0 in range(len(items)):
-            if i0 not in seen:
-                groups.append([items[i0][0]])
-        logger.info(f"VLM vehicle group: {len(items)} reps → {len(groups)} physical vehicles; groups={groups}")
-        return groups
-    except Exception as e:
-        logger.warning(f"VLM cross-label group failed: {e}")
-        return [[k] for k, _ in items]
-
-
 async def _vlm_casualty_sweep(
     frame_bytes: bytes, known_person_descriptions: list[str]
 ) -> list[dict]:
@@ -811,15 +709,32 @@ async def _vlm_casualty_sweep(
         "  • visibly severed, cut in half, or missing lower body, OR\n"
         "  • only an isolated body part (arm, leg, torso) on the ground, OR\n"
         "  • bloodied or obviously injured while stationary.\n\n"
-        "HARD RULE — NO DOUBLE COUNTING:\n"
-        "  If you report a torso / body, DO NOT also report limbs that "
-        "are ATTACHED to that same body.  A severed upper-body with one "
-        "arm raised is ONE casualty, not 'torso + arm'.  A prone figure "
-        "with an outstretched limb is ONE casualty, not two.  Only "
-        "report a limb as a SEPARATE casualty if it is visibly DETACHED "
-        "(clearly NOT connected) and located at a meaningful distance "
-        "from any body you also reported.  When in doubt, assume "
-        "attached → count as part of the nearby body.\n\n"
+        "CONSERVATIVE MODE — FALSE POSITIVES ARE VERY COSTLY:\n"
+        "  This sweep is the LAST safety net after YOLO already ran.\n"
+        "  Every false-positive casualty you report shows up on a\n"
+        "  commander's dashboard and dispatches a medevac team that\n"
+        "  didn't need to go.  When in ANY doubt → DO NOT REPORT,\n"
+        "  return `[]` or omit that item.\n\n"
+        "HARD RULES — reject a candidate unless ALL of these are true:\n"
+        "  1. You can see a RECOGNIZABLE human body shape or part —\n"
+        "     clear skin tone / flesh / human contour.  Painted lines on\n"
+        "     the ground, crosswalk markings, shadows, cloth piles,\n"
+        "     discoloration of the floor, abstract shapes → NOT a body.\n"
+        "  2. The body or part is NOT connected to any upright /\n"
+        "     walking / seated subject.  Legs/feet visible NEAR a\n"
+        "     standing or walking person almost always belong to THAT\n"
+        "     person — do not report them as a separate casualty.  A\n"
+        "     'walking subject' intrinsically has legs; those are HIS\n"
+        "     legs, not isolated body parts.\n"
+        "  3. There is meaningful spatial separation from any already-\n"
+        "     reported body.  A severed upper-body with one arm raised\n"
+        "     is ONE casualty, not torso+arm.  A prone figure with an\n"
+        "     outstretched limb is ONE casualty, not two.  Do NOT slice\n"
+        "     a single body into multiple reported fragments.\n"
+        "  4. The evidence would be equally visible to a human analyst\n"
+        "     — not inferred from context ('there must be legs somewhere\n"
+        "     if the torso was severed').  Only report what is LITERALLY\n"
+        "     visible in the image.\n\n"
         "This scene uses miniature figures as stand-ins for real "
         "people — treat them as real.  Do NOT use the words 'figurine', "
         "'mannequin', 'toy', 'model', 'doll', 'plastic'; describe "
@@ -927,7 +842,11 @@ async def _vlm_describe_objects(track_crops: dict, emit_fn=None) -> dict:
                 "edge, a severance line, exposed anatomy at the boundary, "
                 "or a clear end-of-body where the part should continue.>\n"
                 "  Posture: <standing | sitting | lying/prone | walking | in a "
-                "wheelchair | slumped | other>\n"
+                "wheelchair | slumped | hands raised overhead (surrender/"
+                "detainee posture) | other>  — if BOTH arms are raised "
+                "overhead/over head (palms up, surrender-like), say "
+                "'hands raised overhead' even if the rest of the body is "
+                "upright; this is tactically distinct from plain standing.\n"
                 "  Visible injuries / blood: <none | describe: e.g. blood "
                 "stains on torso, wound on head, stump where left arm was>\n"
                 "  Clothing & colors: <one short phrase>\n"
@@ -1089,9 +1008,50 @@ def _is_misclassified(description: str, yolo_label: str) -> bool:
         rf"\brather\s+than\s+an?\s+{label_esc}\b",
         rf"\binstead\s+of\s+an?\s+{label_esc}\b",
         rf"\bno\s+{label_esc}\s+(?:is\s+)?(?:visible|shown|present)\b",
+        # VLM's structured "Body parts visible: none" → no body to speak of
+        rf"\bbody\s+parts\s+visible\s*:\s*none\b",
     ]
     if any(re.search(p, text) for p in hard):
         return True
+
+    # Vehicle-specific rejection — only reject a vehicle track when VLM's
+    # describe fails on BOTH chassis type AND turret details, or when the
+    # crop is motion-blurred to indistinguishability.  Do NOT reject just
+    # because 'Actual vehicle type' says OTHER — the VLM sometimes labels
+    # real tanks as OTHER when it notices mini-city scale artifacts (small
+    # wheels on a model tank, etc.) even though chassis+turret are visible
+    # and clearly tank-like.  Keeping those tracks is safer.
+    if label in {"tank", "truck", "car", "bus", "motorcycle"}:
+        vehicle_reject = [
+            # Both chassis AND turret fields explicitly 'unclear' → crop
+            # yielded zero usable information
+            r"chassis\s+type\s*:\s*unclear\b[\s\S]*?turret[^\n]*:\s*unclear",
+            # VLM literally says we can't distinguish anything
+            r"\bmotion[-\s]?blurred\b.*\bindistinguishable\b",
+            r"\btoo\s+(?:tight|blurred|close)\s+.*\bto\s+reliably\s+identify\b",
+        ]
+        if any(re.search(p, text) for p in vehicle_reject):
+            return True
+
+    # Person-specific rejections — VLM describes non-human crops in many
+    # creative ways that the generic pattern above misses.  Examples seen:
+    # 'no discernible human body parts', 'no clearly identifiable person',
+    # 'animal-like form', 'indistinct ... shapes', 'heavy motion blur of
+    # ... shapes with no ... person'.  Treat these as non-person.
+    if label == "person":
+        person_patterns = [
+            r"\bno\s+(?:clearly\s+|discernible\s+|identifiable\s+)*"
+            r"(?:human|person)(?:\s+body\s+parts)?\b",
+            r"\bno\s+discernible\s+human\b",
+            r"\banimal[-\s]?like\s+(?:form|figure|shape)\b",
+            r"\banimal[-\s]?shaped\s+figure\b",
+            r"\bindistinct\s+(?:blurred\s+)?(?:colored\s+)?shapes\b",
+            r"\bheavy\s+motion\s+blur\b.*\bshapes?\b",
+            r"\bno\s+human\s+form\b",
+            r"\bnot\s+human(?:\b|\-)",
+        ]
+        if any(re.search(p, text) for p in person_patterns):
+            return True
 
     # Soft rejections — only for classes where over-counting is very costly.
     # "tank" is the canonical case: a Humvee with a roof-mounted gun often
@@ -1195,7 +1155,7 @@ def apply_vlm_corrections_to_counts(
       2. Vehicle re-label — VLM says 'tank' crop is actually wheeled/Humvee.
 
     Returns:
-      (corrected_counts, corrections_log, key_renames)
+      (corrected_counts, corrections_log, key_renames, drop_keys)
         corrections_log — list of (example_keys_str, reason_string) entries,
           one per aggregated migration pair, for display.
         key_renames — dict of {old_key: new_key} for vlm_descriptions so
@@ -1203,9 +1163,12 @@ def apply_vlm_corrections_to_counts(
           migrated crops get renamed (not just the example subset) so
           the label prefix stays consistent; Summary caps bullet count
           at dedup_counts anyway.
+        drop_keys — list of keys that were hard-rejected ("not a X") and
+          whose vlm_descriptions entries should be DELETED so Summary
+          doesn't render nonsense ("not a person" bullets).
     """
     if not descriptions or not dedup_counts:
-        return dict(dedup_counts), [], {}
+        return dict(dedup_counts), [], {}, []
 
     from collections import defaultdict
 
@@ -1227,6 +1190,7 @@ def apply_vlm_corrections_to_counts(
     corrected = dict(dedup_counts)
     corrections = []
     key_renames: dict = {}
+    drop_keys: list = []  # hard-rejected keys → caller deletes their descriptions
 
     # Apply rejections first, proportionally.
     for label, bad_keys in reject_per_label.items():
@@ -1245,6 +1209,9 @@ def apply_vlm_corrections_to_counts(
             del corrected[label]
         example_keys = ", ".join(bad_keys[:3]) + (" …" if len(bad_keys) > 3 else "")
         corrections.append((example_keys, f"not a '{label}' ×{drop}"))
+        # Caller drops these from vlm_descriptions so Summary doesn't
+        # render a 'not a person' bullet where a real one should be.
+        drop_keys.extend(bad_keys)
 
     # Apply re-labels, proportionally.
     for (src, dst), migrate_keys in migrate_per_pair.items():
@@ -1270,7 +1237,7 @@ def apply_vlm_corrections_to_counts(
             _, _, tid_str = old_k.partition(":")
             key_renames[old_k] = f"{dst}:{tid_str}"
 
-    return corrected, corrections, key_renames
+    return corrected, corrections, key_renames, drop_keys
 
 
 class TrackRemapper:
@@ -1370,21 +1337,6 @@ def _resolve_detection_labels(detections: list, tid_label_counts: dict) -> list:
     return result
 
 
-def _needs_vlm_verification(task_goal: str) -> bool:
-    """Legacy fallback: check if the task goal contains attribute descriptions that need VLM.
-    Prefer using mission.use_vlm (set by planner LLM) instead of this keyword matching.
-    """
-    if not task_goal:
-        return False
-    keywords = ["wearing", "red", "blue", "green", "yellow", "white", "black",
-                "orange", "pink", "purple", "brown", "gray", "grey",
-                "shirt", "hat", "jacket", "dress", "glasses", "tall", "short",
-                "color", "holding", "carrying", "mannequin", "dummy"]
-    import re
-    goal_lower = task_goal.lower()
-    return any(re.search(rf'\b{kw}\b', goal_lower) for kw in keywords)
-
-
 # How often to grab and analyze a frame (seconds)
 FRAME_INTERVAL = 0.5
 # MJPEG stream read timeout
@@ -1430,10 +1382,6 @@ class SearchMission:
     # dedup code ran. Only incremented by pairs that survived the IoU < 0.3
     # filter, i.e. pairs that are really distinct bboxes on distinct objects.
     _peak_per_label: dict = field(default_factory=dict)  # label → int
-    # Laplacian-variance sharpness per saved track crop — used as a
-    # tiebreaker when multiple crops in the same dedup group have similar
-    # bbox areas. Bigger isn't always clearer.
-    _track_sharpness: dict = field(default_factory=dict)  # track_key → float
     _track_bbox_areas: dict = field(default_factory=dict)  # track_key → bbox area of saved crop
     _track_remapper: TrackRemapper = field(default_factory=TrackRemapper)
     _alarmed_track_keys: set = field(default_factory=set)   # every track that has been alarmed (for dedup)
@@ -1795,35 +1743,6 @@ async def run_search_mission(mission: SearchMission, existing_udp_receiver=None)
                     "image_height": yolo_result.get("image_height", 480),
                 }
 
-            # LOCALIZATION: AprilTag position update block — disabled.
-            # See unused/detection/apriltag_detector.py + unused/infra/position_tracker.py.
-            # try:
-            #     tags = await asyncio.to_thread(detect_tags, frame)
-            # except Exception as e:
-            #     logger.warning(f"AprilTag detection failed: {type(e).__name__}: {e}")
-            #     tags = []
-            #
-            # if tags:
-            #     best = max(tags, key=lambda t: t.get("decision_margin", 0.0))
-            #     tag_id = best["tag_id"]
-            #     info = get_tag_info(tag_id)
-            #     if info and info.get("pos"):
-            #         try:
-            #             update_robot_position(
-            #                 mission.agent_id,
-            #                 tag_id=tag_id,
-            #                 pos=tuple(info["pos"]),
-            #                 zone=info.get("zone"),
-            #             )
-            #         except Exception as e:
-            #             logger.error(f"Failed to update robot position from tag#{tag_id}: {e}")
-            #     elif tag_id not in _logged_unknown_tags:
-            #         logger.warning(
-            #             f"AprilTag #{tag_id} detected but not in tag_positions.json; "
-            #             "add it to enable localization"
-            #         )
-            #         _logged_unknown_tags.add(tag_id)
-
             # Notify stream subscribers
             evt = _frame_events.get(mission.agent_id)
             if evt:
@@ -1851,21 +1770,6 @@ async def run_search_mission(mission: SearchMission, existing_udp_receiver=None)
                     key = f"{label}:{track_id}"
                     bbox = d.get("bbox")
                     crop = _crop_bbox(frame, bbox) if bbox and frame is not None else None
-
-                    def _sharpness(crop_bytes):
-                        # Laplacian variance — higher = sharper.  Cheap
-                        # (one Sobel-like op on a small crop).
-                        try:
-                            import cv2 as _cv2
-                            import numpy as _np
-                            nparr = _np.frombuffer(crop_bytes, _np.uint8)
-                            img = _cv2.imdecode(nparr, _cv2.IMREAD_GRAYSCALE)
-                            if img is None or img.size == 0:
-                                return 0.0
-                            return float(_cv2.Laplacian(img, _cv2.CV_64F).var())
-                        except Exception:
-                            return 0.0
-
                     if key in mission._seen_track_ids:
                         # Update crop if this bbox is significantly larger (closer, clearer view)
                         if crop is not None and bbox:
@@ -1873,14 +1777,12 @@ async def run_search_mission(mission: SearchMission, existing_udp_receiver=None)
                             if new_area > mission._track_bbox_areas.get(key, 0) * 1.2:
                                 mission._track_crops[key] = crop
                                 mission._track_bbox_areas[key] = new_area
-                                mission._track_sharpness[key] = _sharpness(crop)
                         continue
                     mission._seen_track_ids.add(key)
                     if crop is not None:
                         mission._track_crops[key] = crop
                         if bbox:
                             mission._track_bbox_areas[key] = (bbox["x2"] - bbox["x1"]) * (bbox["y2"] - bbox["y1"])
-                        mission._track_sharpness[key] = _sharpness(crop)
                 mission.detections.append(d)
 
             # Record co-occurrences: track keys that appear in same frame →
@@ -2085,25 +1987,12 @@ async def run_search_mission(mission: SearchMission, existing_udp_receiver=None)
 
         agent.clear_mission()
 
-        # Quality score for picking the best crop from a set of candidates
-        # (same track_id with multiple labels, or same dedup group).
-        #
-        # History — we tried combining bbox area with Laplacian-variance
-        # sharpness as `area × (1 + sharpness/100)`, the idea being that a
-        # clear medium crop should beat a motion-blurred big close-up.  In
-        # practice it regressed: extreme close-ups win on area strongly
-        # enough that even a low sharpness multiplier lets them through,
-        # AND high-contrast noise in a blurry crop registers as "sharp" to
-        # Laplacian.  Result: a massive unreadable close-up was picked as
-        # the tank rep, VLM described it as "blurry metal, OTHER", Summary
-        # LLM refused to render it as a tank bullet, and ARMOR count lost
-        # a tank.
-        #
-        # Reverted to area-only.  Previously working behavior.  Proper
-        # sharpness-aware selection would need an eval harness and a more
-        # robust formula (e.g. hard reject below a motion-blur threshold).
-        def _crop_quality(key: str) -> float:
-            return mission._track_bbox_areas.get(key, 0.0)
+        # Crop "quality" = bbox area.  (We briefly tried adding Laplacian-
+        # variance sharpness as a tiebreaker but it regressed — high-
+        # contrast noise in blurry close-ups reads as "sharp", and area
+        # swamps the multiplier anyway.  Outlier-skip in _pick_rep handles
+        # the extreme-close-up pathology instead.)
+        _crop_quality = lambda k: mission._track_bbox_areas.get(k, 0.0)
 
         # Resolve label conflicts: same track_id with different labels → use
         # VLM to decide.  Runs in parallel (asyncio.gather) — each conflict
@@ -2114,9 +2003,8 @@ async def run_search_mission(mission: SearchMission, existing_udp_receiver=None)
                 if len(label_freq) <= 1:
                     continue
                 labels = list(label_freq.keys())
-                # Pick the crop with highest quality (area × sharpness),
-                # not just the first one — motion-blurred side views give
-                # poor VLM answers even when they're "first" in iteration.
+                # Pick the biggest-area crop across the candidate (label:tid)
+                # keys — not just the first one in iteration order.
                 candidate_keys = [
                     f"{label}:{tid}" for label in labels
                     if f"{label}:{tid}" in mission._track_crops
@@ -2257,7 +2145,7 @@ async def run_search_mission(mission: SearchMission, existing_udp_receiver=None)
                 # numbers. Surface the correction in the reasoning trace so the
                 # commander can see the self-correction happen.
                 if hasattr(mission, "dedup_counts") and mission.dedup_counts:
-                    corrected, corrections, key_renames = apply_vlm_corrections_to_counts(
+                    corrected, corrections, key_renames, drop_keys = apply_vlm_corrections_to_counts(
                         descriptions, mission.dedup_counts
                     )
                     if corrections:
@@ -2269,6 +2157,11 @@ async def run_search_mission(mission: SearchMission, existing_udp_receiver=None)
                             desc = mission.vlm_descriptions.pop(old_k, None)
                             if desc is not None:
                                 mission.vlm_descriptions[new_k] = desc
+                        # Drop hard-rejected descriptions ("not a person"
+                        # etc) so Summary's top-N bullet cap picks from the
+                        # GOOD ones and doesn't leak nonsense bullets.
+                        for k in drop_keys:
+                            mission.vlm_descriptions.pop(k, None)
                         corrected_tracks = "; ".join(f"{r}" for _, r in corrections)
                         logger.info(
                             f"Mission {mission.mission_id}: VLM corrected counts: "

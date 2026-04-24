@@ -553,12 +553,22 @@ async def _dispatch_agent_task(agent: dict, phase: dict, task_goal: str, message
     # Also force report_all so we don't accidentally approach the target.
     alarm_flag = phase.get("alarm_on_detection", False)
     report_all_flag = phase.get("report_all", False)
+    describe_flag = phase.get("vlm_describe_objects", False)
     _ALARM_KW = ("watch", "alarm", "alert", "notify", "warn", "guard", "guardian")
     goal_lower = (task_goal or "").lower()
     if not alarm_flag and any(kw in goal_lower for kw in _ALARM_KW):
         logger.info(f"[{agent['id']}] Prompt keywords → forcing alarm_on_detection=true")
         alarm_flag = True
         report_all_flag = True
+
+    # If the user asks for a report (report_all=true), the result must
+    # always be per-object detailed — no "report" vs "describe" split.
+    # Force vlm_describe_objects=true so Summary has per-person appearance
+    # data to render detailed bullets.  Skip when alarm_on_detection is on
+    # (watch mode cares about presence, not appearance).
+    if report_all_flag and not alarm_flag and not describe_flag:
+        logger.info(f"[{agent['id']}] report_all=true → forcing vlm_describe_objects=true")
+        describe_flag = True
 
     task_payload = {
         "task_type": "agent",
@@ -567,7 +577,7 @@ async def _dispatch_agent_task(agent: dict, phase: dict, task_goal: str, message
         "target_name": phase.get("target_name", ""),
         "report_all": report_all_flag,
         "vlm_verify": phase.get("vlm_verify", False),
-        "vlm_describe_objects": phase.get("vlm_describe_objects", False),
+        "vlm_describe_objects": describe_flag,
         "vlm_describe_scene": phase.get("vlm_describe_scene", False),
         "alarm_on_detection": alarm_flag,
         "task_goal": task_goal,
@@ -762,8 +772,14 @@ async def summarize(state: PlannerState) -> dict:
                 # whole, independent of detected objects.
                 part += f"\n  Scene: {ad['scene_description']}"
             if ad.get("vlm_descriptions"):
-                _BAD_DESC = ("blurry", "can't help", "difficult to", "i'm sorry",
-                             "unclear", "cannot", "unable", "too dark", "not enough")
+                # Only filter out descriptions that REFUSE / FAIL to describe.
+                # 'blurry' / 'unclear' used to be here but VLM uses those as
+                # FACTUAL adjectives ("a blurry person in a blue dress") that
+                # otherwise carry a valid description — filtering those drops
+                # real subjects (e.g. the light-blue-dress civilian in Zone B).
+                _BAD_DESC = ("can't help", "i'm sorry", "cannot describe",
+                             "unable to describe", "too dark to see",
+                             "not enough detail to")
                 label_indices = {}
                 for key, desc in ad["vlm_descriptions"].items():
                     label = key.split(":")[0]
@@ -850,9 +866,14 @@ async def summarize(state: PlannerState) -> dict:
             "  Posture → status:\n"
             "    'person standing' / 'person walking' → 'civilian' / 'non-combatant'\n"
             "    'person in wheelchair' → 'civilian with limited mobility, evacuation priority'\n"
-            "    'person lying down, full body visible, no visible injuries' →\n"
-            "        'downed personnel in prone position, status unknown, may require\n"
-            "         medical assessment (medevac priority)'\n"
+            "    'person lying/prone/slumped' (in ANY condition, even 'intact') →\n"
+            "        'downed personnel, medevac priority' — ALWAYS a Casualty,\n"
+            "         never a civilian. A body on the ground in battlefield\n"
+            "         footage is presumed wounded until cleared by medics.\n"
+            "    'person with arms raised overhead / hands up / both hands raised' →\n"
+            "        'non-combatant in surrender posture / detainee — secure and\n"
+            "         process'. Counts as a Casualty row, not Civilian. Applies\n"
+            "         equally to adults and children.\n"
             "    'person with visible wounds or blood' → 'wounded personnel, urgent medevac'\n"
             "  Body integrity → casualty severity (IMPORTANT, don't flatten):\n"
             "    Each person's VLM description contains a structured line\n"
@@ -893,6 +914,12 @@ async def summarize(state: PlannerState) -> dict:
             "    'camouflage', 'camo', 'tactical', 'armored', or 'military\n"
             "    vehicle'.  A plain 'truck' or 'beige truck/SUV' without those\n"
             "    keywords stays civilian.\n"
+            "    MANDATORY: when the promotion trigger fires, the truck MUST\n"
+            "    appear in the 'Hostile Armor' row with its own bullet.  DO\n"
+            "    NOT describe it only in the Scene context line — 'military-\n"
+            "    style truck / Humvee' in Scene with no corresponding Armor\n"
+            "    bullet is a reporting failure.  One physical military vehicle\n"
+            "    counts in exactly ONE place: Armor, never Scene.\n"
             "  COUNTING DISCIPLINE — READ CAREFULLY:\n"
             "    The 'Hostile Armor' count = (# tank tracks promoted above) +\n"
             "    (# wheeled-military-vehicle tracks promoted above).\n"
@@ -945,9 +972,11 @@ async def summarize(state: PlannerState) -> dict:
             "  <cas   emoji> Casualties:    <N> wounded/downed/KIA   |or|   ✓ None\n"
             "    • <one short bullet per casualty: state + distinguishing detail>\n"
             "  🟢 Civilians:     <N>\n"
-            "    • <one short bullet per civilian (or one overall bullet if more than ~3);\n"
-            "       mention distinguishing appearance, clothing color, activity, and — if\n"
-            "       applicable — vulnerability (wheelchair, mobility limitation, etc.).\n"
+            "    • <ONE short bullet PER civilian — never collapse multiple\n"
+            "       civilians into a single summary bullet, no matter how many\n"
+            "       there are (if N=8, render 8 bullets). Mention distinguishing\n"
+            "       appearance, clothing color, activity, and — if applicable —\n"
+            "       vulnerability (wheelchair, mobility limitation, etc.).\n"
             "       Examples: 'Individual in teal top and blue pants, standing',\n"
             "       'Adult in red shirt beside vehicle', 'Person in wheelchair —\n"
             "       evacuation priority'. NEVER mention the words 'mannequin',\n"
@@ -960,11 +989,25 @@ async def summarize(state: PlannerState) -> dict:
             "  Casualties:     🔴 if N>0,  ✓ if 0\n"
             "  Civilians:      🟢 always (count of friendly non-combatants)\n"
             "\n"
-            "Threat-level rule (computed from the three counts):\n"
+            "Threat-level rule (MECHANICAL — compute from the three counts\n"
+            "in this exact order, stop at first match, do NOT second-guess):\n"
             "  🔴 CRITICAL — Hostile Armor >0  OR  Casualties >0\n"
-            "  🟡 ELEVATED — 0 armor + 0 casualties, BUT vulnerable civilian present\n"
-            "                (wheelchair / limited-mobility / elderly / child)\n"
-            "  🟢 SECURE   — 0 armor + 0 casualties + no vulnerable civilians\n"
+            "  🟡 ELEVATED — 0 armor + 0 casualties AND AT LEAST ONE civilian\n"
+            "                bullet EXPLICITLY mentions vulnerability:\n"
+            "                'wheelchair', 'limited mobility', 'mobility\n"
+            "                impairment', 'elderly', 'child' (as standalone\n"
+            "                person, not referring to a toy/prop nearby),\n"
+            "                'stroller being pushed' (infant in stroller\n"
+            "                counts as child), 'injured but walking',\n"
+            "                'assisted', 'cane', 'crutches'.\n"
+            "                DO NOT infer vulnerability from urban-scene\n"
+            "                context like 'dog present' or 'bicycle near'\n"
+            "                or 'civilian car parked' — those are scene\n"
+            "                furniture, NOT vulnerability signals.\n"
+            "  🟢 SECURE   — 0 armor + 0 casualties + no vulnerability keyword\n"
+            "                in any civilian bullet.  DEFAULT when in doubt.\n"
+            "                A zone with only healthy walking/standing\n"
+            "                civilians is SECURE, period.\n"
             "\n"
             "ALWAYS show all three rows (Hostile Armor, Casualties, Civilians), even when 0.\n"
             "That's the commander's quick-scan dashboard — blanks would be misread.\n"
@@ -994,9 +1037,20 @@ async def summarize(state: PlannerState) -> dict:
             "      legs, only upper torso, etc.) — KIA/recovery.\n"
             "    • Any limb is missing OR visible injuries/blood reported —\n"
             "      wounded, even if the figure is upright/walking.\n"
-            "    • Posture is lying/prone/slumped with no visible movement cue.\n"
+            "    • Posture is 'lying', 'lying/prone', 'prone', or 'slumped' —\n"
+            "      UNCONDITIONALLY routed to Casualties.  Do NOT require\n"
+            "      visible injuries; a body on the ground in a battlefield\n"
+            "      scene is presumed wounded/KIA until cleared.  'intact'\n"
+            "      body integrity + 'lying/prone' posture = 'downed personnel,\n"
+            "      medevac priority' bullet — still a Casualty, NOT a civilian.\n"
+            "    • Posture includes 'arms raised overhead' / 'hands raised' /\n"
+            "      'hands up' / 'both arms up in surrender' — person is either\n"
+            "      surrendering, a detainee, or in distress (esp. a child).\n"
+            "      Route to Casualties with bullet phrasing 'Non-combatant in\n"
+            "      surrender posture / detainee — secure and process'.  This\n"
+            "      is distinct from normal walking/standing.\n"
             "  Civilians = upright/walking/sitting AND body integrity intact AND\n"
-            "              no visible injuries.\n"
+            "              no visible injuries AND hands NOT raised in surrender.\n"
             "Example: 1 severed figure + 1 walking figure with an arm missing +\n"
             "6 standing intact figures → Casualties: 2, Civilians: 6 (not 0+8).\n"
             "The Total (for count queries) is still the UNION so 'count persons'\n"
