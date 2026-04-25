@@ -1323,7 +1323,6 @@ planner_graph = build_planner_graph()
 async def run_planner(
     prompt: str,
     strategy: str = "",
-    agents: Optional[list[str]] = None,
 ) -> dict:
     initial_state: PlannerState = {
         "prompt": prompt,
