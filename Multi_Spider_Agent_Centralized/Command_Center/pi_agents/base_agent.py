@@ -23,7 +23,7 @@ from typing import Dict, List, Optional, TypedDict
 from langgraph.graph import StateGraph, START, END
 
 from .brain import LLMClient
-from .target_approach import SpiderTargetApproach
+from .target_action import TargetActionPlan
 from ..infra.robot_client import robot_client
 from ..infra.robot_registry import robot_registry, RegisteredRobot
 
@@ -298,8 +298,10 @@ class CentralPiAgent:
         self.on_state_update = None   # async callback(robot_id, state_dict)
         self.mission_graph = MissionGraph(robot, brain)
 
-        # Target approach module (Role 2 — portable, will move to turtlebot)
-        self._target_approach = SpiderTargetApproach(robot, brain)
+        # Target-action planner — picks the action to execute when a target
+        # is detected (or MISSION_COMPLETE for find/watch tasks).  No
+        # physical approach: the action runs from the robot's current pose.
+        self._target_action = TargetActionPlan(robot, brain)
 
         # Mission context
         self.mission_id: Optional[str] = None
@@ -307,6 +309,10 @@ class CentralPiAgent:
         self.mission_active = False
         self.report_all = False
         self.alarm_on_detection = False
+        # User-dictated walking route in natural language; '' = none.
+        # When non-empty, _run_patrol uses pattern='custom' and walks
+        # the route while detection runs in the parent mission loop.
+        self.route_prompt: str = ""
         self.mission_duration_s: int = 0   # user-specified duration (0 = use defaults)
 
         # Shortcuts for robot_client calls (auto-fills host/port/robot_id)
@@ -334,8 +340,6 @@ class CentralPiAgent:
         # Completed missions
         self._completed_mission_ids: set = set()
 
-        # Last emitted approach action (avoid repeating same emit)
-        self._last_approach_emit: str = ""
 
         # Report mode dedup: track_ids already logged, last emitted labels
         self._seen_track_ids: set = set()
@@ -377,24 +381,24 @@ class CentralPiAgent:
     # ── Mission lifecycle ────────────────────────────────
 
     def set_mission(self, mission_id: str, task_goal: str, report_all: bool = False, duration_s: int = 0,
-                    alarm_on_detection: bool = False):
+                    alarm_on_detection: bool = False, route_prompt: str = ""):
         self.mission_id = mission_id
         self.task_goal = task_goal
         self.mission_active = True
         self.report_all = report_all
         self.alarm_on_detection = alarm_on_detection
+        self.route_prompt = route_prompt or ""
         self.mission_duration_s = int(duration_s or 0)
         self._consecutive_turns = 0
         self._stop_requested = False
-        self._target_approach.clear()
+        self._target_action.clear()
         self._detections_log = []
         self._seen_track_ids = set()
         self._last_report_labels = []
-        self._last_approach_emit = ""
         logger.info(
             f"[{self.robot.robot_id}] Mission set: {mission_id}, goal={task_goal}, "
             f"report_all={report_all}, alarm_on_detection={alarm_on_detection}, "
-            f"duration_s={self.mission_duration_s}"
+            f"route_prompt={route_prompt!r}, duration_s={self.mission_duration_s}"
         )
 
     def clear_mission(self):
@@ -403,7 +407,7 @@ class CentralPiAgent:
         self.mission_active = False
         self.report_all = False
         self._stop_requested = False
-        self._target_approach.clear()
+        self._target_action.clear()
         logger.info(f"[{self.robot.robot_id}] Mission cleared")
 
     def stop_patrol(self):
@@ -429,8 +433,8 @@ class CentralPiAgent:
         """Process detection results from detection_engine.
 
         Routes to:
-        - Role 1 (report_all): log detections, no approach
-        - Role 2 (conditional action): TargetApproach module
+        - Role 1 (report_all): log detections, mission keeps running
+        - Role 2 (conditional action): TargetActionPlan module
         - Fallback (finished, no target): MissionGraph LLM for fallback action
         """
         # Auto-activate (but not from "finished")
@@ -502,38 +506,10 @@ class CentralPiAgent:
             if obs_status == "finished":
                 return await self._handle_finished(data, detections, has_target)
 
-            # ── Role 2: Target found → TargetApproach module ──
-            # Only switch to approach when target is close enough.
-            # Otherwise let patrol bring us closer first.
+            # Target found → plan + execute the action immediately.
+            # No physical approach: the robot acts from its current pose.
             if has_target:
-                from .target_approach import _get_bbox_height, FRAME_HEIGHT
-                from ..config import APPROACH_DIST_CM, APPROACH_BBOX_RATIO
-
-                target_dets = [d for d in detections if d.get("is_target")]
-                target_bbox_h = max(
-                    (_get_bbox_height(d.get("bbox")) or 0) for d in target_dets
-                ) if target_dets else 0
-
-                # Check distance: prefer ultrasonic (accurate), fallback to bbox
-                close_enough = False
-                if not self._patrol_active:
-                    close_enough = True  # no patrol running, approach regardless
-                else:
-                    ultrasonic_cm = await self._ultrasonic()
-                    if ultrasonic_cm is not None and ultrasonic_cm <= APPROACH_DIST_CM:
-                        close_enough = True  # ultrasonic confirms close
-                    elif target_bbox_h >= FRAME_HEIGHT * APPROACH_BBOX_RATIO:
-                        close_enough = True  # bbox suggests close (ultrasonic may not see target)
-
-                if close_enough:
-                    return await self._handle_target(data, detections)
-                else:
-                    logger.info(
-                        f"[{self._rid}] Target detected but far "
-                        f"(bbox_h={target_bbox_h:.0f}px, ultrasonic={ultrasonic_cm}cm), "
-                        f"continuing patrol"
-                    )
-                    return {"status": "ok", "reason": "target far, continuing patrol"}
+                return await self._handle_target(data, detections)
 
             return {"status": "ok", "action_taken": "stop", "reason": "waiting"}
 
@@ -545,10 +521,10 @@ class CentralPiAgent:
             self._processing = False
 
     async def _handle_target(self, data: dict, detections: list) -> dict:
-        """Handle target detection using TargetApproach module.
+        """Handle target detection.
 
-        Stage 2: LLM plans once (approach? what action?)
-        Stage 3: bbox rules navigate, execute when close
+        LLM plans the action (cached once per mission), robot executes it
+        from current pose, mission ends.  No physical approach.
         """
         # Stop patrol if running
         if self._patrol_active:
@@ -564,7 +540,7 @@ class CentralPiAgent:
         target_dets = [d for d in detections if d.get("is_target")]
         if target_dets:
             label = target_dets[0].get("label", "unknown")
-            # If VLM confirmed this target, tell LLM it matches the task description
+            # If VLM confirmed this target, tell the LLM it matches the task.
             if "VLM confirmed" in label or target_dets[0].get("source", "").endswith("+vlm"):
                 detected_label = f"person (confirmed match for task: {task_goal[:50]})"
             else:
@@ -572,25 +548,22 @@ class CentralPiAgent:
         else:
             detected_label = "unknown"
 
-        # Stage 2: Plan (LLM, called once, cached)
-        first_plan = not self._target_approach.has_plan
-        plan = await self._target_approach.plan(task_goal, detected_label)
+        # Plan the action (one LLM call, cached for this mission)
+        first_plan = not self._target_action.has_plan
+        plan = await self._target_action.plan(task_goal, detected_label)
         if first_plan:
-            await self._emit(f"Intent: Target '{detected_label}' → {plan['final_action']} (approach={plan['approach']}) — {plan['reason']}")
+            await self._emit(
+                f"Intent: Target '{detected_label}' → {plan['final_action']} — {plan['reason']}"
+            )
 
-        # ── Approach is DISABLED in this build ───────────────────────
-        # No physical locomotion and no head-tracking turns toward the target.
-        # The moment a target is detected, we execute the plan's final_action
-        # from where the robot stands and end the mission. This keeps find +
-        # act prompts useful (e.g. "find person, if found wave") while
-        # guaranteeing the robot never tries to reposition.
+        # Execute from current pose, then finish.
         action = plan["final_action"]
         if action != "MISSION_COMPLETE":
             # Ensure standing before a gesture
             if not self.robot.standing:
                 await self._execute_robot_action("stand_up")
             await self._emit(f"Tool: {action} (executed on target)")
-            await self._target_approach.execute_action(action)
+            await self._target_action.execute_action(action)
         else:
             await self._emit("Auto: target detected — mission complete")
         self._consecutive_turns = 0
@@ -602,46 +575,6 @@ class CentralPiAgent:
             "reason": plan.get("reason", "target detected"),
             "mission_ended": True,
         }
-
-        # --- Disabled path: full approach loop (turn/forward toward target) ---
-        # # No approach needed → execute immediately and finish
-        # if not plan["approach"]:
-        #     action = plan["final_action"]
-        #     await self._target_approach.execute_action(action)
-        #     if self.mission_id:
-        #         self._completed_mission_ids.add(self.mission_id)
-        #     return {"status": "ok", "action_taken": action, "reason": plan["reason"], "mission_ended": True}
-        #
-        # # Stage 3: Approach step (rules, per frame)
-        # ultrasonic_cm = await self._ultrasonic()
-        # action = self._target_approach.approach_step(detections, ultrasonic_cm)
-        #
-        # if action == "stop":
-        #     return {"status": "ok", "action_taken": "stop", "reason": "target lost, waiting"}
-        #
-        # if action == plan["final_action"]:
-        #     if not self.robot.standing:
-        #         await self._execute_robot_action("stand_up")
-        #     await self._emit(f"Tool: {action} (target reached)")
-        #     await self._target_approach.execute_action(action)
-        #     self._consecutive_turns = 0
-        #     if self.mission_id:
-        #         self._completed_mission_ids.add(self.mission_id)
-        #     return {"status": "ok", "action_taken": action, "reason": "target reached", "mission_ended": True}
-        #
-        # if action in ("turn_left", "turn_right"):
-        #     self._consecutive_turns += 1
-        #     degrees = self._target_approach.get_turn_degrees(detections)
-        #     direction = "left" if action == "turn_left" else "right"
-        #     await self._emit(f"Auto: turn {direction} ~{degrees}° (approaching)")
-        #     await self._turn_by_degrees(direction, degrees)
-        # elif action in ("forward", "backward"):
-        #     await self._emit(f"Auto: {action} skipped — locomotion disabled")
-        # else:
-        #     await self._emit(f"Auto: {action} (approaching)")
-        #     await self._execute_robot_action(action)
-        #
-        # return {"status": "ok", "action_taken": action, "reason": "approaching target"}
 
     async def _handle_finished(self, data: dict, detections: list, has_target: bool) -> dict:
         """Handle mission finished — just clear mission state.
@@ -682,8 +615,13 @@ class CentralPiAgent:
             if not self.robot.standing:
                 await self._execute_robot_action("stand_up")
 
-            # LLM plans the route based on task_goal
-            route_plan = await self.brain.plan_patrol_route(self.task_goal or "patrol area")
+            # LLM plans the route based on task_goal — or short-circuits to
+            # 'custom' pattern when the Planner extracted a user-dictated
+            # walking route into self.route_prompt.
+            route_plan = await self.brain.plan_patrol_route(
+                self.task_goal or "patrol area",
+                route_prompt=self.route_prompt,
+            )
 
             # Target may have been found while LLM was planning — skip if already stopped
             if self._stop_requested:
@@ -693,6 +631,32 @@ class CentralPiAgent:
 
             pattern = route_plan.get("pattern", "area")
             steps = route_plan.get("steps", [])
+
+            # Custom-route branch: user dictated a walking sequence in plain
+            # language.  Expand it into action steps via the same LLM-prompt
+            # path used for direct_control, then walk them while detection
+            # runs in the parent mission loop.  Locomotion (forward /
+            # backward) is RE-ENABLED here because the user explicitly asked
+            # for it — the global disable in stationary/spin still holds.
+            if pattern == "custom":
+                rp = route_plan.get("route_prompt", "")
+                await self._emit(
+                    f"Intent: Patrol plan → custom route — {rp}"
+                )
+                # execute_steps_from_prompt already handles per-action
+                # dispatch + emits Tool: lines + scales count/steps params,
+                # AND coexists with the active mission detection loop —
+                # frames keep streaming and YOLO/VLM keep running.
+                try:
+                    await self.execute_steps_from_prompt(rp)
+                except Exception as e:
+                    logger.warning(f"[{self.robot.robot_id}] custom route execution failed: {e}")
+                    await self._emit(f"Auto: route execution failed — {e}")
+                if not self._stop_requested:
+                    await self._emit("Auto: Patrol route completed")
+                self._patrol_active = False
+                return {"status": "completed", "elapsed_ms": int((time.time() - start) * 1000)}
+
             if pattern == "stationary":
                 mode_desc = "stationary (observe in place)"
             elif pattern == "spin":

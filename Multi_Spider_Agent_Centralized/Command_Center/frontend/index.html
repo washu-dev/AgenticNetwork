@@ -1129,6 +1129,9 @@ createApp({
 
         const sceneMatch = chunk.match(/▌\s+Scene context:\s+(.+?)(?:\r|\n|$)/);
         const recMatch = chunk.match(/▌\s+RECOMMENDATION:\s+(.+?)(?:\r|\n|$)/);
+        // Find-mode header: '▌ TARGET: 🎯 CONFIRMED — descriptor'
+        // or '▌ TARGET: ✗ NOT FOUND'.  Extract the descriptor when present.
+        const targetMatch = chunk.match(/▌\s+TARGET:\s+(.+?)(?:\r|\n|$)/u);
 
         robots.push({
           id: idFull.replace('crawler-alpha-patrol-', '').trim(),
@@ -1146,6 +1149,7 @@ createApp({
           civiliansBullets,
           sceneContext: sceneMatch ? sceneMatch[1].trim() : null,
           recommendation: recMatch ? recMatch[1].trim() : null,
+          targetLine: targetMatch ? targetMatch[1].trim() : null,
         });
       }
       return robots.length ? { totalLine, robots } : null;
@@ -1221,6 +1225,87 @@ createApp({
         }[name] || "Unknown — open DevTools Console, run navigator.mediaDevices.getUserMedia({audio:true}) and inspect the error.";
         alert(`Microphone unavailable.\n\n${name}: ${msg}\n\n→ ${hint}`);
       }
+    }
+
+    // Build a terse, mode-aware spoken summary from the parsed tactical
+    // card data. Returns null for modes we DON'T want to announce
+    // (direct-control: pure actuation, no observation to report).
+    //
+    // Rationale: auto-speak is the commander's hands-free channel.  Reading
+    // the full SITREP is 40+ seconds of speech; terse per-zone status
+    // lands in ~10s and carries the actionable info first.
+    function buildSpokenSummary(rawSummary, parsed) {
+      if (!parsed || !parsed.robots || !parsed.robots.length) {
+        // No tactical card → direct-control or parse-failure.  Don't speak
+        // either: direct-control is pure motion (visual feedback is enough),
+        // parse failures would mean raw text, which was often wrong anyway.
+        return null;
+      }
+
+      // Find mode: every robot section has a TARGET line / TARGET label.
+      const isFind = parsed.robots.every(r =>
+        (r.threatLabel || '').startsWith('TARGET')
+      );
+
+      if (isFind) {
+        const parts = parsed.robots.map(r => {
+          const id = r.id.replace(/^0+/, '') || '0';
+          if (r.threatLabel.includes('NOT FOUND')) {
+            return `Robot ${id}: target not found.`;
+          }
+          // Strip the emoji from the descriptor
+          const desc = (r.targetLine || '')
+            .replace(/^🎯\s*CONFIRMED\s*[—\-]\s*/u, '')
+            .replace(/^.*?[—\-]\s*/u, '')
+            .trim();
+          return desc
+            ? `Robot ${id}: target confirmed, ${desc}.`
+            : `Robot ${id}: target confirmed.`;
+        });
+        return parts.join(' ');
+      }
+
+      // Report / describe / alarm modes → terse per-zone SITREP.
+      //   "Zone E critical, one tank and one Humvee.
+      //    Zone B elevated, two casualties.
+      //    Zones A and D secure."
+      const critical = [];
+      const elevated = [];
+      const secure = [];
+      const num = (n) => {
+        const words = ['zero','one','two','three','four','five','six',
+                       'seven','eight','nine','ten'];
+        return n <= 10 ? words[n] : String(n);
+      };
+      const armorPhrase = (n) =>
+        n === 1 ? 'one armored unit' : `${num(n)} armored units`;
+      const casPhrase = (n) =>
+        n === 1 ? 'one casualty' : `${num(n)} casualties`;
+      for (const r of parsed.robots) {
+        if (r.threatLevel === 'critical') {
+          let line = `Zone ${r.zone} critical`;
+          if (r.armorCount > 0) line += `, ${armorPhrase(r.armorCount)}`;
+          if (r.casualtiesCount > 0) line += `, ${casPhrase(r.casualtiesCount)}`;
+          critical.push(line + '.');
+        } else if (r.threatLevel === 'elevated') {
+          let line = `Zone ${r.zone} elevated`;
+          if (r.casualtiesCount > 0) line += `, ${casPhrase(r.casualtiesCount)}`;
+          elevated.push(line + '.');
+        } else {
+          secure.push(r.zone);
+        }
+      }
+      const pieces = [];
+      if (critical.length) pieces.push(...critical);
+      if (elevated.length) pieces.push(...elevated);
+      if (secure.length) {
+        if (secure.length === 1) {
+          pieces.push(`Zone ${secure[0]} secure.`);
+        } else {
+          pieces.push(`Zones ${secure.join(', ')} secure.`);
+        }
+      }
+      return 'SITREP complete. ' + pieces.join(' ');
     }
 
     async function speakSummary(text) {
@@ -2276,11 +2361,21 @@ createApp({
       document.addEventListener('keydown', _onEscKey);
 
       // Auto-speak result summaries when they arrive (if autoSpeak is on).
-      // We watch `result` and fire once per terminal status change.
+      // Build a terse mode-aware utterance from the parsed tactical data
+      // (skips direct-control entirely).  Falls back to the raw-text
+      // pathway only when we can't derive a spoken summary at all.
       watch(result, (r) => {
         if (!r) return;
         if (r.status === 'running') return;
-        if (r.summary) speakSummary(r.summary);
+        if (!r.summary) return;
+        const parsed = parsedTactical.value;
+        const spoken = buildSpokenSummary(r.summary, parsed);
+        if (spoken) {
+          speakSummary(spoken);
+        }
+        // Direct-control tasks produce no parsedTactical → spoken === null
+        // → we stay silent.  Visual feedback (robot action/animation)
+        // is enough.
       });
     });
     function _onEscKey(e) {

@@ -181,6 +181,9 @@ class LLMClient:
             "- Only use actions from the list above\n"
             "- For turn_left / turn_right, set 'degrees' to the desired rotation amount\n"
             "- Leave steps=0 and degrees=0 for actions that don't need parameters (uses defaults)\n"
+            "- Preserve EVERY action verb the user named, in the order given. If the prompt "
+            "is 'forward 3 steps then turn left 90', the output MUST contain both a forward "
+            "step AND a turn_left step — never silently drop the second clause.\n"
             f"{self._profile['decompose_rules']}"
         )
 
@@ -303,21 +306,33 @@ class LLMClient:
         """
         Decide what to do when a target is first detected (called once per target).
 
-        Understands the task_goal to determine:
-        - Should the robot approach the target?
-        - What action to execute (when close enough, or immediately)?
+        The robot does NOT physically approach the target.  We only decide
+        what action (if any) to execute from the robot's current pose.
 
-        Returns: {"approach": bool, "final_action": "wave", "reason": "..."}
+        Returns: {"final_action": "wave" | "MISSION_COMPLETE" | ..., "reason": "..."}
         """
         system = (
             f"{self._profile['identity']} A target has been detected by the camera system. "
-            "Based on the mission goal, decide the plan.\n\n"
+            "The detection has ALREADY been verified by the upstream perception "
+            "pipeline (YOLO + VLM).  The robot does NOT physically move toward "
+            "the target — your job is only to decide which action to execute "
+            "from the robot's CURRENT pose.\n\n"
             f"Available actions: {', '.join(available_actions)}\n\n"
             "Rules:\n"
-            "- If the task says to do something when the target is found (e.g. 'if found, wave'), "
-            "set approach=true and final_action to that action\n"
-            "- If the task is just to detect/report, set approach=false and final_action='MISSION_COMPLETE'\n"
-            "- final_action must be one of the available actions or 'MISSION_COMPLETE'\n"
+            "- If the task names a follow-up action to perform when the target "
+            "is found (e.g. 'if found, wave', 'find person and sit down'), "
+            "set final_action to that action.\n"
+            "- If the task is JUST to find / detect / report / watch / locate / "
+            "identify the target with NO follow-up action mentioned, set "
+            "final_action='MISSION_COMPLETE'.\n"
+            "  Examples that map to MISSION_COMPLETE:\n"
+            "    'find a tank' / 'find a person wearing red' /\n"
+            "    'detect any hostiles' / 'identify the orange-shirt subject' /\n"
+            "    'watch for combatants' / 'locate the casualty'.\n"
+            "  Do NOT pick a 'verification' action like look_around or "
+            "turn_left just because attributes were named — VLM has already\n"
+            "  verified the attributes.  No physical motion is needed.\n"
+            "- final_action must be one of the available actions or 'MISSION_COMPLETE'.\n"
         )
         user = (
             f"Mission goal: {task_goal}\n"
@@ -334,35 +349,47 @@ class LLMClient:
             if action not in available_actions and action != "MISSION_COMPLETE":
                 logger.warning(f"LLM chose invalid final_action '{action}', defaulting to MISSION_COMPLETE")
                 action = "MISSION_COMPLETE"
-            logger.info(f"Target plan: approach={result.approach}, action={action} — {result.reason}")
-            return {"approach": result.approach, "final_action": action, "reason": result.reason}
+            logger.info(f"Target plan: action={action} — {result.reason}")
+            return {"final_action": action, "reason": result.reason}
         except Exception as e:
             logger.error(f"Target plan decision failed: {e}")
-            return {"approach": False, "final_action": "MISSION_COMPLETE", "reason": "LLM error"}
+            return {"final_action": "MISSION_COMPLETE", "reason": "LLM error"}
 
-    async def plan_patrol_route(self, task_goal: str, map_data: dict = None) -> dict:
+    async def plan_patrol_route(
+        self, task_goal: str, map_data: dict = None,
+        route_prompt: str = "",
+    ) -> dict:
         """
         Generate a patrol route based on the user's task goal.
 
-        NOTE: "area" (walking route) is currently DISABLED. With no SLAM /
-        localization and a fixed mp4-replay demo pipeline, translating the
-        robot physically is both unreliable and pointless — the recorded
-        frames won't track with movement anyway. Any request that would have
-        been classified as "area" is folded into "spin" so the robot at
-        least rotates in place to convey activity, and the detection
-        pipeline still fires normally.
+        NOTE: "area" (LLM-inferred walking route) is currently DISABLED.
+        With no SLAM / localization the LLM has no map to reason about, so
+        we fold an LLM-classified "area" request into "spin" — the robot
+        rotates in place to convey activity and detection still fires.
 
-        Re-enable the area branch once localization + replay-aware motion
-        exists. All related code is kept below, just commented out.
+        EXCEPTION: when the user EXPLICITLY dictates a walking route in the
+        prompt (e.g. 'forward 5 steps, turn left 90, forward 5'), the
+        Planner extracts it into `route_prompt`.  We bypass the classifier
+        and return pattern='custom' with the prompt forwarded — the Robot
+        Agent expands it into action steps via execute_steps_from_prompt.
+        This works on a real robot; on the mock_pi the locomotion commands
+        sleep + ACK without changing the recorded video.
 
-        Called once at mission start. Returns route steps for the robot to follow.
-        Returns: {"pattern": "spin"|"stationary", "steps": [...], "reason": "..."}
-
-        Args:
-            task_goal: Natural language mission goal.
-            map_data: Optional map/spatial data for route planning (unused while
-                      area patrol is disabled).
+        Called once at mission start.
+        Returns: {"pattern": "spin"|"stationary"|"custom",
+                  "steps": [...]   (empty for custom — robot agent expands),
+                  "route_prompt": str   (only for custom),
+                  "reason": "..."}
         """
+        # Short-circuit: user-dictated route → custom pattern, no LLM needed.
+        if route_prompt:
+            return {
+                "pattern": "custom",
+                "steps": [],
+                "route_prompt": route_prompt,
+                "reason": f"Following user-dictated route: {route_prompt}",
+            }
+
         # Step 1: LLM decides which pattern to use AND explains why
         pattern, llm_reason = await self._classify_patrol_pattern(task_goal)
 
@@ -421,24 +448,48 @@ class LLMClient:
     async def _classify_patrol_pattern(self, task_goal: str) -> tuple[str, str]:
         """Use LLM to classify task_goal into (pattern, reason).
 
-        Patterns: stationary, spin, area.
-        The reason is a one-sentence rationale tying the chosen pattern back to
-        the user's request — it gets surfaced in the robot's reasoning trace so
-        the agent path has the same interpretability as direct_control's
-        decompose step.
+        Patterns: 'stationary' (default) or 'spin' (in-place 360° rotation).
+        Custom-route patrols are picked up by plan_patrol_route's
+        short-circuit before this function is even called.
+
+        DEFAULT BEHAVIOUR IS STATIONARY.  Only escalate to spin when the
+        user EXPLICITLY asks the robot to rotate / look around / scan.
+        Find/search/patrol intent ALONE is NOT enough — without an
+        explicit rotation cue, the robot observes from its current pose.
+        Empty goal → stationary without consulting the LLM (avoids a
+        wasted call when the prompt has no observation intent).
         """
+        if not task_goal:
+            return "stationary", "Empty goal — defaulted to stationary"
+
         system = (
-            "Classify the mission goal into one of TWO patrol patterns AND explain why.\n\n"
+            "Classify the mission goal into ONE of two patrol patterns AND explain why.\n\n"
             "Patterns:\n"
-            "- 'stationary': stay in place. Use for 'check here', 'report what you see',\n"
-            "  'describe', 'detect in front', 'watch', 'monitor', 'alert on X', 'SITREP'.\n"
-            "- 'spin': rotate 360° in place. Use for 'look around', 'scan the area',\n"
-            "  'sweep', 'search the sector', 'patrol', 'explore'. (Physical locomotion\n"
-            "  like walking to another room is disabled — any 'patrol' / 'search' /\n"
-            "  'find' / 'explore' intent is satisfied with an in-place 360° sweep so\n"
-            "  the robot covers its full field of view without translating.)\n\n"
+            "- 'stationary' (DEFAULT): the robot stays in its current pose and\n"
+            "  observes from there.  Use this for: 'check here', 'report what you\n"
+            "  see', 'describe', 'detect', 'watch / monitor / alert on X',\n"
+            "  'count', 'find X', 'search for X', 'patrol' (the verb alone),\n"
+            "  'SITREP', and ANY prompt that does NOT explicitly tell the robot\n"
+            "  to rotate or look around.\n"
+            "- 'spin': rotate 360° in place, sampling each ~90° quadrant.  Use\n"
+            "  ONLY when the prompt EXPLICITLY tells the robot to perform a\n"
+            "  rotation or look-around motion.  Example trigger phrases:\n"
+            "    'spin', 'spin around', 'turn around', 'look around',\n"
+            "    'scan around', 'scan the area', 'scan the sector',\n"
+            "    'scan the perimeter', 'sweep', 'sweep the sector',\n"
+            "    '360', '360 degrees', 'rotate', 'rotate in place',\n"
+            "    'all directions', 'survey the area', 'survey the surroundings',\n"
+            "    'check all directions', 'visual sweep', 'visual scan'.\n"
+            "  Military 'scan' verbs targeting a region (perimeter / sector /\n"
+            "  area / surroundings) ALL imply rotational coverage and count\n"
+            "  as spin triggers.  Synonyms and paraphrases also count\n"
+            "  (e.g. 'do a slow spin clockwise', 'scan back-and-forth').\n\n"
+            "DEFAULT IS STATIONARY.  When in doubt, choose stationary — the\n"
+            "user can always re-issue the command with an explicit rotation\n"
+            "cue, but a wrongly-triggered spin wastes ~10 s and may move the\n"
+            "robot's camera away from the relevant subject.\n\n"
             "Fill the structured output:\n"
-            "- pattern: one of 'stationary' / 'spin'\n"
+            "- pattern: 'stationary' or 'spin'\n"
             "- steps: [] (the caller supplies concrete steps)\n"
             "- reason: one short sentence linking the user's words to the chosen pattern.\n\n"
             "DO NOT emit 'area' — it's disabled in this build."
@@ -449,13 +500,12 @@ class LLMClient:
                 HumanMessage(content=f"Mission goal: {task_goal}"),
             ])
             pattern = result.pattern.strip().lower()
-            # 'area' may still slip through from older schema — fold into spin.
             if pattern == "area":
                 pattern = "spin"
             if pattern not in ("stationary", "spin"):
                 pattern = "stationary"
             reason = (result.reason or "").strip()
-            logger.info(f"Patrol pattern classified: {pattern} — {reason} (goal: {task_goal[:50]})")
+            logger.info(f"Patrol pattern (LLM): {pattern} — {reason} (goal: {task_goal[:50]})")
             return pattern, reason
         except Exception as e:
             logger.warning(f"Pattern classification failed: {e}, defaulting to stationary")

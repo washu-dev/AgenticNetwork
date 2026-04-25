@@ -350,6 +350,7 @@ class RobotAgentService:
             alarm_on_detection=alarm_on_detection,
             duration_s=user_duration,
             threshold=detection_threshold,
+            route_prompt=request.get("route_prompt") or "",
         )
         self._current_mission = mission
         robot_registry.set_busy(self.robot_id, mission.mission_id)

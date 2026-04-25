@@ -1359,7 +1359,13 @@ class SearchMission:
     vlm_verify: bool = False             # VLM verifies attributes (e.g. "wearing green shirt")
     vlm_describe_objects: bool = False   # VLM describes each detected object's appearance
     vlm_describe_scene: bool = False     # VLM describes the overall scene/environment from a full frame
-    alarm_on_detection: bool = False  # Watch/alarm mode: emit Alarm: events, don't approach
+    alarm_on_detection: bool = False  # Watch/alarm mode: emit Alarm: events, mission keeps running
+    # User-dictated walking route in natural language (e.g. "forward 5 steps,
+    # turn left 90 degrees, forward 5 steps").  When non-empty the patrol
+    # pattern becomes 'custom' — the Robot Agent walks the route while
+    # detection runs in parallel.  Empty string = let the patrol classifier
+    # pick stationary or spin as before.
+    route_prompt: str = ""
     duration_s: int = 0  # 0 = use default timeout
     threshold: float = 0.7
     status: str = "pending"
@@ -1651,7 +1657,8 @@ async def run_search_mission(mission: SearchMission, existing_udp_receiver=None)
 
         agent = pi_agent_manager.get_or_create(robot)
         agent.set_mission(mission.mission_id, mission.task_goal, mission.report_all, mission.duration_s,
-                          alarm_on_detection=mission.alarm_on_detection)
+                          alarm_on_detection=mission.alarm_on_detection,
+                          route_prompt=mission.route_prompt)
 
         # Step 2: Start patrol (Robot Agent LLM decides movement pattern)
         logger.info(f"Mission {mission.mission_id}: starting on {mission.agent_id}")
@@ -1682,8 +1689,9 @@ async def run_search_mission(mission: SearchMission, existing_udp_receiver=None)
                     mission.status = "completed"
                     break
                 elif time.time() - last_dispatch_time > 10:
-                    # Find+act mode: patrol done, target was found but lost for >10s → end mission
-                    logger.info(f"Mission {mission.mission_id}: patrol finished, target lost during approach")
+                    # Find+act mode: patrol done, target was matched earlier
+                    # but no new dispatch in the last 10s → end mission
+                    logger.info(f"Mission {mission.mission_id}: patrol finished, no further detections")
                     mission.status = "completed"
                     break
 

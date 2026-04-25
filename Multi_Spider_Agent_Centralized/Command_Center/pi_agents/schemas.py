@@ -54,12 +54,15 @@ class ObstacleDecision(BaseModel):
 
 
 class TargetPlan(BaseModel):
-    """LLM output: decide what to do when a target is first detected."""
-    approach: bool = Field(
-        description="True if the robot should move closer to the target before acting"
-    )
+    """LLM output: decide what action to take when a target is first detected.
+
+    Physical approach (locomotion toward target) is NOT supported — the
+    robot acts from its current pose.  final_action is either a named
+    gesture/posture or 'MISSION_COMPLETE' for find-only tasks.
+    """
     final_action: str = Field(
-        description="The action to execute when close enough (e.g. 'wave', 'sit_down', 'MISSION_COMPLETE')"
+        description="Action to execute from current pose (e.g. 'wave', 'sit_down') "
+                    "or 'MISSION_COMPLETE' for find/detect/watch tasks with no follow-up."
     )
     reason: str = Field(
         description="Brief explanation of the plan"

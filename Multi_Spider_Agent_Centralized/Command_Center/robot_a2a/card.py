@@ -108,7 +108,7 @@ def build_agent_skill(robot_type: str, zone: str) -> AgentSkill:
         tags=tags,
         examples=[
             "Patrol the zone and report anything unusual",
-            "Find the blue cone and approach it",
+            "Find the blue cone and report",
             "Watch for people entering the area and raise an alarm",
             "Move forward 5 steps then turn right",
         ],

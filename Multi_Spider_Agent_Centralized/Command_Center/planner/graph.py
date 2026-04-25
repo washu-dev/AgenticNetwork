@@ -570,7 +570,7 @@ async def _dispatch_agent_task(agent: dict, phase: dict, task_goal: str, message
 
     # Safety net: if the user's prompt clearly asks for a watch/alarm task
     # (keywords below) but the LLM forgot to set alarm_on_detection, force it.
-    # Also force report_all so we don't accidentally approach the target.
+    # Also force report_all so the robot stays in observe mode.
     alarm_flag = phase.get("alarm_on_detection", False)
     report_all_flag = phase.get("report_all", False)
     describe_flag = phase.get("vlm_describe_objects", False)
@@ -617,6 +617,10 @@ async def _dispatch_agent_task(agent: dict, phase: dict, task_goal: str, message
         "vlm_describe_scene": phase.get("vlm_describe_scene", False),
         "alarm_on_detection": alarm_flag,
         "task_goal": task_goal,
+        # User-dictated walking route, e.g. "forward 5 steps, turn left 90".
+        # When set, the patrol pattern becomes 'custom' and the Robot Agent
+        # walks the route while detection runs in parallel.
+        "route_prompt": phase.get("route_prompt"),
     }
     duration = phase.get("duration_s", 0)
     if duration > 0:

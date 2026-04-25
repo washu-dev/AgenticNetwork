@@ -97,10 +97,31 @@ class Phase(BaseModel):
         default=False,
         description=(
             "True for watch/alarm tasks: robot stays in observe mode for the whole "
-            "duration, does NOT approach targets or stop on first detection. Each "
-            "new target match emits an Alarm: event surfaced as a flashing red "
-            "banner. Trigger words: 'watch', 'alert', 'alarm', 'notify', 'warn', "
-            "'guard'. Decide independently of the other flags."
+            "duration and does NOT stop on first detection. Each new target match "
+            "emits an Alarm: event surfaced as a flashing red banner. Trigger "
+            "words: 'watch', 'alert', 'alarm', 'notify', 'warn', 'guard'. "
+            "Decide independently of the other flags."
+        ),
+    )
+    route_prompt: Optional[str] = Field(
+        default=None,
+        description=(
+            "When the user dictates a SPECIFIC walking route in the prompt, place "
+            "ONLY the route portion here as a natural-language string the Robot "
+            "Agent's LLM will turn into action steps.  Examples:\n"
+            "  'Patrol forward 10 steps then turn left 90 degrees and report'\n"
+            "    → route_prompt='forward 10 steps, turn left 90 degrees'\n"
+            "  'Walk forward 5 steps, scan, then forward 5 more, look for tank'\n"
+            "    → route_prompt='forward 5 steps, then forward 5 more steps'\n"
+            "Triggers: any prompt containing concrete locomotion steps "
+            "('forward N steps', 'backward', 'turn left/right N degrees', "
+            "'walk to', 'go around the corner').  When set, the patrol "
+            "pattern becomes 'custom' (overrides stationary/spin defaults) "
+            "and the robot walks the route while running detection in "
+            "parallel.  Always pair with task_type='agent' and report_all=true "
+            "(or any of the describe/alarm flags) so observations are still "
+            "collected during the walk.  Leave None when the user did not "
+            "specify a route."
         ),
     )
 
