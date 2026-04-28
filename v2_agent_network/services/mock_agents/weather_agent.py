@@ -45,5 +45,8 @@ class WeatherAgentExecutor(AgentExecutor):
 def _extract_location(prompt: str) -> str:
     match = re.search(r"\b(?:in|for|near)\s+([A-Za-z][A-Za-z .,-]{1,60})", prompt)
     if match:
-        return match.group(1).strip(" .,-")
+        value = match.group(1).strip(" .,-")
+        for separator in (", then", " then ", ", and", " and "):
+            value = value.split(separator, 1)[0].strip(" .,-")
+        return value
     return "the requested location"

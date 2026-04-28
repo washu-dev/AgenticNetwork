@@ -93,6 +93,7 @@ def _internal_message_to_sdk(message: A2AMessage, request: A2ATaskRequest) -> Me
         message_id=message.message_id,
         context_id=request.context_id,
         task_id=None,
+        reference_task_ids=request.metadata.get("reference_task_ids"),
         parts=[_internal_part_to_sdk(part) for part in message.parts],
         metadata={
             "target_agent_id": request.target_agent_id,

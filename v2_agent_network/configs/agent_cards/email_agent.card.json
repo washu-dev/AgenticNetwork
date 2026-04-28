@@ -1,0 +1,73 @@
+{
+  "name": "Email Agent",
+  "description": "Mock A2A email agent for v2 multi-agent communication demos.",
+  "url": "http://127.0.0.1:9103/",
+  "version": "0.1.0",
+  "protocolVersion": "0.3.0",
+  "preferredTransport": "JSONRPC",
+  "provider": {
+    "organization": "Demo Email Organization",
+    "url": "https://example.invalid/email-agent"
+  },
+  "capabilities": {
+    "streaming": false,
+    "pushNotifications": false,
+    "stateTransitionHistory": true
+  },
+  "defaultInputModes": ["text/plain", "application/json"],
+  "defaultOutputModes": ["text/plain", "application/json"],
+  "securitySchemes": {},
+  "security": [],
+  "skills": [
+    {
+      "id": "email/search",
+      "name": "Search Email",
+      "description": "Search deterministic mock email metadata.",
+      "tags": ["email/search", "email", "search"],
+      "examples": ["Find Bob's last email."],
+      "inputModes": ["text/plain", "application/json"],
+      "outputModes": ["text/plain", "application/json"],
+      "security": []
+    },
+    {
+      "id": "email/read",
+      "name": "Read Email",
+      "description": "Read deterministic mock email content.",
+      "tags": ["email/read", "email", "read"],
+      "examples": ["Read the last email from Bob."],
+      "inputModes": ["text/plain", "application/json"],
+      "outputModes": ["text/plain", "application/json"],
+      "security": []
+    },
+    {
+      "id": "email/draft",
+      "name": "Draft Email",
+      "description": "Draft an email from user instructions and optional workflow artifacts.",
+      "tags": ["email/draft", "email", "draft"],
+      "examples": ["Draft an email to Bob with two meeting options."],
+      "inputModes": ["text/plain", "application/json"],
+      "outputModes": ["text/plain", "application/json"],
+      "security": []
+    },
+    {
+      "id": "email/send",
+      "name": "Send Email",
+      "description": "Send an email only after explicit user confirmation.",
+      "tags": ["email/send", "email", "send", "write"],
+      "examples": ["Send this email to Bob."],
+      "inputModes": ["text/plain", "application/json"],
+      "outputModes": ["text/plain", "application/json"],
+      "security": []
+    },
+    {
+      "id": "email/summarize_thread",
+      "name": "Summarize Thread",
+      "description": "Summarize a deterministic mock email thread.",
+      "tags": ["email/summarize_thread", "email", "summary"],
+      "examples": ["Summarize the thread with Bob."],
+      "inputModes": ["text/plain", "application/json"],
+      "outputModes": ["text/plain", "application/json"],
+      "security": []
+    }
+  ]
+}

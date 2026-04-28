@@ -1,0 +1,73 @@
+{
+  "name": "Calendar Agent",
+  "description": "Mock A2A calendar agent for v2 multi-agent scheduling demos.",
+  "url": "http://127.0.0.1:9102/",
+  "version": "0.1.0",
+  "protocolVersion": "0.3.0",
+  "preferredTransport": "JSONRPC",
+  "provider": {
+    "organization": "Demo Calendar Organization",
+    "url": "https://example.invalid/calendar-agent"
+  },
+  "capabilities": {
+    "streaming": false,
+    "pushNotifications": false,
+    "stateTransitionHistory": true
+  },
+  "defaultInputModes": ["text/plain", "application/json"],
+  "defaultOutputModes": ["text/plain", "application/json"],
+  "securitySchemes": {},
+  "security": [],
+  "skills": [
+    {
+      "id": "calendar/search_availability",
+      "name": "Search Availability",
+      "description": "Find deterministic mock available calendar slots for a time window.",
+      "tags": ["calendar/search_availability", "calendar", "availability", "schedule"],
+      "examples": ["Check my calendar tomorrow afternoon."],
+      "inputModes": ["text/plain", "application/json"],
+      "outputModes": ["text/plain", "application/json"],
+      "security": []
+    },
+    {
+      "id": "calendar/create_event",
+      "name": "Create Event",
+      "description": "Prepare or create a calendar event after explicit confirmation.",
+      "tags": ["calendar/create_event", "calendar", "write"],
+      "examples": ["Create a meeting for tomorrow afternoon."],
+      "inputModes": ["text/plain", "application/json"],
+      "outputModes": ["text/plain", "application/json"],
+      "security": []
+    },
+    {
+      "id": "calendar/update_event",
+      "name": "Update Event",
+      "description": "Prepare or update a calendar event after explicit confirmation.",
+      "tags": ["calendar/update_event", "calendar", "write"],
+      "examples": ["Move my 2 PM meeting."],
+      "inputModes": ["text/plain", "application/json"],
+      "outputModes": ["text/plain", "application/json"],
+      "security": []
+    },
+    {
+      "id": "calendar/respond_invitation",
+      "name": "Respond Invitation",
+      "description": "Prepare a response to a calendar invitation.",
+      "tags": ["calendar/respond_invitation", "calendar", "invitation"],
+      "examples": ["Respond maybe to the team invite."],
+      "inputModes": ["text/plain", "application/json"],
+      "outputModes": ["text/plain", "application/json"],
+      "security": []
+    },
+    {
+      "id": "calendar/summarize_schedule",
+      "name": "Summarize Schedule",
+      "description": "Summarize a deterministic mock schedule.",
+      "tags": ["calendar/summarize_schedule", "calendar", "summary"],
+      "examples": ["Summarize my afternoon schedule."],
+      "inputModes": ["text/plain", "application/json"],
+      "outputModes": ["text/plain", "application/json"],
+      "security": []
+    }
+  ]
+}

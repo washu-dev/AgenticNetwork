@@ -1,0 +1,73 @@
+{
+  "name": "Photo Geospatial Agent",
+  "description": "Mock A2A photo and geospatial analysis agent for v2 multi-agent demos.",
+  "url": "http://127.0.0.1:9104/",
+  "version": "0.1.0",
+  "protocolVersion": "0.3.0",
+  "preferredTransport": "JSONRPC",
+  "provider": {
+    "organization": "Demo Geospatial Organization",
+    "url": "https://example.invalid/photo-geospatial-agent"
+  },
+  "capabilities": {
+    "streaming": false,
+    "pushNotifications": false,
+    "stateTransitionHistory": true
+  },
+  "defaultInputModes": ["text/plain", "application/json", "image/jpeg", "image/png"],
+  "defaultOutputModes": ["text/plain", "application/json"],
+  "securitySchemes": {},
+  "security": [],
+  "skills": [
+    {
+      "id": "image/geospatial_analysis",
+      "name": "Geospatial Photo Analysis",
+      "description": "Analyze a referenced image for deterministic geospatial and scene indicators.",
+      "tags": ["image/geospatial_analysis", "image", "geospatial", "photo"],
+      "examples": ["Analyze this geospatial photo near Austin."],
+      "inputModes": ["text/plain", "application/json", "image/jpeg", "image/png"],
+      "outputModes": ["text/plain", "application/json"],
+      "security": []
+    },
+    {
+      "id": "image/object_detection",
+      "name": "Object Detection",
+      "description": "Detect deterministic mock objects from a referenced image.",
+      "tags": ["image/object_detection", "image", "objects"],
+      "examples": ["Detect visible objects in this photo."],
+      "inputModes": ["image/jpeg", "image/png"],
+      "outputModes": ["application/json"],
+      "security": []
+    },
+    {
+      "id": "image/location_inference",
+      "name": "Location Inference",
+      "description": "Infer deterministic coarse location notes from image context.",
+      "tags": ["image/location_inference", "image", "location"],
+      "examples": ["Infer likely location clues from this image."],
+      "inputModes": ["text/plain", "image/jpeg", "image/png"],
+      "outputModes": ["application/json"],
+      "security": []
+    },
+    {
+      "id": "image/satellite_interpretation",
+      "name": "Satellite Interpretation",
+      "description": "Summarize deterministic satellite-style scene indicators.",
+      "tags": ["image/satellite_interpretation", "image", "satellite"],
+      "examples": ["Interpret this satellite image."],
+      "inputModes": ["image/jpeg", "image/png"],
+      "outputModes": ["application/json"],
+      "security": []
+    },
+    {
+      "id": "image/photo_forensics_basic",
+      "name": "Basic Photo Forensics",
+      "description": "Return deterministic basic photo-forensics notes.",
+      "tags": ["image/photo_forensics_basic", "image", "forensics"],
+      "examples": ["Check this photo for basic consistency issues."],
+      "inputModes": ["image/jpeg", "image/png"],
+      "outputModes": ["application/json"],
+      "security": []
+    }
+  ]
+}

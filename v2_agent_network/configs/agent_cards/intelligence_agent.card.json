@@ -1,0 +1,73 @@
+{
+  "name": "Intelligence Agent",
+  "description": "Mock A2A intelligence synthesis agent for v2 multi-agent demos.",
+  "url": "http://127.0.0.1:9105/",
+  "version": "0.1.0",
+  "protocolVersion": "0.3.0",
+  "preferredTransport": "JSONRPC",
+  "provider": {
+    "organization": "Demo Intelligence Organization",
+    "url": "https://example.invalid/intelligence-agent"
+  },
+  "capabilities": {
+    "streaming": false,
+    "pushNotifications": false,
+    "stateTransitionHistory": true
+  },
+  "defaultInputModes": ["text/plain", "application/json"],
+  "defaultOutputModes": ["text/plain", "application/json"],
+  "securitySchemes": {},
+  "security": [],
+  "skills": [
+    {
+      "id": "intelligence/situation_summary",
+      "name": "Situation Summary",
+      "description": "Synthesize prior artifacts into a deterministic situation summary.",
+      "tags": ["intelligence/situation_summary", "intelligence", "summary"],
+      "examples": ["Give me a situation summary from these artifacts."],
+      "inputModes": ["text/plain", "application/json"],
+      "outputModes": ["text/plain", "application/json"],
+      "security": []
+    },
+    {
+      "id": "intelligence/risk_assessment",
+      "name": "Risk Assessment",
+      "description": "Generate deterministic risk assessment notes from prior artifacts.",
+      "tags": ["intelligence/risk_assessment", "intelligence", "risk"],
+      "examples": ["Assess key risks from these findings."],
+      "inputModes": ["text/plain", "application/json"],
+      "outputModes": ["text/plain", "application/json"],
+      "security": []
+    },
+    {
+      "id": "intelligence/course_of_action",
+      "name": "Course Of Action",
+      "description": "Recommend a deterministic read-only course of action from prior artifacts.",
+      "tags": ["intelligence/course_of_action", "intelligence", "plan"],
+      "examples": ["Recommend a plan from the scene and weather outputs."],
+      "inputModes": ["text/plain", "application/json"],
+      "outputModes": ["text/plain", "application/json"],
+      "security": []
+    },
+    {
+      "id": "intelligence/entity_tracking",
+      "name": "Entity Tracking",
+      "description": "Summarize deterministic entity tracking observations.",
+      "tags": ["intelligence/entity_tracking", "intelligence", "tracking"],
+      "examples": ["Track entities mentioned across these reports."],
+      "inputModes": ["text/plain", "application/json"],
+      "outputModes": ["application/json"],
+      "security": []
+    },
+    {
+      "id": "intelligence/report_generation",
+      "name": "Report Generation",
+      "description": "Generate a deterministic report draft from source artifacts.",
+      "tags": ["intelligence/report_generation", "intelligence", "report"],
+      "examples": ["Generate a concise report from these artifacts."],
+      "inputModes": ["text/plain", "application/json"],
+      "outputModes": ["text/plain", "application/json"],
+      "security": []
+    }
+  ]
+}
