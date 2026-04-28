@@ -1,4 +1,0 @@
-{
-  "_comment": "AprilTag position registry. Key = tag_id (string). Pos = [x, y] in meters (world frame).",
-  "_how_to_fill": "Add entries as '10': {\"zone\": \"A\", \"pos\": [x_meters, y_meters]}. Measure from the map origin."
-}

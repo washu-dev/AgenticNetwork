@@ -1,7 +1,0 @@
-{
-  "_comment": "Zone adjacency graph. Used for cross-zone support dispatch (robot can only travel to adjacent zones).",
-
-  "A": ["B"],
-  "B": ["A", "C"],
-  "C": ["B"]
-}
