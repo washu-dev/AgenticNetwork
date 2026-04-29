@@ -9,6 +9,7 @@ CALENDAR_TERMS = {"calendar", "schedule", "availability", "available", "meeting 
 EMAIL_TERMS = {"email", "mail", "message"}
 IMAGE_GEO_TERMS = {"photo", "image", "geospatial", "satellite", "scene"}
 INTELLIGENCE_TERMS = {"situation", "summary", "plan", "risk", "course of action"}
+CODE_TERMS = {"repo", "repository", "code", "coding", "test", "tests", "bug", "fix", "pr", "pull request"}
 WEATHER_SKILL = "weather/forecast"
 CALENDAR_SEARCH_AVAILABILITY_SKILL = "calendar/search_availability"
 EMAIL_DRAFT_SKILL = "email/draft"
@@ -16,16 +17,27 @@ EMAIL_SEND_SKILL = "email/send"
 IMAGE_GEOSPATIAL_ANALYSIS_SKILL = "image/geospatial_analysis"
 INTELLIGENCE_SITUATION_SUMMARY_SKILL = "intelligence/situation_summary"
 INTELLIGENCE_COURSE_OF_ACTION_SKILL = "intelligence/course_of_action"
+CODE_REPOSITORY_INSPECTION_SKILL = "code/repository_inspection"
+CODE_BUG_FIX_SKILL = "code/bug_fix"
+CODE_PR_REVIEW_SKILL = "code/pr_review"
+CODE_TEST_GENERATION_SKILL = "code/test_generation"
+CODE_DOCUMENTATION_SKILL = "code/documentation"
 
 
 def infer_skill(text: str) -> str:
     return plan_workflow(text)[0]
 
 
-def plan_workflow(text: str) -> list[str]:
+def plan_workflow(text: str, requested_skill: str | None = None) -> list[str]:
+    if requested_skill:
+        return [requested_skill]
+
     lowered = text.lower()
     workflow: list[str] = []
 
+    code_skill = _code_skill(lowered)
+    if code_skill:
+        workflow.append(code_skill)
     if _mentions_image_geo(lowered):
         workflow.append(IMAGE_GEOSPATIAL_ANALYSIS_SKILL)
     if any(term in lowered for term in WEATHER_TERMS):
@@ -90,3 +102,17 @@ def _mentions_image_geo(lowered: str) -> bool:
 
 def _mentions_intelligence(lowered: str) -> bool:
     return any(term in lowered for term in INTELLIGENCE_TERMS)
+
+
+def _code_skill(lowered: str) -> str | None:
+    if not any(term in lowered for term in CODE_TERMS):
+        return None
+    if "pull request" in lowered or " pr " in f" {lowered} ":
+        return CODE_PR_REVIEW_SKILL
+    if "fix" in lowered or "failing test" in lowered or "bug" in lowered:
+        return CODE_BUG_FIX_SKILL
+    if "generate test" in lowered or "write test" in lowered or "add test" in lowered:
+        return CODE_TEST_GENERATION_SKILL
+    if "documentation" in lowered or "docs" in lowered:
+        return CODE_DOCUMENTATION_SKILL
+    return CODE_REPOSITORY_INSPECTION_SKILL

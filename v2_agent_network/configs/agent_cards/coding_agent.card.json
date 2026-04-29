@@ -1,0 +1,73 @@
+{
+  "name": "Coding Agent",
+  "description": "Mock A2A coding agent for v2 repository-assistance demos. It never runs commands or modifies files.",
+  "url": "http://127.0.0.1:9106/",
+  "version": "0.1.0",
+  "protocolVersion": "0.3.0",
+  "preferredTransport": "JSONRPC",
+  "provider": {
+    "organization": "Demo Coding Organization",
+    "url": "https://example.invalid/coding-agent"
+  },
+  "capabilities": {
+    "streaming": false,
+    "pushNotifications": false,
+    "stateTransitionHistory": true
+  },
+  "defaultInputModes": ["text/plain", "application/json"],
+  "defaultOutputModes": ["text/plain", "application/json"],
+  "securitySchemes": {},
+  "security": [],
+  "skills": [
+    {
+      "id": "code/repository_inspection",
+      "name": "Repository Inspection",
+      "description": "Return deterministic read-only repository observations and a recommended next task.",
+      "tags": ["code/repository_inspection", "code", "repository", "inspection", "read"],
+      "examples": ["Review the current repo and suggest what coding task should be done next."],
+      "inputModes": ["text/plain", "application/json"],
+      "outputModes": ["text/plain", "application/json"],
+      "security": []
+    },
+    {
+      "id": "code/bug_fix",
+      "name": "Bug Fix Plan",
+      "description": "Prepare a deterministic bug-fix plan that requires confirmation before any repository modification.",
+      "tags": ["code/bug_fix", "code", "bug", "fix", "write"],
+      "examples": ["Fix the failing test in this repo."],
+      "inputModes": ["text/plain", "application/json"],
+      "outputModes": ["text/plain", "application/json"],
+      "security": []
+    },
+    {
+      "id": "code/pr_review",
+      "name": "PR Review",
+      "description": "Return deterministic read-only review feedback for repository changes.",
+      "tags": ["code/pr_review", "code", "review", "read"],
+      "examples": ["Review this pull request."],
+      "inputModes": ["text/plain", "application/json"],
+      "outputModes": ["text/plain", "application/json"],
+      "security": []
+    },
+    {
+      "id": "code/test_generation",
+      "name": "Test Generation Plan",
+      "description": "Prepare deterministic test-generation advice; writing tests requires confirmation.",
+      "tags": ["code/test_generation", "code", "tests", "write"],
+      "examples": ["Generate tests for this feature."],
+      "inputModes": ["text/plain", "application/json"],
+      "outputModes": ["text/plain", "application/json"],
+      "security": []
+    },
+    {
+      "id": "code/documentation",
+      "name": "Documentation Draft",
+      "description": "Generate deterministic documentation advice or draft content without modifying files.",
+      "tags": ["code/documentation", "code", "documentation", "docs", "draft"],
+      "examples": ["Draft documentation for this module."],
+      "inputModes": ["text/plain", "application/json"],
+      "outputModes": ["text/plain", "application/json"],
+      "security": []
+    }
+  ]
+}

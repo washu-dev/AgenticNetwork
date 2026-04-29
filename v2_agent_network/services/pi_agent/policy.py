@@ -14,6 +14,8 @@ CONFIRMATION_REQUIRED_SKILLS = {
     "calendar/create_event",
     "calendar/update_event",
     "calendar/delete_event",
+    "code/bug_fix",
+    "code/test_generation",
 }
 
 ALLOWED_SKILLS = {
@@ -35,6 +37,9 @@ ALLOWED_SKILLS = {
     "intelligence/course_of_action",
     "intelligence/entity_tracking",
     "intelligence/report_generation",
+    "code/repository_inspection",
+    "code/pr_review",
+    "code/documentation",
 }
 
 
@@ -42,7 +47,7 @@ def evaluate_skill(skill: str, capability: AgentCapability | None = None) -> Pol
     if skill in CONFIRMATION_REQUIRED_SKILLS:
         return PolicyDecision(
             status=PolicyDecisionStatus.requires_confirmation,
-            reason=f"{skill} changes external state and requires confirmation.",
+            reason=f"{skill} may change external or repository state and requires confirmation.",
             confirmation_status=ConfirmationStatus.pending,
         )
     if skill in ALLOWED_SKILLS:

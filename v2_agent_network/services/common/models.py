@@ -218,5 +218,6 @@ class AgentInvocationRecord(BaseModel):
 class PublishedRecord(BaseModel):
     record_id: str
     agent_id: str
-    backend: Literal["fake", "ads"]
+    backend: Literal["fake", "real"]
     raw_record: dict[str, Any]
+    backend_ref: str | None = None

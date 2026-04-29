@@ -25,6 +25,15 @@ KNOWN_OASF_SKILLS: dict[str, OfficialOASFSkill] = {
     )
 }
 
+WRITE_SKILL_IDS = {
+    "email/send",
+    "calendar/create_event",
+    "calendar/update_event",
+    "calendar/delete_event",
+    "code/bug_fix",
+    "code/test_generation",
+}
+
 
 def load_agent_card(path: str | Path) -> AgentCard:
     with Path(path).open("r", encoding="utf-8") as fh:
@@ -64,6 +73,8 @@ def agent_card_to_oasf_record(card: AgentCard) -> dict[str, Any]:
     official, custom = _official_and_custom_skills(card)
     provider = card.provider.organization if card.provider else "unknown"
     record_id = str(uuid5(NAMESPACE_URL, f"v2-agent-network:{card.name}:{card.version}"))
+    skill_policies = {skill.id: _skill_policy(skill) for skill in card.skills}
+    has_write_skill = any(policy["action_type"] == "write" for policy in skill_policies.values())
 
     return {
         "schema_version": "demo-v2",
@@ -96,9 +107,10 @@ def agent_card_to_oasf_record(card: AgentCard) -> dict[str, Any]:
             "required_scopes": [],
         },
         "policy": {
-            "risk_level": "low",
-            "action_type": "read",
+            "risk_level": "medium" if has_write_skill else "low",
+            "action_type": "write" if has_write_skill else "read",
             "write_requires_confirmation": True,
+            "skill_policies": skill_policies,
         },
         "metadata": {
             "source": "v2_agent_network",
@@ -128,6 +140,7 @@ def oasf_record_to_discovered_agent(record: dict[str, Any]) -> DiscoveredAgent:
         for skill in record["discovery"].get("official_oasf_skills", [])
     ]
     custom = record["discovery"].get("custom_skill_tags", [])
+    skill_policies = record.get("policy", {}).get("skill_policies", {})
 
     capabilities = [
         AgentCapability(
@@ -139,11 +152,19 @@ def oasf_record_to_discovered_agent(record: dict[str, Any]) -> DiscoveredAgent:
             output_modes=skill.output_modes or card.default_output_modes,
             required_auth=[],
             required_scopes=[],
-            risk_level=RiskLevel(record.get("policy", {}).get("risk_level", "low")),
+            risk_level=RiskLevel(
+                skill_policies.get(skill.id, {}).get(
+                    "risk_level",
+                    record.get("policy", {}).get("risk_level", "low"),
+                )
+            ),
             examples=skill.examples or [],
             official_oasf_skills=official,
             custom_skill_tags=custom,
-            action_type=record.get("policy", {}).get("action_type", "read"),
+            action_type=skill_policies.get(skill.id, {}).get(
+                "action_type",
+                record.get("policy", {}).get("action_type", "read"),
+            ),
         )
         for skill in card.skills
     ]
@@ -169,10 +190,25 @@ def oasf_record_to_discovered_agent(record: dict[str, Any]) -> DiscoveredAgent:
     )
 
 
-def published_record_from_oasf(record: dict[str, Any], backend: str = "fake") -> PublishedRecord:
+def published_record_from_oasf(
+    record: dict[str, Any],
+    backend: str = "fake",
+    backend_ref: str | None = None,
+) -> PublishedRecord:
     return PublishedRecord(
         record_id=record["record_id"],
         agent_id=record["agent_id"],
         backend=backend,
         raw_record=record,
+        backend_ref=backend_ref,
     )
+
+
+def _skill_policy(skill: Any) -> dict[str, Any]:
+    tags = set(skill.tags or [])
+    is_write = skill.id in WRITE_SKILL_IDS or "write" in tags
+    return {
+        "risk_level": "medium" if is_write else "low",
+        "action_type": "write" if is_write else "read",
+        "confirmation_required": is_write,
+    }

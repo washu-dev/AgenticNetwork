@@ -96,6 +96,7 @@ def test_fake_directory_publish_search_resolve_and_fake_gate() -> None:
     published = directory.publish_agent_card(card)
 
     assert published.backend == "fake"
+    assert published.backend_ref is None
     assert directory.search_agents(skill="weather/forecast")[0].agent_id == "weather-agent"
     assert directory.search_agents(skill="weather")[0].agent_id == "weather-agent"
     assert directory.resolve_agent("weather-agent").name == "Weather Agent"

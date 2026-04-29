@@ -7,6 +7,7 @@ from a2a.types import AgentCard
 from starlette.applications import Starlette
 
 from v2_agent_network.services.mock_agents.calendar_agent import CalendarAgentExecutor
+from v2_agent_network.services.mock_agents.coding_agent import CodingAgentExecutor
 from v2_agent_network.services.mock_agents.email_agent import EmailAgentExecutor
 from v2_agent_network.services.mock_agents.intelligence_agent import IntelligenceAgentExecutor
 from v2_agent_network.services.mock_agents.photo_geospatial_agent import PhotoGeospatialAgentExecutor
@@ -42,3 +43,7 @@ def create_photo_geospatial_a2a_app(agent_card: AgentCard) -> Starlette:
 
 def create_intelligence_a2a_app(agent_card: AgentCard) -> Starlette:
     return _create_a2a_app(agent_card, IntelligenceAgentExecutor())
+
+
+def create_coding_a2a_app(agent_card: AgentCard) -> Starlette:
+    return _create_a2a_app(agent_card, CodingAgentExecutor())
