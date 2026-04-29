@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from v2_agent_network.services.common.models import (
@@ -66,6 +67,12 @@ def evaluate_skill(
     capability: AgentCapability | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> PolicyDecision:
+    if _permissive_policy_enabled():
+        return PolicyDecision(
+            status=PolicyDecisionStatus.allowed,
+            reason=f"{skill} is allowed because PI_POLICY_MODE=permissive.",
+            confirmation_status=ConfirmationStatus.not_required,
+        )
     if skill == "email/draft" and _truthy((metadata or {}).get("create_gmail_draft")):
         return PolicyDecision(
             status=PolicyDecisionStatus.requires_confirmation,
@@ -96,6 +103,12 @@ def evaluate_skill(
 def evaluate_capability(capability: AgentCapability, skill: str | None = None) -> PolicyDecision:
     if skill is not None:
         return evaluate_skill(skill, capability)
+    if _permissive_policy_enabled():
+        return PolicyDecision(
+            status=PolicyDecisionStatus.allowed,
+            reason="Capability is allowed because PI_POLICY_MODE=permissive.",
+            confirmation_status=ConfirmationStatus.not_required,
+        )
     if capability.action_type == "write" or capability.risk_level in {RiskLevel.medium, RiskLevel.high}:
         return PolicyDecision(
             status=PolicyDecisionStatus.requires_confirmation,
@@ -115,3 +128,10 @@ def _truthy(value: Any) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes", "y", "on"}
     return bool(value)
+
+
+def _permissive_policy_enabled() -> bool:
+    mode = os.getenv("PI_POLICY_MODE", "strict").strip().lower()
+    return mode in {"permissive", "allow_all", "disabled", "off"} or _truthy(
+        os.getenv("PI_DISABLE_CONFIRMATION_GATES")
+    )

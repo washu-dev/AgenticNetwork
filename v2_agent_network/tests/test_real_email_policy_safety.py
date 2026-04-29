@@ -55,6 +55,16 @@ def test_email_draft_gmail_draft_creation_requires_confirmation() -> None:
     assert "create_gmail_draft=true" in decision.reason
 
 
+def test_permissive_policy_mode_allows_write_skills_without_confirmation(monkeypatch) -> None:
+    monkeypatch.setenv("PI_POLICY_MODE", "permissive")
+
+    decision = evaluate_skill("email/send")
+
+    assert decision.status == "allowed"
+    assert decision.confirmation_status == "not_required"
+    assert "PI_POLICY_MODE=permissive" in decision.reason
+
+
 def test_router_maps_common_merged_email_calendar_workspace_prompts() -> None:
     assert plan_workflow("What time is it for the email agent?") == ["email/current_time"]
     assert plan_workflow("Check Google Workspace OAuth status.") == ["email/google/status"]

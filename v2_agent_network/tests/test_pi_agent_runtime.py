@@ -323,6 +323,198 @@ async def _tool_loop_write_skill_requires_confirmation_without_a2a() -> None:
     assert pending["task_input"]["to"] == ["wyy0115@outlook.com"]
 
 
+def test_tool_loop_permissive_mode_skips_confirmation_tool(monkeypatch) -> None:
+    asyncio.run(_tool_loop_permissive_mode_skips_confirmation_tool(monkeypatch))
+
+
+async def _tool_loop_permissive_mode_skips_confirmation_tool(monkeypatch) -> None:
+    monkeypatch.setenv("PI_POLICY_MODE", "permissive")
+    directory = SpyDirectoryClient(fake_ads=True)
+    directory.publish_agent_card(_email_group_card())
+    a2a_client = SpyA2AClient()
+    llm_client = ScriptedToolLoopClient(
+        [
+            AgentToolCall(
+                tool_name="discover_agents",
+                arguments={"query": "group email", "skill_hint": "email/group_send"},
+            ),
+            AgentToolCall(
+                tool_name="request_confirmation",
+                arguments={
+                    "action_summary": "Send group email.",
+                    "agent_id": "email-agent",
+                    "skill": "email/group_send",
+                    "task_input": {"subject": "test", "body": "test"},
+                },
+            ),
+            AgentToolCall(
+                tool_name="call_agent",
+                arguments={
+                    "agent_id": "email-agent",
+                    "skill": "email/group_send",
+                    "task_input": {"subject": "test", "body": "test"},
+                },
+            ),
+            AgentToolCall(tool_name="final_answer", arguments={"text": "Sent."}),
+        ]
+    )
+    pi_app = create_app(
+        directory_client=directory,
+        a2a_client=a2a_client,
+        publish_weather_card=False,
+        llm_config=_llm_config(),
+        tool_loop_llm_client=llm_client,
+        agent_mode="tool_loop",
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=pi_app),
+        base_url="http://pi-agent",
+    ) as pi_http_client:
+        response = await pi_http_client.post(
+            "/messages",
+            json={
+                "user_id": "user-1",
+                "channel": "api",
+                "text": "Send the group notice email.",
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["confirmation_required"] is False
+    assert payload["policy_decisions"][0]["policy_decision"] == "allowed"
+    assert a2a_client.calls == [("email-agent", "email/group_send")]
+    assert payload["tool_trace"][1]["tool_name"] == "request_confirmation"
+    assert payload["tool_trace"][1]["status"] == "skipped"
+
+
+def test_tool_loop_preserves_explicit_email_title_and_content(monkeypatch) -> None:
+    asyncio.run(_tool_loop_preserves_explicit_email_title_and_content(monkeypatch))
+
+
+async def _tool_loop_preserves_explicit_email_title_and_content(monkeypatch) -> None:
+    monkeypatch.setenv("PI_POLICY_MODE", "permissive")
+    directory = SpyDirectoryClient(fake_ads=True)
+    directory.publish_agent_card(_email_group_card())
+    a2a_client = SpyA2AClient()
+    llm_client = ScriptedToolLoopClient(
+        [
+            AgentToolCall(
+                tool_name="discover_agents",
+                arguments={"query": "group email", "skill_hint": "email/group_send"},
+            ),
+            AgentToolCall(
+                tool_name="call_agent",
+                arguments={
+                    "agent_id": "email-agent",
+                    "skill": "email/group_send",
+                    "task_input": {},
+                },
+            ),
+            AgentToolCall(tool_name="final_answer", arguments={"text": "Sent."}),
+        ]
+    )
+    pi_app = create_app(
+        directory_client=directory,
+        a2a_client=a2a_client,
+        publish_weather_card=False,
+        llm_config=_llm_config(),
+        tool_loop_llm_client=llm_client,
+        agent_mode="tool_loop",
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=pi_app),
+        base_url="http://pi-agent",
+    ) as pi_http_client:
+        response = await pi_http_client.post(
+            "/messages",
+            json={
+                "user_id": "user-1",
+                "channel": "api",
+                "text": 'Ask the email agent to send a group notice. The title is "Another test", the content is "Another test". DO NOT change the title or content.',
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    assert a2a_client.calls == [("email-agent", "email/group_send")]
+    assert a2a_client.requests[0].metadata["subject"] == "Another test"
+    assert a2a_client.requests[0].metadata["body"] == "Another test"
+
+
+def test_tool_loop_canonicalizes_email_skill_tags_and_skips_duplicate_send(monkeypatch) -> None:
+    asyncio.run(_tool_loop_canonicalizes_email_skill_tags_and_skips_duplicate_send(monkeypatch))
+
+
+async def _tool_loop_canonicalizes_email_skill_tags_and_skips_duplicate_send(monkeypatch) -> None:
+    monkeypatch.setenv("PI_POLICY_MODE", "permissive")
+    directory = SpyDirectoryClient(fake_ads=True)
+    directory.publish_agent_card(load_agent_card(EMAIL_CARD))
+    a2a_client = SpyA2AClient()
+    llm_client = ScriptedToolLoopClient(
+        [
+            AgentToolCall(
+                tool_name="discover_agents",
+                arguments={"query": "send email", "skill_hint": "email/send"},
+            ),
+            AgentToolCall(
+                tool_name="call_agent",
+                arguments={
+                    "agent_id": "email-agent",
+                    "skill": "email/send",
+                    "task_input": {
+                        "to": ["wyy0115@outlook.com"],
+                        "subject": "Test",
+                        "body": "Test",
+                    },
+                },
+            ),
+            AgentToolCall(
+                tool_name="call_agent",
+                arguments={
+                    "agent_id": "email-agent",
+                    "skill": "send",
+                    "task_input": {
+                        "to": ["wyy0115@outlook.com"],
+                        "subject": "Test",
+                        "body": "Test",
+                    },
+                },
+            ),
+            AgentToolCall(tool_name="final_answer", arguments={"text": "Sent once."}),
+        ]
+    )
+    pi_app = create_app(
+        directory_client=directory,
+        a2a_client=a2a_client,
+        publish_weather_card=False,
+        llm_config=_llm_config(),
+        tool_loop_llm_client=llm_client,
+        agent_mode="tool_loop",
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=pi_app),
+        base_url="http://pi-agent",
+    ) as pi_http_client:
+        response = await pi_http_client.post(
+            "/messages",
+            json={
+                "user_id": "user-1",
+                "channel": "api",
+                "text": "Send an email to wyy0115@outlook.com.",
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert a2a_client.calls == [("email-agent", "email/send")]
+    assert payload["task_ids"] == {"email/send": a2a_client.requests[0].task_id}
+    assert payload["tool_trace"][2]["status"] == "skipped"
+    assert payload["tool_trace"][2]["content"]["skill"] == "email/send"
+
+
 def test_tool_loop_confirmation_resumes_pending_call_once() -> None:
     asyncio.run(_tool_loop_confirmation_resumes_pending_call_once())
 
@@ -585,6 +777,139 @@ async def _tool_loop_yes_without_pending_confirmation_continues_agent_loop() -> 
     assert "No pending confirmation" not in second.text
     assert payload["final_response"] == 'Here is the simplest Python version:\nprint("Hello, world!")'
     assert payload["context_id"] == context_id
+    second_state = llm_client.states[1]
+    assert "assistant: Do you want the simplest Python Hello World program?" in (
+        second_state.context_snapshot["conversation_history"]
+    )
+
+
+def test_tool_loop_followup_gets_prior_assistant_answer_in_context_snapshot() -> None:
+    asyncio.run(_tool_loop_followup_gets_prior_assistant_answer_in_context_snapshot())
+
+
+async def _tool_loop_followup_gets_prior_assistant_answer_in_context_snapshot() -> None:
+    llm_client = ScriptedToolLoopClient(
+        [
+            AgentToolCall(
+                tool_name="final_answer",
+                arguments={"text": 'Use this code:\n```python\nprint("prime")\n```'},
+            ),
+            AgentToolCall(
+                tool_name="final_answer",
+                arguments={"text": "I can send the prior program from context."},
+            ),
+        ]
+    )
+    pi_app = create_app(
+        directory_client=DirectoryClient(fake_ads=True),
+        a2a_client=FailingA2AClient(),
+        publish_weather_card=False,
+        llm_config=_llm_config(),
+        tool_loop_llm_client=llm_client,
+        agent_mode="tool_loop",
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=pi_app),
+        base_url="http://pi-agent",
+    ) as pi_http_client:
+        first = await pi_http_client.post(
+            "/messages",
+            json={
+                "user_id": "user-1",
+                "channel": "api",
+                "text": "Write a Python program that tells if a number is prime.",
+            },
+        )
+        context_id = first.json()["context_id"]
+        second = await pi_http_client.post(
+            "/messages",
+            json={
+                "user_id": "user-1",
+                "channel": "api",
+                "context_id": context_id,
+                "text": "Send this program to wyy0115@outlook.com.",
+            },
+        )
+
+    assert first.status_code == 200, first.text
+    assert second.status_code == 200, second.text
+    second_state = llm_client.states[1]
+    history = "\n".join(second_state.context_snapshot["conversation_history"])
+    assert "assistant: Use this code:" in history
+    assert 'print("prime")' in history
+    assert "Send this program" in history
+
+
+def test_tool_loop_followup_email_send_extracts_recipient_and_prior_program(monkeypatch) -> None:
+    asyncio.run(_tool_loop_followup_email_send_extracts_recipient_and_prior_program(monkeypatch))
+
+
+async def _tool_loop_followup_email_send_extracts_recipient_and_prior_program(monkeypatch) -> None:
+    monkeypatch.setenv("PI_POLICY_MODE", "permissive")
+    directory = SpyDirectoryClient(fake_ads=True)
+    directory.publish_agent_card(load_agent_card(EMAIL_CARD))
+    a2a_client = SpyA2AClient()
+    llm_client = ScriptedToolLoopClient(
+        [
+            AgentToolCall(
+                tool_name="final_answer",
+                arguments={"text": 'Use this code:\n```python\nprint("prime")\n```'},
+            ),
+            AgentToolCall(
+                tool_name="discover_agents",
+                arguments={"query": "send email", "skill_hint": "email/send"},
+            ),
+            AgentToolCall(
+                tool_name="call_agent",
+                arguments={
+                    "agent_id": "email-agent",
+                    "skill": "email/send",
+                    "task_input": {"subject": "the program you need"},
+                },
+            ),
+            AgentToolCall(tool_name="final_answer", arguments={"text": "Sent."}),
+        ]
+    )
+    pi_app = create_app(
+        directory_client=directory,
+        a2a_client=a2a_client,
+        publish_weather_card=False,
+        llm_config=_llm_config(),
+        tool_loop_llm_client=llm_client,
+        agent_mode="tool_loop",
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=pi_app),
+        base_url="http://pi-agent",
+    ) as pi_http_client:
+        first = await pi_http_client.post(
+            "/messages",
+            json={
+                "user_id": "user-1",
+                "channel": "api",
+                "text": "Write a Python program that tells if a number is prime.",
+            },
+        )
+        context_id = first.json()["context_id"]
+        second = await pi_http_client.post(
+            "/messages",
+            json={
+                "user_id": "user-1",
+                "channel": "api",
+                "context_id": context_id,
+                "text": 'Can you send this program to wyy0115@outlook.com, title "the program you need"',
+            },
+        )
+
+    assert first.status_code == 200, first.text
+    assert second.status_code == 200, second.text
+    assert a2a_client.calls == [("email-agent", "email/send")]
+    request = a2a_client.requests[0]
+    assert request.metadata["to"] == ["wyy0115@outlook.com"]
+    assert request.metadata["subject"] == "the program you need"
+    assert 'print("prime")' in request.metadata["body"]
 
 
 def test_tool_loop_followup_can_search_read_and_answer_from_observations() -> None:
@@ -814,6 +1139,31 @@ def _logistics_card() -> AgentCard:
                 name="Route Planning",
                 description="Plan logistics routes.",
                 tags=["logistics/route_planning", "logistics", "route", "planning"],
+                inputModes=["text/plain", "application/json"],
+                outputModes=["text/plain", "application/json"],
+            )
+        ],
+    )
+
+
+def _email_group_card() -> AgentCard:
+    return AgentCard(
+        name="Email Agent",
+        description="Test email agent with group send.",
+        url="http://10.0.0.6:9103/",
+        provider=AgentProvider(organization="External Email", url="https://example.invalid"),
+        version="0.1.0",
+        protocolVersion="0.3.0",
+        preferredTransport="JSONRPC",
+        capabilities=AgentCapabilities(streaming=False, pushNotifications=False),
+        defaultInputModes=["text/plain", "application/json"],
+        defaultOutputModes=["text/plain", "application/json"],
+        skills=[
+            AgentSkill(
+                id="email/group_send",
+                name="Send Group Email",
+                description="Send one Gmail message to all recipients in the group list.",
+                tags=["email/group_send", "email/send", "email", "gmail", "group", "write"],
                 inputModes=["text/plain", "application/json"],
                 outputModes=["text/plain", "application/json"],
             )

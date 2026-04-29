@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from typing import Any, Protocol
 from urllib.parse import urlsplit
 from uuid import uuid4
@@ -24,6 +25,7 @@ from v2_agent_network.services.common.models import (
     PIContext,
     PolicyDecision,
     PolicyDecisionStatus,
+    utc_now,
 )
 from v2_agent_network.services.directory.client import DirectoryClient, DirectoryUnavailable
 from v2_agent_network.services.pi_agent.llm_config import PILLMConfig
@@ -53,6 +55,7 @@ class AgentTurnState(BaseModel):
     user_text: str
     requested_skill: str | None = None
     step: int = 0
+    context_snapshot: dict[str, Any] = Field(default_factory=dict)
     ads_skill_catalog: list[dict[str, Any]] = Field(default_factory=list)
     ads_catalog_error: str | None = None
     discovered_agents: dict[str, DiscoveredAgent] = Field(default_factory=dict)
@@ -236,6 +239,7 @@ class PIAgentRuntime:
         if state.requested_skill and _looks_like_endpoint_url(state.requested_skill):
             raise ValueError("requested_skill must be a skill name, not an endpoint URL.")
         self._load_ads_skill_catalog(state)
+        state.context_snapshot = _context_snapshot(context, self.store)
 
         for step in range(self.max_steps):
             state.step = step
@@ -248,14 +252,17 @@ class PIAgentRuntime:
             )
             final = await self._execute_tool(tool_call, state=state, context=context, incoming=incoming)
             if final is not None:
+                self._remember_final_response(context, final)
                 return final
 
-        return self._final(
+        final = self._final(
             state,
             text="I reached the maximum number of tool steps before finishing.",
             a2a_state=A2ATaskState.input_required,
             errors=["max_steps_exceeded"],
         )
+        self._remember_final_response(context, final)
+        return final
 
     def _load_ads_skill_catalog(self, state: AgentTurnState) -> None:
         try:
@@ -370,7 +377,18 @@ class PIAgentRuntime:
                 }
             ],
         )
+        self._remember_final_response(context, final)
         return final
+
+    def _remember_final_response(self, context: PIContext, final: AgentFinal) -> None:
+        text = final.text.strip()
+        if not text:
+            return
+        memory = f"assistant: {text}"
+        if not context.conversation_history or context.conversation_history[-1] != memory:
+            context.conversation_history.append(memory)
+        context.updated_at = utc_now()
+        self.store.save_context(context)
 
     async def _execute_tool(
         self,
@@ -398,7 +416,19 @@ class PIAgentRuntime:
                 return maybe_final
             observation = maybe_final
         elif name == "request_confirmation":
-            return self._request_confirmation(args, state=state, context=context)
+            if _permissive_policy_enabled():
+                observation = AgentObservation(
+                    tool_name=name,
+                    status="skipped",
+                    content={
+                        "reason": (
+                            "PI_POLICY_MODE=permissive disables confirmation gates. "
+                            "Use call_agent to execute the discovered agent skill."
+                        )
+                    },
+                )
+            else:
+                return self._request_confirmation(args, state=state, context=context)
         elif name == "ask_user":
             return self._final(state, text=str(args.get("text") or "I need more information."), a2a_state=A2ATaskState.input_required)
         elif name == "final_answer":
@@ -472,6 +502,7 @@ class PIAgentRuntime:
         agent_id = str(args.get("agent_id") or "")
         skill = str(args.get("skill") or "")
         task_input = args.get("task_input") if isinstance(args.get("task_input"), dict) else {}
+        user_text = getattr(incoming, "text", context.current_goal)
         if _looks_like_endpoint_url(agent_id) or _looks_like_endpoint_url(skill):
             return AgentObservation(
                 tool_name="call_agent",
@@ -484,6 +515,26 @@ class PIAgentRuntime:
                 tool_name="call_agent",
                 status="error",
                 content={"error": f"Agent {agent_id!r} has not been discovered in this turn."},
+            )
+        original_skill = skill
+        skill = _canonical_skill_for_agent(agent, original_skill)
+        task_input = _augment_task_input_from_user_text(
+            skill=skill,
+            task_input=task_input,
+            user_text=user_text,
+            conversation_history=context.conversation_history,
+        )
+        if state.task_states.get(skill) == A2ATaskState.completed.value:
+            return AgentObservation(
+                tool_name="call_agent",
+                status="skipped",
+                content={
+                    "skill": skill,
+                    "requested_skill": original_skill,
+                    "agent_id": agent.agent_id,
+                    "reason": f"{skill} was already completed in this turn.",
+                    "task_id": state.task_ids.get(skill),
+                },
             )
         capability = _capability_for_skill(agent, skill)
         policy_metadata = dict(task_input)
@@ -520,7 +571,7 @@ class PIAgentRuntime:
             )
         request = self._task_request(
             context=context,
-            user_text=getattr(incoming, "text", context.current_goal),
+            user_text=user_text,
             user_id=getattr(incoming, "user_id", context.user_id),
             channel_value=getattr(getattr(incoming, "channel", context.channel), "value", str(context.channel)),
             agent=agent,
@@ -737,10 +788,12 @@ def _tool_loop_system_prompt() -> str:
         "or input shape. Call call_agent only with an agent_id returned by discovery and a "
         "skill advertised by that Agent Card. Never invent endpoint URLs, never call an "
         "undiscovered agent, and never treat ADS record storage as proof of live discovery. "
-        "Policy is enforced by Python tools. For any send, create, append, replace, delete, "
-        "repo mutation, command execution, or other side effect, call_agent may return "
-        "confirmation_required; stop and wait for user confirmation. Do not claim writes "
-        "or sends happened unless a tool observation proves it. Use read_context for follow-up "
+        "Policy is enforced by Python tools. If policy_mode is permissive, do not ask for "
+        "confirmation only because an action is a side effect; call call_agent and let tools "
+        "execute. Otherwise, for any send, create, append, replace, delete, repo mutation, "
+        "command execution, or other side effect, call_agent may return confirmation_required; "
+        "stop and wait for user confirmation. Do not claim writes or sends happened unless "
+        "a tool observation proves it. Use read_context for follow-up "
         "questions, prior outputs, artifacts, task ids, and pending actions. Call final_answer "
         "only when the answer is supported by context or tool observations."
     )
@@ -759,6 +812,8 @@ def _initial_llm_payload(state: AgentTurnState) -> dict[str, Any]:
         },
         "ads_skill_catalog": state.ads_skill_catalog,
         "ads_catalog_error": state.ads_catalog_error,
+        "context_snapshot": state.context_snapshot,
+        "policy_mode": os.getenv("PI_POLICY_MODE", "strict"),
         "instructions": "Call exactly one tool next.",
     }
 
@@ -981,6 +1036,19 @@ def _capability_for_skill(agent: DiscoveredAgent, skill: str) -> AgentCapability
     return agent.skills[0]
 
 
+def _canonical_skill_for_agent(agent: DiscoveredAgent, skill: str) -> str:
+    for capability in agent.skills:
+        official_names = {item.name for item in capability.official_oasf_skills}
+        aliases = set(capability.skill_tags) | set(capability.custom_skill_tags) | official_names
+        if skill not in aliases:
+            continue
+        for candidate in [*capability.skill_tags, *capability.custom_skill_tags]:
+            if "/" in candidate:
+                return candidate
+        return skill
+    return skill
+
+
 def _policy_entry(skill: str, agent: DiscoveredAgent, policy_decision: PolicyDecision) -> dict[str, str]:
     return {
         "skill": skill,
@@ -1087,3 +1155,102 @@ def _looks_like_endpoint_url(value: str | None) -> bool:
         return False
     parsed = urlsplit(value)
     return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
+def _augment_task_input_from_user_text(
+    *,
+    skill: str,
+    task_input: dict[str, Any],
+    user_text: str,
+    conversation_history: list[str] | None = None,
+) -> dict[str, Any]:
+    augmented = dict(task_input)
+    if not _is_email_like_skill(skill):
+        return augmented
+
+    explicit_subject = (
+        _explicit_text_field(user_text, ("subject", "title"))
+        or _string_or_none(augmented.get("subject"))
+        or _string_or_none(augmented.get("title"))
+    )
+    explicit_body = (
+        _explicit_text_field(user_text, ("body", "content", "message"))
+        or _string_or_none(augmented.get("body"))
+        or _string_or_none(augmented.get("content"))
+    )
+    if explicit_subject:
+        augmented["subject"] = explicit_subject
+    if explicit_body:
+        augmented["body"] = explicit_body
+    if not augmented.get("to"):
+        to_addresses = _email_addresses_from_text(user_text)
+        if to_addresses:
+            augmented["to"] = to_addresses
+    if not augmented.get("body") and _references_prior_program(user_text):
+        prior_program = _latest_code_block(conversation_history or [])
+        if prior_program:
+            augmented["body"] = prior_program
+    augmented.pop("title", None)
+    augmented.pop("content", None)
+    return augmented
+
+
+def _is_email_like_skill(skill: str) -> bool:
+    return skill.startswith("email/") or "email" in skill.lower()
+
+
+def _explicit_text_field(text: str, names: tuple[str, ...]) -> str | None:
+    quoted = r'"([^"]+)"|\'([^\']+)\'|“([^”]+)”|‘([^’]+)’'
+    for name in names:
+        pattern = rf"\b{re.escape(name)}\b\s*(?:is|as|=|:)?\s*(?:{quoted})"
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            return _clean_literal(next(group for group in match.groups() if group))
+    for name in names:
+        pattern = rf"\b{re.escape(name)}\b\s+(?:is|as)\s+(.+?)(?=,|\band\b|\.|$)"
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            return _clean_literal(match.group(1))
+    return None
+
+
+def _string_or_none(value: Any) -> str | None:
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def _clean_literal(value: str) -> str:
+    return value.strip().strip(" .")
+
+
+def _email_addresses_from_text(text: str) -> list[str]:
+    return list(
+        dict.fromkeys(
+            match.group(0)
+            for match in re.finditer(
+                r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}",
+                text,
+                flags=re.IGNORECASE,
+            )
+        )
+    )
+
+
+def _references_prior_program(text: str) -> bool:
+    normalized = text.lower()
+    return any(phrase in normalized for phrase in ("this program", "this code", "the program", "the code"))
+
+
+def _latest_code_block(conversation_history: list[str]) -> str | None:
+    for item in reversed(conversation_history):
+        for match in reversed(list(re.finditer(r"```(?:[A-Za-z0-9_+-]+)?\s*\n(.*?)```", item, re.DOTALL))):
+            code = match.group(1).strip()
+            if code:
+                return code
+    return None
+
+
+def _permissive_policy_enabled() -> bool:
+    mode = os.getenv("PI_POLICY_MODE", "strict").strip().lower()
+    return mode in {"permissive", "allow_all", "disabled", "off"} or os.getenv(
+        "PI_DISABLE_CONFIRMATION_GATES", ""
+    ).strip().lower() in {"1", "true", "yes", "y", "on"}

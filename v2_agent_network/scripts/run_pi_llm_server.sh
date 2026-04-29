@@ -23,6 +23,7 @@ export PI_LLM_TIMEOUT_SECONDS="${PI_LLM_TIMEOUT_SECONDS:-30}"
 export PI_LLM_ALLOW_DETERMINISTIC_FALLBACK="${PI_LLM_ALLOW_DETERMINISTIC_FALLBACK:-false}"
 export PI_LLM_USE_FOR_FINAL_SUMMARY="${PI_LLM_USE_FOR_FINAL_SUMMARY:-true}"
 export PI_AGENT_MODE="${PI_AGENT_MODE:-tool_loop}"
+export PI_POLICY_MODE="${PI_POLICY_MODE:-permissive}"
 export PI_LOG_LEVEL="${PI_LOG_LEVEL:-INFO}"
 
 export AGENT_NETWORK_FAKE_ADS="${AGENT_NETWORK_FAKE_ADS:-false}"
@@ -44,7 +45,7 @@ if [[ ! -x "$PYTHON_BIN" ]]; then
   exit 2
 fi
 
-echo "Starting PI LLM server host=$PI_AGENT_HOST port=$PI_AGENT_PORT ads=$ADS_SERVER_ADDR llm_model=$PI_LLM_MODEL agent_mode=$PI_AGENT_MODE log_level=$PI_LOG_LEVEL" >&2
+echo "Starting PI LLM server host=$PI_AGENT_HOST port=$PI_AGENT_PORT ads=$ADS_SERVER_ADDR llm_model=$PI_LLM_MODEL agent_mode=$PI_AGENT_MODE policy_mode=$PI_POLICY_MODE log_level=$PI_LOG_LEVEL" >&2
 
 args=(
   -m v2_agent_network.scripts.run_pi_agent_server
