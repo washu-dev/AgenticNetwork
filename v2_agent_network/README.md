@@ -9,6 +9,9 @@ Milestone 3B adds Photo/Geospatial and Intelligence mock A2A agents plus a
 deterministic Photo/Geospatial -> Weather -> Intelligence summary workflow.
 Milestone 3C adds a mock Coding A2A agent for read-only repository inspection
 and confirmation-gated repository modification proposals.
+Milestone 4A adds explicit fake/real Directory backends, endpoint validation,
+and `requested_skill` capability-hint handling with a seventh-agent acceptance
+test.
 
 This is not the v1 image-classification demo.
 
@@ -162,6 +165,30 @@ be externally reachable.
 See `v2_agent_network/docs/REAL_AGENT_INTEGRATION.md` for real-agent onboarding
 requirements.
 
+## Milestone 4A requested_skill + Seventh-Agent Acceptance
+
+`POST /messages` accepts an optional `requested_skill` field. This field is a
+capability hint, not an endpoint override. The PI-agent rejects raw endpoint
+URLs in `requested_skill`; callers must publish an Agent Card/OASF record and
+let PI discover the agent through the Directory.
+
+When `requested_skill` is present, PI still follows the normal selection path:
+it calls `DirectoryClient.search_agents`, selects only from discovered agents,
+evaluates the same policy rules used for inferred skills, and invokes allowed
+agents only through `A2AClient` and the HTTP transport. Unknown requested skills
+with no discovered capable agent return a clear `no capable agent found`
+response.
+
+Confirmation-required requested skills do not auto-invoke. For example,
+`email/send` and `code/bug_fix` return `confirmation_required` with a pending
+confirmation instead of calling the selected agent.
+
+The Checkpoint 3 acceptance test adds a test-only Logistics Agent with
+`logistics/route_planning`, publishes its Agent Card through `DirectoryClient`,
+and sends PI a request with `requested_skill="logistics/route_planning"`. This
+proves a seventh agent can be onboarded dynamically without adding Logistics
+endpoint logic to PI routing code or directly importing Logistics mock logic.
+
 Run the v2 tests with pytest plugin autoload disabled. This avoids
 loading unrelated system plugins from the ROS environment.
 
@@ -199,5 +226,5 @@ Compatibility notes:
   loudly with `DirectoryUnavailable` until dependency compatibility is fixed in
   a separate milestone.
 
-Later milestones will add seventh-agent acceptance, Telegram and WhatsApp
-adapters, observability, Docker Compose, and SLIM/NATS transports.
+Later milestones will add Telegram and WhatsApp adapters, observability, Docker
+Compose, and SLIM/NATS transports.
