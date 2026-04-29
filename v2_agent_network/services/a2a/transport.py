@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 from urllib.parse import urlsplit
 
@@ -12,6 +13,8 @@ from v2_agent_network.services.a2a.adapters import (
     internal_task_request_to_a2a_request,
 )
 from v2_agent_network.services.common.models import A2ATaskRequest, A2ATaskResult, DiscoveredAgent
+
+logger = logging.getLogger(__name__)
 
 
 class A2ATransport(ABC):
@@ -33,6 +36,15 @@ class HTTPA2ATransport(A2ATransport):
         card = discovered_agent_to_a2a_agent_card(agent)
         sdk_request = internal_task_request_to_a2a_request(request)
         injected_client = self._client_for(card.url)
+        logger.info(
+            "a2a_http_send_start agent_id=%s endpoint=%s skill=%s task_id=%s context_id=%s injected_client=%s",
+            agent.agent_id,
+            card.url,
+            request.skill,
+            request.task_id,
+            request.context_id,
+            injected_client is not None,
+        )
         if injected_client is not None:
             sdk_client = SdkA2AClient(httpx_client=injected_client, agent_card=card)
             sdk_response = await sdk_client.send_message(sdk_request)
@@ -40,7 +52,18 @@ class HTTPA2ATransport(A2ATransport):
             async with httpx.AsyncClient(timeout=30) as http_client:
                 sdk_client = SdkA2AClient(httpx_client=http_client, agent_card=card)
                 sdk_response = await sdk_client.send_message(sdk_request)
-        return a2a_response_to_internal_task_result(sdk_response)
+        result = a2a_response_to_internal_task_result(sdk_response)
+        logger.info(
+            "a2a_http_send_done agent_id=%s endpoint=%s skill=%s task_id=%s state=%s artifacts=%d error=%s",
+            agent.agent_id,
+            card.url,
+            request.skill,
+            result.task_id,
+            result.state.value,
+            len(result.artifacts),
+            result.error,
+        )
+        return result
 
     def _client_for(self, url: str) -> httpx.AsyncClient | None:
         if self._http_client is not None:

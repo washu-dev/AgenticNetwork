@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import subprocess
 import tempfile
+import time
 from importlib import metadata
 from pathlib import Path
 from typing import Any, Callable, Protocol
@@ -18,6 +20,8 @@ from v2_agent_network.services.directory.card_oasf_converter import (
     published_record_from_oasf,
     validate_oasf_record,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class DirectoryUnavailable(RuntimeError):
@@ -53,6 +57,11 @@ class FakeDirectoryBackend:
     def publish_oasf_record(self, record: dict[str, Any]) -> PublishedRecord:
         validate_oasf_record(record)
         self._records[record["record_id"]] = record
+        logger.debug(
+            "directory_fake_publish record_id=%s agent_id=%s",
+            record.get("record_id"),
+            record.get("agent_id"),
+        )
         return published_record_from_oasf(record, backend="fake")
 
     def search_agents(
@@ -63,13 +72,20 @@ class FakeDirectoryBackend:
         output_mode: str | None = None,
         constraints: dict[str, Any] | None = None,
     ) -> list[DiscoveredAgent]:
-        return _filter_and_sort_records(
+        agents = _filter_and_sort_records(
             list(self._records.values()),
             skill=skill,
             domain=domain,
             input_mode=input_mode,
             output_mode=output_mode,
         )
+        logger.debug(
+            "directory_fake_search skill=%s domain=%s results=%d",
+            skill,
+            domain,
+            len(agents),
+        )
+        return agents
 
     def resolve_agent(self, agent_id_or_record_id: str) -> DiscoveredAgent:
         for record in self._records.values():
@@ -135,7 +151,15 @@ class RealADSDirectoryBackend:
             cid = push.stdout.strip()
             if not cid:
                 raise self._command_unavailable("dirctl push did not return a CID", push)
-            self._run_dirctl(["routing", "publish", cid])
+            self._run_dirctl(["pull", cid, "--output", "json"])
+            publication = self._run_dirctl(["routing", "publish", cid, "--output", "json"])
+            self._wait_for_routing_index(cid, publication)
+            logger.info(
+                "directory_real_publish_cli agent_id=%s cid=%s server=%s",
+                internal_record.get("agent_id"),
+                cid,
+                self.server_address,
+            )
             return published_record_from_oasf(internal_record, backend="real", backend_ref=cid)
         finally:
             temp_path.unlink(missing_ok=True)
@@ -240,40 +264,144 @@ class RealADSDirectoryBackend:
         searched_skills = [skill] if skill else []
         searched_skills.extend(_ads_skill_hints(skill))
         searched_skills = _dedupe_values([item for item in searched_skills if item])
+        logger.info(
+            "directory_real_search_start server=%s skill=%s searched_skills=%s domain=%s input_mode=%s output_mode=%s",
+            self.server_address,
+            skill,
+            searched_skills,
+            domain,
+            input_mode,
+            output_mode,
+        )
 
         if searched_skills:
             for search_skill in searched_skills:
                 result = self._run_dirctl(
                     ["routing", "search", "--skill", search_skill, "--limit", str(limit), "--output", "json"]
                 )
-                cids.extend(_cids_from_routing_output(result.stdout))
+                routing_search_cids = _cids_from_routing_output(result.stdout)
+                cids.extend(routing_search_cids)
+                logger.debug(
+                    "directory_real_search_routing_search skill=%s cids=%s",
+                    search_skill,
+                    routing_search_cids,
+                )
                 if not cids:
                     local = self._run_dirctl(
                         ["routing", "list", "--skill", search_skill, "--output", "json"]
                     )
-                    cids.extend(_cids_from_routing_output(local.stdout))
-                if not cids:
+                    routing_list_cids = _cids_from_routing_output(local.stdout)
+                    cids.extend(routing_list_cids)
+                    logger.debug(
+                        "directory_real_search_routing_list skill=%s cids=%s",
+                        search_skill,
+                        routing_list_cids,
+                    )
+                if not cids and self._allow_local_store_fallback():
                     local_search = self._run_dirctl(
                         ["search", "--skill", search_skill, "--limit", str(limit), "--output", "json"]
                     )
-                    cids.extend(_cids_from_routing_output(local_search.stdout))
+                    local_search_cids = _cids_from_routing_output(local_search.stdout)
+                    cids.extend(local_search_cids)
+                    logger.debug(
+                        "directory_real_search_local_store skill=%s cids=%s",
+                        search_skill,
+                        local_search_cids,
+                    )
         else:
             result = self._run_dirctl(["routing", "search", "--limit", str(limit), "--output", "json"])
-            cids.extend(_cids_from_routing_output(result.stdout))
+            routing_search_cids = _cids_from_routing_output(result.stdout)
+            cids.extend(routing_search_cids)
+            logger.debug("directory_real_search_routing_search_all cids=%s", routing_search_cids)
             if not cids:
                 local = self._run_dirctl(["routing", "list", "--output", "json"])
-                cids.extend(_cids_from_routing_output(local.stdout))
-            if not cids:
+                routing_list_cids = _cids_from_routing_output(local.stdout)
+                cids.extend(routing_list_cids)
+                logger.debug("directory_real_search_routing_list_all cids=%s", routing_list_cids)
+            if not cids and self._allow_local_store_fallback():
                 local_search = self._run_dirctl(["search", "--limit", str(limit), "--output", "json"])
-                cids.extend(_cids_from_routing_output(local_search.stdout))
+                local_search_cids = _cids_from_routing_output(local_search.stdout)
+                cids.extend(local_search_cids)
+                logger.debug("directory_real_search_local_store_all cids=%s", local_search_cids)
+
+        if not cids and not self._allow_local_store_fallback():
+            self._raise_if_storage_only_matches(
+                skill=skill,
+                domain=domain,
+                input_mode=input_mode,
+                output_mode=output_mode,
+                limit=limit,
+            )
 
         records = [self._pull_record(cid) for cid in _dedupe_values(cids)]
-        return _filter_and_sort_records(
+        agents = _filter_and_sort_records(
             _dedupe_records(records),
             skill=skill,
             domain=domain,
             input_mode=input_mode,
             output_mode=output_mode,
+        )
+        logger.info(
+            "directory_real_search_done skill=%s raw_cids=%s pulled_records=%d agents=%s",
+            skill,
+            _dedupe_values(cids),
+            len(records),
+            [agent.agent_id for agent in agents],
+        )
+        return agents
+
+    @staticmethod
+    def _allow_local_store_fallback() -> bool:
+        return os.getenv("ADS_ALLOW_LOCAL_STORE_FALLBACK", "false").lower() == "true"
+
+    def _raise_if_storage_only_matches(
+        self,
+        *,
+        skill: str | None,
+        domain: str | None,
+        input_mode: str | None,
+        output_mode: str | None,
+        limit: int,
+    ) -> None:
+        try:
+            storage = self._run_dirctl(["search", "--limit", str(limit), "--output", "json"])
+            storage_cids = _dedupe_values(_cids_from_routing_output(storage.stdout))
+        except DirectoryUnavailable as exc:
+            logger.warning(
+                "directory_real_search_storage_diagnostic_failed skill=%s error=%s",
+                skill,
+                exc,
+            )
+            return
+        if not storage_cids:
+            return
+        records = []
+        for cid in storage_cids:
+            try:
+                records.append(self._pull_record(cid))
+            except DirectoryUnavailable as exc:
+                logger.warning(
+                    "directory_real_search_storage_pull_failed cid=%s skill=%s error=%s",
+                    cid,
+                    skill,
+                    exc,
+                )
+        matching_agents = _filter_and_sort_records(
+            _dedupe_records(records),
+            skill=skill,
+            domain=domain,
+            input_mode=input_mode,
+            output_mode=output_mode,
+        )
+        if not matching_agents:
+            return
+        agent_ids = [agent.agent_id for agent in matching_agents]
+        raise DirectoryUnavailable(
+            "Agent record exists in ADS storage but is not routed/discoverable. "
+            f"skill={skill!r}; storage_cids={storage_cids!r}; matching_agents={agent_ids!r}. "
+            "Live discovery uses the routing index, not plain dirctl search. "
+            "Run v2_agent_network.scripts.ads_diagnostics or repair routing with "
+            "v2_agent_network.scripts.repair_ads_routing."
         )
 
     def _resolve_agent_cli(self, agent_id_or_record_id: str) -> DiscoveredAgent:
@@ -288,7 +416,13 @@ class RealADSDirectoryBackend:
     def _pull_record(self, cid: str) -> dict[str, Any]:
         result = self._run_dirctl(["pull", cid, "--output", "json"])
         try:
-            return self._normalize_for_internal(_record_from_pull_output(result.stdout))
+            record = self._normalize_for_internal(_record_from_pull_output(result.stdout))
+            logger.debug(
+                "directory_real_pull cid=%s agent_id=%s",
+                cid,
+                record.get("agent_id"),
+            )
+            return record
         except json.JSONDecodeError as exc:
             raise self._command_unavailable(f"dirctl pull {cid} did not return JSON", result) from exc
 
@@ -307,6 +441,51 @@ class RealADSDirectoryBackend:
         if card_data is not None:
             return agent_card_to_oasf_record(AgentCard.model_validate(card_data))
         raise self._unavailable("ADS record is missing embedded A2A Agent Card data.", None)
+
+    def _wait_for_routing_index(
+        self,
+        cid: str,
+        publication: subprocess.CompletedProcess[str],
+    ) -> None:
+        timeout = float(os.getenv("ADS_ROUTING_PUBLISH_TIMEOUT_SECONDS", "8"))
+        interval = float(os.getenv("ADS_ROUTING_PUBLISH_POLL_SECONDS", "0.25"))
+        deadline = time.monotonic() + max(timeout, 0)
+        last_list = ""
+        while True:
+            routed = self._run_dirctl(["routing", "list", "--cid", cid, "--output", "json"])
+            last_list = routed.stdout.strip()
+            if cid in _cids_from_routing_output(routed.stdout):
+                logger.info(
+                    "directory_real_publish_routing_verified cid=%s server=%s",
+                    cid,
+                    self.server_address,
+                )
+                return
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(max(interval, 0.01))
+        raise self._routing_not_indexed(cid, publication, last_list)
+
+    def _routing_not_indexed(
+        self,
+        cid: str,
+        publication: subprocess.CompletedProcess[str],
+        last_list: str,
+    ) -> DirectoryUnavailable:
+        try:
+            info = self._run_dirctl(["routing", "info", "--output", "json"]).stdout.strip()
+        except DirectoryUnavailable as exc:
+            info = f"<routing info failed: {exc}>"
+        pending = _local_publication_status(cid)
+        return DirectoryUnavailable(
+            "ADS routing publish was accepted but the record did not appear in the routing index. "
+            f"cid={cid!r}; publication_stdout={publication.stdout.strip()!r}; "
+            f"publication_stderr={publication.stderr.strip()!r}; "
+            f"routing_list_cid={last_list!r}; routing_info={info!r}; "
+            f"local_publication_status={pending!r}. "
+            "The record may be stored but not discoverable. Run the ADS diagnostics/repair script "
+            "or restart the ADS daemon deliberately if the dirctl routing reconciler is stuck."
+        )
 
     def _require_server_address(self) -> None:
         if not self.server_address:
@@ -519,3 +698,34 @@ def _package_version(package: str) -> str:
         return metadata.version(package)
     except metadata.PackageNotFoundError:
         return "not-installed"
+
+
+def _local_publication_status(cid: str) -> dict[str, Any] | None:
+    db_path = Path(os.getenv("ADS_LOCAL_DB_PATH", "~/.agntcy/dir/dir.db")).expanduser()
+    if not db_path.exists():
+        return None
+    try:
+        import sqlite3
+
+        with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as connection:
+            row = connection.execute(
+                """
+                select id, status, created_time, last_update_time, request_json
+                from publications
+                where request_json like ?
+                order by created_at desc
+                limit 1
+                """,
+                (f"%{cid}%",),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "id": row[0],
+            "status": row[1],
+            "created_time": row[2],
+            "last_update_time": row[3],
+            "request_json": row[4],
+        }
+    except Exception as exc:
+        return {"error": f"{type(exc).__name__}: {exc}", "db_path": str(db_path)}

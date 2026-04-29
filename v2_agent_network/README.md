@@ -17,6 +17,11 @@ Milestone 4B adds safe integration paths for a live Gmail-backed Email/Calendar
 Milestone 4C adds a real local ADS workflow through `dirctl`: publish the live
 Email Agent record, search ADS by skill, let PI discover from ADS, and invoke
 the live A2A endpoint for safe read-only skills.
+Milestone 5A adds an optional OpenAI-powered PI tool-loop runtime. The LLM
+repeatedly chooses protected PI tools such as DirectoryClient discovery,
+Agent Card inspection, policy-checked A2A invocation, confirmation requests,
+and final answer. Endpoints, policy enforcement, and A2A transport remain
+outside the model.
 
 This is not the v1 image-classification demo.
 
@@ -149,6 +154,13 @@ real backend and calls `dirctl` directly, so the PI/A2A Python environment does
 not need the Python `agntcy-dir` SDK to import. `ADS_BACKEND=sdk` remains
 optional; in this local environment it may still fail if the installed
 `agntcy-dir` generated protobuf code and `protobuf` runtime are incompatible.
+
+The real CLI publish path is verified: after `dirctl push`, it pulls the CID,
+submits `dirctl routing publish`, then polls `dirctl routing list --cid <cid>`.
+The CLI reports success only after the CID appears in the routing index. If ADS
+stores the record but does not route it, publishing fails loudly with the CID,
+publication output, routing diagnostics, and any readable local publication
+status.
 
 ## Milestone 4A Endpoint Validation
 
@@ -306,7 +318,19 @@ Start a local real ADS daemon:
 dirctl daemon start
 ```
 
-Publish the live Email Agent record into ADS:
+If this machine should accept remote publishes on the LAN, use the managed proxy
+instead of an ad-hoc background command:
+
+```bash
+cd /home/cspl-yi/Downloads/agentic_network/AgenticNetwork
+v1_classification/.venv/bin/python -m v2_agent_network.scripts.manage_ads_lan start \
+  --listen-host 10.229.117.37 \
+  --listen-port 8888
+v1_classification/.venv/bin/python -m v2_agent_network.scripts.manage_ads_lan status
+```
+
+Publish the live Email Agent record into ADS. This command now waits for routing
+index verification before reporting success:
 
 ```bash
 cd /home/cspl-yi/Downloads/agentic_network/AgenticNetwork
@@ -317,18 +341,44 @@ v1_classification/.venv/bin/python -m v2_agent_network.scripts.publish_agents \
   --card v2_agent_network/configs/agent_cards/email_agent.card.json
 ```
 
-Search local ADS with an official routing hint used by the Email Agent record:
+Search routed ADS entries with an official routing hint used by the Email Agent
+record:
 
 ```bash
-dirctl --server-addr localhost:8888 search \
+dirctl --server-addr localhost:8888 routing search \
   --skill natural_language_processing/information_retrieval_synthesis/information_retrieval_synthesis_search \
   --output json
 ```
 
-PI searches for the requested custom skill, also searches the configured ADS
-routing hints through `dirctl routing search`, `dirctl routing list`, and local
-`dirctl search` fallback, pulls matching records, and post-filters by custom
-skill tags such as `email/current_time`.
+`dirctl search` reads stored records and can return stale or orphaned CIDs.
+Live discovery uses the routing index. PI searches the requested custom skill
+and configured ADS routing hints through `dirctl routing search` and
+`dirctl routing list`, pulls routed records, and post-filters by custom skill
+tags such as `email/current_time`. The local-store fallback is disabled by
+default and is only enabled when `ADS_ALLOW_LOCAL_STORE_FALLBACK=true`.
+
+Diagnose stored-but-not-routed records:
+
+```bash
+cd /home/cspl-yi/Downloads/agentic_network/AgenticNetwork
+v1_classification/.venv/bin/python -m v2_agent_network.scripts.ads_diagnostics \
+  --server-addr localhost:8888
+```
+
+The diagnostic labels CIDs as `healthy` (stored and routed), `queued` (publish
+submitted but not indexed), `orphaned` (stored with no publication row), or
+`stale` (stored but currently unrouted). If ADS is stuck with a queued CID, the
+host operator can deliberately repair routing:
+
+```bash
+cd /home/cspl-yi/Downloads/agentic_network/AgenticNetwork
+v1_classification/.venv/bin/python -m v2_agent_network.scripts.repair_ads_routing \
+  --server-addr localhost:8888 \
+  --cid <cid>
+```
+
+Add `--restart-daemon-if-stuck` only when you intentionally want the repair tool
+to restart the local `dirctl` daemon and re-check the routing index.
 
 Run the safe PI -> real ADS -> live Email Agent demo:
 
@@ -348,6 +398,168 @@ Run the policy-blocked send safety test:
 cd /home/cspl-yi/Downloads/agentic_network/AgenticNetwork
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 v1_classification/.venv/bin/python -m pytest \
   v2_agent_network/tests/test_milestone4c_real_ads_cli.py::test_requested_skill_email_send_requires_confirmation_before_a2a -q
+```
+
+## Milestone 5A LLM PI Tool Loop
+
+The PI Agent can now use OpenAI as a ReAct-style tool-loop agent when
+`PI_LLM_ENABLED=true` and `PI_AGENT_MODE=tool_loop`. The LLM sees protected
+tool schemas, not raw endpoint authority. It can ask PI to discover agents,
+inspect a discovered Agent Card, call a discovered agent skill, read context,
+request confirmation, ask the user, or produce a final answer. PI still owns
+DirectoryClient search, policy checks, confirmation state, and A2A transport.
+
+`PI_AGENT_MODE=legacy` keeps the older one-shot workflow planner available for
+debugging and regression tests.
+
+Required server-side configuration:
+
+```bash
+OPENAI_API_KEY=...
+PI_LLM_ENABLED=true
+PI_LLM_PROVIDER=openai
+PI_LLM_MODEL=gpt-5.5
+PI_LLM_REASONING_EFFORT=low
+PI_LLM_VERBOSITY=low
+PI_LLM_MAX_OUTPUT_TOKENS=1200
+PI_LLM_TIMEOUT_SECONDS=30
+PI_LLM_ALLOW_DETERMINISTIC_FALLBACK=false
+PI_LLM_USE_FOR_FINAL_SUMMARY=true
+PI_AGENT_MODE=tool_loop
+AGENT_NETWORK_FAKE_ADS=false
+ADS_BACKEND=cli
+ADS_SERVER_ADDR=localhost:8888
+```
+
+Keep `OPENAI_API_KEY` on the server side only. If `PI_LLM_ENABLED=true` and the
+key is missing, PI fails loudly at startup. If `PI_LLM_ENABLED=false`, the
+existing deterministic router remains the default.
+
+For daily use, copy the local env template and put your key there:
+
+```bash
+cd /home/cspl-yi/Downloads/agentic_network/AgenticNetwork
+cp v2_agent_network/.env.pi.example v2_agent_network/.env.pi.local
+$EDITOR v2_agent_network/.env.pi.local
+```
+
+Then start PI with one command:
+
+```bash
+cd /home/cspl-yi/Downloads/agentic_network/AgenticNetwork
+v2_agent_network/scripts/run_pi_llm_server.sh
+```
+
+Open the minimum chat UI at:
+
+```text
+http://localhost:8080/
+```
+
+For an email-send request, PI uses the tool loop to discover and inspect the
+Email Agent, asks for confirmation before the side-effecting `email/send`, and
+a follow-up `yes` in the same chat context resumes the stored pending tool
+call instead of replanning from scratch.
+
+`v2_agent_network/.env.pi.local` is ignored by git. You can also point the
+launcher at a different env file:
+
+```bash
+PI_ENV_FILE=/path/to/pi.env v2_agent_network/scripts/run_pi_llm_server.sh
+```
+
+For debugging, set `PI_LOG_LEVEL=DEBUG` in `v2_agent_network/.env.pi.local` or
+inline:
+
+```bash
+PI_LOG_LEVEL=DEBUG v2_agent_network/scripts/run_pi_llm_server.sh
+```
+
+The server logs agent mode, tool calls, discovered ADS CIDs, selected agent
+endpoint, policy decision, A2A task id/state, artifact count, and errors. It
+does not log `OPENAI_API_KEY`.
+
+Run PI with the LLM planner over real ADS:
+
+```bash
+cd /home/cspl-yi/Downloads/agentic_network/AgenticNetwork
+OPENAI_API_KEY=<your-key> \
+PI_LLM_ENABLED=true \
+PI_LLM_PROVIDER=openai \
+PI_LLM_MODEL=gpt-5.5 \
+PI_LLM_REASONING_EFFORT=low \
+PI_LLM_VERBOSITY=low \
+PI_AGENT_MODE=tool_loop \
+AGENT_NETWORK_FAKE_ADS=false \
+ADS_BACKEND=cli \
+ADS_SERVER_ADDR=localhost:8888 \
+v1_classification/.venv/bin/python -m v2_agent_network.scripts.run_pi_agent_server \
+  --host 0.0.0.0 \
+  --port 8080
+```
+
+Safe LLM PI demo after publishing the live Email Agent to real ADS:
+
+```bash
+cd /home/cspl-yi/Downloads/agentic_network/AgenticNetwork
+OPENAI_API_KEY=<your-key> \
+PI_LLM_ENABLED=true \
+PI_LLM_PROVIDER=openai \
+PI_LLM_MODEL=gpt-5.5 \
+PI_LLM_REASONING_EFFORT=low \
+PI_LLM_VERBOSITY=low \
+PI_AGENT_MODE=tool_loop \
+AGENT_NETWORK_FAKE_ADS=false \
+ADS_BACKEND=cli \
+ADS_SERVER_ADDR=localhost:8888 \
+v1_classification/.venv/bin/python -m v2_agent_network.scripts.run_llm_pi_email_demo \
+  --prompt "What time is it for the email agent?" \
+  --expected-skill email/current_time
+```
+
+Blocked-send safety check:
+
+```bash
+curl -X POST http://localhost:8080/messages \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "user_id": "demo-user",
+    "channel": "api",
+    "text": "Send an email to Bob saying hello."
+  }'
+```
+
+Expected result: the LLM may plan `email/send`, but PI returns
+`confirmation_required=true`, does not invoke A2A, and sends no email.
+
+For natural-language send requests, PI first asks the LLM to extract safe draft
+inputs such as recipient, subject, and body, then calls `email/draft` through
+A2A. `email/send` is still blocked until an explicit confirmation request.
+
+```bash
+curl -X POST http://localhost:8080/messages \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "user_id": "demo-user",
+    "channel": "api",
+    "text": "Can you send an email to wyy0115@outlook.com and ask what is for dinner?"
+  }'
+```
+
+If the draft is correct and you want to actually send it, confirm the returned
+`context_id`. This is the point where the live Email Agent may perform the
+external Gmail side effect:
+
+```bash
+curl -X POST http://localhost:8080/confirmations \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "user_id": "demo-user",
+    "channel": "api",
+    "context_id": "<context_id from /messages>",
+    "skill": "email/send",
+    "confirmed": true
+  }'
 ```
 
 Run the v2 tests with pytest plugin autoload disabled. This avoids

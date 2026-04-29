@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import subprocess
+
 import pytest
 
 from v2_agent_network.services.directory.card_oasf_converter import load_agent_card
+from v2_agent_network.services.directory.backends import RealADSDirectoryBackend
 from v2_agent_network.services.directory.client import DirectoryClient, DirectoryUnavailable
 
 
@@ -52,7 +55,10 @@ def test_real_backend_sdk_import_failure_reports_dependency_versions(monkeypatch
 def test_real_backend_never_reads_fake_backend_records() -> None:
     fake_directory = DirectoryClient(fake_ads=True)
     fake_directory.publish_agent_card(load_agent_card(WEATHER_CARD))
-    real_directory = DirectoryClient(fake_ads=False, ads_url="localhost:8888")
+    real_backend = RealADSDirectoryBackend(
+        ads_url="localhost:8888",
+        runner=lambda command: subprocess.CompletedProcess(command, 0, stdout="[]", stderr=""),
+    )
+    real_directory = DirectoryClient(fake_ads=False, backend=real_backend)
 
-    with pytest.raises(DirectoryUnavailable):
-        real_directory.search_agents(skill="weather/forecast")
+    assert real_directory.search_agents(skill="weather/forecast") == []

@@ -3,3 +3,8 @@ __pycache__/
 *$py.class
 
 .pytest_cache/
+
+# Local secrets / runtime configuration
+.env
+.env.local
+.env.*.local

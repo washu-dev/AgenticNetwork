@@ -104,7 +104,7 @@ def evaluate_capability(capability: AgentCapability, skill: str | None = None) -
         )
     return PolicyDecision(
         status=PolicyDecisionStatus.allowed,
-        reason="Read-only low-risk mock Weather request.",
+        reason="Capability is read-only and low risk.",
         confirmation_status=ConfirmationStatus.not_required,
     )
 

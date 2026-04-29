@@ -11,6 +11,7 @@ import httpx
 import pytest
 
 from v2_agent_network.scripts import publish_agents
+from v2_agent_network.scripts.ads_diagnostics import _classify_cid
 from v2_agent_network.services.a2a.client import A2AClient
 from v2_agent_network.services.directory import backends as backend_module
 from v2_agent_network.services.directory.backends import (
@@ -106,7 +107,28 @@ def test_real_ads_cli_publish_pushes_and_publishes_email_record() -> None:
     assert runner.pushed_record["modules"][0]["data"]["card_schema_version"]
     assert "endpoint" not in runner.pushed_record["modules"][0]["data"]
     assert any(command[3:4] == ["push"] for command in runner.commands)
+    assert any(command[3:4] == ["pull"] for command in runner.commands)
     assert any(command[3:5] == ["routing", "publish"] for command in runner.commands)
+    assert any(command[3:7] == ["routing", "list", "--cid", "bafy-email-record"] for command in runner.commands)
+
+
+def test_real_ads_cli_publish_fails_when_routing_publish_is_not_indexed(monkeypatch) -> None:
+    monkeypatch.setenv("ADS_ROUTING_PUBLISH_TIMEOUT_SECONDS", "0")
+    runner = FakeDirctlRunner(routing_returns=False)
+    backend = RealADSDirectoryBackend(
+        ads_url="localhost:8888",
+        backend="cli",
+        runner=runner,
+    )
+
+    with pytest.raises(DirectoryUnavailable) as exc_info:
+        backend.publish_agent_card(load_agent_card(EMAIL_CARD))
+
+    error = str(exc_info.value)
+    assert "did not appear in the routing index" in error
+    assert "bafy-email-record" in error
+    assert "routing_info" in error
+    assert "local_publication_status" in error
 
 
 def test_real_ads_cli_search_by_custom_skill_pulls_and_post_filters_record() -> None:
@@ -130,14 +152,33 @@ def test_real_ads_cli_search_by_custom_skill_pulls_and_post_filters_record() -> 
     assert any(command[3:4] == ["pull"] for command in runner.commands)
 
 
-def test_real_ads_cli_search_falls_back_to_local_ads_search() -> None:
-    runner = FakeDirctlRunner(search_returns=True, routing_returns=False)
+def test_real_ads_cli_search_reports_storage_only_records_by_default() -> None:
+    runner = FakeDirctlRunner(search_returns=True, routing_returns=True)
     backend = RealADSDirectoryBackend(
         ads_url="localhost:8888",
         backend="cli",
         runner=runner,
     )
     backend.publish_agent_card(load_agent_card(EMAIL_CARD))
+    runner.routing_returns = False
+
+    with pytest.raises(DirectoryUnavailable) as exc_info:
+        backend.search_agents(skill="email/current_time")
+
+    assert "exists in ADS storage but is not routed/discoverable" in str(exc_info.value)
+    assert any(command[3:4] == ["search"] for command in runner.commands)
+
+
+def test_real_ads_cli_search_local_store_fallback_is_explicit(monkeypatch) -> None:
+    monkeypatch.setenv("ADS_ALLOW_LOCAL_STORE_FALLBACK", "true")
+    runner = FakeDirctlRunner(search_returns=True, routing_returns=True)
+    backend = RealADSDirectoryBackend(
+        ads_url="localhost:8888",
+        backend="cli",
+        runner=runner,
+    )
+    backend.publish_agent_card(load_agent_card(EMAIL_CARD))
+    runner.routing_returns = False
 
     agents = backend.search_agents(skill="email/current_time")
 
@@ -209,6 +250,29 @@ def test_publish_agents_real_cli_uses_real_backend_without_fake_fallback(monkeyp
     assert " fake" not in output
 
 
+def test_publish_agents_real_cli_fails_if_routing_publish_is_not_indexed(
+    monkeypatch,
+    capsys,
+) -> None:
+    monkeypatch.setenv("ADS_ROUTING_PUBLISH_TIMEOUT_SECONDS", "0")
+    runner = FakeDirctlRunner(routing_returns=False)
+
+    def fake_subprocess_run(command: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
+        return runner(command)
+
+    monkeypatch.setenv("AGENT_NETWORK_FAKE_ADS", "false")
+    monkeypatch.setenv("ADS_BACKEND", "cli")
+    monkeypatch.setenv("ADS_SERVER_ADDR", "localhost:8888")
+    monkeypatch.setattr(backend_module.subprocess, "run", fake_subprocess_run)
+
+    exit_code = publish_agents.main(["--card", str(EMAIL_CARD)])
+
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert "did not appear in the routing index" in captured.err
+    assert "bafy-email-record" in captured.err
+
+
 def test_requested_skill_email_send_requires_confirmation_before_a2a() -> None:
     asyncio.run(_requested_skill_email_send_requires_confirmation_before_a2a())
 
@@ -251,7 +315,7 @@ async def _real_ads_requested_skill_email_send_requires_confirmation_before_a2a(
     backend = RealADSDirectoryBackend(
         ads_url="localhost:8888",
         backend="cli",
-        runner=FakeDirctlRunner(search_returns=True, routing_returns=False),
+        runner=FakeDirctlRunner(search_returns=True, routing_returns=True),
     )
     backend.publish_agent_card(load_agent_card(EMAIL_CARD))
     directory = DirectoryClient(fake_ads=False, backend=backend)
@@ -280,6 +344,38 @@ async def _real_ads_requested_skill_email_send_requires_confirmation_before_a2a(
     assert payload["confirmation_required"] is True
     assert payload["pending_confirmation"]["skill"] == "email/send"
     assert payload["task_ids"] == {}
+
+
+def test_ads_diagnostics_classifies_routed_queued_stale_and_orphaned_records() -> None:
+    publications = {
+        "queued-cid": {"status": 1},
+        "stale-cid": {"status": 3},
+    }
+
+    assert _classify_cid(
+        "routed-cid",
+        routed_cids={"routed-cid"},
+        stored_cids={"routed-cid"},
+        publications=publications,
+    )["state"] == "healthy"
+    assert _classify_cid(
+        "queued-cid",
+        routed_cids=set(),
+        stored_cids={"queued-cid"},
+        publications=publications,
+    )["state"] == "queued"
+    assert _classify_cid(
+        "stale-cid",
+        routed_cids=set(),
+        stored_cids={"stale-cid"},
+        publications=publications,
+    )["state"] == "stale"
+    assert _classify_cid(
+        "orphaned-cid",
+        routed_cids=set(),
+        stored_cids={"orphaned-cid"},
+        publications=publications,
+    )["state"] == "orphaned"
 
 
 @pytest.mark.skipif(

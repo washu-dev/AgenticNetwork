@@ -22,6 +22,7 @@ from v2_agent_network.services.directory.card_oasf_converter import (
     oasf_record_to_discovered_agent,
 )
 from v2_agent_network.services.directory.client import DirectoryClient, DirectoryUnavailable
+from v2_agent_network.services.pi_agent.policy import evaluate_skill
 
 
 WEATHER_CARD = "v2_agent_network/configs/agent_cards/weather_agent.card.json"
@@ -142,3 +143,56 @@ def test_directory_handles_official_oasf_skill_separately_from_custom_tags() -> 
     custom_result = directory.search_agents(skill="demo-custom-vision-tag")
     assert official_result[0].name == "Vision Agent"
     assert custom_result[0].name == "Vision Agent"
+
+
+def test_oasf_conversion_keeps_custom_tags_per_agent_card_skill_for_policy() -> None:
+    card = AgentCard(
+        name="Email Agent",
+        description="Email agent with read and write custom skills.",
+        url="http://127.0.0.1:9103/",
+        provider=AgentProvider(organization="External Email", url="https://example.invalid"),
+        version="0.2.0",
+        protocolVersion="0.3.0",
+        preferredTransport="JSONRPC",
+        capabilities=AgentCapabilities(streaming=False, pushNotifications=False),
+        defaultInputModes=["text/plain", "application/json"],
+        defaultOutputModes=["text/plain", "application/json"],
+        skills=[
+            AgentSkill(
+                id="email/search",
+                name="Search Email",
+                description="Search email metadata.",
+                tags=["email/search", "email", "read"],
+                inputModes=["text/plain", "application/json"],
+                outputModes=["text/plain", "application/json"],
+            ),
+            AgentSkill(
+                id="email/group_send",
+                name="Send Group Email",
+                description="Send one email to a group after confirmation.",
+                tags=["email/group_send", "email/send", "email", "send", "write"],
+                inputModes=["text/plain", "application/json"],
+                outputModes=["text/plain", "application/json"],
+            ),
+        ],
+    )
+
+    record = agent_card_to_oasf_record(card)
+    discovered = oasf_record_to_discovered_agent(record)
+    search_capability = next(
+        capability for capability in discovered.skills if "email/search" in capability.skill_tags
+    )
+    group_send_capability = next(
+        capability
+        for capability in discovered.skills
+        if "email/group_send" in capability.skill_tags
+    )
+
+    assert "email/group_send" not in search_capability.custom_skill_tags
+    assert "email/search" not in group_send_capability.custom_skill_tags
+    assert search_capability.action_type == "read"
+    assert group_send_capability.action_type == "write"
+    assert group_send_capability.risk_level == "medium"
+    assert evaluate_skill("email/group_send", group_send_capability).status == (
+        "requires_confirmation"
+    )

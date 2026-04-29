@@ -61,6 +61,18 @@ WRITE_SKILL_IDS = {
     "code/bug_fix",
     "code/test_generation",
 }
+WRITE_SKILL_TERMS = {
+    "append",
+    "bug_fix",
+    "create",
+    "delete",
+    "group_send",
+    "replace",
+    "send",
+    "test_fix",
+    "update",
+    "write",
+}
 
 
 def load_agent_card(path: str | Path) -> AgentCard:
@@ -221,7 +233,6 @@ def oasf_record_to_discovered_agent(record: dict[str, Any]) -> DiscoveredAgent:
         OfficialOASFSkill.model_validate(skill)
         for skill in record["discovery"].get("official_oasf_skills", [])
     ]
-    custom = record["discovery"].get("custom_skill_tags", [])
     skill_policies = record.get("policy", {}).get("skill_policies", {})
 
     capabilities = [
@@ -242,7 +253,7 @@ def oasf_record_to_discovered_agent(record: dict[str, Any]) -> DiscoveredAgent:
             ),
             examples=skill.examples or [],
             official_oasf_skills=official,
-            custom_skill_tags=custom,
+            custom_skill_tags=_custom_tags_for_skill(skill),
             action_type=skill_policies.get(skill.id, {}).get(
                 "action_type",
                 record.get("policy", {}).get("action_type", "read"),
@@ -288,12 +299,36 @@ def published_record_from_oasf(
 
 def _skill_policy(skill: Any) -> dict[str, Any]:
     tags = set(skill.tags or [])
-    is_write = skill.id in WRITE_SKILL_IDS or "write" in tags
+    is_write = (
+        skill.id in WRITE_SKILL_IDS
+        or "write" in tags
+        or _looks_like_write_skill(skill)
+    )
     return {
         "risk_level": "medium" if is_write else "low",
         "action_type": "write" if is_write else "read",
         "confirmation_required": is_write,
     }
+
+
+def _custom_tags_for_skill(skill: Any) -> list[str]:
+    tags = [skill.id, *(skill.tags or [])]
+    return sorted({tag for tag in tags if tag not in KNOWN_OASF_SKILLS})
+
+
+def _looks_like_write_skill(skill: Any) -> bool:
+    values = {str(skill.id).lower(), *(str(tag).lower() for tag in (skill.tags or []))}
+    description = str(getattr(skill, "description", "") or "").lower()
+    name = str(getattr(skill, "name", "") or "").lower()
+    for term in WRITE_SKILL_TERMS:
+        term_text = term.replace("_", " ")
+        if (
+            any(term in value for value in values)
+            or term_text in description
+            or term_text in name
+        ):
+            return True
+    return False
 
 
 def _ads_record_name(provider_url: str, agent_id: str) -> str:

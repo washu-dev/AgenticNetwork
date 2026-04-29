@@ -1,0 +1,58 @@
+time=2026-04-29T16:07:18.496-05:00 level=INFO msg="OASF validator configured" component=server schema_url=https://schema.oasf.outshift.com
+time=2026-04-29T16:07:18.496-05:00 level=INFO msg="Connection management configured" component=server max_concurrent_streams=1000 max_recv_msg_size_mb=4 max_send_msg_size_mb=4 connection_timeout=2m0s max_connection_idle=15m0s max_connection_age=30m0s keepalive_time=5m0s keepalive_timeout=1m0s
+time=2026-04-29T16:07:18.496-05:00 level=INFO msg="Initializing event service" component=events subscriber_buffer_size=100 log_slow_consumers=true log_published_events=false
+time=2026-04-29T16:07:18.496-05:00 level=INFO msg="Initializing local OCI store" component=store/oci path=/home/cspl-yi/.agntcy/dir/store
+time=2026-04-29T16:07:18.516-05:00 level=INFO msg="mDNS local discovery enabled" component=p2p service=agntcy-dir-local-discovery
+time=2026-04-29T16:07:18.516-05:00 level=INFO msg="AutoRelay enabled with DHT peer source" component=p2p
+time=2026-04-29T16:07:18.516-05:00 level=INFO msg="CID provider announcement event" component=routing/handler ref="cid:\"baeareigmvlvytdin2lkfrkqu47gd3vdzxm7nbsie7cmv2xnpy75n45rqji\"" provider="{12D3KooWSEdzj6YFo592YmkbDFdchkEBJpPVq1qNhJNBHQre4aRJ: []}" host=12D3KooWSEdzj6YFo592YmkbDFdchkEBJpPVq1qNhJNBHQre4aRJ
+time=2026-04-29T16:07:18.516-05:00 level=WARN msg="Failed to advertise to rendezvous" component=p2p rendezvous=dir/connect error="failed to find any peer in table"
+time=2026-04-29T16:07:18.516-05:00 level=INFO msg="GossipSub manager initialized" component=routing/pubsub topic=dir/labels/v1 maxMessageSize=10240 peerID=12D3KooWSEdzj6YFo592YmkbDFdchkEBJpPVq1qNhJNBHQre4aRJ
+time=2026-04-29T16:07:18.516-05:00 level=INFO msg="GossipSub label announcements enabled" component=routing/remote
+time=2026-04-29T16:07:18.516-05:00 level=INFO msg="Started periodic GossipSub mesh peer tagging" component=routing/remote interval=30s
+time=2026-04-29T16:07:18.516-05:00 level=INFO msg="Initializing SQLite database" component=database path=/home/cspl-yi/.agntcy/dir/dir.db
+time=2026-04-29T16:07:18.517-05:00 level=INFO msg="Starting remote label cleanup task" component=routing/cleanup interval=48h0m0s
+time=2026-04-29T16:07:18.517-05:00 level=INFO msg="Started CID provider republishing task" component=routing/cleanup interval=36h0m0s
+time=2026-04-29T16:07:18.519-05:00 level=INFO msg="Registered gRPC health service" component=healthcheck
+time=2026-04-29T16:07:18.519-05:00 level=INFO msg="Starting publication service" component=publication workers=1 interval=1h0m0s
+time=2026-04-29T16:07:18.519-05:00 level=INFO msg="Publication service started successfully" component=publication
+time=2026-04-29T16:07:18.519-05:00 level=INFO msg="Publication service started" component=server
+time=2026-04-29T16:07:18.519-05:00 level=INFO msg="Starting publication scheduler" component=publication interval=1h0m0s
+time=2026-04-29T16:07:18.519-05:00 level=INFO msg="Starting publication worker" component=publication worker_id=0
+time=2026-04-29T16:07:18.519-05:00 level=INFO msg="Health check monitoring started" component=healthcheck
+time=2026-04-29T16:07:18.519-05:00 level=INFO msg="Server started" component=daemon address=localhost:8888
+time=2026-04-29T16:07:18.519-05:00 level=INFO msg="Server starting" component=server address=localhost:8888
+time=2026-04-29T16:07:18.519-05:00 level=INFO msg="Processing publication" component=publication worker_id=0 publication_id=a0f5cf52-053c-4621-be4b-8431c0e480b3
+time=2026-04-29T16:07:18.519-05:00 level=INFO msg="Registered task" component=reconciler/service name=indexer interval=1h0m0s enabled=true
+time=2026-04-29T16:07:18.519-05:00 level=INFO msg="Registered task" component=reconciler/service name=name interval=1h0m0s enabled=true
+time=2026-04-29T16:07:18.519-05:00 level=INFO msg="Registered task" component=reconciler/service name=signature interval=1m0s enabled=true
+time=2026-04-29T16:07:18.519-05:00 level=INFO msg="Starting reconciler service" component=reconciler/service task_count=3
+time=2026-04-29T16:07:18.519-05:00 level=INFO msg="Started task" component=reconciler/service name=indexer
+time=2026-04-29T16:07:18.519-05:00 level=INFO msg="Started task" component=reconciler/service name=name
+time=2026-04-29T16:07:18.519-05:00 level=INFO msg="Started task" component=reconciler/service name=signature
+time=2026-04-29T16:07:18.519-05:00 level=INFO msg="Reconciler service started" component=reconciler/service
+time=2026-04-29T16:07:18.519-05:00 level=INFO msg="Reconciler started" component=daemon
+time=2026-04-29T16:07:18.519-05:00 level=INFO msg="Starting task loop" component=reconciler/service name=indexer interval=1h0m0s
+time=2026-04-29T16:07:18.519-05:00 level=INFO msg="Starting task loop" component=reconciler/service name=name interval=1h0m0s
+time=2026-04-29T16:07:18.519-05:00 level=INFO msg="Daemon ready" component=daemon data_dir=/home/cspl-yi/.agntcy/dir config=/home/cspl-yi/.agntcy/dir/daemon.config.yaml pid=2314754
+time=2026-04-29T16:07:18.519-05:00 level=INFO msg="Found new records to index" component=reconciler/indexer count=4
+time=2026-04-29T16:07:18.519-05:00 level=INFO msg="Starting task loop" component=reconciler/service name=signature interval=1m0s
+time=2026-04-29T16:07:18.616-05:00 level=INFO msg="No records need name verification" component=reconciler/name
+time=2026-04-29T16:07:18.623-05:00 level=INFO msg="No records need signature verification" component=reconciler/signature
+time=2026-04-29T16:07:18.637-05:00 level=INFO msg="Successfully published record" component=routing/local cid=baeareicm5eckohu6xec6fr5jhfefiyv4t2pfnjqokxik5yw2mgss2pgaiy
+time=2026-04-29T16:07:18.637-05:00 level=INFO msg="Publication processing completed" component=publication worker_id=0 publication_id=a0f5cf52-053c-4621-be4b-8431c0e480b3 total_cids=1 successful_announcements=1
+time=2026-04-29T16:07:18.656-05:00 level=INFO msg="Processing publication" component=publication worker_id=0 publication_id=5bbc1956-65a7-4ab8-9349-992712369907
+time=2026-04-29T16:07:18.660-05:00 level=INFO msg="Successfully indexed record" component=reconciler/indexer cid=baeareicm5eckohu6xec6fr5jhfefiyv4t2pfnjqokxik5yw2mgss2pgaiy
+time=2026-04-29T16:07:18.670-05:00 level=INFO msg="Successfully published record" component=routing/local cid=baeareigykwdzk5i7intaleytxxwtjawgz6s4zfceol2y6k246usqmkut7q
+time=2026-04-29T16:07:18.670-05:00 level=INFO msg="Publication processing completed" component=publication worker_id=0 publication_id=5bbc1956-65a7-4ab8-9349-992712369907 total_cids=1 successful_announcements=1
+time=2026-04-29T16:07:18.688-05:00 level=INFO msg="Processing publication" component=publication worker_id=0 publication_id=0d2d9abb-d0af-48a7-a41f-0ac670c275ff
+time=2026-04-29T16:07:18.689-05:00 level=INFO msg="Skipping republish as record was already published" component=routing/local cid=baeareigykwdzk5i7intaleytxxwtjawgz6s4zfceol2y6k246usqmkut7q
+time=2026-04-29T16:07:18.689-05:00 level=INFO msg="Publication processing completed" component=publication worker_id=0 publication_id=0d2d9abb-d0af-48a7-a41f-0ac670c275ff total_cids=1 successful_announcements=1
+time=2026-04-29T16:07:18.711-05:00 level=INFO msg="Processing publication" component=publication worker_id=0 publication_id=42e84563-a3ff-4ff8-b597-9671de8e8925
+time=2026-04-29T16:07:18.712-05:00 level=INFO msg="Skipping republish as record was already published" component=routing/local cid=baeareigykwdzk5i7intaleytxxwtjawgz6s4zfceol2y6k246usqmkut7q
+time=2026-04-29T16:07:18.713-05:00 level=INFO msg="Publication processing completed" component=publication worker_id=0 publication_id=42e84563-a3ff-4ff8-b597-9671de8e8925 total_cids=1 successful_announcements=1
+time=2026-04-29T16:07:18.746-05:00 level=INFO msg="Successfully indexed record" component=reconciler/indexer cid=baeareidhdpmdrfckl2evpoatemihc5rrgdggv3rimz5i5nxpqwe7pk4xcy
+time=2026-04-29T16:07:18.778-05:00 level=INFO msg="Successfully indexed record" component=reconciler/indexer cid=baeareif5xn7osocv2yx6hfxdrice6dzvjwnedxzqd6je4mzww24snt4xmy
+time=2026-04-29T16:07:18.804-05:00 level=INFO msg="Successfully indexed record" component=reconciler/indexer cid=baeareigykwdzk5i7intaleytxxwtjawgz6s4zfceol2y6k246usqmkut7q
+time=2026-04-29T16:07:18.804-05:00 level=INFO msg="Indexing complete" component=reconciler/indexer indexed=4 failed=0
+time=2026-04-29T16:07:20.535-05:00 level=INFO msg="started call" component=grpc user_agent=grpc-go/1.80.0 protocol=grpc grpc.component=server grpc.service=agntcy.dir.routing.v1.RoutingService grpc.method=List grpc.method_type=server_stream peer.address=127.0.0.1:46770 grpc.start_time=2026-04-29T16:07:20-05:00 grpc.time_ms=40.345
+time=2026-04-29T16:07:20.535-05:00 level=INFO msg="finished call" component=grpc user_agent=grpc-go/1.80.0 protocol=grpc grpc.component=server grpc.service=agntcy.dir.routing.v1.RoutingService grpc.method=List grpc.method_type=server_stream peer.address=127.0.0.1:46770 grpc.start_time=2026-04-29T16:07:20-05:00 grpc.code=OK grpc.time_ms=41.03
