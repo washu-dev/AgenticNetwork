@@ -44,8 +44,9 @@ and CLI scripts; it is not a persistent registry server.
 
 Fake ADS is in-memory and per-process. Running `publish_agents.py` in one
 process does not populate a separately running PI server. Load cards into the PI
-process with `PI_AGENT_CARD_PATHS` or `run_pi_agent_server.py --card`, or use
-real ADS once the dependency issue below is fixed.
+process with `PI_AGENT_CARD_PATHS` or `run_pi_agent_server.py --card` only for
+fake ADS mode. Use real ADS for shared discovery between separately running
+processes.
 
 ```text
 User/API
@@ -56,7 +57,17 @@ User/API
   -> external Email Agent A2A server
 ```
 
-Dry-run local validation:
+Runtime modes:
+
+1. Direct A2A endpoint validation: validate a known endpoint with
+   `validate_agent_endpoint.py --endpoint`. This mode does not perform
+   discovery and publishes only when `--publish` is supplied.
+2. Real ADS local discovery: start `dirctl daemon`, publish records through
+   `ADS_BACKEND=cli`, search ADS, and let PI discover from ADS.
+3. Fake ADS: process-local test backend only. It is not shared between CLI and
+   PI server processes.
+
+Dry-run local card validation:
 
 ```bash
 AGENT_NETWORK_FAKE_ADS=false v1_classification/.venv/bin/python -m v2_agent_network.scripts.publish_agents --dry-run
@@ -68,15 +79,29 @@ Publish sample records to fake ADS:
 AGENT_NETWORK_FAKE_ADS=true v1_classification/.venv/bin/python -m v2_agent_network.scripts.publish_agents
 ```
 
-Publish to real ADS only after dependency compatibility is fixed:
+Start local ADS and publish the live Email Agent record to real ADS:
 
 ```bash
-AGENT_NETWORK_FAKE_ADS=false ADS_URL=localhost:8888 v1_classification/.venv/bin/python -m v2_agent_network.scripts.publish_agents
+# install dirctl first if `command -v dirctl` is empty
+dirctl daemon start
+AGENT_NETWORK_FAKE_ADS=false \
+ADS_BACKEND=cli \
+ADS_SERVER_ADDR=localhost:8888 \
+v1_classification/.venv/bin/python -m v2_agent_network.scripts.publish_agents \
+  --card v2_agent_network/configs/agent_cards/email_agent.card.json
 ```
 
-In this environment, `agntcy-dir==1.2.1` currently fails to import because its
-generated protobuf code expects a newer protobuf runtime than
-`protobuf==6.33.6`. Milestone 4A intentionally does not change dependencies.
+Search ADS using the Email Agent's official routing hint:
+
+```bash
+dirctl --server-addr localhost:8888 routing search \
+  --skill natural_language_processing/information_retrieval_synthesis/information_retrieval_synthesis_search \
+  --limit 10
+```
+
+`ADS_BACKEND=cli` is the default real ADS backend and does not import the Python
+`agntcy-dir` SDK. `ADS_BACKEND=sdk` is optional and may require an isolated
+protobuf-compatible environment.
 
 ## Endpoint Validation
 
@@ -148,6 +173,20 @@ v1_classification/.venv/bin/python -m v2_agent_network.scripts.run_pi_agent_serv
   --card v2_agent_network/configs/agent_cards/email_agent.card.json
 ```
 
+For real ADS, publish the card to ADS instead of using `PI_AGENT_CARD_PATHS`.
+Then run PI with `AGENT_NETWORK_FAKE_ADS=false`, `ADS_BACKEND=cli`, and
+`ADS_SERVER_ADDR=localhost:8888`. The real ADS Email demo exercises this path
+in-process:
+
+```bash
+AGENT_NETWORK_FAKE_ADS=false \
+ADS_BACKEND=cli \
+ADS_SERVER_ADDR=localhost:8888 \
+v1_classification/.venv/bin/python -m v2_agent_network.scripts.run_real_ads_email_discovery_demo \
+  --skill email/current_time \
+  --prompt "What time is it for the email agent?"
+```
+
 ## Agent Checklists
 
 Weather agents should expose `weather/current_conditions`, `weather/forecast`,
@@ -173,8 +212,12 @@ source artifact references in their result.
 - If validation fails before sending a task, check Agent Card URL, skill names,
   and input/output modes.
 - If mock validation fails, the contract fixture has regressed.
-- If real ADS fails with `DirectoryUnavailable`, inspect the included
-  `protobuf` and `agntcy-dir` versions and resolve dependency compatibility in a
-  separate dependency milestone.
+- If real ADS CLI mode fails with `dirctl is not installed`, install the
+  `dirctl` binary or use the published container image. If it fails with a
+  connection error, run `dirctl daemon start` and set
+  `ADS_SERVER_ADDR=localhost:8888`.
+- If `ADS_BACKEND=sdk` fails with `DirectoryUnavailable`, inspect the included
+  `protobuf` and `agntcy-dir` versions and use an isolated compatible SDK
+  environment. CLI mode does not require the Python SDK.
 - If the PI cannot discover an agent, publish the card/record first and confirm
   the requested skill is present as an official OASF skill or custom skill tag.

@@ -63,6 +63,7 @@ def test_publish_agents_single_card_dry_run(capsys) -> None:
 def test_publish_agents_real_ads_unavailable_exits_nonzero(monkeypatch, capsys) -> None:
     monkeypatch.delenv("AGENT_NETWORK_FAKE_ADS", raising=False)
     monkeypatch.setenv("ADS_URL", "localhost:8888")
+    monkeypatch.setenv("ADS_BACKEND", "sdk")
 
     exit_code = publish_agents.main(
         ["--card", "v2_agent_network/configs/agent_cards/weather_agent.card.json"]
@@ -74,4 +75,4 @@ def test_publish_agents_real_ads_unavailable_exits_nonzero(monkeypatch, capsys) 
     assert "Original error:" in captured.err
     assert "protobuf=" in captured.err
     assert "agntcy-dir=" in captured.err
-    assert "dependency compatibility" in captured.err
+    assert "protobuf runtime compatible" in captured.err

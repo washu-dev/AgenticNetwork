@@ -80,7 +80,7 @@ def create_app(
         _publish_card(directory, CARD_FILES["intelligence"])
     if publish_coding_card:
         _publish_card(directory, CARD_FILES["coding"])
-    for card_path in _configured_agent_card_paths(agent_card_paths):
+    for card_path in _configured_agent_card_paths(agent_card_paths, allow_local_cards=directory.fake_ads):
         directory.publish_agent_card(load_agent_card(card_path))
 
     @app.get("/health")
@@ -300,9 +300,21 @@ def _publish_card(directory: DirectoryClient, filename: str) -> None:
     directory.publish_agent_card(load_agent_card(card_path))
 
 
-def _configured_agent_card_paths(agent_card_paths: Sequence[str | Path] | None) -> list[Path]:
+def _configured_agent_card_paths(
+    agent_card_paths: Sequence[str | Path] | None,
+    *,
+    allow_local_cards: bool,
+) -> list[Path]:
     if agent_card_paths is not None:
-        return [Path(path) for path in agent_card_paths]
+        paths = [Path(path) for path in agent_card_paths]
+        if paths and not allow_local_cards:
+            raise RuntimeError(
+                "PI Agent Card path loading is only supported in fake ADS mode. "
+                "Publish Agent Cards to real ADS and let PI discover them through DirectoryClient."
+            )
+        return paths
+    if not allow_local_cards:
+        return []
     raw_paths = os.getenv("PI_AGENT_CARD_PATHS", "")
     return [Path(item.strip()) for item in raw_paths.split(",") if item.strip()]
 

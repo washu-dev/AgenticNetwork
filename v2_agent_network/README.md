@@ -14,6 +14,9 @@ and `requested_skill` capability-hint handling with a seventh-agent acceptance
 test.
 Milestone 4B adds safe integration paths for a live Gmail-backed Email/Calendar
 / Google Workspace A2A agent.
+Milestone 4C adds a real local ADS workflow through `dirctl`: publish the live
+Email Agent record, search ADS by skill, let PI discover from ADS, and invoke
+the live A2A endpoint for safe read-only skills.
 
 This is not the v1 image-classification demo.
 
@@ -35,6 +38,13 @@ it does not pretend custom tags are official OASF taxonomy entries. Milestone
 3C coding skills such as `code/repository_inspection`, `code/bug_fix`,
 `code/pr_review`, `code/test_generation`, and `code/documentation` are also
 stored as demo-specific custom skill tags.
+
+For real ADS publication, the Email Agent record uses official OASF routing
+skills where known for Directory routing, while project-specific skills such as
+`email/current_time` remain custom tags in metadata. PI searches ADS using the
+requested custom skill plus the configured official routing hints, pulls the
+matching records, then post-filters by custom skill tag before policy and A2A
+invocation. Custom tags are not treated as official OASF taxonomy entries.
 
 ## Milestone 2 Demo
 
@@ -122,17 +132,23 @@ cd /home/cspl-yi/Downloads/agentic_network/AgenticNetwork
 AGENT_NETWORK_FAKE_ADS=true v1_classification/.venv/bin/python -m v2_agent_network.scripts.publish_agents
 ```
 
-Real ADS scaffold command:
+Publish the live Email Agent card to a real local ADS daemon through `dirctl`:
 
 ```bash
 cd /home/cspl-yi/Downloads/agentic_network/AgenticNetwork
-AGENT_NETWORK_FAKE_ADS=false ADS_URL=localhost:8888 v1_classification/.venv/bin/python -m v2_agent_network.scripts.publish_agents
+dirctl daemon start
+AGENT_NETWORK_FAKE_ADS=false \
+ADS_BACKEND=cli \
+ADS_SERVER_ADDR=localhost:8888 \
+v1_classification/.venv/bin/python -m v2_agent_network.scripts.publish_agents \
+  --card v2_agent_network/configs/agent_cards/email_agent.card.json
 ```
 
-Real ADS currently fails loudly in this environment because `agntcy-dir==1.2.1`
-imports generated protobuf code that requires a newer protobuf runtime than the
-installed `protobuf==6.33.6`. Milestone 4A intentionally does not change package
-versions; fix AGNTCY/protobuf compatibility in a separate dependency milestone.
+Real ADS mode never falls back to fake records. `ADS_BACKEND=cli` is the default
+real backend and calls `dirctl` directly, so the PI/A2A Python environment does
+not need the Python `agntcy-dir` SDK to import. `ADS_BACKEND=sdk` remains
+optional; in this local environment it may still fail if the installed
+`agntcy-dir` generated protobuf code and `protobuf` runtime are incompatible.
 
 ## Milestone 4A Endpoint Validation
 
@@ -197,8 +213,8 @@ The Gmail-backed Email Agent is an external A2A server. PI is also a server when
 run with Uvicorn. `DirectoryClient` is a client used by PI and CLI tools; it is
 not a server or persistent registry. Fake ADS is an in-memory per-process
 backend, so `publish_agents.py` validates and publishes only for the current CLI
-process. A separately running PI process must load Agent Cards at startup or use
-real ADS once the current `agntcy-dir` / protobuf dependency issue is fixed.
+process. Real ADS is the shared discovery service for separately running
+processes.
 
 ```text
 User/API
@@ -208,6 +224,17 @@ User/API
   -> A2AClient
   -> external Email Agent A2A server
 ```
+
+Runtime modes:
+
+1. Direct A2A endpoint validation: use a known URL with
+   `validate_agent_endpoint.py --endpoint`. This sends a safe A2A task directly
+   to the endpoint and performs no discovery unless `--publish` is supplied.
+2. Real ADS local discovery: run `dirctl daemon start`, publish the Email Agent
+   card to ADS, search ADS by skill, and let PI discover the agent from ADS.
+3. Fake ADS: test-only, in-memory, per-process fallback. It is useful for unit
+   tests and demos, but it is not a shared registry and is not the final
+   discovery proof.
 
 Run PI with the live Email Agent card loaded into its own fake Directory:
 
@@ -270,6 +297,58 @@ The repository still includes a placeholder mock Email Agent fixture for
 regression tests. The real-email demo publishes only the live Email Agent card
 and asserts that PI selected the live card endpoint and provider organization.
 
+## Milestone 4C Real ADS Email Discovery
+
+Start a local real ADS daemon:
+
+```bash
+# install dirctl first if `command -v dirctl` is empty
+dirctl daemon start
+```
+
+Publish the live Email Agent record into ADS:
+
+```bash
+cd /home/cspl-yi/Downloads/agentic_network/AgenticNetwork
+AGENT_NETWORK_FAKE_ADS=false \
+ADS_BACKEND=cli \
+ADS_SERVER_ADDR=localhost:8888 \
+v1_classification/.venv/bin/python -m v2_agent_network.scripts.publish_agents \
+  --card v2_agent_network/configs/agent_cards/email_agent.card.json
+```
+
+Search ADS with an official routing hint used by the Email Agent record:
+
+```bash
+dirctl --server-addr localhost:8888 routing search \
+  --skill natural_language_processing/information_retrieval_synthesis/information_retrieval_synthesis_search \
+  --limit 10
+```
+
+PI searches for the requested custom skill, also searches the configured ADS
+routing hints, pulls matching records, and post-filters by custom skill tags such
+as `email/current_time`.
+
+Run the safe PI -> real ADS -> live Email Agent demo:
+
+```bash
+cd /home/cspl-yi/Downloads/agentic_network/AgenticNetwork
+AGENT_NETWORK_FAKE_ADS=false \
+ADS_BACKEND=cli \
+ADS_SERVER_ADDR=localhost:8888 \
+v1_classification/.venv/bin/python -m v2_agent_network.scripts.run_real_ads_email_discovery_demo \
+  --skill email/current_time \
+  --prompt "What time is it for the email agent?"
+```
+
+Run the policy-blocked send safety test:
+
+```bash
+cd /home/cspl-yi/Downloads/agentic_network/AgenticNetwork
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 v1_classification/.venv/bin/python -m pytest \
+  v2_agent_network/tests/test_milestone4c_real_ads_cli.py::test_requested_skill_email_send_requires_confirmation_before_a2a -q
+```
+
 Run the v2 tests with pytest plugin autoload disabled. This avoids
 loading unrelated system plugins from the ROS environment.
 
@@ -302,10 +381,11 @@ Compatibility notes:
 - The installed SDK's `a2a.client.A2AClient` is deprecated, so later milestones
   should move to the SDK's `ClientFactory` JSON-RPC path if the project upgrades
   the A2A client layer.
-- Real ADS is scaffolded in Milestone 4A, but this environment has an
-  `agntcy-dir` / protobuf compatibility mismatch. Real ADS operations fail
-  loudly with `DirectoryUnavailable` until dependency compatibility is fixed in
-  a separate milestone.
+- Real ADS uses `ADS_BACKEND=cli` by default and calls `dirctl`, which avoids
+  importing the Python `agntcy-dir` SDK in the PI/A2A runtime. The optional
+  `ADS_BACKEND=sdk` path can still fail loudly with `DirectoryUnavailable` if
+  the installed `agntcy-dir` generated protobuf code and `protobuf` runtime are
+  incompatible.
 
 Later milestones will add Telegram and WhatsApp adapters, observability, Docker
 Compose, and SLIM/NATS transports.

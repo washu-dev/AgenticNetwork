@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from uuid import uuid5, NAMESPACE_URL
@@ -24,6 +25,25 @@ KNOWN_OASF_SKILLS: dict[str, OfficialOASFSkill] = {
         id=203,
     )
 }
+
+# Official OASF routing hints used for real ADS publication when a card only
+# exposes project-specific custom skill tags. These are not treated as aliases
+# for the custom skills; PI still post-filters by the card's custom skill tags
+# before invoking the A2A endpoint.
+EMAIL_ADS_ROUTING_SKILLS = [
+    OfficialOASFSkill(
+        name="natural_language_processing/information_retrieval_synthesis/information_retrieval_synthesis_search",
+        id=10306,
+    ),
+    OfficialOASFSkill(
+        name="natural_language_processing/natural_language_generation/summarization",
+        id=10202,
+    ),
+    OfficialOASFSkill(
+        name="retrieval_augmented_generation/retrieval_of_information/document_retrieval",
+        id=60103,
+    ),
+]
 
 WRITE_SKILL_IDS = {
     "email/send",
@@ -127,6 +147,77 @@ def agent_card_to_oasf_record(card: AgentCard) -> dict[str, Any]:
     }
 
 
+def agent_card_to_ads_record(card: AgentCard) -> dict[str, Any]:
+    """Build an ADS/OASF-shaped record for real Directory publication.
+
+    The record keeps A2A interaction details separate from ADS discovery fields.
+    Official OASF skills are used only for ADS routing hints where known; the
+    card's specific skills remain custom tags under metadata and are used by PI
+    for post-filtering and policy/A2A invocation.
+    """
+    base_record = agent_card_to_oasf_record(card)
+    provider_url = card.provider.url if card.provider and card.provider.url else ""
+    agent_id = base_record["agent_id"]
+    name = _ads_record_name(provider_url, agent_id)
+    routing_skills = _ads_routing_skills_for_card(card)
+    created_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    custom_tags = base_record["discovery"]["custom_skill_tags"]
+
+    return {
+        "schema_version": "1.0.0",
+        "record_id": base_record["record_id"],
+        "name": name,
+        "version": card.version,
+        "authors": [card.provider.organization if card.provider else "AgenticNetwork"],
+        "description": card.description,
+        "created_at": created_at,
+        "skills": [skill.model_dump(exclude_none=True) for skill in routing_skills],
+        "domains": [],
+        "locators": [
+            {
+                "type": "a2a_agent_card",
+                "urls": [card.url],
+            }
+        ],
+        "modules": [
+            {
+                "name": "integration/a2a",
+                "data": {
+                    "endpoint": card.url,
+                    "preferred_transport": (card.preferred_transport or "JSONRPC").lower(),
+                    "card_data": card.model_dump(mode="json", by_alias=True, exclude_none=True),
+                    "custom_skill_tags": custom_tags,
+                },
+            }
+        ],
+        "annotations": {
+            "a2a.url": card.url,
+            "agentic_network.agent_id": agent_id,
+            "agentic_network.display_name": card.name,
+            "agentic_network.organization": base_record.get("organization", "unknown"),
+            "agentic_network.custom_skill_tags": ",".join(custom_tags),
+        },
+        "agent_id": agent_id,
+        "organization": base_record.get("organization", "unknown"),
+        "interaction": base_record["interaction"],
+        "discovery": {
+            **base_record["discovery"],
+            "ads_routing_skills": [skill.model_dump(exclude_none=True) for skill in routing_skills],
+            "ads_routing_note": (
+                "ADS routing uses official OASF skills where known. Project-specific "
+                "A2A skills remain custom_skill_tags and are post-filtered by PI."
+            ),
+        },
+        "auth": base_record["auth"],
+        "policy": base_record["policy"],
+        "metadata": {
+            **base_record["metadata"],
+            "source": "v2_agent_network",
+            "a2a_agent_card": card.model_dump(mode="json", by_alias=True, exclude_none=True),
+        },
+    }
+
+
 def validate_oasf_record(record: dict[str, Any]) -> None:
     for field in ("record_id", "name", "interaction", "discovery"):
         if field not in record:
@@ -179,7 +270,7 @@ def oasf_record_to_discovered_agent(record: dict[str, Any]) -> DiscoveredAgent:
 
     return DiscoveredAgent(
         agent_id=record["agent_id"],
-        name=record["name"],
+        name=card.name,
         organization=record.get("organization", "unknown"),
         description=record.get("description", ""),
         skills=capabilities,
@@ -220,3 +311,23 @@ def _skill_policy(skill: Any) -> dict[str, Any]:
         "action_type": "write" if is_write else "read",
         "confirmation_required": is_write,
     }
+
+
+def _ads_record_name(provider_url: str, agent_id: str) -> str:
+    if provider_url.startswith(("http://", "https://")):
+        return provider_url.rstrip("/")
+    return f"https://example.invalid/agents/{agent_id}"
+
+
+def _ads_routing_skills_for_card(card: AgentCard) -> list[OfficialOASFSkill]:
+    official = [
+        KNOWN_OASF_SKILLS[skill.id]
+        for skill in card.skills
+        if skill.id in KNOWN_OASF_SKILLS
+    ]
+    if card.name.lower().replace(" ", "-") == "email-agent":
+        official.extend(EMAIL_ADS_ROUTING_SKILLS)
+    deduped: dict[str, OfficialOASFSkill] = {}
+    for skill in official:
+        deduped[skill.name] = skill
+    return list(deduped.values())
