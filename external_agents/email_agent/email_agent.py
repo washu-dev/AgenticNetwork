@@ -38,30 +38,37 @@ from email.header import decode_header
 from email.message import EmailMessage
 from email.utils import formatdate, make_msgid
 from pathlib import Path
-from typing import Any, Iterable
+from typing import TYPE_CHECKING, Any, Iterable
 from xml.etree import ElementTree
 from zoneinfo import ZoneInfo
 
+if TYPE_CHECKING:
+    from a2a.server.agent_execution import RequestContext as A2ARequestContext
+    from a2a.server.events import EventQueue as A2AEventQueue
+    from a2a.server.tasks import TaskUpdater as A2ATaskUpdater
+    from a2a.types import AgentCard as A2AAgentCard
+
 try:
-    from a2a.server.agent_execution import AgentExecutor, RequestContext
-    from a2a.server.apps import A2AStarletteApplication
-    from a2a.server.events import EventQueue
-    from a2a.server.request_handlers import DefaultRequestHandler
-    from a2a.server.tasks import InMemoryTaskStore, TaskUpdater
-    from a2a.types import AgentCard, DataPart, Part, TextPart
+    from a2a.server.agent_execution import AgentExecutor as _AgentExecutorBase
+    from a2a.server.apps import A2AStarletteApplication as _A2AStarletteApplication
+    from a2a.server.request_handlers import DefaultRequestHandler as _DefaultRequestHandler
+    from a2a.server.tasks import InMemoryTaskStore as _InMemoryTaskStore
+    from a2a.server.tasks import TaskUpdater as _TaskUpdater
+    from a2a.types import AgentCard as _AgentCard
+    from a2a.types import DataPart as _DataPart
+    from a2a.types import Part as _Part
+    from a2a.types import TextPart as _TextPart
 except ImportError as exc:
     A2A_IMPORT_ERROR: ImportError | None = exc
-    AgentExecutor = object
-    RequestContext = Any
-    EventQueue = Any
-    TaskUpdater = Any
-    AgentCard = Any
-    DataPart = Any
-    Part = Any
-    TextPart = Any
-    A2AStarletteApplication = None
-    DefaultRequestHandler = None
-    InMemoryTaskStore = None
+    _AgentExecutorBase = object
+    _A2AStarletteApplication = None
+    _DefaultRequestHandler = None
+    _InMemoryTaskStore = None
+    _TaskUpdater = None
+    _AgentCard = None
+    _DataPart = None
+    _Part = None
+    _TextPart = None
 else:
     A2A_IMPORT_ERROR = None
 
@@ -1647,7 +1654,7 @@ class ToolCallingEmailAgent:
             self.status.update("error", f"{type(exc).__name__}: {exc}")
             raise
 
-    def run_interactive(self, user_request: str, followups: int = 5) -> None:
+    def run_interactive(self, user_request: str) -> None:
         try:
             self.status.update(
                 "starting",
@@ -1657,12 +1664,22 @@ class ToolCallingEmailAgent:
             )
             client = self._openai_client()
             response = self._start_response(client, user_request)
+            latest_user_request = user_request
 
-            for _ in range(followups + 1):
+            while True:
                 text, response = self._finish_response(client, response)
                 print(text)
 
-                if not _needs_user_followup(text) or not sys.stdin.isatty():
+                if not sys.stdin.isatty():
+                    self.status.update("finished", "Agent finished", response_preview=_preview_text(text))
+                    return
+
+                if not self._llm_requests_user_followup(
+                    client,
+                    original_request=user_request,
+                    latest_user_request=latest_user_request,
+                    assistant_text=text,
+                ):
                     self.status.update("finished", "Agent finished", response_preview=_preview_text(text))
                     return
 
@@ -1677,6 +1694,7 @@ class ToolCallingEmailAgent:
                     "Sending follow-up to model",
                     request_preview=_preview_text(next_request),
                 )
+                latest_user_request = next_request
                 response = client.responses.create(
                     model=self.model,
                     input=[{"role": "user", "content": next_request}],
@@ -1684,9 +1702,6 @@ class ToolCallingEmailAgent:
                     previous_response_id=_object_get(response, "id"),
                     parallel_tool_calls=False,
                 )
-
-            self.status.update("finished", "Stopped after maximum follow-up turns")
-            print("Stopped after the maximum number of follow-up turns.")
         except Exception as exc:
             self.status.update("error", f"{type(exc).__name__}: {exc}")
             raise
@@ -1775,6 +1790,61 @@ class ToolCallingEmailAgent:
             "Try narrowing the request or increasing --max-steps."
         ), response
 
+    def _llm_requests_user_followup(
+        self,
+        client: Any,
+        *,
+        original_request: str,
+        latest_user_request: str,
+        assistant_text: str,
+    ) -> bool:
+        self.status.update(
+            "reasoning",
+            "Asking model whether user follow-up is needed",
+            model=self.model,
+        )
+        response = client.responses.create(
+            model=self.model,
+            input=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Decide whether the email agent's latest response is waiting "
+                        "for the user before the current request can be completed. "
+                        "Reply with exactly CONTINUE when the user must answer a "
+                        "clarifying question, provide missing required information, "
+                        "or confirm a pending next step. Reply with exactly FINISH "
+                        "when the request is complete, failed, cancelled, or the "
+                        "response only contains an optional offer to help further."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "original_user_request": original_request,
+                            "latest_user_request": latest_user_request,
+                            "latest_agent_response": assistant_text,
+                        },
+                        indent=2,
+                    ),
+                },
+            ],
+        )
+        decision = _response_text(response).strip().upper()
+        decision_match = re.search(r"\b(CONTINUE|FINISH)\b", decision)
+        should_continue = bool(decision_match and decision_match.group(1) == "CONTINUE")
+        self.status.update(
+            "followup_decision",
+            (
+                "Model decided to wait for user input"
+                if should_continue
+                else "Model decided the conversation is complete"
+            ),
+            decision=_preview_text(decision),
+        )
+        return should_continue
+
     def _system_prompt(self) -> str:
         now = datetime.now(ZoneInfo(self.email_agent.config.timezone_name))
         return (
@@ -1799,7 +1869,10 @@ class ToolCallingEmailAgent:
             "runtime approval unless the command was run with --yes. Never say an "
             "event was added to Google Calendar unless the tool result has "
             "created_in_google_calendar true. Google Docs and Sheets write actions "
-            "also require runtime approval. When the user "
+            "also require runtime approval. Ask follow-up questions only when the "
+            "answer is required to complete the current request; once the request "
+            "is complete, provide a concise final answer without optional next-step "
+            "questions. When the user "
             "asks about an attachment, file, PDF, document, spreadsheet, or invite "
             "inside an email, call read_email with include_attachments true. "
             f"The configured account is {self.email_agent.config.email_address}. "
@@ -2059,7 +2132,7 @@ class ToolCallingEmailAgent:
         return approved
 
 
-class GmailEmailAgentExecutor(AgentExecutor):
+class GmailEmailAgentExecutor(_AgentExecutorBase):
     """A2A AgentExecutor wrapper around the Gmail-backed EmailAgent."""
 
     def __init__(self, email_agent: EmailAgent | None = None):
@@ -2070,8 +2143,8 @@ class GmailEmailAgentExecutor(AgentExecutor):
             ) from A2A_IMPORT_ERROR
         self.email_agent = email_agent or EmailAgent(EmailConfig.from_env())
 
-    async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
-        updater = TaskUpdater(event_queue, context.task_id, context.context_id)
+    async def execute(self, context: A2ARequestContext, event_queue: A2AEventQueue) -> None:
+        updater = _task_updater(event_queue, context.task_id, context.context_id)
         skill = _a2a_skill_from_context(context)
 
         try:
@@ -2146,14 +2219,14 @@ class GmailEmailAgentExecutor(AgentExecutor):
                 },
             )
 
-    async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
-        updater = TaskUpdater(event_queue, context.task_id, context.context_id)
+    async def cancel(self, context: A2ARequestContext, event_queue: A2AEventQueue) -> None:
+        updater = _task_updater(event_queue, context.task_id, context.context_id)
         await updater.reject()
 
     async def _read_or_search_email(
         self,
-        context: RequestContext,
-        updater: TaskUpdater,
+        context: A2ARequestContext,
+        updater: A2ATaskUpdater,
         skill: str,
     ) -> None:
         payload = _a2a_payload_from_context(context)
@@ -2204,7 +2277,7 @@ class GmailEmailAgentExecutor(AgentExecutor):
             output=output,
         )
 
-    async def _draft_email(self, context: RequestContext, updater: TaskUpdater) -> None:
+    async def _draft_email(self, context: A2ARequestContext, updater: A2ATaskUpdater) -> None:
         payload = _a2a_payload_from_context(context)
         draft = _a2a_draft_from_payload(
             payload=payload,
@@ -2256,7 +2329,7 @@ class GmailEmailAgentExecutor(AgentExecutor):
             output=output,
         )
 
-    async def _send_email(self, context: RequestContext, updater: TaskUpdater) -> None:
+    async def _send_email(self, context: A2ARequestContext, updater: A2ATaskUpdater) -> None:
         payload = _a2a_payload_from_context(context)
         if not _a2a_confirmed(context):
             await _a2a_requires_input(
@@ -2317,7 +2390,7 @@ class GmailEmailAgentExecutor(AgentExecutor):
             output=output,
         )
 
-    async def _summarize_thread(self, context: RequestContext, updater: TaskUpdater) -> None:
+    async def _summarize_thread(self, context: A2ARequestContext, updater: A2ATaskUpdater) -> None:
         payload = _a2a_payload_from_context(context)
         messages = await asyncio.to_thread(
             self.email_agent.read_emails,
@@ -2350,8 +2423,8 @@ class GmailEmailAgentExecutor(AgentExecutor):
 
     async def _workspace_utility(
         self,
-        context: RequestContext,
-        updater: TaskUpdater,
+        context: A2ARequestContext,
+        updater: A2ATaskUpdater,
         skill: str,
     ) -> None:
         if skill == "email/google/status":
@@ -2393,8 +2466,8 @@ class GmailEmailAgentExecutor(AgentExecutor):
 
     async def _calendar_action(
         self,
-        context: RequestContext,
-        updater: TaskUpdater,
+        context: A2ARequestContext,
+        updater: A2ATaskUpdater,
         skill: str,
     ) -> None:
         payload = _a2a_payload_from_context(context)
@@ -2494,8 +2567,8 @@ class GmailEmailAgentExecutor(AgentExecutor):
 
     async def _docs_action(
         self,
-        context: RequestContext,
-        updater: TaskUpdater,
+        context: A2ARequestContext,
+        updater: A2ATaskUpdater,
         skill: str,
     ) -> None:
         payload = _a2a_payload_from_context(context)
@@ -2660,8 +2733,8 @@ class GmailEmailAgentExecutor(AgentExecutor):
 
     async def _sheets_action(
         self,
-        context: RequestContext,
-        updater: TaskUpdater,
+        context: A2ARequestContext,
+        updater: A2ATaskUpdater,
         skill: str,
     ) -> None:
         payload = _a2a_payload_from_context(context)
@@ -2757,22 +2830,26 @@ class GmailEmailAgentExecutor(AgentExecutor):
 
 def load_email_a2a_agent_card(
     card_path: Path | str = DEFAULT_EMAIL_A2A_CARD,
-) -> AgentCard:
+) -> A2AAgentCard:
     _require_a2a()
+    assert _AgentCard is not None
     with Path(card_path).open("r", encoding="utf-8") as fh:
-        return AgentCard.model_validate(json.load(fh))
+        return _AgentCard.model_validate(json.load(fh))
 
 
 def create_email_a2a_app(
-    agent_card: AgentCard,
+    agent_card: A2AAgentCard,
     email_agent: EmailAgent | None = None,
 ) -> Any:
     _require_a2a()
-    request_handler = DefaultRequestHandler(
+    assert _A2AStarletteApplication is not None
+    assert _DefaultRequestHandler is not None
+    assert _InMemoryTaskStore is not None
+    request_handler = _DefaultRequestHandler(
         agent_executor=GmailEmailAgentExecutor(email_agent),
-        task_store=InMemoryTaskStore(),
+        task_store=_InMemoryTaskStore(),
     )
-    return A2AStarletteApplication(
+    return _A2AStarletteApplication(
         agent_card=agent_card,
         http_handler=request_handler,
     ).build()
@@ -2786,29 +2863,57 @@ def _require_a2a() -> None:
         ) from A2A_IMPORT_ERROR
 
 
-def _a2a_skill_from_context(context: RequestContext) -> str:
+def _task_updater(
+    event_queue: A2AEventQueue,
+    task_id: str,
+    context_id: str,
+) -> A2ATaskUpdater:
+    _require_a2a()
+    assert _TaskUpdater is not None
+    return _TaskUpdater(event_queue, task_id, context_id)
+
+
+def _data_part(data: dict[str, Any]) -> Any:
+    _require_a2a()
+    assert _DataPart is not None
+    assert _Part is not None
+    return _Part(root=_DataPart(data=data))
+
+
+def _text_part(text: str) -> Any:
+    _require_a2a()
+    assert _Part is not None
+    assert _TextPart is not None
+    return _Part(root=_TextPart(text=text))
+
+
+def _is_data_part(value: Any) -> bool:
+    return _DataPart is not None and isinstance(value, _DataPart)
+
+
+def _a2a_skill_from_context(context: A2ARequestContext) -> str:
     metadata = context.metadata or {}
     return str(metadata.get("skill") or "email/draft")
 
 
-def _a2a_confirmed(context: RequestContext) -> bool:
+def _a2a_confirmed(context: A2ARequestContext) -> bool:
     metadata = context.metadata or {}
     return metadata.get("confirmed") is True or metadata.get("confirmation_status") == "confirmed"
 
 
-def _a2a_user_text(context: RequestContext) -> str:
+def _a2a_user_text(context: A2ARequestContext) -> str:
     try:
         return str(context.get_user_input())
     except Exception:
         return ""
 
 
-def _a2a_payload_from_context(context: RequestContext) -> dict[str, Any]:
+def _a2a_payload_from_context(context: A2ARequestContext) -> dict[str, Any]:
     payload: dict[str, Any] = dict(context.metadata or {})
     if context.message:
         for part in context.message.parts:
             root = part.root
-            if isinstance(root, DataPart) and isinstance(root.data, dict):
+            if _is_data_part(root) and isinstance(root.data, dict):
                 payload.update(root.data)
     return payload
 
@@ -2945,8 +3050,8 @@ def _a2a_summarize_messages(messages: list[dict[str, Any]]) -> str:
 
 
 async def _a2a_confirmation_required(
-    context: RequestContext,
-    updater: TaskUpdater,
+    context: A2ARequestContext,
+    updater: A2ATaskUpdater,
     skill: str,
     reason: str,
 ) -> None:
@@ -2967,7 +3072,7 @@ async def _a2a_confirmation_required(
 
 
 async def _a2a_complete(
-    updater: TaskUpdater,
+    updater: A2ATaskUpdater,
     *,
     skill: str,
     artifact_id: str,
@@ -2977,21 +3082,21 @@ async def _a2a_complete(
 ) -> None:
     await updater.start_work()
     await updater.add_artifact(
-        [Part(root=DataPart(data=output))],
+        [_data_part(output)],
         artifact_id=artifact_id,
         name=artifact_name,
         metadata={"skill": skill, "content_type": "application/json"},
     )
     await updater.complete(
         message=updater.new_agent_message(
-            [Part(root=TextPart(text=text))],
+            [_text_part(text)],
             metadata={"structured_output": output},
         )
     )
 
 
 async def _a2a_requires_input(
-    updater: TaskUpdater,
+    updater: A2ATaskUpdater,
     *,
     skill: str,
     artifact_id: str,
@@ -3000,14 +3105,14 @@ async def _a2a_requires_input(
     output: dict[str, Any],
 ) -> None:
     await updater.add_artifact(
-        [Part(root=DataPart(data=output))],
+        [_data_part(output)],
         artifact_id=artifact_id,
         name=artifact_name,
         metadata={"skill": skill, "content_type": "application/json"},
     )
     await updater.requires_input(
         message=updater.new_agent_message(
-            [Part(root=TextPart(text=text))],
+            [_text_part(text)],
             metadata={"structured_output": output},
         ),
         final=True,
@@ -3043,27 +3148,6 @@ def _response_text(response: Any) -> str:
                 if text:
                     parts.append(str(text))
     return "\n".join(parts).strip() or "(No final response.)"
-
-
-def _needs_user_followup(text: str) -> bool:
-    normalized = " ".join(text.strip().lower().split())
-    if not normalized:
-        return False
-
-    followup_phrases = (
-        "would you like me",
-        "do you want me",
-        "should i",
-        "shall i",
-        "may i",
-        "can i send",
-        "please provide",
-        "please confirm",
-    )
-    if any(phrase in normalized for phrase in followup_phrases):
-        return True
-
-    return normalized.endswith("?")
 
 
 def _preview_text(value: Any, limit: int = 160) -> str:
@@ -3780,8 +3864,8 @@ def build_parser() -> argparse.ArgumentParser:
     agent_parser.add_argument(
         "--followups",
         type=int,
-        default=5,
-        help="Maximum follow-up turns when the agent asks for input.",
+        default=None,
+        help=argparse.SUPPRESS,
     )
     agent_parser.add_argument("request", nargs=argparse.REMAINDER)
 
@@ -4073,7 +4157,7 @@ def main() -> None:
         if args.once or not sys.stdin.isatty():
             print(ai_agent.run(request))
         else:
-            ai_agent.run_interactive(request, followups=args.followups)
+            ai_agent.run_interactive(request)
         return
 
     if args.command == "serve-a2a":
