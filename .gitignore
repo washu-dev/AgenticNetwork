@@ -8,3 +8,5 @@ __pycache__/
 .env
 .env.local
 .env.*.local
+v2_agent_network/*.log
+v2_agent_network/.runtime/
