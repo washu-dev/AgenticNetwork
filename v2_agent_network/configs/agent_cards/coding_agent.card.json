@@ -1,12 +1,12 @@
 {
   "name": "Coding Agent",
-  "description": "Mock A2A coding agent for v2 repository-assistance demos. It never runs commands or modifies files.",
-  "url": "http://127.0.0.1:9106/",
-  "version": "0.1.0",
+  "description": "External mini-swe-agent-backed A2A Coding Agent. Read-only skills inspect the target repository and return structured findings; write-capable skills require PI confirmation. The deployed agent runs mini-swe-agent's DefaultAgent in YOLO mode and should be operated inside a sandbox.",
+  "url": "http://10.229.117.181:9106/",
+  "version": "0.2.0",
   "protocolVersion": "0.3.0",
   "preferredTransport": "JSONRPC",
   "provider": {
-    "organization": "Demo Coding Organization",
+    "organization": "CSPL Coding Agent",
     "url": "https://example.invalid/coding-agent"
   },
   "capabilities": {
@@ -22,7 +22,7 @@
     {
       "id": "code/repository_inspection",
       "name": "Repository Inspection",
-      "description": "Return deterministic read-only repository observations and a recommended next task.",
+      "description": "Run mini-swe-agent against the repository and return a structured summary plus a recommended next task. Read-only.",
       "tags": ["code/repository_inspection", "code", "repository", "inspection", "read"],
       "examples": ["Review the current repo and suggest what coding task should be done next."],
       "inputModes": ["text/plain", "application/json"],
@@ -32,7 +32,7 @@
     {
       "id": "code/bug_fix",
       "name": "Bug Fix Plan",
-      "description": "Prepare a deterministic bug-fix plan that requires confirmation before any repository modification.",
+      "description": "Use mini-swe-agent to investigate a failing test and prepare a focused patch plan. Repository writes require PI confirmation.",
       "tags": ["code/bug_fix", "code", "bug", "fix", "write"],
       "examples": ["Fix the failing test in this repo."],
       "inputModes": ["text/plain", "application/json"],
@@ -42,7 +42,7 @@
     {
       "id": "code/pr_review",
       "name": "PR Review",
-      "description": "Return deterministic read-only review feedback for repository changes.",
+      "description": "Use mini-swe-agent to inspect recent branch changes (git diff/log) and emit structured review findings. Read-only.",
       "tags": ["code/pr_review", "code", "review", "read"],
       "examples": ["Review this pull request."],
       "inputModes": ["text/plain", "application/json"],
@@ -52,7 +52,7 @@
     {
       "id": "code/test_generation",
       "name": "Test Generation Plan",
-      "description": "Prepare deterministic test-generation advice; writing tests requires confirmation.",
+      "description": "Use mini-swe-agent to identify uncovered behaviour and propose tests. Writing tests requires PI confirmation.",
       "tags": ["code/test_generation", "code", "tests", "write"],
       "examples": ["Generate tests for this feature."],
       "inputModes": ["text/plain", "application/json"],
@@ -62,7 +62,7 @@
     {
       "id": "code/documentation",
       "name": "Documentation Draft",
-      "description": "Generate deterministic documentation advice or draft content without modifying files.",
+      "description": "Use mini-swe-agent to inspect the target module and draft documentation guidance without writing files. Read-only.",
       "tags": ["code/documentation", "code", "documentation", "docs", "draft"],
       "examples": ["Draft documentation for this module."],
       "inputModes": ["text/plain", "application/json"],
