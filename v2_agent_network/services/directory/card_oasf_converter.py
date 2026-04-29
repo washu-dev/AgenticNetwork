@@ -165,55 +165,38 @@ def agent_card_to_ads_record(card: AgentCard) -> dict[str, Any]:
 
     return {
         "schema_version": "1.0.0",
-        "record_id": base_record["record_id"],
         "name": name,
         "version": card.version,
         "authors": [card.provider.organization if card.provider else "AgenticNetwork"],
         "description": card.description,
         "created_at": created_at,
-        "skills": [skill.model_dump(exclude_none=True) for skill in routing_skills],
+        "skills": [_ads_skill_payload(skill) for skill in routing_skills],
         "domains": [],
         "locators": [
             {
-                "type": "a2a_agent_card",
-                "urls": [card.url],
+                "type": "source_code",
+                "urls": [provider_url or card.url],
+                "annotations": {
+                    "a2a.url": card.url,
+                },
             }
         ],
         "modules": [
             {
                 "name": "integration/a2a",
                 "data": {
-                    "endpoint": card.url,
-                    "preferred_transport": (card.preferred_transport or "JSONRPC").lower(),
+                    "card_schema_version": card.protocol_version or "0.3.0",
                     "card_data": card.model_dump(mode="json", by_alias=True, exclude_none=True),
-                    "custom_skill_tags": custom_tags,
                 },
             }
         ],
         "annotations": {
             "a2a.url": card.url,
             "agentic_network.agent_id": agent_id,
+            "agentic_network.record_id": base_record["record_id"],
             "agentic_network.display_name": card.name,
             "agentic_network.organization": base_record.get("organization", "unknown"),
             "agentic_network.custom_skill_tags": ",".join(custom_tags),
-        },
-        "agent_id": agent_id,
-        "organization": base_record.get("organization", "unknown"),
-        "interaction": base_record["interaction"],
-        "discovery": {
-            **base_record["discovery"],
-            "ads_routing_skills": [skill.model_dump(exclude_none=True) for skill in routing_skills],
-            "ads_routing_note": (
-                "ADS routing uses official OASF skills where known. Project-specific "
-                "A2A skills remain custom_skill_tags and are post-filtered by PI."
-            ),
-        },
-        "auth": base_record["auth"],
-        "policy": base_record["policy"],
-        "metadata": {
-            **base_record["metadata"],
-            "source": "v2_agent_network",
-            "a2a_agent_card": card.model_dump(mode="json", by_alias=True, exclude_none=True),
         },
     }
 
@@ -331,3 +314,10 @@ def _ads_routing_skills_for_card(card: AgentCard) -> list[OfficialOASFSkill]:
     for skill in official:
         deduped[skill.name] = skill
     return list(deduped.values())
+
+
+def _ads_skill_payload(skill: OfficialOASFSkill) -> dict[str, Any]:
+    payload: dict[str, Any] = {"name": skill.name}
+    if skill.id is not None:
+        payload["id"] = skill.id
+    return payload

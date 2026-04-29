@@ -91,12 +91,12 @@ v1_classification/.venv/bin/python -m v2_agent_network.scripts.publish_agents \
   --card v2_agent_network/configs/agent_cards/email_agent.card.json
 ```
 
-Search ADS using the Email Agent's official routing hint:
+Search local ADS using the Email Agent's official routing hint:
 
 ```bash
-dirctl --server-addr localhost:8888 routing search \
+dirctl --server-addr localhost:8888 search \
   --skill natural_language_processing/information_retrieval_synthesis/information_retrieval_synthesis_search \
-  --limit 10
+  --output json
 ```
 
 `ADS_BACKEND=cli` is the default real ADS backend and does not import the Python

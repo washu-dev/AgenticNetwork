@@ -110,7 +110,7 @@ class RealADSDirectoryBackend:
         self._models: Any | None = None
 
     def publish_agent_card(self, card: AgentCard) -> PublishedRecord:
-        return self.publish_oasf_record(agent_card_to_ads_record(card))
+        return self.publish_oasf_record(agent_card_to_oasf_record(card))
 
     def publish_oasf_record(self, record: dict[str, Any]) -> PublishedRecord:
         validate_oasf_record(record)
@@ -126,6 +126,7 @@ class RealADSDirectoryBackend:
     def _publish_oasf_record_cli(self, record: dict[str, Any]) -> PublishedRecord:
         self._require_server_address()
         ads_record = self._normalize_for_ads(record)
+        internal_record = self._normalize_for_internal(record)
         with tempfile.NamedTemporaryFile("w", suffix=".json", encoding="utf-8", delete=False) as fh:
             json.dump(ads_record, fh, indent=2, sort_keys=True)
             temp_path = Path(fh.name)
@@ -135,13 +136,14 @@ class RealADSDirectoryBackend:
             if not cid:
                 raise self._command_unavailable("dirctl push did not return a CID", push)
             self._run_dirctl(["routing", "publish", cid])
-            return published_record_from_oasf(ads_record, backend="real", backend_ref=cid)
+            return published_record_from_oasf(internal_record, backend="real", backend_ref=cid)
         finally:
             temp_path.unlink(missing_ok=True)
 
     def _publish_oasf_record_sdk(self, record: dict[str, Any]) -> PublishedRecord:
         client, models = self._client_and_models()
         ads_record_data = self._normalize_for_ads(record)
+        internal_record = self._normalize_for_internal(record)
         try:
             from google.protobuf.json_format import ParseDict
             from google.protobuf.struct_pb2 import Struct
@@ -156,7 +158,7 @@ class RealADSDirectoryBackend:
                     refs=[models.core_v1.RecordRef(cid=cid)]
                 )
                 client.publish(models.routing_v1.PublishRequest(record_refs=record_refs))
-            return published_record_from_oasf(ads_record_data, backend="real", backend_ref=cid)
+            return published_record_from_oasf(internal_record, backend="real", backend_ref=cid)
         except DirectoryUnavailable:
             raise
         except Exception as exc:
@@ -250,12 +252,20 @@ class RealADSDirectoryBackend:
                         ["routing", "list", "--skill", search_skill, "--output", "json"]
                     )
                     cids.extend(_cids_from_routing_output(local.stdout))
+                if not cids:
+                    local_search = self._run_dirctl(
+                        ["search", "--skill", search_skill, "--limit", str(limit), "--output", "json"]
+                    )
+                    cids.extend(_cids_from_routing_output(local_search.stdout))
         else:
             result = self._run_dirctl(["routing", "search", "--limit", str(limit), "--output", "json"])
             cids.extend(_cids_from_routing_output(result.stdout))
             if not cids:
                 local = self._run_dirctl(["routing", "list", "--output", "json"])
                 cids.extend(_cids_from_routing_output(local.stdout))
+            if not cids:
+                local_search = self._run_dirctl(["search", "--limit", str(limit), "--output", "json"])
+                cids.extend(_cids_from_routing_output(local_search.stdout))
 
         records = [self._pull_record(cid) for cid in _dedupe_values(cids)]
         return _filter_and_sort_records(
@@ -278,7 +288,7 @@ class RealADSDirectoryBackend:
     def _pull_record(self, cid: str) -> dict[str, Any]:
         result = self._run_dirctl(["pull", cid, "--output", "json"])
         try:
-            return _record_from_pull_output(result.stdout)
+            return self._normalize_for_internal(_record_from_pull_output(result.stdout))
         except json.JSONDecodeError as exc:
             raise self._command_unavailable(f"dirctl pull {cid} did not return JSON", result) from exc
 
@@ -289,6 +299,14 @@ class RealADSDirectoryBackend:
         if "interaction" in record and "discovery" in record:
             return record
         raise self._unavailable("Record is missing v2 interaction/discovery metadata.", None)
+
+    def _normalize_for_internal(self, record: dict[str, Any]) -> dict[str, Any]:
+        if "interaction" in record and "discovery" in record:
+            return record
+        card_data = _card_data_from_ads_record(record)
+        if card_data is not None:
+            return agent_card_to_oasf_record(AgentCard.model_validate(card_data))
+        raise self._unavailable("ADS record is missing embedded A2A Agent Card data.", None)
 
     def _require_server_address(self) -> None:
         if not self.server_address:
@@ -466,6 +484,16 @@ def _record_from_pull_output(raw: str) -> dict[str, Any]:
             if "interaction" in value and "discovery" in value:
                 return value
     return data
+
+
+def _card_data_from_ads_record(record: dict[str, Any]) -> dict[str, Any] | None:
+    for module in record.get("modules", []):
+        if not isinstance(module, dict):
+            continue
+        data = module.get("data")
+        if isinstance(data, dict) and isinstance(data.get("card_data"), dict):
+            return data["card_data"]
+    return None
 
 
 def _ads_skill_hints(skill: str | None) -> list[str]:

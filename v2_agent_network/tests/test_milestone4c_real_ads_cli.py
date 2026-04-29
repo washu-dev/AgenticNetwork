@@ -30,10 +30,16 @@ WEATHER_CARD = Path("v2_agent_network/configs/agent_cards/weather_agent.card.jso
 
 
 class FakeDirctlRunner:
-    def __init__(self, *, search_returns: bool = True) -> None:
+    def __init__(
+        self,
+        *,
+        search_returns: bool = True,
+        routing_returns: bool | None = None,
+    ) -> None:
         self.commands: list[list[str]] = []
         self.pushed_record: dict[str, Any] | None = None
         self.search_returns = search_returns
+        self.routing_returns = search_returns if routing_returns is None else routing_returns
 
     def __call__(self, command: list[str]) -> subprocess.CompletedProcess[str]:
         self.commands.append(command)
@@ -45,19 +51,23 @@ class FakeDirctlRunner:
         if args[:2] == ["routing", "publish"]:
             return _completed(command, stdout="published\n")
         if args[:2] == ["routing", "search"]:
-            if not self.search_returns:
+            if not self.routing_returns:
                 return _completed(command, stdout="[]")
             return _completed(
                 command,
                 stdout=json.dumps({"results": [{"record_ref": {"cid": "bafy-email-record"}}]}),
             )
         if args[:2] == ["routing", "list"]:
-            if not self.search_returns:
+            if not self.routing_returns:
                 return _completed(command, stdout="[]")
             return _completed(
                 command,
                 stdout=json.dumps([{"cid": "bafy-email-record"}]),
             )
+        if args[:1] == ["search"]:
+            if not self.search_returns:
+                return _completed(command, stdout="[]")
+            return _completed(command, stdout=json.dumps(["bafy-email-record"]))
         if args[:1] == ["pull"]:
             return _completed(command, stdout=json.dumps(self._record()))
         if args[:2] == ["routing", "info"]:
@@ -87,10 +97,14 @@ def test_real_ads_cli_publish_pushes_and_publishes_email_record() -> None:
 
     assert published.backend == "real"
     assert published.backend_ref == "bafy-email-record"
-    assert published.raw_record["schema_version"] == "1.0.0"
     assert published.raw_record["record_id"]
-    assert published.raw_record["skills"]
     assert "email/current_time" in published.raw_record["discovery"]["custom_skill_tags"]
+    assert runner.pushed_record is not None
+    assert runner.pushed_record["schema_version"] == "1.0.0"
+    assert runner.pushed_record["skills"]
+    assert "record_id" not in runner.pushed_record
+    assert runner.pushed_record["modules"][0]["data"]["card_schema_version"]
+    assert "endpoint" not in runner.pushed_record["modules"][0]["data"]
     assert any(command[3:4] == ["push"] for command in runner.commands)
     assert any(command[3:5] == ["routing", "publish"] for command in runner.commands)
 
@@ -114,6 +128,21 @@ def test_real_ads_cli_search_by_custom_skill_pulls_and_post_filters_record() -> 
         for command in runner.commands
     )
     assert any(command[3:4] == ["pull"] for command in runner.commands)
+
+
+def test_real_ads_cli_search_falls_back_to_local_ads_search() -> None:
+    runner = FakeDirctlRunner(search_returns=True, routing_returns=False)
+    backend = RealADSDirectoryBackend(
+        ads_url="localhost:8888",
+        backend="cli",
+        runner=runner,
+    )
+    backend.publish_agent_card(load_agent_card(EMAIL_CARD))
+
+    agents = backend.search_agents(skill="email/current_time")
+
+    assert agents[0].agent_id == "email-agent"
+    assert any(command[3:4] == ["search"] for command in runner.commands)
 
 
 def test_real_ads_cli_missing_dirctl_raises_install_instructions() -> None:
@@ -201,6 +230,45 @@ async def _requested_skill_email_send_requires_confirmation_before_a2a() -> None
             "/messages",
             json={
                 "user_id": "safety-test",
+                "channel": "api",
+                "text": "Send this email.",
+                "requested_skill": "email/send",
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["confirmation_required"] is True
+    assert payload["pending_confirmation"]["skill"] == "email/send"
+    assert payload["task_ids"] == {}
+
+
+def test_real_ads_requested_skill_email_send_requires_confirmation_before_a2a() -> None:
+    asyncio.run(_real_ads_requested_skill_email_send_requires_confirmation_before_a2a())
+
+
+async def _real_ads_requested_skill_email_send_requires_confirmation_before_a2a() -> None:
+    backend = RealADSDirectoryBackend(
+        ads_url="localhost:8888",
+        backend="cli",
+        runner=FakeDirctlRunner(search_returns=True, routing_returns=False),
+    )
+    backend.publish_agent_card(load_agent_card(EMAIL_CARD))
+    directory = DirectoryClient(fake_ads=False, backend=backend)
+    pi_app = create_app(
+        directory_client=directory,
+        a2a_client=FailingA2AClient(),
+        publish_weather_card=False,
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=pi_app),
+        base_url="http://pi-agent",
+    ) as pi_http_client:
+        response = await pi_http_client.post(
+            "/messages",
+            json={
+                "user_id": "real-ads-safety-test",
                 "channel": "api",
                 "text": "Send this email.",
                 "requested_skill": "email/send",

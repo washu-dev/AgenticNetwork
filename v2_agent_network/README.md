@@ -317,17 +317,18 @@ v1_classification/.venv/bin/python -m v2_agent_network.scripts.publish_agents \
   --card v2_agent_network/configs/agent_cards/email_agent.card.json
 ```
 
-Search ADS with an official routing hint used by the Email Agent record:
+Search local ADS with an official routing hint used by the Email Agent record:
 
 ```bash
-dirctl --server-addr localhost:8888 routing search \
+dirctl --server-addr localhost:8888 search \
   --skill natural_language_processing/information_retrieval_synthesis/information_retrieval_synthesis_search \
-  --limit 10
+  --output json
 ```
 
 PI searches for the requested custom skill, also searches the configured ADS
-routing hints, pulls matching records, and post-filters by custom skill tags such
-as `email/current_time`.
+routing hints through `dirctl routing search`, `dirctl routing list`, and local
+`dirctl search` fallback, pulls matching records, and post-filters by custom
+skill tags such as `email/current_time`.
 
 Run the safe PI -> real ADS -> live Email Agent demo:
 
