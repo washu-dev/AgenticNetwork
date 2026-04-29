@@ -19,6 +19,7 @@ Gmail, Calendar, Docs, and Sheets. It does not store account passwords.
 from __future__ import annotations
 
 import argparse
+import atexit
 import asyncio
 import base64
 import email
@@ -28,7 +29,9 @@ import json
 import mimetypes
 import os
 import re
+import subprocess
 import sys
+import tempfile
 import uuid
 import warnings
 import zipfile
@@ -36,7 +39,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from email.header import decode_header
 from email.message import EmailMessage
-from email.utils import formatdate, make_msgid
+from email.utils import formatdate, getaddresses, make_msgid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterable
 from xml.etree import ElementTree
@@ -73,6 +76,35 @@ else:
     A2A_IMPORT_ERROR = None
 
 
+def _agent_network_root() -> Path | None:
+    start = Path(__file__).resolve().parent
+    for candidate in [start, *start.parents]:
+        if (candidate / "v2_agent_network").is_dir():
+            return candidate
+        nested = candidate / "AgenticNetwork"
+        if (nested / "v2_agent_network").is_dir():
+            return nested
+    return None
+
+
+def _default_email_a2a_card_path() -> Path:
+    script_dir = Path(__file__).resolve().parent
+    local_card = script_dir / "email_agent.card.json"
+    if local_card.exists():
+        return local_card
+    root = _agent_network_root()
+    if root is not None:
+        return root / "v2_agent_network" / "configs" / "agent_cards" / "email_agent.card.json"
+    return (
+        script_dir
+        / "AgenticNetwork"
+        / "v2_agent_network"
+        / "configs"
+        / "agent_cards"
+        / "email_agent.card.json"
+    )
+
+
 DEFAULT_EMAIL = "emailagent.cspl@gmail.com"
 DEFAULT_TIMEZONE = "America/Chicago"
 DEFAULT_MODEL = "gpt-5-mini"
@@ -92,15 +124,27 @@ DEFAULT_GOOGLE_CREDENTIALS = "credentials.json"
 DEFAULT_GOOGLE_CALENDAR_TOKEN = DEFAULT_GOOGLE_TOKEN
 DEFAULT_GOOGLE_CALENDAR_CREDENTIALS = DEFAULT_GOOGLE_CREDENTIALS
 DEFAULT_AGENT_STATUS_FILE = ".agent_status.json"
-DEFAULT_EMAIL_A2A_CARD = (
-    Path(__file__).resolve().parent
-    / "AgenticNetwork"
-    / "v2_agent_network"
-    / "configs"
-    / "agent_cards"
-    / "email_agent.card.json"
-)
+DEFAULT_NOTICE_LIST_FILE = "notice_list.txt"
+DEFAULT_ADS_SERVER_ADDR = "10.229.117.37:8888"
+DEFAULT_ADS_BACKEND = "cli"
+DEFAULT_EMAIL_A2A_CARD = _default_email_a2a_card_path()
+DEFAULT_REMOTE_A2A_TIMEOUT_SECONDS = 30
+EMAIL_ADS_ROUTING_SKILLS: list[dict[str, Any]] = [
+    {
+        "name": "natural_language_processing/information_retrieval_synthesis/information_retrieval_synthesis_search",
+        "id": 10306,
+    },
+    {
+        "name": "natural_language_processing/natural_language_generation/summarization",
+        "id": 10202,
+    },
+    {
+        "name": "retrieval_augmented_generation/retrieval_of_information/document_retrieval",
+        "id": 60103,
+    },
+]
 MAX_ATTACHMENT_PREVIEW_CHARS = 8000
+EMAIL_STATUS_LOG_FALSE_VALUES = {"0", "false", "no", "off"}
 TEXT_ATTACHMENT_EXTENSIONS = {
     ".csv",
     ".eml",
@@ -118,6 +162,32 @@ TEXT_ATTACHMENT_EXTENSIONS = {
     ".yaml",
     ".yml",
 }
+EMAIL_ADDRESS_RE = re.compile(
+    r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@"
+    r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+    r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+"
+)
+
+
+def _email_status(message: str, **details: Any) -> None:
+    if os.getenv("EMAIL_AGENT_STATUS_LOGS", "1").strip().lower() in EMAIL_STATUS_LOG_FALSE_VALUES:
+        return
+    rendered = " ".join(
+        f"{key}={value}"
+        for key, value in details.items()
+        if value is not None and value != ""
+    )
+    suffix = f" {rendered}" if rendered else ""
+    print(f"[email-agent] {message}{suffix}", file=sys.stderr, flush=True)
+
+
+@dataclass(frozen=True)
+class EmailAdsPublishedRecord:
+    record_id: str
+    agent_id: str
+    backend: str
+    backend_ref: str | None = None
+    raw_record: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -155,6 +225,14 @@ class EmailAgent:
         mark_read: bool = False,
     ) -> list[dict[str, Any]]:
         """Read newest matching messages through the Gmail API."""
+        _email_status(
+            "Reading Gmail messages",
+            folder=folder,
+            limit=max(1, min(limit, 100)),
+            include_body=include_body,
+            include_attachments=include_attachments,
+            mark_read=mark_read,
+        )
         service = self._gmail_service()
         query = _gmail_query_from_criteria(criteria)
         label_ids = _gmail_label_ids_from_folder(folder)
@@ -169,9 +247,11 @@ class EmailAgent:
 
         response = service.users().messages().list(**request).execute()
         message_refs = response.get("messages", []) or []
+        _email_status("Gmail search returned messages", count=len(message_refs))
         messages: list[dict[str, Any]] = []
 
-        for ref in message_refs:
+        for index, ref in enumerate(message_refs, start=1):
+            _email_status("Fetching Gmail message", index=index, total=len(message_refs))
             message_id = ref["id"]
             gmail_message = (
                 service.users()
@@ -196,6 +276,7 @@ class EmailAgent:
 
             messages.append(item)
 
+        _email_status("Finished reading Gmail messages", count=len(messages))
         return messages
 
     def send_email(
@@ -207,11 +288,20 @@ class EmailAgent:
         bcc: list[str] | None = None,
         html: str | None = None,
         attachments: list[Path] | None = None,
+        high_importance: bool = False,
     ) -> str:
         """Send an email through the Gmail API."""
         if not to:
             raise ValueError("At least one recipient is required.")
 
+        _email_status(
+            "Sending Gmail email",
+            recipient_count=len(to),
+            cc_count=len(cc or []),
+            bcc_count=len(bcc or []),
+            attachment_count=len(attachments or []),
+            high_importance=high_importance,
+        )
         msg = self._build_email_message(
             to=to,
             subject=subject,
@@ -220,6 +310,7 @@ class EmailAgent:
             bcc=bcc,
             html=html,
             attachments=attachments,
+            high_importance=high_importance,
         )
         sent = (
             self._gmail_service()
@@ -228,7 +319,65 @@ class EmailAgent:
             .send(userId="me", body={"raw": _gmail_raw_message(msg)})
             .execute()
         )
-        return sent.get("id", msg["Message-ID"])
+        message_id = sent.get("id", msg["Message-ID"])
+        _email_status("Gmail email sent", message_id=message_id)
+        return message_id
+
+    def load_notice_recipients(self, recipient_file: Path | str | None = None) -> list[str]:
+        """Load notice-list recipients from a local text file."""
+        path = _notice_list_path(recipient_file)
+        _email_status("Loading notice recipients", path=str(path))
+        recipients = load_recipients_from_file(path)
+        if not recipients:
+            raise ValueError(f"No recipients found in {path}.")
+        _email_status("Notice recipients loaded", path=str(path), count=len(recipients))
+        return recipients
+
+    def send_group_email(
+        self,
+        *,
+        subject: str,
+        body: str,
+        cc: list[str] | None = None,
+        bcc: list[str] | None = None,
+        html: str | None = None,
+        recipient_file: Path | str | None = None,
+        high_importance: bool = False,
+        recipient_source: str | None = None,
+        to: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Send one email to the local notice list."""
+        if recipient_source:
+            _normalize_recipient_source(recipient_source)
+        explicit_recipients = _normalize_addresses(to)
+        if explicit_recipients:
+            _email_status(
+                "Ignoring explicit recipients for group email; using notice list",
+                explicit_recipient_count=len(explicit_recipients),
+            )
+        recipients = self.load_notice_recipients(recipient_file)
+        source_label = str(_notice_list_path(recipient_file))
+        if not recipients:
+            raise ValueError("Group email requires at least one recipient.")
+
+        message_id = self.send_email(
+            to=recipients,
+            cc=cc,
+            bcc=bcc,
+            subject=subject,
+            body=body,
+            html=html,
+            high_importance=high_importance,
+        )
+        return {
+            "message_id": message_id,
+            "recipient_source": "notice_list",
+            "recipient_source_detail": source_label,
+            "recipient_count": len(recipients),
+            "to": recipients,
+            "subject": subject,
+            "high_importance": high_importance,
+        }
 
     def write_email_draft(
         self,
@@ -238,11 +387,19 @@ class EmailAgent:
         cc: list[str] | None = None,
         bcc: list[str] | None = None,
         html: str | None = None,
+        high_importance: bool = False,
     ) -> str:
         """Create a Gmail draft."""
         if not to:
             raise ValueError("At least one recipient is required.")
 
+        _email_status(
+            "Creating Gmail draft",
+            recipient_count=len(to),
+            cc_count=len(cc or []),
+            bcc_count=len(bcc or []),
+            high_importance=high_importance,
+        )
         msg = self._build_email_message(
             to=to,
             subject=subject,
@@ -250,6 +407,7 @@ class EmailAgent:
             cc=cc,
             bcc=bcc,
             html=html,
+            high_importance=high_importance,
         )
         draft = (
             self._gmail_service()
@@ -258,7 +416,9 @@ class EmailAgent:
             .create(userId="me", body={"message": {"raw": _gmail_raw_message(msg)}})
             .execute()
         )
-        return draft.get("id", "")
+        draft_id = draft.get("id", "")
+        _email_status("Gmail draft created", draft_id=draft_id)
+        return draft_id
 
     def create_calendar_event(
         self,
@@ -280,9 +440,17 @@ class EmailAgent:
         through the Gmail API.
         """
         attendees = attendees or []
+        _email_status(
+            "Creating calendar event",
+            attendee_count=len(attendees),
+            send_invite=send_invite,
+            use_google_api=use_google_api,
+            allow_ics_fallback=allow_ics_fallback,
+        )
 
         google_api_error = ""
         if use_google_api:
+            _email_status("Trying Google Calendar API event creation")
             try:
                 google_result = self._create_google_calendar_event(
                     title=title,
@@ -295,7 +463,9 @@ class EmailAgent:
             except Exception as exc:
                 google_result = None
                 google_api_error = f"{type(exc).__name__}: {exc}"
+                _email_status("Google Calendar API event creation failed", error=google_api_error)
             if google_result:
+                _email_status("Google Calendar event created", event_id=google_result.get("event_id"))
                 return google_result
             if not allow_ics_fallback:
                 raise RuntimeError(
@@ -318,6 +488,7 @@ class EmailAgent:
         )
 
         if send_invite:
+            _email_status("Sending calendar invite email", attendee_count=len(ics_attendees))
             message_id = self._send_calendar_invite(
                 to=attendees,
                 title=title,
@@ -336,6 +507,7 @@ class EmailAgent:
             }
             if google_api_error:
                 result["google_api_error"] = google_api_error
+            _email_status("Calendar invite email sent", message_id=message_id)
             return result
 
         output_dir = Path("calendar_events")
@@ -351,6 +523,7 @@ class EmailAgent:
         }
         if google_api_error:
             result["google_api_error"] = google_api_error
+        _email_status("Local ICS event file written", path=str(event_file))
         return result
 
     def list_calendar_events(
@@ -360,6 +533,12 @@ class EmailAgent:
         max_results: int = 20,
     ) -> list[dict[str, Any]]:
         """Read events from Google Calendar."""
+        _email_status(
+            "Listing Google Calendar events",
+            start=start.isoformat(),
+            end=end.isoformat(),
+            max_results=max_results,
+        )
         service = self._google_calendar_service()
         events_result = (
             service.events()
@@ -373,7 +552,9 @@ class EmailAgent:
             )
             .execute()
         )
-        return [_format_google_event(item) for item in events_result.get("items", [])]
+        events = [_format_google_event(item) for item in events_result.get("items", [])]
+        _email_status("Google Calendar events listed", count=len(events))
+        return events
 
     def authorize_google_calendar(self) -> dict[str, Any]:
         """Run OAuth setup and write token.json for Google Workspace access."""
@@ -381,7 +562,9 @@ class EmailAgent:
 
     def authorize_google_workspace(self) -> dict[str, Any]:
         """Run OAuth setup and write token.json for Gmail, Calendar, Docs, and Sheets."""
+        _email_status("Authorizing Google Workspace")
         credentials = self._google_credentials(interactive=True)
+        _email_status("Google Workspace authorized", token_path=str(_calendar_token_path()))
         return {
             "ok": True,
             "token_path": str(_calendar_token_path()),
@@ -394,6 +577,7 @@ class EmailAgent:
 
     def google_workspace_status(self) -> dict[str, Any]:
         """Return local Google Workspace setup state without starting OAuth."""
+        _email_status("Checking Google Workspace status")
         dependency_error = ""
         try:
             _import_google_dependencies()
@@ -424,9 +608,16 @@ class EmailAgent:
         except Exception as exc:
             status["authorized"] = False
             status["auth_error"] = f"{type(exc).__name__}: {exc}"
+        _email_status(
+            "Google Workspace status checked",
+            authorized=status.get("authorized"),
+            token_exists=status.get("token_exists"),
+            credentials_exists=status.get("credentials_exists"),
+        )
         return status
 
     def list_google_docs(self, query: str = "", max_results: int = 10) -> list[dict[str, Any]]:
+        _email_status("Listing Google Docs", max_results=max_results, has_query=bool(query))
         service = self._google_service("drive", "v3")
         drive_query = "mimeType='application/vnd.google-apps.document' and trashed=false"
         if query:
@@ -441,23 +632,29 @@ class EmailAgent:
             )
             .execute()
         )
-        return result.get("files", []) or []
+        docs = result.get("files", []) or []
+        _email_status("Google Docs listed", count=len(docs))
+        return docs
 
     def read_google_doc(self, document_id: str) -> dict[str, Any]:
+        _email_status("Reading Google Doc", document_id=document_id)
         document = (
             self._google_service("docs", "v1")
             .documents()
             .get(documentId=document_id)
             .execute()
         )
-        return {
+        result = {
             "document_id": document_id,
             "title": document.get("title", ""),
             "text": _extract_google_doc_text(document),
             "url": f"https://docs.google.com/document/d/{document_id}/edit",
         }
+        _email_status("Google Doc read", document_id=document_id)
+        return result
 
     def create_google_doc(self, title: str, content: str = "") -> dict[str, Any]:
+        _email_status("Creating Google Doc", has_content=bool(content))
         service = self._google_service("docs", "v1")
         document = service.documents().create(body={"title": title}).execute()
         document_id = document["documentId"]
@@ -466,13 +663,16 @@ class EmailAgent:
                 documentId=document_id,
                 body={"requests": [{"insertText": {"location": {"index": 1}, "text": content}}]},
             ).execute()
-        return {
+        result = {
             "document_id": document_id,
             "title": title,
             "url": f"https://docs.google.com/document/d/{document_id}/edit",
         }
+        _email_status("Google Doc created", document_id=document_id)
+        return result
 
     def append_google_doc(self, document_id: str, text: str) -> dict[str, Any]:
+        _email_status("Appending to Google Doc", document_id=document_id, chars=len(text))
         service = self._google_service("docs", "v1")
         document = service.documents().get(documentId=document_id).execute()
         end_index = _google_doc_end_index(document)
@@ -480,11 +680,13 @@ class EmailAgent:
             documentId=document_id,
             body={"requests": [{"insertText": {"location": {"index": end_index}, "text": text}}]},
         ).execute()
-        return {
+        result = {
             "document_id": document_id,
             "url": f"https://docs.google.com/document/d/{document_id}/edit",
             "appended_chars": len(text),
         }
+        _email_status("Google Doc append completed", document_id=document_id, chars=len(text))
+        return result
 
     def replace_google_doc_text(
         self,
@@ -492,6 +694,7 @@ class EmailAgent:
         find_text: str,
         replace_text: str,
     ) -> dict[str, Any]:
+        _email_status("Replacing text in Google Doc", document_id=document_id)
         response = (
             self._google_service("docs", "v1")
             .documents()
@@ -513,13 +716,16 @@ class EmailAgent:
         occurrences = 0
         for reply in response.get("replies", []) or []:
             occurrences += reply.get("replaceAllText", {}).get("occurrencesChanged", 0)
-        return {
+        result = {
             "document_id": document_id,
             "occurrences_changed": occurrences,
             "url": f"https://docs.google.com/document/d/{document_id}/edit",
         }
+        _email_status("Google Doc text replacement completed", document_id=document_id, occurrences=occurrences)
+        return result
 
     def list_google_sheets(self, query: str = "", max_results: int = 10) -> list[dict[str, Any]]:
+        _email_status("Listing Google Sheets", max_results=max_results, has_query=bool(query))
         service = self._google_service("drive", "v3")
         drive_query = "mimeType='application/vnd.google-apps.spreadsheet' and trashed=false"
         if query:
@@ -534,9 +740,12 @@ class EmailAgent:
             )
             .execute()
         )
-        return result.get("files", []) or []
+        sheets = result.get("files", []) or []
+        _email_status("Google Sheets listed", count=len(sheets))
+        return sheets
 
     def read_google_sheet(self, spreadsheet_id: str, range_name: str = "A1:Z50") -> dict[str, Any]:
+        _email_status("Reading Google Sheet", spreadsheet_id=spreadsheet_id, range=range_name)
         values = (
             self._google_service("sheets", "v4")
             .spreadsheets()
@@ -544,12 +753,14 @@ class EmailAgent:
             .get(spreadsheetId=spreadsheet_id, range=range_name)
             .execute()
         )
-        return {
+        result = {
             "spreadsheet_id": spreadsheet_id,
             "range": values.get("range", range_name),
             "values": values.get("values", []),
             "url": f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit",
         }
+        _email_status("Google Sheet read", spreadsheet_id=spreadsheet_id, row_count=len(result["values"]))
+        return result
 
     def create_google_sheet(
         self,
@@ -557,6 +768,7 @@ class EmailAgent:
         sheet_name: str = "Sheet1",
         values: list[list[Any]] | None = None,
     ) -> dict[str, Any]:
+        _email_status("Creating Google Sheet", sheet_name=sheet_name, row_count=len(values or []))
         service = self._google_service("sheets", "v4")
         spreadsheet = (
             service.spreadsheets()
@@ -566,7 +778,7 @@ class EmailAgent:
         spreadsheet_id = spreadsheet["spreadsheetId"]
         if values:
             self.write_google_sheet(spreadsheet_id, f"{sheet_name}!A1", values)
-        return {
+        result = {
             "spreadsheet_id": spreadsheet_id,
             "title": title,
             "url": spreadsheet.get(
@@ -574,6 +786,8 @@ class EmailAgent:
                 f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit",
             ),
         }
+        _email_status("Google Sheet created", spreadsheet_id=spreadsheet_id)
+        return result
 
     def write_google_sheet(
         self,
@@ -582,6 +796,12 @@ class EmailAgent:
         values: list[list[Any]],
         value_input_option: str = "USER_ENTERED",
     ) -> dict[str, Any]:
+        _email_status(
+            "Writing Google Sheet range",
+            spreadsheet_id=spreadsheet_id,
+            range=range_name,
+            row_count=len(values),
+        )
         result = (
             self._google_service("sheets", "v4")
             .spreadsheets()
@@ -594,12 +814,14 @@ class EmailAgent:
             )
             .execute()
         )
-        return {
+        output = {
             "spreadsheet_id": spreadsheet_id,
             "updated_range": result.get("updatedRange", range_name),
             "updated_cells": result.get("updatedCells", 0),
             "url": f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit",
         }
+        _email_status("Google Sheet range written", spreadsheet_id=spreadsheet_id, updated_cells=output["updated_cells"])
+        return output
 
     def append_google_sheet(
         self,
@@ -608,6 +830,12 @@ class EmailAgent:
         values: list[list[Any]],
         value_input_option: str = "USER_ENTERED",
     ) -> dict[str, Any]:
+        _email_status(
+            "Appending Google Sheet rows",
+            spreadsheet_id=spreadsheet_id,
+            range=range_name,
+            row_count=len(values),
+        )
         result = (
             self._google_service("sheets", "v4")
             .spreadsheets()
@@ -622,12 +850,52 @@ class EmailAgent:
             .execute()
         )
         updates = result.get("updates", {})
-        return {
+        output = {
             "spreadsheet_id": spreadsheet_id,
             "updated_range": updates.get("updatedRange", range_name),
             "updated_cells": updates.get("updatedCells", 0),
             "url": f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit",
         }
+        _email_status("Google Sheet rows appended", spreadsheet_id=spreadsheet_id, updated_cells=output["updated_cells"])
+        return output
+
+    def discover_ads_agents(
+        self,
+        *,
+        skill: str = "",
+        query: str = "",
+        limit: int = 10,
+        include_self: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Discover live agents registered in ADS using the standalone CLI path."""
+        return discover_ads_agents(
+            skill=skill,
+            query=query,
+            limit=limit,
+            include_self=include_self,
+        )
+
+    def send_a2a_request_to_ads_agent(
+        self,
+        *,
+        agent_ref: str,
+        skill: str,
+        message: str,
+        data: dict[str, Any] | None = None,
+        timeout_seconds: int = DEFAULT_REMOTE_A2A_TIMEOUT_SECONDS,
+        confirmed: bool = True,
+    ) -> dict[str, Any]:
+        """Resolve an ADS-discovered agent and send it one A2A request."""
+        return asyncio.run(
+            send_a2a_request_to_ads_agent(
+                agent_ref=agent_ref,
+                skill=skill,
+                message=message,
+                data=data or {},
+                timeout_seconds=timeout_seconds,
+                confirmed=confirmed,
+            )
+        )
 
     def _add_attachment(self, msg: EmailMessage, attachment: Path) -> None:
         if not attachment.exists():
@@ -655,6 +923,7 @@ class EmailAgent:
         bcc: list[str] | None = None,
         html: str | None = None,
         attachments: list[Path] | None = None,
+        high_importance: bool = False,
     ) -> EmailMessage:
         msg = EmailMessage()
         msg["From"] = self.config.email_address
@@ -666,6 +935,11 @@ class EmailAgent:
         msg["Subject"] = subject
         msg["Date"] = formatdate(localtime=True)
         msg["Message-ID"] = make_msgid(domain=self.config.email_address.split("@")[-1])
+        if high_importance:
+            msg["Importance"] = "High"
+            msg["Priority"] = "urgent"
+            msg["X-Priority"] = "1 (Highest)"
+            msg["X-MSMail-Priority"] = "High"
 
         msg.set_content(body or "")
         if html:
@@ -734,6 +1008,7 @@ class EmailAgent:
         return self._google_service("calendar", "v3")
 
     def _google_service(self, api_name: str, api_version: str) -> Any:
+        _email_status("Creating Google API service", api=f"{api_name}/{api_version}")
         credentials = self._google_credentials(interactive=False)
         _, _, _, build = _import_google_dependencies()
         return build(api_name, api_version, credentials=credentials)
@@ -746,10 +1021,12 @@ class EmailAgent:
         token_path = _calendar_token_path()
         credentials_path = _calendar_credentials_path()
         credentials = None
+        _email_status("Loading Google credentials", token_path=str(token_path), interactive=interactive)
 
         if token_path.exists():
             missing_scopes = _missing_google_scopes(token_path)
             if missing_scopes:
+                _email_status("Google token is missing required scopes", missing_scope_count=len(missing_scopes))
                 if not interactive:
                     raise RuntimeError(
                         "Existing Google token is missing required scopes. "
@@ -778,11 +1055,14 @@ class EmailAgent:
             )
 
         if credentials and credentials.valid:
+            _email_status("Using valid Google credentials")
             return credentials
 
         if credentials and credentials.expired and credentials.refresh_token:
+            _email_status("Refreshing expired Google credentials")
             credentials.refresh(Request())
             token_path.write_text(credentials.to_json(), encoding="utf-8")
+            _email_status("Google credentials refreshed", token_path=str(token_path))
             return credentials
 
         if not interactive:
@@ -798,12 +1078,14 @@ class EmailAgent:
                 "and save it here as credentials.json or set GOOGLE_CREDENTIALS."
             )
 
+        _email_status("Starting Google OAuth local server", credentials_path=str(credentials_path))
         flow = InstalledAppFlow.from_client_secrets_file(
             str(credentials_path),
             GOOGLE_WORKSPACE_SCOPES,
         )
         credentials = flow.run_local_server(port=0, open_browser=False, prompt="consent")
         token_path.write_text(credentials.to_json(), encoding="utf-8")
+        _email_status("Google OAuth token saved", token_path=str(token_path))
         return credentials
 
     def _create_google_calendar_event(
@@ -818,6 +1100,7 @@ class EmailAgent:
         if end <= start:
             raise ValueError("Event end time must be after the start time.")
 
+        _email_status("Creating Google Calendar event through API", attendee_count=len(attendees))
         service = self._google_calendar_service()
         event_body = {
             "summary": title,
@@ -844,7 +1127,7 @@ class EmailAgent:
             )
             .execute()
         )
-        return {
+        result = {
             "mode": "google_calendar_api",
             "created_in_google_calendar": True,
             "event_id": created.get("id", ""),
@@ -853,6 +1136,8 @@ class EmailAgent:
             "start": created.get("start", {}),
             "end": created.get("end", {}),
         }
+        _email_status("Google Calendar API event created", event_id=result["event_id"])
+        return result
 
 
 def _calendar_token_path() -> Path:
@@ -1255,8 +1540,12 @@ AGENT_TOOL_SCHEMAS: list[dict[str, Any]] = [
                 },
                 "subject": {"type": "string"},
                 "body": {"type": "string"},
+                "high_importance": {
+                    "type": "boolean",
+                    "description": "Whether to mark the draft with high-importance priority headers.",
+                },
             },
-            "required": ["to", "cc", "bcc", "subject", "body"],
+            "required": ["to", "cc", "bcc", "subject", "body", "high_importance"],
             "additionalProperties": False,
         },
         "strict": True,
@@ -1285,8 +1574,52 @@ AGENT_TOOL_SCHEMAS: list[dict[str, Any]] = [
                 },
                 "subject": {"type": "string"},
                 "body": {"type": "string"},
+                "high_importance": {
+                    "type": "boolean",
+                    "description": "Whether to send the email with high-importance priority headers.",
+                },
             },
-            "required": ["to", "cc", "bcc", "subject", "body"],
+            "required": ["to", "cc", "bcc", "subject", "body", "high_importance"],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    },
+    {
+        "type": "function",
+        "name": "send_group_email",
+        "description": (
+            "Send one email to the local notice_list.txt group. Use this when the "
+            "user says group notice, notice group, notice list, or asks to send "
+            "the group notice email. Do not ask for recipient addresses; this tool "
+            "always reads the local notice_list.txt by default."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "cc": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "CC email addresses, or an empty array.",
+                },
+                "bcc": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "BCC email addresses, or an empty array.",
+                },
+                "subject": {"type": "string"},
+                "body": {"type": "string"},
+                "high_importance": {
+                    "type": "boolean",
+                    "description": "Whether to send the group email with high-importance priority headers.",
+                },
+            },
+            "required": [
+                "cc",
+                "bcc",
+                "subject",
+                "body",
+                "high_importance",
+            ],
             "additionalProperties": False,
         },
         "strict": True,
@@ -1575,6 +1908,82 @@ AGENT_TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "type": "function",
+        "name": "discover_ads_agents",
+        "description": (
+            "Search the real ADS directory for registered agents that can help with "
+            "work outside the local email/calendar/docs/sheets tools. Returns agent refs, "
+            "A2A endpoints, and advertised skills."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "skill": {
+                    "type": "string",
+                    "description": "Optional skill tag or official OASF skill name to search for. Use an empty string to list agents.",
+                },
+                "query": {
+                    "type": "string",
+                    "description": "Optional free-text filter over agent names, descriptions, organizations, and skill text.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 50,
+                    "description": "Maximum agents to return.",
+                },
+                "include_self": {
+                    "type": "boolean",
+                    "description": "Whether to include this email agent when it appears in ADS.",
+                },
+            },
+            "required": ["skill", "query", "limit", "include_self"],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    },
+    {
+        "type": "function",
+        "name": "send_a2a_request",
+        "description": (
+            "Send a request to another ADS-discovered A2A agent. Use discover_ads_agents "
+            "first, then pass the returned cid, record_id, agent_id, name, or endpoint as agent_ref. "
+            "This contacts the external agent directly."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "agent_ref": {
+                    "type": "string",
+                    "description": "Agent reference from ADS discovery: cid, record_id, agent_id, name, or A2A endpoint.",
+                },
+                "skill": {
+                    "type": "string",
+                    "description": "Target skill tag from the discovered agent card.",
+                },
+                "message": {
+                    "type": "string",
+                    "description": "Natural-language instruction to send to the remote agent.",
+                },
+                "data": {
+                    "type": "object",
+                    "description": "Optional structured JSON payload for the remote agent. Use an empty object unless a fixed schema is provided.",
+                    "properties": {},
+                    "additionalProperties": False,
+                },
+                "timeout_seconds": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 120,
+                    "description": "A2A request timeout in seconds.",
+                },
+            },
+            "required": ["agent_ref", "skill", "message", "data", "timeout_seconds"],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    },
+    {
+        "type": "function",
         "name": "current_time",
         "description": "Return the current local time and timezone.",
         "parameters": {
@@ -1621,7 +2030,6 @@ class ToolCallingEmailAgent:
         self,
         email_agent: EmailAgent,
         model: str = DEFAULT_MODEL,
-        auto_approve: bool = False,
         max_steps: int = 8,
         verbose: bool = False,
         show_status: bool = False,
@@ -1629,7 +2037,6 @@ class ToolCallingEmailAgent:
     ):
         self.email_agent = email_agent
         self.model = model
-        self.auto_approve = auto_approve
         self.max_steps = max_steps
         self.verbose = verbose
         self.status = AgentStatusReporter(
@@ -1730,10 +2137,11 @@ class ToolCallingEmailAgent:
         )
 
     def _finish_response(self, client: Any, response: Any) -> tuple[str, Any]:
+        pending_actions: list[dict[str, Any]] = []
         for _ in range(self.max_steps):
             tool_calls = _extract_function_calls(response)
             if not tool_calls:
-                return _response_text(response), response
+                return _append_pending_actions_to_text(_response_text(response), pending_actions), response
 
             tool_outputs = []
             for call in tool_calls:
@@ -1767,6 +2175,7 @@ class ToolCallingEmailAgent:
                         tool=name,
                         error=result["error"],
                     )
+                pending_actions.extend(_pending_actions_from_tool_result(result, tool_name=name))
 
                 tool_outputs.append(
                     {
@@ -1858,18 +2267,30 @@ class ToolCallingEmailAgent:
             "Use Google Docs tools for document requests and Google Sheets tools "
             "for spreadsheet requests. Ask for a document or spreadsheet ID when "
             "a search result is ambiguous. "
+            "When a task needs capabilities outside this local email, calendar, "
+            "Docs, and Sheets agent, call discover_ads_agents to see which agents "
+            "are registered in ADS. Do not invent remote agents or endpoints. If "
+            "a suitable remote agent is discovered, call send_a2a_request with an "
+            "agent_ref from discovery, the discovered skill tag, and a concise "
+            "task message. Prefer local tools for work this agent can do directly. "
             "Ask the user for missing email addresses, dates, or times instead of "
             "guessing. Keep final answers concise and include the concrete result "
             "of any tool action. If the user explicitly asks you to send an email "
             "and the recipient/content are available, call the send_email tool; do "
-            "not ask a separate permission question because the runtime will ask "
-            "for approval. If the user confirms a previous draft should be sent, "
-            "call send_email with the draft contents from the conversation. Sending "
-            "email, marking mail as read, and sending calendar invites require "
-            "runtime approval unless the command was run with --yes. Never say an "
+            "not ask a separate permission question. If the user says a previous draft should be sent, "
+            "call send_email with the draft contents from the conversation. "
+            "For an email to multiple explicit recipients, include every address "
+            "in the same to list with send_email. When the user says group notice, "
+            "notice group, notice list, or group notice email, use send_group_email; "
+            "it always reads the local notice_list.txt file and does not need "
+            "recipients from the request. Ask for a subject or body if either is missing. "
+            "When the user asks to mark an email urgent, important, high priority, "
+            "or high importance, set high_importance true on draft/send tools. "
+            "Sending email, marking mail as read, and sending calendar invites are "
+            "performed directly when requested. Never say an "
             "event was added to Google Calendar unless the tool result has "
-            "created_in_google_calendar true. Google Docs and Sheets write actions "
-            "also require runtime approval. Ask follow-up questions only when the "
+            "created_in_google_calendar true. Google Docs and Sheets changes are "
+            "also performed directly when requested. Ask follow-up questions only when the "
             "answer is required to complete the current request; once the request "
             "is complete, provide a concise final answer without optional next-step "
             "questions. When the user "
@@ -1883,9 +2304,6 @@ class ToolCallingEmailAgent:
     def _run_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         if name == "read_email":
             mark_read = bool(arguments.get("mark_read", False))
-            if mark_read and not self._approve("mark messages as read", arguments):
-                return {"ok": False, "cancelled": True, "message": "Not approved."}
-
             limit = int(arguments.get("limit", 5))
             limit = max(1, min(limit, 25))
             messages = self.email_agent.read_emails(
@@ -1908,21 +2326,38 @@ class ToolCallingEmailAgent:
                 bcc=_normalize_addresses(arguments.get("bcc")),
                 subject=str(arguments.get("subject") or ""),
                 body=str(arguments.get("body") or ""),
+                high_importance=bool(arguments.get("high_importance", False)),
             )
-            return {"ok": True, "draft_id": draft_id}
+            return {
+                "ok": True,
+                "draft_id": draft_id,
+                "high_importance": bool(arguments.get("high_importance", False)),
+            }
 
         if name == "send_email":
-            if not self._approve("send email", arguments):
-                return {"ok": False, "cancelled": True, "message": "Not approved."}
-
             message_id = self.email_agent.send_email(
                 to=_normalize_addresses(arguments.get("to")),
                 cc=_normalize_addresses(arguments.get("cc")),
                 bcc=_normalize_addresses(arguments.get("bcc")),
                 subject=str(arguments.get("subject") or ""),
                 body=str(arguments.get("body") or ""),
+                high_importance=bool(arguments.get("high_importance", False)),
             )
-            return {"ok": True, "message_id": message_id}
+            return {
+                "ok": True,
+                "message_id": message_id,
+                "high_importance": bool(arguments.get("high_importance", False)),
+            }
+
+        if name == "send_group_email":
+            result = self.email_agent.send_group_email(
+                cc=_normalize_addresses(arguments.get("cc")),
+                bcc=_normalize_addresses(arguments.get("bcc")),
+                subject=str(arguments.get("subject") or ""),
+                body=str(arguments.get("body") or ""),
+                high_importance=bool(arguments.get("high_importance", False)),
+            )
+            return {"ok": True, **result}
 
         if name == "google_workspace_status":
             return {"ok": True, **self.email_agent.google_workspace_status()}
@@ -1945,8 +2380,6 @@ class ToolCallingEmailAgent:
             }
 
         if name == "create_google_doc":
-            if not self._approve("create Google Doc", arguments):
-                return {"ok": False, "cancelled": True, "message": "Not approved."}
             return {
                 "ok": True,
                 **self.email_agent.create_google_doc(
@@ -1956,8 +2389,6 @@ class ToolCallingEmailAgent:
             }
 
         if name == "append_google_doc":
-            if not self._approve("append to Google Doc", arguments):
-                return {"ok": False, "cancelled": True, "message": "Not approved."}
             return {
                 "ok": True,
                 **self.email_agent.append_google_doc(
@@ -1967,8 +2398,6 @@ class ToolCallingEmailAgent:
             }
 
         if name == "replace_google_doc_text":
-            if not self._approve("replace text in Google Doc", arguments):
-                return {"ok": False, "cancelled": True, "message": "Not approved."}
             return {
                 "ok": True,
                 **self.email_agent.replace_google_doc_text(
@@ -1997,8 +2426,6 @@ class ToolCallingEmailAgent:
             }
 
         if name == "create_google_sheet":
-            if not self._approve("create Google Sheet", arguments):
-                return {"ok": False, "cancelled": True, "message": "Not approved."}
             return {
                 "ok": True,
                 **self.email_agent.create_google_sheet(
@@ -2009,8 +2436,6 @@ class ToolCallingEmailAgent:
             }
 
         if name == "write_google_sheet":
-            if not self._approve("write Google Sheet range", arguments):
-                return {"ok": False, "cancelled": True, "message": "Not approved."}
             return {
                 "ok": True,
                 **self.email_agent.write_google_sheet(
@@ -2021,8 +2446,6 @@ class ToolCallingEmailAgent:
             }
 
         if name == "append_google_sheet":
-            if not self._approve("append rows to Google Sheet", arguments):
-                return {"ok": False, "cancelled": True, "message": "Not approved."}
             return {
                 "ok": True,
                 **self.email_agent.append_google_sheet(
@@ -2059,12 +2482,6 @@ class ToolCallingEmailAgent:
         if name == "create_calendar_event":
             send_invite = bool(arguments.get("send_invite", True))
             use_google_api = bool(arguments.get("use_google_api", False))
-            if (send_invite or use_google_api) and not self._approve(
-                "create calendar event / send invite",
-                arguments,
-            ):
-                return {"ok": False, "cancelled": True, "message": "Not approved."}
-
             start = parse_datetime(
                 str(arguments.get("start") or ""),
                 self.email_agent.config.timezone_name,
@@ -2086,6 +2503,35 @@ class ToolCallingEmailAgent:
             )
             return {"ok": True, **result}
 
+        if name == "discover_ads_agents":
+            limit = max(1, min(int(arguments.get("limit") or 10), 50))
+            agents = self.email_agent.discover_ads_agents(
+                skill=str(arguments.get("skill") or ""),
+                query=str(arguments.get("query") or ""),
+                limit=limit,
+                include_self=bool(arguments.get("include_self", False)),
+            )
+            return {"ok": True, "agents": agents, "count": len(agents)}
+
+        if name == "send_a2a_request":
+            timeout_seconds = max(
+                1,
+                min(
+                    int(arguments.get("timeout_seconds") or DEFAULT_REMOTE_A2A_TIMEOUT_SECONDS),
+                    120,
+                ),
+            )
+            request_args = {
+                "agent_ref": str(arguments.get("agent_ref") or ""),
+                "skill": str(arguments.get("skill") or ""),
+                "message": str(arguments.get("message") or ""),
+                "data": dict(arguments.get("data") or {}),
+                "timeout_seconds": timeout_seconds,
+                "confirmed": True,
+            }
+            result = self.email_agent.send_a2a_request_to_ads_agent(**request_args)
+            return {"ok": True, **result}
+
         if name == "current_time":
             now = datetime.now(ZoneInfo(self.email_agent.config.timezone_name))
             return {
@@ -2096,42 +2542,6 @@ class ToolCallingEmailAgent:
 
         return {"ok": False, "error": f"Unknown tool: {name}"}
 
-    def _approve(self, action: str, arguments: dict[str, Any]) -> bool:
-        if self.auto_approve:
-            self.status.update(
-                "approval_auto",
-                f"Auto-approved action: {action}",
-                action=action,
-                tool_args=_redact_status_arguments(arguments),
-            )
-            return True
-        if not sys.stdin.isatty():
-            self.status.update(
-                "approval_denied",
-                f"Action needs approval but stdin is not interactive: {action}",
-                action=action,
-            )
-            return False
-
-        self.status.update(
-            "waiting_for_approval",
-            f"Waiting for approval: {action}",
-            action=action,
-            tool_args=_redact_status_arguments(arguments),
-        )
-        print()
-        print(f"Approval required to {action}:")
-        print(json.dumps(arguments, indent=2, default=str))
-        answer = input("Approve? [y/N]: ").strip().lower()
-        approved = answer in {"y", "yes"}
-        self.status.update(
-            "approval_granted" if approved else "approval_denied",
-            f"{'Approved' if approved else 'Denied'} action: {action}",
-            action=action,
-        )
-        return approved
-
-
 class GmailEmailAgentExecutor(_AgentExecutorBase):
     """A2A AgentExecutor wrapper around the Gmail-backed EmailAgent."""
 
@@ -2139,7 +2549,7 @@ class GmailEmailAgentExecutor(_AgentExecutorBase):
         if A2A_IMPORT_ERROR is not None:
             raise RuntimeError(
                 "The a2a-sdk package is required for A2A server mode. "
-                "Install the multi-agent dependencies first."
+                "Install the email agent environment dependencies first."
             ) from A2A_IMPORT_ERROR
         self.email_agent = email_agent or EmailAgent(EmailConfig.from_env())
 
@@ -2154,7 +2564,7 @@ class GmailEmailAgentExecutor(_AgentExecutorBase):
             if skill == "email/draft":
                 await self._draft_email(context, updater)
                 return
-            if skill == "email/send":
+            if skill in {"email/send", "email/group_send"}:
                 await self._send_email(context, updater)
                 return
             if skill == "email/summarize_thread":
@@ -2231,22 +2641,6 @@ class GmailEmailAgentExecutor(_AgentExecutorBase):
     ) -> None:
         payload = _a2a_payload_from_context(context)
         mark_read = _a2a_bool(payload.get("mark_read"), default=False)
-        if mark_read and not _a2a_confirmed(context):
-            await _a2a_requires_input(
-                updater,
-                skill=skill,
-                artifact_id="email-mark-read-confirmation-required",
-                artifact_name="email_mark_read_confirmation_required",
-                text="Marking email as read changes mailbox state and requires confirmation.",
-                output={
-                    "skill": skill,
-                    "confirmation_required": True,
-                    "reason": "Marking email as read changes mailbox state and requires confirmation.",
-                    "context_id": context.context_id,
-                    "task_id": context.task_id,
-                },
-            )
-            return
 
         include_body = _a2a_bool(payload.get("include_body"), default=skill == "email/read")
         messages = await asyncio.to_thread(
@@ -2294,20 +2688,6 @@ class GmailEmailAgentExecutor(_AgentExecutorBase):
         }
 
         if _a2a_bool(payload.get("create_gmail_draft"), default=False):
-            if not _a2a_confirmed(context):
-                await _a2a_requires_input(
-                    updater,
-                    skill="email/draft",
-                    artifact_id="email-draft-confirmation-required",
-                    artifact_name="email_draft_confirmation_required",
-                    text="Creating a Gmail draft changes mailbox state and requires confirmation.",
-                    output={
-                        **output,
-                        "confirmation_required": True,
-                        "reason": "Creating a Gmail draft changes mailbox state and requires confirmation.",
-                    },
-                )
-                return
             draft_id = await asyncio.to_thread(
                 self.email_agent.write_email_draft,
                 to=_normalize_addresses(draft.get("to")),
@@ -2316,6 +2696,7 @@ class GmailEmailAgentExecutor(_AgentExecutorBase):
                 subject=str(draft.get("subject") or ""),
                 body=str(draft.get("body") or ""),
                 html=draft.get("html") if isinstance(draft.get("html"), str) else None,
+                high_importance=_a2a_bool(draft.get("high_importance"), default=False),
             )
             output["gmail_draft_created"] = True
             output["draft_id"] = draft_id
@@ -2330,36 +2711,26 @@ class GmailEmailAgentExecutor(_AgentExecutorBase):
         )
 
     async def _send_email(self, context: A2ARequestContext, updater: A2ATaskUpdater) -> None:
+        skill = _a2a_skill_from_context(context)
         payload = _a2a_payload_from_context(context)
-        if not _a2a_confirmed(context):
-            await _a2a_requires_input(
-                updater,
-                skill="email/send",
-                artifact_id="email-send-confirmation-required",
-                artifact_name="email_send_confirmation_required",
-                text="Sending email is a write action and requires explicit confirmation.",
-                output={
-                    "skill": "email/send",
-                    "confirmation_required": True,
-                    "reason": "Sending email is a write action and requires explicit confirmation.",
-                    "context_id": context.context_id,
-                    "task_id": context.task_id,
-                },
-            )
-            return
 
         draft = _a2a_draft_from_payload(
             payload=payload,
             user_text=_a2a_user_text(context),
             allow_demo_defaults=False,
         )
+        if skill == "email/group_send":
+            draft["to"] = ", ".join(
+                self.email_agent.load_notice_recipients(payload.get("recipient_file"))
+            )
+            draft["recipient_source"] = "notice_list"
         to = _normalize_addresses(draft.get("to"))
         if not to:
-            raise ValueError("email/send requires at least one recipient address.")
+            raise ValueError(f"{skill} requires at least one recipient address.")
         if not str(draft.get("subject") or "").strip():
-            raise ValueError("email/send requires a subject.")
+            raise ValueError(f"{skill} requires a subject.")
         if not str(draft.get("body") or "").strip():
-            raise ValueError("email/send requires a body.")
+            raise ValueError(f"{skill} requires a body.")
 
         message_id = await asyncio.to_thread(
             self.email_agent.send_email,
@@ -2369,23 +2740,25 @@ class GmailEmailAgentExecutor(_AgentExecutorBase):
             subject=str(draft.get("subject") or ""),
             body=str(draft.get("body") or ""),
             html=draft.get("html") if isinstance(draft.get("html"), str) else None,
+            high_importance=_a2a_bool(draft.get("high_importance"), default=False),
         )
         output = {
-            "skill": "email/send",
+            "skill": skill,
             "status": "completed",
             "message_id": message_id,
             "sent_email": {
                 "to": ", ".join(to),
                 "subject": str(draft.get("subject") or ""),
+                "high_importance": _a2a_bool(draft.get("high_importance"), default=False),
             },
             "context_id": context.context_id,
             "task_id": context.task_id,
         }
         await _a2a_complete(
             updater,
-            skill="email/send",
-            artifact_id="email-send",
-            artifact_name="email_send",
+            skill=skill,
+            artifact_id=skill.replace("/", "-"),
+            artifact_name=skill.replace("/", "_").replace("-", "_"),
             text=f"Sent email to {', '.join(to)}.",
             output=output,
         )
@@ -2528,10 +2901,6 @@ class GmailEmailAgentExecutor(_AgentExecutorBase):
             )
             return
 
-        if not _a2a_confirmed(context):
-            await _a2a_confirmation_required(context, updater, skill, "Creating calendar events or sending invites requires confirmation.")
-            return
-
         title = str(payload.get("title") or "").strip()
         if not title:
             raise ValueError("email/calendar/create_event requires title.")
@@ -2616,10 +2985,6 @@ class GmailEmailAgentExecutor(_AgentExecutorBase):
                 text=f"Read Google Doc: {doc.get('title', document_id)}.",
                 output=output,
             )
-            return
-
-        if not _a2a_confirmed(context):
-            await _a2a_confirmation_required(context, updater, skill, "Creating or modifying Google Docs requires confirmation.")
             return
 
         if skill == "email/docs/create":
@@ -2713,6 +3078,7 @@ class GmailEmailAgentExecutor(_AgentExecutorBase):
             bcc=_normalize_addresses(payload.get("bcc")),
             subject=subject,
             body=body,
+            high_importance=_a2a_bool(payload.get("high_importance"), default=False),
         )
         await _a2a_complete(
             updater,
@@ -2783,10 +3149,6 @@ class GmailEmailAgentExecutor(_AgentExecutorBase):
             )
             return
 
-        if not _a2a_confirmed(context):
-            await _a2a_confirmation_required(context, updater, skill, "Creating or modifying Google Sheets requires confirmation.")
-            return
-
         if skill == "email/sheets/create":
             result = await asyncio.to_thread(
                 self.email_agent.create_google_sheet,
@@ -2855,11 +3217,995 @@ def create_email_a2a_app(
     ).build()
 
 
+def _with_advertised_url(agent_card: A2AAgentCard, advertised_url: str | None) -> A2AAgentCard:
+    if not advertised_url:
+        return agent_card
+    normalized_url = advertised_url.rstrip("/") + "/"
+    return agent_card.model_copy(update={"url": normalized_url})
+
+
+def _agent_card_json(agent_card: A2AAgentCard) -> dict[str, Any]:
+    if hasattr(agent_card, "model_dump"):
+        return agent_card.model_dump(mode="json", by_alias=True, exclude_none=True)
+    raise TypeError("A2A Agent Card object does not support model_dump().")
+
+
+def _validate_ads_agent_card(agent_card: A2AAgentCard) -> None:
+    if not getattr(agent_card, "name", ""):
+        raise ValueError("Agent Card requires name before ADS publication.")
+    if not getattr(agent_card, "url", ""):
+        raise ValueError("Agent Card requires url before ADS publication.")
+    if not (getattr(agent_card, "skills", None) or []):
+        raise ValueError("Agent Card requires at least one skill before ADS publication.")
+
+
+def _agent_card_skill_tags(agent_card: A2AAgentCard) -> list[str]:
+    tags: list[str] = []
+    for skill in getattr(agent_card, "skills", None) or []:
+        skill_id = getattr(skill, "id", "")
+        if skill_id:
+            tags.append(skill_id)
+        tags.extend(getattr(skill, "tags", None) or [])
+    return sorted(set(tags))
+
+
+def _ads_skill_policy(skill: Any) -> dict[str, Any]:
+    return {
+        "risk_level": "low",
+        "action_type": "read",
+    }
+
+
+def _email_agent_card_to_oasf_record(agent_card: A2AAgentCard) -> dict[str, Any]:
+    _validate_ads_agent_card(agent_card)
+    card_data = _agent_card_json(agent_card)
+    provider = getattr(agent_card, "provider", None)
+    organization = getattr(provider, "organization", None) if provider else None
+    name = getattr(agent_card, "name", "")
+    version = getattr(agent_card, "version", "")
+    agent_id = name.lower().replace(" ", "-")
+    custom_tags = _agent_card_skill_tags(agent_card)
+    skill_policies = {
+        getattr(skill, "id", ""): _ads_skill_policy(skill)
+        for skill in getattr(agent_card, "skills", None) or []
+        if getattr(skill, "id", "")
+    }
+    return {
+        "schema_version": "demo-v2",
+        "record_type": "agntcy.oasf.demo.agent_record",
+        "record_id": str(uuid.uuid5(uuid.NAMESPACE_URL, f"v2-agent-network:{name}:{version}")),
+        "agent_id": agent_id,
+        "name": name,
+        "organization": organization or "unknown",
+        "description": getattr(agent_card, "description", ""),
+        "interaction": {
+            "type": "a2a_agent_card",
+            "endpoint": getattr(agent_card, "url", ""),
+            "preferred_transport": (
+                getattr(agent_card, "preferred_transport", None) or "JSONRPC"
+            ).lower(),
+            "agent_card": card_data,
+        },
+        "discovery": {
+            "official_oasf_skills": [],
+            "custom_skill_tags": custom_tags,
+            "custom_skill_note": (
+                "Custom skill tags are demo-specific when no local official "
+                "OASF taxonomy mapping is known."
+            ),
+            "domains": sorted({tag.split("/")[0] for tag in custom_tags if "/" in tag}),
+            "input_modes": getattr(agent_card, "default_input_modes", None) or [],
+            "output_modes": getattr(agent_card, "default_output_modes", None) or [],
+        },
+        "auth": {
+            "security": getattr(agent_card, "security", None) or [],
+            "security_schemes": getattr(agent_card, "security_schemes", None) or {},
+            "required_scopes": [],
+        },
+        "policy": {
+            "risk_level": "low",
+            "action_type": "read",
+            "skill_policies": skill_policies,
+        },
+        "metadata": {
+            "source": "standalone_email_agent",
+            "demo_specific_custom_skills": custom_tags,
+        },
+    }
+
+
+def _ads_record_name(provider_url: str, agent_id: str) -> str:
+    if provider_url.startswith(("http://", "https://")):
+        return provider_url.rstrip("/")
+    return f"https://example.invalid/agents/{agent_id}"
+
+
+def _ads_routing_skills_for_card(agent_card: A2AAgentCard) -> list[dict[str, Any]]:
+    agent_id = getattr(agent_card, "name", "").lower().replace(" ", "-")
+    if agent_id == "email-agent":
+        return [dict(skill) for skill in EMAIL_ADS_ROUTING_SKILLS]
+    return []
+
+
+def _email_agent_card_to_ads_record(agent_card: A2AAgentCard) -> dict[str, Any]:
+    base_record = _email_agent_card_to_oasf_record(agent_card)
+    card_data = base_record["interaction"]["agent_card"]
+    provider = getattr(agent_card, "provider", None)
+    provider_url = getattr(provider, "url", "") if provider else ""
+    agent_id = base_record["agent_id"]
+    custom_tags = base_record["discovery"]["custom_skill_tags"]
+    created_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+    return {
+        "schema_version": "1.0.0",
+        "name": _ads_record_name(provider_url, agent_id),
+        "version": getattr(agent_card, "version", ""),
+        "authors": [base_record.get("organization") or "AgenticNetwork"],
+        "description": getattr(agent_card, "description", ""),
+        "created_at": created_at,
+        "skills": _ads_routing_skills_for_card(agent_card),
+        "domains": [],
+        "locators": [
+            {
+                "type": "source_code",
+                "urls": [provider_url or getattr(agent_card, "url", "")],
+                "annotations": {
+                    "a2a.url": getattr(agent_card, "url", ""),
+                },
+            }
+        ],
+        "modules": [
+            {
+                "name": "integration/a2a",
+                "data": {
+                    "card_schema_version": getattr(agent_card, "protocol_version", None)
+                    or "0.3.0",
+                    "card_data": card_data,
+                },
+            }
+        ],
+        "annotations": {
+            "a2a.url": getattr(agent_card, "url", ""),
+            "agentic_network.agent_id": agent_id,
+            "agentic_network.record_id": base_record["record_id"],
+            "agentic_network.display_name": getattr(agent_card, "name", ""),
+            "agentic_network.organization": base_record.get("organization", "unknown"),
+            "agentic_network.custom_skill_tags": ",".join(custom_tags),
+        },
+    }
+
+
+def _run_ads_dirctl_command(
+    args: list[str],
+    *,
+    ads_url: str | None,
+) -> subprocess.CompletedProcess[str]:
+    server_address = (
+        ads_url
+        or os.getenv("ADS_SERVER_ADDR")
+        or os.getenv("ADS_URL")
+        or os.getenv("ADS_SERVER_ADDRESS")
+        or os.getenv("DIRECTORY_CLIENT_SERVER_ADDRESS")
+        or DEFAULT_ADS_SERVER_ADDR
+    )
+    if not server_address:
+        raise RuntimeError("Real ADS is not configured. Set ADS_SERVER_ADDR or --ads-url.")
+
+    dirctl_path = os.getenv("DIRCTL_BIN", "dirctl")
+    command = [dirctl_path, "--server-addr", server_address, *args]
+    try:
+        completed = subprocess.run(
+            command,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            "dirctl is not installed or not on PATH. Install the AGNTCY dirctl "
+            "binary, or set DIRCTL_BIN to its location."
+        ) from exc
+    if completed.returncode != 0:
+        output = completed.stderr.strip() or completed.stdout.strip()
+        detail = f"\n{output}" if output else ""
+        raise RuntimeError(
+            f"dirctl command failed with exit code {completed.returncode}: "
+            f"{' '.join(command)}{detail}"
+        )
+    return completed
+
+
+def _try_ads_dirctl_command(
+    args: list[str],
+    *,
+    ads_url: str | None,
+    errors: list[str],
+) -> subprocess.CompletedProcess[str] | None:
+    try:
+        return _run_ads_dirctl_command(args, ads_url=ads_url)
+    except RuntimeError as exc:
+        errors.append(str(exc))
+        _email_status("ADS command failed", command=" ".join(args), error=_preview_text(exc))
+        return None
+
+
+def _cids_from_routing_output(raw: str) -> list[str]:
+    if not raw.strip():
+        return []
+    data = json.loads(raw)
+    if isinstance(data, dict):
+        for key in ("items", "records", "results", "record_refs", "recordRefs", "refs"):
+            value = data.get(key)
+            if isinstance(value, list):
+                data = value
+                break
+    items = data if isinstance(data, list) else [data]
+    cids: list[str] = []
+    for item in items:
+        cid = _cid_from_ads_item(item)
+        if cid:
+            cids.append(cid)
+    return _dedupe_strings(cids)
+
+
+def _cid_from_ads_item(item: Any) -> str | None:
+    if isinstance(item, str):
+        return item
+    if not isinstance(item, dict):
+        return None
+    for key in ("cid", "id"):
+        value = item.get(key)
+        if isinstance(value, str):
+            return value
+    record_ref = item.get("record_ref") or item.get("recordRef") or item.get("ref")
+    if isinstance(record_ref, dict):
+        value = record_ref.get("cid") or record_ref.get("id")
+        return value if isinstance(value, str) else None
+    record = item.get("record")
+    if isinstance(record, dict):
+        value = record.get("cid") or record.get("id")
+        return value if isinstance(value, str) else None
+    return None
+
+
+def _record_from_ads_pull_output(raw: str) -> dict[str, Any]:
+    data = json.loads(raw)
+    if not isinstance(data, dict):
+        raise json.JSONDecodeError("dirctl pull returned non-object JSON", raw, 0)
+    for key in ("record", "data"):
+        value = data.get(key)
+        if isinstance(value, dict):
+            if "data" in value and isinstance(value["data"], dict):
+                return value["data"]
+            return value
+    return data
+
+
+def _card_data_from_ads_record(record: dict[str, Any]) -> dict[str, Any] | None:
+    interaction = record.get("interaction")
+    if isinstance(interaction, dict) and isinstance(interaction.get("agent_card"), dict):
+        return interaction["agent_card"]
+    for module in record.get("modules", []) or []:
+        if not isinstance(module, dict):
+            continue
+        data = module.get("data")
+        if isinstance(data, dict) and isinstance(data.get("card_data"), dict):
+            return data["card_data"]
+    return None
+
+
+def _a2a_url_from_ads_record(
+    record: dict[str, Any],
+    card_data: dict[str, Any] | None,
+) -> str:
+    annotations = record.get("annotations") if isinstance(record.get("annotations"), dict) else {}
+    url = annotations.get("a2a.url")
+    if isinstance(url, str) and url:
+        return url
+
+    interaction = record.get("interaction")
+    if isinstance(interaction, dict) and isinstance(interaction.get("endpoint"), str):
+        return interaction["endpoint"]
+
+    for locator in record.get("locators", []) or []:
+        if not isinstance(locator, dict):
+            continue
+        locator_annotations = locator.get("annotations")
+        if isinstance(locator_annotations, dict):
+            url = locator_annotations.get("a2a.url")
+            if isinstance(url, str) and url:
+                return url
+
+    if card_data and isinstance(card_data.get("url"), str):
+        return card_data["url"]
+    return ""
+
+
+def _ads_record_to_agent_summary(
+    record: dict[str, Any],
+    *,
+    cid: str | None = None,
+) -> dict[str, Any]:
+    card_data = _card_data_from_ads_record(record) or {}
+    annotations = record.get("annotations") if isinstance(record.get("annotations"), dict) else {}
+    endpoint = _a2a_url_from_ads_record(record, card_data)
+    name = str(
+        card_data.get("name")
+        or annotations.get("agentic_network.display_name")
+        or record.get("name")
+        or "Unknown Agent"
+    )
+    agent_id = str(
+        annotations.get("agentic_network.agent_id")
+        or record.get("agent_id")
+        or name.lower().replace(" ", "-")
+    )
+    record_id = str(
+        annotations.get("agentic_network.record_id")
+        or record.get("record_id")
+        or cid
+        or agent_id
+    )
+    organization = str(
+        annotations.get("agentic_network.organization")
+        or record.get("organization")
+        or (
+            card_data.get("provider", {}).get("organization")
+            if isinstance(card_data.get("provider"), dict)
+            else ""
+        )
+        or "unknown"
+    )
+    skills = _skill_summaries_from_card_data(card_data)
+    custom_tags = _custom_skill_tags_from_ads_record(record, skills)
+
+    return {
+        "agent_id": agent_id,
+        "record_id": record_id,
+        "cid": cid or "",
+        "name": name,
+        "organization": organization,
+        "description": str(card_data.get("description") or record.get("description") or ""),
+        "endpoint": endpoint,
+        "source_card_url": f"{endpoint.rstrip('/')}/.well-known/agent-card.json" if endpoint else "",
+        "skills": skills,
+        "custom_skill_tags": custom_tags,
+        "official_routing_skills": [
+            item
+            for item in record.get("skills", []) or []
+            if isinstance(item, dict)
+        ],
+    }
+
+
+def _skill_summaries_from_card_data(card_data: dict[str, Any]) -> list[dict[str, Any]]:
+    summaries: list[dict[str, Any]] = []
+    for skill in card_data.get("skills", []) or []:
+        if not isinstance(skill, dict):
+            continue
+        summaries.append(
+            {
+                "id": str(skill.get("id") or ""),
+                "name": str(skill.get("name") or ""),
+                "description": str(skill.get("description") or ""),
+                "tags": [str(tag) for tag in skill.get("tags", []) or []],
+                "examples": [str(example) for example in skill.get("examples", []) or []],
+            }
+        )
+    return summaries
+
+
+def _custom_skill_tags_from_ads_record(
+    record: dict[str, Any],
+    skills: list[dict[str, Any]],
+) -> list[str]:
+    tags: list[str] = []
+    annotations = record.get("annotations") if isinstance(record.get("annotations"), dict) else {}
+    annotated_tags = annotations.get("agentic_network.custom_skill_tags")
+    if isinstance(annotated_tags, str):
+        tags.extend(tag.strip() for tag in annotated_tags.split(",") if tag.strip())
+    discovery = record.get("discovery")
+    if isinstance(discovery, dict):
+        tags.extend(str(tag) for tag in discovery.get("custom_skill_tags", []) or [])
+    for skill in skills:
+        if skill.get("id"):
+            tags.append(str(skill["id"]))
+        tags.extend(str(tag) for tag in skill.get("tags", []) or [])
+    return sorted(set(tags))
+
+
+def _dedupe_strings(values: Iterable[str]) -> list[str]:
+    return list(dict.fromkeys(value for value in values if value))
+
+
+def _ads_skill_hints(skill: str) -> list[str]:
+    if not skill or not skill.startswith("email/"):
+        return []
+    return [str(item["name"]) for item in EMAIL_ADS_ROUTING_SKILLS]
+
+
+def _looks_like_ads_cid(value: str) -> bool:
+    return value.startswith(("bafy", "bae", "bag", "zd", "Qm"))
+
+
+def _pull_ads_record(cid: str, *, ads_url: str | None = None) -> dict[str, Any]:
+    result = _run_ads_dirctl_command(["pull", cid, "--output", "json"], ads_url=ads_url)
+    try:
+        return _record_from_ads_pull_output(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"dirctl pull {cid} did not return a valid ADS record.") from exc
+
+
+def _ads_search_cids(
+    *,
+    skill: str,
+    limit: int,
+    ads_url: str | None = None,
+) -> list[str]:
+    errors: list[str] = []
+    cids: list[str] = []
+    completed_any = False
+    search_terms = _dedupe_strings([skill, *_ads_skill_hints(skill)])
+
+    def collect(args: list[str]) -> None:
+        nonlocal completed_any
+        completed = _try_ads_dirctl_command(args, ads_url=ads_url, errors=errors)
+        if completed is None:
+            return
+        completed_any = True
+        try:
+            cids.extend(_cids_from_routing_output(completed.stdout))
+        except json.JSONDecodeError as exc:
+            errors.append(f"Could not parse ADS output from {' '.join(args)}: {exc}")
+
+    if search_terms:
+        for search_skill in search_terms:
+            collect(["routing", "search", "--skill", search_skill, "--limit", str(limit), "--output", "json"])
+            if not cids:
+                collect(["routing", "list", "--skill", search_skill, "--output", "json"])
+            if not cids:
+                collect(["search", "--skill", search_skill, "--limit", str(limit), "--output", "json"])
+    else:
+        collect(["routing", "search", "--limit", str(limit), "--output", "json"])
+        if not cids:
+            collect(["routing", "list", "--output", "json"])
+        if not cids:
+            collect(["search", "--limit", str(limit), "--output", "json"])
+
+    if search_terms and not cids:
+        collect(["routing", "search", "--limit", str(limit), "--output", "json"])
+        if not cids:
+            collect(["routing", "list", "--output", "json"])
+
+    if not completed_any and errors:
+        raise RuntimeError(f"ADS discovery failed: {errors[0]}")
+    return _dedupe_strings(cids)[:limit]
+
+
+def _agent_summary_matches(
+    summary: dict[str, Any],
+    *,
+    skill: str,
+    query: str,
+) -> bool:
+    haystack_parts = [
+        summary.get("agent_id", ""),
+        summary.get("record_id", ""),
+        summary.get("name", ""),
+        summary.get("organization", ""),
+        summary.get("description", ""),
+        summary.get("endpoint", ""),
+        " ".join(summary.get("custom_skill_tags", []) or []),
+    ]
+    for skill_item in summary.get("skills", []) or []:
+        if isinstance(skill_item, dict):
+            haystack_parts.extend(
+                [
+                    skill_item.get("id", ""),
+                    skill_item.get("name", ""),
+                    skill_item.get("description", ""),
+                    " ".join(skill_item.get("tags", []) or []),
+                    " ".join(skill_item.get("examples", []) or []),
+                ]
+            )
+    for official in summary.get("official_routing_skills", []) or []:
+        if isinstance(official, dict):
+            haystack_parts.extend([str(official.get("name", "")), str(official.get("id", ""))])
+    haystack = " ".join(str(part).lower() for part in haystack_parts)
+    if skill and skill.lower() not in haystack:
+        return False
+    if query and query.lower() not in haystack:
+        return False
+    return True
+
+
+def _current_agent_urls() -> set[str]:
+    urls = set()
+    env_url = os.getenv("EMAIL_AGENT_A2A_URL")
+    if env_url:
+        urls.add(env_url.rstrip("/"))
+    try:
+        if DEFAULT_EMAIL_A2A_CARD.exists():
+            card = load_email_a2a_agent_card(DEFAULT_EMAIL_A2A_CARD)
+            url = getattr(card, "url", "")
+            if url:
+                urls.add(str(url).rstrip("/"))
+    except Exception:
+        pass
+    return urls
+
+
+def _is_current_agent_summary(summary: dict[str, Any]) -> bool:
+    endpoint = str(summary.get("endpoint") or "").rstrip("/")
+    return bool(endpoint and endpoint in _current_agent_urls())
+
+
+def discover_ads_agents(
+    *,
+    skill: str = "",
+    query: str = "",
+    limit: int = 10,
+    include_self: bool = False,
+    ads_url: str | None = None,
+) -> list[dict[str, Any]]:
+    limit = max(1, min(limit, 50))
+    skill = skill.strip()
+    query = query.strip()
+    _email_status(
+        "Discovering agents from ADS",
+        skill=skill or "any",
+        query=query,
+        limit=limit,
+    )
+    cids = _ads_search_cids(skill=skill, limit=max(limit * 3, limit), ads_url=ads_url)
+    summaries: list[dict[str, Any]] = []
+    for cid in cids:
+        try:
+            summary = _ads_record_to_agent_summary(_pull_ads_record(cid, ads_url=ads_url), cid=cid)
+        except Exception as exc:
+            _email_status("Skipping ADS record that could not be parsed", cid=cid, error=_preview_text(exc))
+            continue
+        if not include_self and _is_current_agent_summary(summary):
+            continue
+        if not _agent_summary_matches(summary, skill=skill, query=query):
+            continue
+        summaries.append(summary)
+
+    deduped: dict[str, dict[str, Any]] = {}
+    for summary in summaries:
+        key = str(summary.get("cid") or summary.get("record_id") or summary.get("endpoint"))
+        if key:
+            deduped[key] = summary
+    result = list(deduped.values())[:limit]
+    _email_status("ADS discovery completed", count=len(result))
+    return result
+
+
+def _resolve_ads_agent(
+    agent_ref: str,
+    *,
+    ads_url: str | None = None,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    agent_ref = agent_ref.strip()
+    if not agent_ref:
+        raise ValueError("agent_ref is required.")
+
+    if _looks_like_ads_cid(agent_ref):
+        record = _pull_ads_record(agent_ref, ads_url=ads_url)
+        summary = _ads_record_to_agent_summary(record, cid=agent_ref)
+        card_data = _card_data_from_ads_record(record)
+        if card_data is None:
+            raise RuntimeError(f"ADS record {agent_ref} does not contain an embedded A2A Agent Card.")
+        return record, summary, card_data
+
+    candidates = discover_ads_agents(limit=50, include_self=True, ads_url=ads_url)
+    normalized_ref = agent_ref.rstrip("/").lower()
+    for summary in candidates:
+        aliases = {
+            str(summary.get("cid") or "").lower(),
+            str(summary.get("record_id") or "").lower(),
+            str(summary.get("agent_id") or "").lower(),
+            str(summary.get("name") or "").lower(),
+            str(summary.get("endpoint") or "").rstrip("/").lower(),
+            str(summary.get("source_card_url") or "").rstrip("/").lower(),
+        }
+        if normalized_ref in aliases:
+            cid = str(summary.get("cid") or "")
+            if not cid:
+                raise RuntimeError(f"Resolved {agent_ref!r}, but the ADS result did not include a CID.")
+            record = _pull_ads_record(cid, ads_url=ads_url)
+            card_data = _card_data_from_ads_record(record)
+            if card_data is None:
+                raise RuntimeError(f"ADS record for {agent_ref!r} does not contain an embedded A2A Agent Card.")
+            return record, _ads_record_to_agent_summary(record, cid=cid), card_data
+
+    raise KeyError(f"Agent not found in ADS: {agent_ref}")
+
+
+async def send_a2a_request_to_ads_agent(
+    *,
+    agent_ref: str,
+    skill: str,
+    message: str,
+    data: dict[str, Any] | None = None,
+    timeout_seconds: int = DEFAULT_REMOTE_A2A_TIMEOUT_SECONDS,
+    ads_url: str | None = None,
+    confirmed: bool = True,
+) -> dict[str, Any]:
+    if not skill.strip():
+        raise ValueError("skill is required.")
+    if not message.strip():
+        raise ValueError("message is required.")
+    _, summary, card_data = _resolve_ads_agent(agent_ref, ads_url=ads_url)
+    if _is_current_agent_summary(summary):
+        raise RuntimeError("Refusing to send a remote A2A request to this same email agent.")
+
+    try:
+        import httpx
+        from a2a.client import A2AClient as SdkA2AClient
+        from a2a.types import (
+            AgentCard,
+            DataPart,
+            Message,
+            MessageSendParams,
+            Part,
+            Role,
+            SendMessageRequest,
+            TextPart,
+        )
+    except ImportError as exc:
+        raise RuntimeError(
+            "Remote A2A requests require the a2a-sdk and httpx packages."
+        ) from exc
+
+    card = AgentCard.model_validate(card_data)
+    context_id = str(uuid.uuid4())
+    task_id = str(uuid.uuid4())
+    parts = [
+        Part(root=TextPart(text=message, metadata={"skill": skill})),
+    ]
+    if data:
+        parts.append(Part(root=DataPart(data=data, metadata={"skill": skill})))
+    preauthorized_metadata = (
+        {"confirmed": True}
+        if confirmed
+        else {}
+    )
+
+    sdk_message = Message(
+        role=Role.user,
+        message_id=str(uuid.uuid4()),
+        context_id=context_id,
+        task_id=None,
+        parts=parts,
+        metadata={
+            "target_agent_id": summary.get("agent_id"),
+            "skill": skill,
+            "requested_task_id": task_id,
+            **preauthorized_metadata,
+        },
+    )
+    request = SendMessageRequest(
+        id=str(uuid.uuid4()),
+        params=MessageSendParams(
+            message=sdk_message,
+            metadata={
+                "target_agent_id": summary.get("agent_id"),
+                "skill": skill,
+                "user_goal": message,
+                **preauthorized_metadata,
+            },
+        ),
+    )
+
+    _email_status(
+        "Sending remote A2A request",
+        agent=summary.get("agent_id"),
+        skill=skill,
+        endpoint=summary.get("endpoint"),
+    )
+    async with httpx.AsyncClient(timeout=timeout_seconds) as http_client:
+        sdk_client = SdkA2AClient(httpx_client=http_client, agent_card=card)
+        response = await sdk_client.send_message(request)
+    result = _summarize_a2a_response(response)
+    result["agent"] = {
+        key: summary.get(key)
+        for key in ("agent_id", "record_id", "cid", "name", "organization", "endpoint")
+    }
+    result["skill"] = skill
+    result["confirmed"] = confirmed
+    for action in result.get("pending_actions", []) or []:
+        if isinstance(action, dict):
+            action.setdefault("agent", result["agent"])
+            action.setdefault("skill", skill)
+    _email_status(
+        "Remote A2A request completed",
+        agent=summary.get("agent_id"),
+        state=result.get("state"),
+    )
+    return result
+
+
+def _summarize_a2a_response(response: Any) -> dict[str, Any]:
+    root = getattr(response, "root", response)
+    error = getattr(root, "error", None)
+    if error is not None:
+        code = getattr(error, "code", "")
+        error_message = getattr(error, "message", str(error))
+        raise RuntimeError(f"A2A error {code}: {error_message}")
+
+    result = getattr(root, "result", root)
+    status = getattr(result, "status", None)
+    state = _a2a_value(getattr(status, "state", None)) or (
+        "completed" if hasattr(result, "parts") else "unknown"
+    )
+
+    messages: list[dict[str, Any]] = []
+    if hasattr(result, "parts"):
+        messages.append(_summarize_a2a_message(result))
+    for message in getattr(result, "history", None) or []:
+        messages.append(_summarize_a2a_message(message))
+    status_message = getattr(status, "message", None)
+    if status_message is not None:
+        messages.append(_summarize_a2a_message(status_message))
+
+    artifacts = [
+        _summarize_a2a_artifact(artifact)
+        for artifact in getattr(result, "artifacts", None) or []
+    ]
+    structured_output = _structured_output_from_a2a_result(result)
+    text_parts = [
+        part.get("text", "")
+        for message_item in messages
+        for part in message_item.get("parts", [])
+        if part.get("kind") == "text" and part.get("text")
+    ]
+    summary = {
+        "state": state,
+        "task_id": getattr(result, "id", None) or getattr(result, "task_id", None),
+        "context_id": getattr(result, "context_id", None),
+        "text": "\n".join(text_parts),
+        "messages": messages,
+        "artifacts": artifacts,
+        "structured_output": structured_output,
+    }
+    pending_actions = _a2a_pending_actions_from_summary(summary)
+    summary["requires_follow_up"] = bool(pending_actions)
+    summary["pending_actions"] = pending_actions
+    return summary
+
+
+def _summarize_a2a_message(message: Any) -> dict[str, Any]:
+    return {
+        "message_id": getattr(message, "message_id", ""),
+        "role": _a2a_value(getattr(message, "role", "")),
+        "parts": [_summarize_a2a_part(part) for part in getattr(message, "parts", []) or []],
+        "metadata": getattr(message, "metadata", None) or {},
+    }
+
+
+def _summarize_a2a_artifact(artifact: Any) -> dict[str, Any]:
+    return {
+        "artifact_id": getattr(artifact, "artifact_id", ""),
+        "name": getattr(artifact, "name", "artifact"),
+        "parts": [_summarize_a2a_part(part) for part in getattr(artifact, "parts", []) or []],
+        "metadata": getattr(artifact, "metadata", None) or {},
+    }
+
+
+def _summarize_a2a_part(part: Any) -> dict[str, Any]:
+    root = getattr(part, "root", part)
+    metadata = getattr(root, "metadata", None) or getattr(part, "metadata", None) or {}
+    if hasattr(root, "text"):
+        return {
+            "kind": "text",
+            "content_type": "text/plain",
+            "text": str(getattr(root, "text", "")),
+            "metadata": metadata,
+        }
+    if hasattr(root, "data"):
+        return {
+            "kind": "data",
+            "content_type": "application/json",
+            "data": getattr(root, "data", None) or {},
+            "metadata": metadata,
+        }
+    file_obj = getattr(root, "file", None)
+    if file_obj is not None:
+        return {
+            "kind": "file",
+            "content_type": getattr(file_obj, "mime_type", None)
+            or getattr(file_obj, "mimeType", None)
+            or "application/octet-stream",
+            "uri": getattr(file_obj, "uri", ""),
+            "name": getattr(file_obj, "name", ""),
+            "metadata": metadata,
+        }
+    return {
+        "kind": type(root).__name__,
+        "content_type": "application/octet-stream",
+        "metadata": metadata,
+    }
+
+
+def _structured_output_from_a2a_result(result: Any) -> dict[str, Any] | None:
+    for artifact in getattr(result, "artifacts", None) or []:
+        for part in getattr(artifact, "parts", []) or []:
+            root = getattr(part, "root", part)
+            data = getattr(root, "data", None)
+            if isinstance(data, dict):
+                return data
+    status = getattr(result, "status", None)
+    message = getattr(status, "message", None)
+    metadata = getattr(message, "metadata", None) if message is not None else None
+    if isinstance(metadata, dict) and isinstance(metadata.get("structured_output"), dict):
+        return metadata["structured_output"]
+    return None
+
+
+def _a2a_pending_actions_from_summary(summary: dict[str, Any]) -> list[dict[str, Any]]:
+    return []
+
+
+def _a2a_summary_payloads(summary: dict[str, Any]) -> list[dict[str, Any]]:
+    payloads: list[dict[str, Any]] = []
+    structured_output = summary.get("structured_output")
+    if isinstance(structured_output, dict):
+        payloads.append(structured_output)
+
+    for collection_name in ("artifacts", "messages"):
+        for item in summary.get(collection_name, []) or []:
+            if not isinstance(item, dict):
+                continue
+            metadata = item.get("metadata")
+            if isinstance(metadata, dict) and isinstance(metadata.get("structured_output"), dict):
+                payloads.append(metadata["structured_output"])
+            for part in item.get("parts", []) or []:
+                if isinstance(part, dict) and isinstance(part.get("data"), dict):
+                    payloads.append(part["data"])
+    return payloads
+
+
+def _a2a_state_needs_follow_up(state: str) -> bool:
+    normalized = state.strip().lower().replace("_", "-").replace(" ", "-")
+    return normalized in {"input-required", "auth-required", "working", "submitted"}
+
+
+def _pending_actions_from_tool_result(
+    result: dict[str, Any],
+    *,
+    tool_name: str,
+) -> list[dict[str, Any]]:
+    actions: list[dict[str, Any]] = []
+    for action in result.get("pending_actions", []) or []:
+        if isinstance(action, dict):
+            item = dict(action)
+            item.setdefault("source_tool", tool_name)
+            actions.append(item)
+    single = result.get("pending_action")
+    if isinstance(single, dict):
+        item = dict(single)
+        item.setdefault("source_tool", tool_name)
+        actions.append(item)
+    return actions
+
+
+def _pending_action_follow_up_lines(actions: list[dict[str, Any]]) -> list[str]:
+    return [_format_pending_action_line(action) for action in actions if isinstance(action, dict)]
+
+
+def _append_pending_actions_to_text(text: str, actions: list[dict[str, Any]]) -> str:
+    lines = _pending_action_follow_up_lines(actions)
+    if not lines:
+        return text
+    block = "Pending action:\n" + "\n".join(f"- {line}" for line in lines)
+    if block in text:
+        return text
+    return f"{text.rstrip()}\n\n{block}" if text.strip() else block
+
+
+def _format_pending_action_line(action: dict[str, Any]) -> str:
+    agent = action.get("agent") if isinstance(action.get("agent"), dict) else {}
+    agent_name = str(agent.get("name") or agent.get("agent_id") or "Remote agent")
+    skill = str(action.get("skill") or "").strip()
+    raw_action_type = str(action.get("type") or "follow_up_required")
+    action_type = raw_action_type.replace("_", " ")
+    reason = str(action.get("reason") or action.get("text") or "").strip()
+    next_step = str(action.get("next_step") or "").strip()
+    prefix = f"{agent_name} is waiting for {action_type}"
+    if skill:
+        prefix += f" for {skill}"
+    pieces = [prefix]
+    if reason:
+        pieces.append(reason)
+    if next_step:
+        pieces.append(next_step)
+    return ". ".join(piece.rstrip(".") for piece in pieces if piece) + "."
+
+
+def _a2a_value(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(getattr(value, "value", value))
+
+
+def publish_email_a2a_agent_card_to_ads(
+    agent_card: A2AAgentCard,
+    *,
+    ads_url: str | None = None,
+    ads_backend: str | None = DEFAULT_ADS_BACKEND,
+) -> EmailAdsPublishedRecord:
+    _email_status(
+        "Publishing Email Agent card to ADS",
+        ads_url=ads_url or "env",
+        ads_backend=ads_backend or "env",
+        agent_url=agent_card.url,
+    )
+    backend = (ads_backend or os.getenv("ADS_BACKEND") or DEFAULT_ADS_BACKEND).lower()
+    if backend != "cli":
+        raise RuntimeError(
+            "Standalone Email Agent ADS publication supports ADS_BACKEND=cli only. "
+            "Use --ads-backend cli or set ADS_BACKEND=cli."
+        )
+
+    ads_record = _email_agent_card_to_ads_record(agent_card)
+    internal_record = _email_agent_card_to_oasf_record(agent_card)
+    with tempfile.NamedTemporaryFile("w", suffix=".json", encoding="utf-8", delete=False) as fh:
+        json.dump(ads_record, fh, indent=2, sort_keys=True)
+        temp_path = Path(fh.name)
+    try:
+        _email_status("Pushing Email Agent ADS record", record_file=str(temp_path))
+        push = _run_ads_dirctl_command(
+            ["push", str(temp_path), "--output", "raw"],
+            ads_url=ads_url,
+        )
+        cid = push.stdout.strip()
+        if not cid:
+            raise RuntimeError("dirctl push did not return a CID.")
+        _email_status("Publishing Email Agent ADS routing entry", cid=cid)
+        _run_ads_dirctl_command(["routing", "publish", cid], ads_url=ads_url)
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+    published = EmailAdsPublishedRecord(
+        record_id=internal_record["record_id"],
+        agent_id=internal_record["agent_id"],
+        backend="real",
+        backend_ref=cid,
+        raw_record=internal_record,
+    )
+    _email_status("Email Agent card published to ADS", backend=published.backend, record=cid)
+    return published
+
+
+def unpublish_email_a2a_agent_card_from_ads(
+    published: EmailAdsPublishedRecord | str | None,
+    *,
+    ads_url: str | None = None,
+) -> bool:
+    if published is None:
+        return False
+    cid = published if isinstance(published, str) else published.backend_ref
+    if not cid:
+        _email_status("Skipping ADS unpublish", reason="missing published CID")
+        return False
+
+    _email_status("Unpublishing Email Agent from ADS", cid=cid)
+    try:
+        _run_ads_dirctl_command(["routing", "unpublish", cid], ads_url=ads_url)
+    except Exception as exc:
+        _email_status("Failed to unpublish Email Agent from ADS", cid=cid, error=_preview_text(exc))
+        return False
+
+    _email_status("Email Agent unpublished from ADS", cid=cid)
+    return True
+
+
 def _require_a2a() -> None:
     if A2A_IMPORT_ERROR is not None:
         raise RuntimeError(
             "A2A server mode requires the a2a-sdk, starlette, and uvicorn packages. "
-            "Install the AgenticNetwork dependencies before running serve-a2a."
+            "Install the email agent environment dependencies before running serve-a2a."
         ) from A2A_IMPORT_ERROR
 
 
@@ -2894,11 +4240,6 @@ def _is_data_part(value: Any) -> bool:
 def _a2a_skill_from_context(context: A2ARequestContext) -> str:
     metadata = context.metadata or {}
     return str(metadata.get("skill") or "email/draft")
-
-
-def _a2a_confirmed(context: A2ARequestContext) -> bool:
-    metadata = context.metadata or {}
-    return metadata.get("confirmed") is True or metadata.get("confirmation_status") == "confirmed"
 
 
 def _a2a_user_text(context: A2ARequestContext) -> str:
@@ -2960,14 +4301,24 @@ def _a2a_draft_from_payload(
         or payload.get("recipients")
         or payload.get("recipient_email")
     )
+    recipient_source = _normalize_recipient_source(
+        str(
+            payload.get("recipient_source")
+            or payload.get("recipient_group")
+            or payload.get("group")
+            or ""
+        )
+    )
+    if not to and recipient_source == "notice_list":
+        to = load_recipients_from_file(_notice_list_path(payload.get("recipient_file")))
     if not to and allow_demo_defaults and recipient_name.lower() == "bob":
         to = ["bob@example.com"]
 
-    subject = str(payload.get("subject") or "").strip()
+    subject = str(payload.get("subject") or _a2a_labeled_line(user_text, "subject")).strip()
     if not subject:
         subject = "Meeting options for tomorrow afternoon" if slots else "Email draft"
 
-    body = str(payload.get("body") or "").strip()
+    body = str(payload.get("body") or _a2a_labeled_body(user_text)).strip()
     if not body:
         body = _a2a_default_draft_body(recipient_name, slots)
 
@@ -2978,6 +4329,8 @@ def _a2a_draft_from_payload(
         "recipient_name": recipient_name,
         "subject": subject,
         "body": body,
+        "recipient_source": recipient_source,
+        "high_importance": _a2a_bool(payload.get("high_importance"), default=False),
     }
 
 
@@ -2988,6 +4341,14 @@ def _a2a_normalize_draft(draft: dict[str, Any]) -> dict[str, Any]:
     normalized["bcc"] = ", ".join(_normalize_addresses(normalized.get("bcc")))
     normalized["subject"] = str(normalized.get("subject") or "")
     normalized["body"] = str(normalized.get("body") or "")
+    normalized["recipient_source"] = _normalize_recipient_source(
+        str(normalized.get("recipient_source") or normalized.get("recipient_group") or "")
+    )
+    if not _normalize_addresses(normalized.get("to")) and normalized["recipient_source"] == "notice_list":
+        normalized["to"] = ", ".join(
+            load_recipients_from_file(_notice_list_path(normalized.get("recipient_file")))
+        )
+    normalized["high_importance"] = _a2a_bool(normalized.get("high_importance"), default=False)
     return normalized
 
 
@@ -3005,6 +4366,20 @@ def _a2a_default_draft_body(recipient_name: str, slots: list[dict[str, str]]) ->
         )
 
     return f"Hi {recipient_name},\n\n\n\nBest"
+
+
+def _a2a_labeled_line(text: str, label: str) -> str:
+    match = re.search(rf"(?im)^\s*{re.escape(label)}\s*:\s*(.+?)\s*$", text)
+    return match.group(1).strip() if match else ""
+
+
+def _a2a_labeled_body(text: str) -> str:
+    match = re.search(r"(?ims)^\s*body\s*:\s*(.+)\s*$", text)
+    if not match:
+        return ""
+    body = match.group(1).strip()
+    body = re.sub(r"(?im)^\s*confirmed\s*:.*$", "", body).strip()
+    return body
 
 
 def _a2a_recipient_name_from_text(text: str) -> str:
@@ -3047,28 +4422,6 @@ def _a2a_summarize_messages(messages: list[dict[str, Any]]) -> str:
         snippet = message.get("snippet") or message.get("body") or ""
         lines.append(f"{index}. {subject} from {sender}: {_preview_text(snippet, 180)}")
     return "\n".join(lines)
-
-
-async def _a2a_confirmation_required(
-    context: A2ARequestContext,
-    updater: A2ATaskUpdater,
-    skill: str,
-    reason: str,
-) -> None:
-    await _a2a_requires_input(
-        updater,
-        skill=skill,
-        artifact_id=skill.replace("/", "-") + "-confirmation-required",
-        artifact_name=skill.replace("/", "_").replace("-", "_") + "_confirmation_required",
-        text=reason,
-        output={
-            "skill": skill,
-            "confirmation_required": True,
-            "reason": reason,
-            "context_id": context.context_id,
-            "task_id": context.task_id,
-        },
-    )
 
 
 async def _a2a_complete(
@@ -3567,11 +4920,57 @@ def _indent_text(value: str, prefix: str) -> str:
     return "\n".join(f"{prefix}{line}" for line in value.splitlines())
 
 
+def _notice_list_path(path: Path | str | None = None) -> Path:
+    if path:
+        return Path(path).expanduser()
+    env_path = os.getenv("EMAIL_AGENT_NOTICE_LIST")
+    if env_path:
+        return Path(env_path).expanduser()
+    return Path(__file__).resolve().parent / DEFAULT_NOTICE_LIST_FILE
+
+
+def _normalize_recipient_source(value: str) -> str:
+    normalized = value.strip().lower().replace("-", "_").replace(" ", "_")
+    if normalized in {"notice", "notice_group", "notice_list", "group_notice"}:
+        return "notice_list"
+    if normalized in {"", "explicit", "manual", "addresses"}:
+        return "explicit"
+    raise ValueError(
+        "Unknown recipient_source. Use 'explicit' or 'notice_list'."
+    )
+
+
+def load_recipients_from_file(path: Path | str) -> list[str]:
+    recipient_path = Path(path).expanduser()
+    if not recipient_path.exists():
+        raise FileNotFoundError(f"Recipient list not found: {recipient_path}")
+
+    entries: list[str] = []
+    for line in recipient_path.read_text(encoding="utf-8").splitlines():
+        cleaned = line.split("#", 1)[0].strip()
+        if not cleaned:
+            continue
+        entries.append(cleaned)
+    return parse_recipients(entries)
+
+
 def parse_recipients(values: list[str] | None) -> list[str]:
-    recipients: list[str] = []
+    chunks: list[str] = []
     for value in values or []:
-        recipients.extend(item.strip() for item in value.split(",") if item.strip())
-    return recipients
+        text = str(value).replace(";", ",")
+        for line in text.splitlines():
+            cleaned = line.split("#", 1)[0].strip()
+            if cleaned:
+                chunks.append(cleaned)
+
+    recipients = [
+        address.strip()
+        for _, address in getaddresses(chunks)
+        if address and address.strip()
+    ]
+    for chunk in chunks:
+        recipients.extend(match.group(0) for match in EMAIL_ADDRESS_RE.finditer(chunk))
+    return _dedupe_strings(recipients)
 
 
 def parse_datetime(value: str, timezone_name: str) -> datetime:
@@ -3704,7 +5103,17 @@ def build_parser() -> argparse.ArgumentParser:
     read_parser.add_argument("--mark-read", action="store_true")
 
     send_parser = subparsers.add_parser("send", help="Send email.")
-    send_parser.add_argument("--to", action="append", required=True)
+    send_parser.add_argument("--to", action="append")
+    send_parser.add_argument(
+        "--to-file",
+        type=Path,
+        help="Text file with one or more recipient addresses per line.",
+    )
+    send_parser.add_argument(
+        "--notice-list",
+        action="store_true",
+        help=f"Use the local {DEFAULT_NOTICE_LIST_FILE} as recipients.",
+    )
     send_parser.add_argument("--cc", action="append")
     send_parser.add_argument("--bcc", action="append")
     send_parser.add_argument("--subject", required=True)
@@ -3712,6 +5121,12 @@ def build_parser() -> argparse.ArgumentParser:
     send_parser.add_argument("--body-file", type=Path)
     send_parser.add_argument("--html")
     send_parser.add_argument("--attachment", action="append", type=Path)
+    send_parser.add_argument(
+        "--high-importance",
+        "--important",
+        action="store_true",
+        help="Send with high-importance priority headers.",
+    )
 
     event_parser = subparsers.add_parser("event", help="Create/send a calendar event invite.")
     event_parser.add_argument("--title", required=True)
@@ -3824,7 +5239,7 @@ def build_parser() -> argparse.ArgumentParser:
     agent_parser.add_argument(
         "--yes",
         action="store_true",
-        help="Auto-approve write actions such as sending mail or invites.",
+        help=argparse.SUPPRESS,
     )
     agent_parser.add_argument(
         "--max-steps",
@@ -3889,6 +5304,33 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=DEFAULT_EMAIL_A2A_CARD,
         help="A2A Agent Card JSON file.",
+    )
+    a2a_parser.add_argument(
+        "--advertise-url",
+        default=os.getenv("EMAIL_AGENT_A2A_URL"),
+        help="Externally reachable A2A URL to publish to ADS. Defaults to the Agent Card URL.",
+    )
+    a2a_parser.add_argument(
+        "--ads-url",
+        default=(
+            os.getenv("ADS_SERVER_ADDR")
+            or os.getenv("ADS_URL")
+            or os.getenv("ADS_SERVER_ADDRESS")
+            or os.getenv("DIRECTORY_CLIENT_SERVER_ADDRESS")
+            or DEFAULT_ADS_SERVER_ADDR
+        ),
+        help=f"ADS server address. Defaults to ADS_SERVER_ADDR/ADS_URL or {DEFAULT_ADS_SERVER_ADDR}.",
+    )
+    a2a_parser.add_argument(
+        "--ads-backend",
+        default=os.getenv("ADS_BACKEND", DEFAULT_ADS_BACKEND),
+        choices=["cli"],
+        help=f"Standalone ADS publisher backend. Defaults to {DEFAULT_ADS_BACKEND}.",
+    )
+    a2a_parser.add_argument(
+        "--no-publish-ads",
+        action="store_true",
+        help="Start the A2A server without publishing the Agent Card to ADS.",
     )
 
     status_parser = subparsers.add_parser(
@@ -3962,14 +5404,21 @@ def main() -> None:
 
     if args.command == "send":
         body = args.body_file.read_text(encoding="utf-8") if args.body_file else args.body
+        recipients = parse_recipients(args.to)
+        if args.to_file:
+            recipients.extend(load_recipients_from_file(args.to_file))
+        if args.notice_list:
+            recipients.extend(load_recipients_from_file(_notice_list_path()))
+        recipients = _dedupe_strings(recipients)
         message_id = agent.send_email(
-            to=parse_recipients(args.to),
+            to=recipients,
             cc=parse_recipients(args.cc),
             bcc=parse_recipients(args.bcc),
             subject=args.subject,
             body=body,
             html=args.html,
             attachments=args.attachment or [],
+            high_importance=args.high_importance,
         )
         print(f"Email sent: {message_id}")
         return
@@ -4148,7 +5597,6 @@ def main() -> None:
         ai_agent = ToolCallingEmailAgent(
             email_agent=agent,
             model=args.model,
-            auto_approve=args.yes,
             max_steps=args.max_steps,
             verbose=args.verbose,
             show_status=args.status,
@@ -4167,12 +5615,48 @@ def main() -> None:
         except ImportError as exc:
             raise RuntimeError("The uvicorn package is required for serve-a2a.") from exc
 
-        card = load_email_a2a_agent_card(args.card)
-        uvicorn.run(
-            create_email_a2a_app(card, agent),
+        _email_status("Loading Email Agent A2A card", card=str(args.card))
+        card = _with_advertised_url(
+            load_email_a2a_agent_card(args.card),
+            args.advertise_url,
+        )
+        published_record: EmailAdsPublishedRecord | None = None
+        if not args.no_publish_ads:
+            published_record = publish_email_a2a_agent_card_to_ads(
+                card,
+                ads_url=args.ads_url,
+                ads_backend=args.ads_backend,
+            )
+            cleanup_done = False
+
+            def cleanup_ads_publication() -> None:
+                nonlocal cleanup_done
+                if cleanup_done:
+                    return
+                cleanup_done = True
+                unpublish_email_a2a_agent_card_from_ads(
+                    published_record,
+                    ads_url=args.ads_url,
+                )
+
+            atexit.register(cleanup_ads_publication)
+        else:
+            _email_status("Skipping ADS publication", reason="--no-publish-ads")
+        _email_status(
+            "Starting Email Agent A2A server",
             host=args.host,
             port=args.port,
+            agent_url=card.url,
         )
+        try:
+            uvicorn.run(
+                create_email_a2a_app(card, agent),
+                host=args.host,
+                port=args.port,
+            )
+        finally:
+            if published_record is not None:
+                cleanup_ads_publication()
         return
 
     if args.command == "agent-status":

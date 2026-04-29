@@ -1,0 +1,63 @@
+{
+  "name": "Disaster Response Agent",
+  "description": "AI-powered A2A disaster response planning agent that turns situation descriptions such as tornado, flood, wildfire, war, explosion, chemical hazard, or armed threat into detailed immediate-action guidance, shelter and evacuation steps, supplies, communications, and safety checklists. It can also discover other ADS agents and request support from them when useful.",
+  "url": "http://10.229.117.223:9104/",
+  "version": "0.3.2",
+  "protocolVersion": "0.3.0",
+  "preferredTransport": "JSONRPC",
+  "provider": {
+    "organization": "CSPL Disaster Response Agent",
+    "url": "https://example.invalid/cspl-disaster-response-agent"
+  },
+  "capabilities": {
+    "streaming": false,
+    "pushNotifications": false,
+    "stateTransitionHistory": true
+  },
+  "defaultInputModes": ["text/plain", "application/json"],
+  "defaultOutputModes": ["text/plain", "application/json"],
+  "securitySchemes": {},
+  "security": [],
+  "skills": [
+    {
+      "id": "disaster/response_plan",
+      "name": "Build Disaster Response Plan",
+      "description": "Use an AI model to create a detailed emergency response plan from a situation description, including immediate actions, shelter guidance, evacuation guidance, communications, supplies, follow-up checks, and optional support from other ADS agents.",
+      "tags": ["disaster/response_plan", "disaster", "emergency", "response", "planning", "safety", "triage", "ads-discovery", "a2a", "read"],
+      "examples": [
+        "A tornado warning was issued and people are in a classroom.",
+        "Flood water is entering the first floor and residents need instructions.",
+        "There are armed people near the building and staff need immediate guidance."
+      ],
+      "inputModes": ["text/plain", "application/json"],
+      "outputModes": ["text/plain", "application/json"],
+      "security": []
+    },
+    {
+      "id": "disaster/triage",
+      "name": "Triage Disaster Situation",
+      "description": "Use an AI model to identify likely incident type, risk level, immediate hazards, first actions people should take, and whether another ADS agent may be useful.",
+      "tags": ["disaster/triage", "disaster", "emergency", "hazard", "triage", "safety", "ads-discovery", "a2a", "read"],
+      "examples": [
+        "Classify this emergency: people heard shots outside.",
+        "What should people do first if a chemical smell enters the building?"
+      ],
+      "inputModes": ["text/plain", "application/json"],
+      "outputModes": ["text/plain", "application/json"],
+      "security": []
+    },
+    {
+      "id": "disaster/checklist",
+      "name": "Create Disaster Checklist",
+      "description": "Use an AI model to generate an actionable checklist for shelter, evacuation, supplies, communications, medical needs, avoided actions, and coordination tasks for other ADS agents when relevant.",
+      "tags": ["disaster/checklist", "disaster", "emergency", "checklist", "preparedness", "response", "safety", "ads-discovery", "a2a", "read"],
+      "examples": [
+        "Make a response checklist for a wildfire evacuation.",
+        "Create a tornado shelter checklist for a lab building."
+      ],
+      "inputModes": ["text/plain", "application/json"],
+      "outputModes": ["text/plain", "application/json"],
+      "security": []
+    }
+  ]
+}

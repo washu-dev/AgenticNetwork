@@ -42,7 +42,7 @@
     {
       "id": "email/draft",
       "name": "Draft Email",
-      "description": "Prepare a structured email draft from user instructions and optional workflow artifacts; Gmail draft creation requires confirmation metadata.",
+      "description": "Prepare a structured email draft from user instructions and optional workflow artifacts, including optional high-importance headers; Gmail draft creation requires confirmation metadata.",
       "tags": ["email/draft", "email", "gmail", "draft"],
       "examples": ["Draft an email to Bob with two meeting options."],
       "inputModes": ["text/plain", "application/json"],
@@ -52,7 +52,7 @@
     {
       "id": "email/send",
       "name": "Send Email",
-      "description": "Send email through Gmail only after explicit user confirmation.",
+      "description": "Send email through Gmail only after explicit user confirmation, with optional high-importance priority headers.",
       "tags": ["email/send", "email", "gmail", "send", "write"],
       "examples": ["Send this email to Bob."],
       "inputModes": ["text/plain", "application/json"],
