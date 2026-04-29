@@ -16,15 +16,25 @@ WEATHER_SKILL = "weather/forecast"
 CALENDAR_SEARCH_AVAILABILITY_SKILL = "calendar/search_availability"
 EMAIL_DRAFT_SKILL = "email/draft"
 EMAIL_SEND_SKILL = "email/send"
+EMAIL_SEARCH_SKILL = "email/search"
+EMAIL_READ_SKILL = "email/read"
+EMAIL_SUMMARIZE_THREAD_SKILL = "email/summarize_thread"
+EMAIL_GOOGLE_STATUS_SKILL = "email/google/status"
+EMAIL_CURRENT_TIME_SKILL = "email/current_time"
 EMAIL_CALENDAR_LIST_EVENTS_SKILL = "email/calendar/list_events"
 EMAIL_CALENDAR_CREATE_EVENT_SKILL = "email/calendar/create_event"
+EMAIL_CALENDAR_STATUS_SKILL = "email/calendar/status"
 EMAIL_DOCS_LIST_SKILL = "email/docs/list"
 EMAIL_DOCS_READ_SKILL = "email/docs/read"
 EMAIL_DOCS_CREATE_SKILL = "email/docs/create"
+EMAIL_DOCS_APPEND_SKILL = "email/docs/append"
+EMAIL_DOCS_REPLACE_TEXT_SKILL = "email/docs/replace_text"
 EMAIL_DOCS_CREATE_AND_EMAIL_SKILL = "email/docs/create_and_email"
 EMAIL_SHEETS_LIST_SKILL = "email/sheets/list"
 EMAIL_SHEETS_READ_SKILL = "email/sheets/read"
 EMAIL_SHEETS_CREATE_SKILL = "email/sheets/create"
+EMAIL_SHEETS_WRITE_SKILL = "email/sheets/write"
+EMAIL_SHEETS_APPEND_SKILL = "email/sheets/append"
 IMAGE_GEOSPATIAL_ANALYSIS_SKILL = "image/geospatial_analysis"
 INTELLIGENCE_SITUATION_SUMMARY_SKILL = "intelligence/situation_summary"
 INTELLIGENCE_COURSE_OF_ACTION_SKILL = "intelligence/course_of_action"
@@ -53,6 +63,9 @@ def plan_workflow(text: str, requested_skill: str | None = None) -> list[str]:
         workflow.append(IMAGE_GEOSPATIAL_ANALYSIS_SKILL)
     if any(term in lowered for term in WEATHER_TERMS):
         workflow.append(WEATHER_SKILL)
+    utility_skill = _email_utility_skill(lowered)
+    if utility_skill:
+        workflow.append(utility_skill)
     docs_skill = None
     if not code_skill or any(term in lowered for term in {"google doc", "google docs", "document"}):
         docs_skill = _docs_skill(lowered)
@@ -61,15 +74,10 @@ def plan_workflow(text: str, requested_skill: str | None = None) -> list[str]:
     sheets_skill = _sheets_skill(lowered)
     if sheets_skill:
         workflow.append(sheets_skill)
-    if _mentions_calendar(lowered):
+    if _mentions_calendar(lowered) and utility_skill != EMAIL_CALENDAR_STATUS_SKILL:
         workflow.append(_calendar_skill(lowered))
-    if _mentions_email(lowered) and docs_skill != EMAIL_DOCS_CREATE_AND_EMAIL_SKILL:
-        if "draft" in lowered or "meeting option" in lowered:
-            workflow.append(EMAIL_DRAFT_SKILL)
-        elif "send" in lowered:
-            workflow.append(EMAIL_SEND_SKILL)
-        else:
-            workflow.append(EMAIL_DRAFT_SKILL)
+    if _mentions_email(lowered) and docs_skill != EMAIL_DOCS_CREATE_AND_EMAIL_SKILL and not utility_skill:
+        workflow.append(_email_skill(lowered))
     if _mentions_intelligence(lowered):
         if "course of action" in lowered:
             workflow.append(INTELLIGENCE_COURSE_OF_ACTION_SKILL)
@@ -116,11 +124,13 @@ def _mentions_email(lowered: str) -> bool:
 
 
 def _calendar_skill(lowered: str) -> str:
+    if "status" in lowered or "configured" in lowered or "oauth" in lowered:
+        return EMAIL_CALENDAR_STATUS_SKILL
+    if any(term in lowered for term in {"list", "show", "what is on", "what's on", "events"}):
+        return EMAIL_CALENDAR_LIST_EVENTS_SKILL
     if any(term in lowered for term in {"create", "add", "schedule", "invite", "event"}):
         if "availability" not in lowered and "available" not in lowered and "meeting option" not in lowered:
             return EMAIL_CALENDAR_CREATE_EVENT_SKILL
-    if any(term in lowered for term in {"list", "show", "what is on", "what's on", "events"}):
-        return EMAIL_CALENDAR_LIST_EVENTS_SKILL
     return CALENDAR_SEARCH_AVAILABILITY_SKILL
 
 
@@ -132,6 +142,10 @@ def _docs_skill(lowered: str) -> str | None:
             return EMAIL_DOCS_CREATE_AND_EMAIL_SKILL
     if any(term in lowered for term in {"create", "new", "draft", "write"}):
         return EMAIL_DOCS_CREATE_SKILL
+    if "append" in lowered or "add text" in lowered:
+        return EMAIL_DOCS_APPEND_SKILL
+    if "replace" in lowered:
+        return EMAIL_DOCS_REPLACE_TEXT_SKILL
     if any(term in lowered for term in {"list", "find", "search"}):
         return EMAIL_DOCS_LIST_SKILL
     return EMAIL_DOCS_READ_SKILL
@@ -142,9 +156,35 @@ def _sheets_skill(lowered: str) -> str | None:
         return None
     if any(term in lowered for term in {"create", "new"}):
         return EMAIL_SHEETS_CREATE_SKILL
+    if "append" in lowered or "add row" in lowered:
+        return EMAIL_SHEETS_APPEND_SKILL
+    if any(term in lowered for term in {"write", "overwrite", "update"}):
+        return EMAIL_SHEETS_WRITE_SKILL
     if any(term in lowered for term in {"list", "find", "search"}):
         return EMAIL_SHEETS_LIST_SKILL
     return EMAIL_SHEETS_READ_SKILL
+
+
+def _email_utility_skill(lowered: str) -> str | None:
+    if "current time" in lowered or ("what time" in lowered and "email" in lowered):
+        return EMAIL_CURRENT_TIME_SKILL
+    if "calendar" in lowered and ("status" in lowered or "configured" in lowered or "oauth" in lowered):
+        return EMAIL_CALENDAR_STATUS_SKILL
+    if ("google" in lowered or "workspace" in lowered or "oauth" in lowered) and "status" in lowered:
+        return EMAIL_GOOGLE_STATUS_SKILL
+    return None
+
+
+def _email_skill(lowered: str) -> str:
+    if "summarize" in lowered or "summary" in lowered or "thread" in lowered:
+        return EMAIL_SUMMARIZE_THREAD_SKILL
+    if "search" in lowered or "find" in lowered:
+        return EMAIL_SEARCH_SKILL
+    if "read" in lowered or "latest" in lowered or "unread" in lowered:
+        return EMAIL_READ_SKILL
+    if "send" in lowered:
+        return EMAIL_SEND_SKILL
+    return EMAIL_DRAFT_SKILL
 
 
 def _mentions_image_geo(lowered: str) -> bool:
@@ -156,7 +196,7 @@ def _mentions_intelligence(lowered: str) -> bool:
 
 
 def _code_skill(lowered: str) -> str | None:
-    if not any(term in lowered for term in CODE_TERMS):
+    if not _mentions_code(lowered):
         return None
     if "pull request" in lowered or " pr " in f" {lowered} ":
         return CODE_PR_REVIEW_SKILL
@@ -167,3 +207,8 @@ def _code_skill(lowered: str) -> str | None:
     if "documentation" in lowered or "docs" in lowered:
         return CODE_DOCUMENTATION_SKILL
     return CODE_REPOSITORY_INSPECTION_SKILL
+
+
+def _mentions_code(lowered: str) -> bool:
+    code_terms = CODE_TERMS - {"pr"}
+    return any(term in lowered for term in code_terms) or " pr " in f" {lowered} "

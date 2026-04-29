@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from copy import deepcopy
 from pathlib import Path
+from typing import Any, Sequence
 from urllib.parse import urlsplit
 from uuid import uuid4
 
@@ -47,6 +48,7 @@ class IncomingMessage(BaseModel):
     text: str
     context_id: str | None = None
     requested_skill: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 def create_app(
@@ -58,6 +60,7 @@ def create_app(
     publish_calendar_email_cards: bool = False,
     publish_geo_intelligence_cards: bool = False,
     publish_coding_card: bool = False,
+    agent_card_paths: Sequence[str | Path] | None = None,
 ) -> FastAPI:
     directory = directory_client or DirectoryClient()
     client = a2a_client or A2AClient()
@@ -77,6 +80,8 @@ def create_app(
         _publish_card(directory, CARD_FILES["intelligence"])
     if publish_coding_card:
         _publish_card(directory, CARD_FILES["coding"])
+    for card_path in _configured_agent_card_paths(agent_card_paths):
+        directory.publish_agent_card(load_agent_card(card_path))
 
     @app.get("/health")
     def health() -> dict[str, str]:
@@ -144,7 +149,7 @@ def create_app(
                     raise
                 selected_agent = routing.selected_agents[0]
                 selected_capability = _capability_for_skill(selected_agent, skill)
-                policy_decision = evaluate_skill(skill, selected_capability)
+                policy_decision = evaluate_skill(skill, selected_capability, metadata=incoming.metadata)
                 policy_decisions.append(_policy_entry(skill, selected_agent, policy_decision))
                 if policy_decision.status.value == "denied":
                     raise HTTPException(status_code=403, detail=policy_decision.reason)
@@ -295,6 +300,13 @@ def _publish_card(directory: DirectoryClient, filename: str) -> None:
     directory.publish_agent_card(load_agent_card(card_path))
 
 
+def _configured_agent_card_paths(agent_card_paths: Sequence[str | Path] | None) -> list[Path]:
+    if agent_card_paths is not None:
+        return [Path(path) for path in agent_card_paths]
+    raw_paths = os.getenv("PI_AGENT_CARD_PATHS", "")
+    return [Path(item.strip()) for item in raw_paths.split(",") if item.strip()]
+
+
 def _looks_like_endpoint_url(value: str) -> bool:
     parsed = urlsplit(value)
     if bool(parsed.scheme and parsed.netloc) or "://" in value:
@@ -376,6 +388,10 @@ def _task_request(
         "policy_decision": policy_decision.status.value,
         "confirmation_status": policy_decision.confirmation_status.value,
     }
+    task_metadata = _safe_user_metadata(incoming.metadata)
+    if skill == "email/draft":
+        task_metadata.setdefault("create_gmail_draft", False)
+    metadata.update(task_metadata)
     if skill == "image/geospatial_analysis":
         image_uri = "file://mock/geospatial-photo-austin.jpg"
         parts.append(
@@ -410,6 +426,18 @@ def _task_request(
         messages=[A2AMessage(role="user", parts=parts)],
         metadata=metadata,
     )
+
+
+def _safe_user_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    reserved = {
+        "user_id",
+        "channel",
+        "policy_decision",
+        "confirmation_status",
+        "confirmed",
+        "skill",
+    }
+    return {key: value for key, value in metadata.items() if key not in reserved}
 
 
 def _policy_entry(

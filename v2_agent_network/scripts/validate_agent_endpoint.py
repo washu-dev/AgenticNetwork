@@ -49,6 +49,7 @@ async def validate_endpoint(
         "context_id": context_id,
         "artifacts_count": 0,
         "structured_output_present": False,
+        "request_metadata": {},
         "published": False,
         "publish_backend": None,
         "warnings": [],
@@ -76,22 +77,32 @@ async def validate_endpoint(
         context = context_id or f"ctx-validate-{uuid4()}"
         report["context_id"] = context
         if mock_agent:
-            result = await _send_mock_task(
+            request = _request(
                 card=card,
                 skill=skill,
                 prompt=prompt,
                 context_id=context,
                 sender_id=sender_id,
+            )
+            report["request_metadata"] = request.metadata
+            result = await _send_mock_task(
+                card=card,
+                request=request,
                 mock_agent=mock_agent,
             )
             report["endpoint_reachable"] = True
         else:
-            result = await _send_external_task(
+            request = _request(
                 card=card,
                 skill=skill,
                 prompt=prompt,
                 context_id=context,
                 sender_id=sender_id,
+            )
+            report["request_metadata"] = request.metadata
+            result = await _send_external_task(
+                card=card,
+                request=request,
                 timeout=timeout,
             )
             report["endpoint_reachable"] = True
@@ -117,10 +128,7 @@ async def validate_endpoint(
 async def _send_mock_task(
     *,
     card: AgentCard,
-    skill: str,
-    prompt: str,
-    context_id: str,
-    sender_id: str,
+    request: A2ATaskRequest,
     mock_agent: str,
 ) -> Any:
     if mock_agent != "weather":
@@ -131,27 +139,18 @@ async def _send_mock_task(
         base_url=card.url,
     ) as http_client:
         client = A2AClient(HTTPA2ATransport(http_client=http_client))
-        return await client.send_task(
-            a2a_agent_card_to_discovered_agent(card),
-            _request(card=card, skill=skill, prompt=prompt, context_id=context_id, sender_id=sender_id),
-        )
+        return await client.send_task(a2a_agent_card_to_discovered_agent(card), request)
 
 
 async def _send_external_task(
     *,
     card: AgentCard,
-    skill: str,
-    prompt: str,
-    context_id: str,
-    sender_id: str,
+    request: A2ATaskRequest,
     timeout: float,
 ) -> Any:
     async with httpx.AsyncClient(timeout=timeout) as http_client:
         client = A2AClient(HTTPA2ATransport(http_client=http_client))
-        return await client.send_task(
-            a2a_agent_card_to_discovered_agent(card),
-            _request(card=card, skill=skill, prompt=prompt, context_id=context_id, sender_id=sender_id),
-        )
+        return await client.send_task(a2a_agent_card_to_discovered_agent(card), request)
 
 
 def _request(
@@ -163,6 +162,9 @@ def _request(
     sender_id: str,
 ) -> A2ATaskRequest:
     agent = a2a_agent_card_to_discovered_agent(card)
+    metadata = {"sender_id": sender_id, "skill": skill}
+    if skill == "email/draft":
+        metadata["create_gmail_draft"] = False
     return A2ATaskRequest(
         task_id=str(uuid4()),
         context_id=context_id,
@@ -170,7 +172,7 @@ def _request(
         skill=skill,
         user_goal=prompt,
         messages=[A2AMessage(role="user", parts=[A2APart(kind="text", text=prompt)])],
-        metadata={"sender_id": sender_id, "skill": skill},
+        metadata=metadata,
     )
 
 

@@ -12,6 +12,8 @@ and confirmation-gated repository modification proposals.
 Milestone 4A adds explicit fake/real Directory backends, endpoint validation,
 and `requested_skill` capability-hint handling with a seventh-agent acceptance
 test.
+Milestone 4B adds safe integration paths for a live Gmail-backed Email/Calendar
+/ Google Workspace A2A agent.
 
 This is not the v1 image-classification demo.
 
@@ -188,6 +190,85 @@ The Checkpoint 3 acceptance test adds a test-only Logistics Agent with
 and sends PI a request with `requested_skill="logistics/route_planning"`. This
 proves a seventh agent can be onboarded dynamically without adding Logistics
 endpoint logic to PI routing code or directly importing Logistics mock logic.
+
+## Milestone 4B Real Email Agent Integration
+
+The Gmail-backed Email Agent is an external A2A server. PI is also a server when
+run with Uvicorn. `DirectoryClient` is a client used by PI and CLI tools; it is
+not a server or persistent registry. Fake ADS is an in-memory per-process
+backend, so `publish_agents.py` validates and publishes only for the current CLI
+process. A separately running PI process must load Agent Cards at startup or use
+real ADS once the current `agntcy-dir` / protobuf dependency issue is fixed.
+
+```text
+User/API
+  -> PI Agent server
+  -> DirectoryClient
+  -> ADS or fake ADS
+  -> A2AClient
+  -> external Email Agent A2A server
+```
+
+Run PI with the live Email Agent card loaded into its own fake Directory:
+
+```bash
+cd /home/cspl-yi/Downloads/agentic_network/AgenticNetwork
+AGENT_NETWORK_FAKE_ADS=true \
+PI_AGENT_CARD_PATHS=v2_agent_network/configs/agent_cards/email_agent.card.json \
+uvicorn v2_agent_network.services.pi_agent.main:create_app --factory --host 0.0.0.0 --port 8080
+```
+
+Or use the helper:
+
+```bash
+cd /home/cspl-yi/Downloads/agentic_network/AgenticNetwork
+v1_classification/.venv/bin/python -m v2_agent_network.scripts.run_pi_agent_server \
+  --fake-ads \
+  --card v2_agent_network/configs/agent_cards/email_agent.card.json
+```
+
+Safely validate the live Email Agent endpoint without discovery or publishing:
+
+```bash
+cd /home/cspl-yi/Downloads/agentic_network/AgenticNetwork
+v1_classification/.venv/bin/python -m v2_agent_network.scripts.validate_agent_endpoint \
+  --card v2_agent_network/configs/agent_cards/email_agent.card.json \
+  --skill email/current_time \
+  --prompt "What time is it for the email agent?" \
+  --endpoint http://10.229.117.223:9103/
+```
+
+```bash
+cd /home/cspl-yi/Downloads/agentic_network/AgenticNetwork
+v1_classification/.venv/bin/python -m v2_agent_network.scripts.validate_agent_endpoint \
+  --card v2_agent_network/configs/agent_cards/email_agent.card.json \
+  --skill email/draft \
+  --prompt "Draft a short test email to myself, but do not create a Gmail draft and do not send it." \
+  --endpoint http://10.229.117.223:9103/
+```
+
+For `email/draft`, validation and demos set `create_gmail_draft=false`. Do not
+automate `email/send`, calendar event creation, Google Doc creation/update, or
+Google Sheet writes. Those skills must return `confirmation_required` unless a
+manual, explicit confirmation path is added later.
+
+Safe PI real-email demo:
+
+```bash
+cd /home/cspl-yi/Downloads/agentic_network/AgenticNetwork
+AGENT_NETWORK_FAKE_ADS=true v1_classification/.venv/bin/python -m v2_agent_network.scripts.run_real_email_agent_demo
+```
+
+Override the endpoint if needed:
+
+```bash
+AGENT_NETWORK_FAKE_ADS=true v1_classification/.venv/bin/python -m v2_agent_network.scripts.run_real_email_agent_demo \
+  --endpoint http://10.229.117.223:9103/
+```
+
+The repository still includes a placeholder mock Email Agent fixture for
+regression tests. The real-email demo publishes only the live Email Agent card
+and asserts that PI selected the live card endpoint and provider organization.
 
 Run the v2 tests with pytest plugin autoload disabled. This avoids
 loading unrelated system plugins from the ROS environment.

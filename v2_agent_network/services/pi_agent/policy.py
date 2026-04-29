@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from v2_agent_network.services.common.models import (
     AgentCapability,
     ConfirmationStatus,
@@ -59,7 +61,17 @@ ALLOWED_SKILLS = {
 }
 
 
-def evaluate_skill(skill: str, capability: AgentCapability | None = None) -> PolicyDecision:
+def evaluate_skill(
+    skill: str,
+    capability: AgentCapability | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> PolicyDecision:
+    if skill == "email/draft" and _truthy((metadata or {}).get("create_gmail_draft")):
+        return PolicyDecision(
+            status=PolicyDecisionStatus.requires_confirmation,
+            reason="email/draft with create_gmail_draft=true changes Gmail state and requires confirmation.",
+            confirmation_status=ConfirmationStatus.pending,
+        )
     if skill in CONFIRMATION_REQUIRED_SKILLS:
         return PolicyDecision(
             status=PolicyDecisionStatus.requires_confirmation,
@@ -95,3 +107,11 @@ def evaluate_capability(capability: AgentCapability, skill: str | None = None) -
         reason="Read-only low-risk mock Weather request.",
         confirmation_status=ConfirmationStatus.not_required,
     )
+
+
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+    return bool(value)

@@ -38,6 +38,24 @@ structured output.
 
 ## Publishing
 
+External agents are independent A2A servers. The PI Agent is also an HTTP
+server when run with Uvicorn. `DirectoryClient` is a client object used by PI
+and CLI scripts; it is not a persistent registry server.
+
+Fake ADS is in-memory and per-process. Running `publish_agents.py` in one
+process does not populate a separately running PI server. Load cards into the PI
+process with `PI_AGENT_CARD_PATHS` or `run_pi_agent_server.py --card`, or use
+real ADS once the dependency issue below is fixed.
+
+```text
+User/API
+  -> PI Agent server
+  -> DirectoryClient
+  -> ADS or fake ADS
+  -> A2AClient
+  -> external Email Agent A2A server
+```
+
 Dry-run local validation:
 
 ```bash
@@ -86,6 +104,50 @@ The default validation path does not publish to ADS. Add `--publish` only when
 the endpoint should also be registered through Directory. Use `--fake-ads` with
 `--publish` for local fake publication.
 
+Safe live Email Agent validation commands:
+
+```bash
+v1_classification/.venv/bin/python -m v2_agent_network.scripts.validate_agent_endpoint \
+  --card v2_agent_network/configs/agent_cards/email_agent.card.json \
+  --skill email/current_time \
+  --prompt "What time is it for the email agent?" \
+  --endpoint http://10.229.117.223:9103/
+```
+
+```bash
+v1_classification/.venv/bin/python -m v2_agent_network.scripts.validate_agent_endpoint \
+  --card v2_agent_network/configs/agent_cards/email_agent.card.json \
+  --skill email/draft \
+  --prompt "Draft a short test email to myself, but do not create a Gmail draft and do not send it." \
+  --endpoint http://10.229.117.223:9103/
+```
+
+For `email/draft`, the validator sends `create_gmail_draft=false` metadata.
+Automated validation must not invoke `email/send`, create calendar events,
+create docs, write sheets, or mutate Google Workspace state.
+
+`validate_agent_endpoint.py` validates a known Agent Card and endpoint. It does
+not perform discovery unless `--publish` is supplied.
+
+## PI Server Card Loading
+
+For a separately running PI server with fake ADS, load external Agent Cards into
+the PI process itself:
+
+```bash
+AGENT_NETWORK_FAKE_ADS=true \
+PI_AGENT_CARD_PATHS=v2_agent_network/configs/agent_cards/email_agent.card.json \
+uvicorn v2_agent_network.services.pi_agent.main:create_app --factory --host 0.0.0.0 --port 8080
+```
+
+Alternatively:
+
+```bash
+v1_classification/.venv/bin/python -m v2_agent_network.scripts.run_pi_agent_server \
+  --fake-ads \
+  --card v2_agent_network/configs/agent_cards/email_agent.card.json
+```
+
 ## Agent Checklists
 
 Weather agents should expose `weather/current_conditions`, `weather/forecast`,
@@ -94,6 +156,13 @@ Weather agents should expose `weather/current_conditions`, `weather/forecast`,
 Calendar mutations such as create, update, and delete must require confirmation.
 Email `send` must require confirmation. Coding actions that run commands, write
 files, create commits, or apply patches must require confirmation.
+
+The Gmail-backed Email Agent can perform real Gmail, Calendar, Docs, and Sheets
+actions. `email/send`, `email/calendar/create_event`, `email/docs/create`,
+`email/docs/append`, `email/docs/replace_text`,
+`email/docs/create_and_email`, `email/sheets/create`, `email/sheets/write`, and
+`email/sheets/append` must require confirmation. `email/draft` is read-only only
+when `create_gmail_draft=false`; creating a Gmail draft is a write action.
 
 Photo/Geospatial agents should accept file or artifact references. Intelligence
 agents should accept prior structured outputs or artifact references and return
