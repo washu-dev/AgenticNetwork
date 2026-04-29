@@ -91,7 +91,7 @@ def test_agent_card_and_oasf_conversion_keeps_weather_skill_custom() -> None:
     assert discovered.skills[0].custom_skill_tags
 
 
-def test_fake_directory_publish_search_resolve_and_fake_gate() -> None:
+def test_fake_directory_publish_search_resolve_and_fake_gate(monkeypatch) -> None:
     card = load_agent_card(WEATHER_CARD)
     directory = DirectoryClient(fake_ads=True)
     published = directory.publish_agent_card(card)
@@ -103,6 +103,10 @@ def test_fake_directory_publish_search_resolve_and_fake_gate() -> None:
     assert directory.resolve_agent("weather-agent").name == "Weather Agent"
     assert directory.resolve_agent(published.record_id).endpoint == card.url
 
+    monkeypatch.delenv("ADS_SERVER_ADDR", raising=False)
+    monkeypatch.delenv("ADS_URL", raising=False)
+    monkeypatch.delenv("ADS_SERVER_ADDRESS", raising=False)
+    monkeypatch.delenv("DIRECTORY_CLIENT_SERVER_ADDRESS", raising=False)
     real_directory = DirectoryClient(fake_ads=False)
     with pytest.raises(DirectoryUnavailable):
         real_directory.search_agents(skill="weather/forecast")

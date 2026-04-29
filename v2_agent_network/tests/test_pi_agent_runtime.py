@@ -16,7 +16,7 @@ from v2_agent_network.services.common.models import (
     A2ATaskState,
 )
 from v2_agent_network.services.directory.card_oasf_converter import load_agent_card
-from v2_agent_network.services.directory.client import DirectoryClient
+from v2_agent_network.services.directory.client import DirectoryClient, DirectoryUnavailable
 from v2_agent_network.services.pi_agent.agent_runtime import AgentToolCall
 from v2_agent_network.services.pi_agent.llm_config import PILLMConfig
 from v2_agent_network.services.pi_agent.main import create_app
@@ -24,6 +24,7 @@ from v2_agent_network.services.state.store import InMemoryStateStore
 
 
 EMAIL_CARD = Path("v2_agent_network/configs/agent_cards/email_agent.card.json")
+CODING_CARD = Path("v2_agent_network/configs/agent_cards/coding_agent.card.json")
 
 
 def test_tool_loop_discovers_calls_and_finishes() -> None:
@@ -77,7 +78,7 @@ async def _tool_loop_discovers_calls_and_finishes() -> None:
     payload = response.json()
     assert payload["planner_mode"] == "tool_loop"
     assert payload["llm_model"] == "test-llm"
-    assert directory.search_calls == ["email/current_time"]
+    assert directory.search_calls == [None, "email/current_time"]
     assert a2a_client.calls == [("email-agent", "email/current_time")]
     assert payload["final_response"] == "It is noon."
     assert payload["task_states"]["email/current_time"] == "completed"
@@ -86,6 +87,46 @@ async def _tool_loop_discovers_calls_and_finishes() -> None:
         "discover_agents",
         "call_agent",
     ]
+
+
+def test_tool_loop_initial_state_includes_ads_skill_catalog() -> None:
+    asyncio.run(_tool_loop_initial_state_includes_ads_skill_catalog())
+
+
+async def _tool_loop_initial_state_includes_ads_skill_catalog() -> None:
+    directory = SpyDirectoryClient(fake_ads=True)
+    directory.publish_agent_card(load_agent_card(CODING_CARD))
+    llm_client = ScriptedToolLoopClient(
+        [AgentToolCall(tool_name="final_answer", arguments={"text": "Catalog inspected."})]
+    )
+    pi_app = create_app(
+        directory_client=directory,
+        a2a_client=FailingA2AClient(),
+        publish_weather_card=False,
+        llm_config=_llm_config(),
+        tool_loop_llm_client=llm_client,
+        agent_mode="tool_loop",
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=pi_app),
+        base_url="http://pi-agent",
+    ) as pi_http_client:
+        response = await pi_http_client.post(
+            "/messages",
+            json={
+                "user_id": "user-1",
+                "channel": "api",
+                "text": "Can you review this repo?",
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    first_state = llm_client.states[0]
+    catalog_skills = {item["skill"] for item in first_state.ads_skill_catalog}
+    assert "code/repository_inspection" in catalog_skills
+    assert "code/bug_fix" in catalog_skills
+    assert first_state.ads_catalog_error is None
 
 
 def test_tool_loop_cannot_call_undiscovered_agent() -> None:
@@ -134,6 +175,53 @@ async def _tool_loop_cannot_call_undiscovered_agent() -> None:
 
 def test_tool_loop_rejects_raw_endpoint_tool_arguments() -> None:
     asyncio.run(_tool_loop_rejects_raw_endpoint_tool_arguments())
+
+
+def test_tool_loop_discovery_error_is_observation_not_500() -> None:
+    asyncio.run(_tool_loop_discovery_error_is_observation_not_500())
+
+
+async def _tool_loop_discovery_error_is_observation_not_500() -> None:
+    llm_client = ScriptedToolLoopClient(
+        [
+            AgentToolCall(
+                tool_name="discover_agents",
+                arguments={"query": "code", "skill_hint": "code"},
+            ),
+            AgentToolCall(
+                tool_name="final_answer",
+                arguments={"text": "I cannot find a routed coding agent right now."},
+            ),
+        ]
+    )
+    pi_app = create_app(
+        directory_client=UnavailableDirectoryClient(fake_ads=True),
+        a2a_client=FailingA2AClient(),
+        publish_weather_card=False,
+        llm_config=_llm_config(),
+        tool_loop_llm_client=llm_client,
+        agent_mode="tool_loop",
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=pi_app),
+        base_url="http://pi-agent",
+    ) as pi_http_client:
+        response = await pi_http_client.post(
+            "/messages",
+            json={
+                "user_id": "user-1",
+                "channel": "api",
+                "text": "Can the coding agent write code?",
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["final_response"] == "I cannot find a routed coding agent right now."
+    assert payload["tool_trace"][0]["tool_name"] == "discover_agents"
+    assert payload["tool_trace"][0]["status"] == "error"
+    assert "storage-only diagnostic" in payload["tool_trace"][0]["content"]["error"]
 
 
 async def _tool_loop_rejects_raw_endpoint_tool_arguments() -> None:
@@ -307,6 +395,65 @@ async def _tool_loop_confirmation_resumes_pending_call_once() -> None:
     assert payload["structured_output"]["sent_email"]["to"] == "wyy0115@outlook.com"
 
 
+def test_tool_loop_yes_without_pending_confirmation_continues_agent_loop() -> None:
+    asyncio.run(_tool_loop_yes_without_pending_confirmation_continues_agent_loop())
+
+
+async def _tool_loop_yes_without_pending_confirmation_continues_agent_loop() -> None:
+    state_store = InMemoryStateStore()
+    llm_client = ScriptedToolLoopClient(
+        [
+            AgentToolCall(
+                tool_name="ask_user",
+                arguments={"text": "Do you want the simplest Python Hello World program?"},
+            ),
+            AgentToolCall(
+                tool_name="final_answer",
+                arguments={"text": 'Here is the simplest Python version:\nprint("Hello, world!")'},
+            ),
+        ]
+    )
+    pi_app = create_app(
+        directory_client=DirectoryClient(fake_ads=True),
+        a2a_client=FailingA2AClient(),
+        state_store=state_store,
+        publish_weather_card=False,
+        llm_config=_llm_config(),
+        tool_loop_llm_client=llm_client,
+        agent_mode="tool_loop",
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=pi_app),
+        base_url="http://pi-agent",
+    ) as pi_http_client:
+        first = await pi_http_client.post(
+            "/messages",
+            json={
+                "user_id": "user-1",
+                "channel": "api",
+                "text": "Can you write a hello world program for me?",
+            },
+        )
+        context_id = first.json()["context_id"]
+        second = await pi_http_client.post(
+            "/messages",
+            json={
+                "user_id": "user-1",
+                "channel": "api",
+                "context_id": context_id,
+                "text": "yes",
+            },
+        )
+
+    assert first.status_code == 200, first.text
+    assert second.status_code == 200, second.text
+    payload = second.json()
+    assert "No pending confirmation" not in second.text
+    assert payload["final_response"] == 'Here is the simplest Python version:\nprint("Hello, world!")'
+    assert payload["context_id"] == context_id
+
+
 def test_tool_loop_followup_can_search_read_and_answer_from_observations() -> None:
     asyncio.run(_tool_loop_followup_can_search_read_and_answer_from_observations())
 
@@ -429,7 +576,7 @@ async def _tool_loop_dynamic_ads_agent_requires_no_pi_code_change() -> None:
 
     assert response.status_code == 200, response.text
     payload = response.json()
-    assert directory.search_calls == ["logistics/route_planning"]
+    assert directory.search_calls == [None, "logistics/route_planning"]
     assert a2a_client.calls == [("logistics-agent", "logistics/route_planning")]
     assert payload["selected_agent"] == "logistics-agent"
     assert payload["final_response"] == "The logistics agent returned a route plan."
@@ -461,6 +608,11 @@ class SpyDirectoryClient(DirectoryClient):
             skill = args[0]
         self.search_calls.append(skill)
         return super().search_agents(*args, **kwargs)
+
+
+class UnavailableDirectoryClient(DirectoryClient):
+    def search_agents(self, *args, **kwargs):
+        raise DirectoryUnavailable("storage-only diagnostic")
 
 
 class SpyA2AClient(A2AClient):

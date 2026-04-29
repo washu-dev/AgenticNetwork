@@ -449,22 +449,100 @@ class RealADSDirectoryBackend:
     ) -> None:
         timeout = float(os.getenv("ADS_ROUTING_PUBLISH_TIMEOUT_SECONDS", "8"))
         interval = float(os.getenv("ADS_ROUTING_PUBLISH_POLL_SECONDS", "0.25"))
+        routed, last_list = self._poll_routing_index(cid, timeout=timeout, interval=interval)
+        if routed:
+            logger.info(
+                "directory_real_publish_routing_verified cid=%s server=%s",
+                cid,
+                self.server_address,
+            )
+            return
+        if self._restart_daemon_if_stuck():
+            logger.warning(
+                "directory_real_publish_routing_stuck_restarting_daemon cid=%s server=%s",
+                cid,
+                self.server_address,
+            )
+            self._restart_local_daemon_for_routing_repair(cid)
+            routed, last_list = self._poll_routing_index(
+                cid,
+                timeout=timeout,
+                interval=interval,
+            )
+            if routed:
+                logger.info(
+                    "directory_real_publish_routing_verified_after_restart cid=%s server=%s",
+                    cid,
+                    self.server_address,
+                )
+                return
+        raise self._routing_not_indexed(cid, publication, last_list)
+
+    def _poll_routing_index(
+        self,
+        cid: str,
+        *,
+        timeout: float,
+        interval: float,
+    ) -> tuple[bool, str]:
         deadline = time.monotonic() + max(timeout, 0)
         last_list = ""
         while True:
             routed = self._run_dirctl(["routing", "list", "--cid", cid, "--output", "json"])
             last_list = routed.stdout.strip()
             if cid in _cids_from_routing_output(routed.stdout):
-                logger.info(
-                    "directory_real_publish_routing_verified cid=%s server=%s",
-                    cid,
-                    self.server_address,
-                )
-                return
+                return True, last_list
             if time.monotonic() >= deadline:
                 break
             time.sleep(max(interval, 0.01))
-        raise self._routing_not_indexed(cid, publication, last_list)
+        return False, last_list
+
+    @staticmethod
+    def _restart_daemon_if_stuck() -> bool:
+        return os.getenv("ADS_ROUTING_RESTART_DAEMON_IF_STUCK", "false").lower() == "true"
+
+    def _restart_local_daemon_for_routing_repair(self, cid: str) -> None:
+        stop = subprocess.run(
+            [self.dirctl_path, "daemon", "stop"],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        logger.warning(
+            "directory_real_publish_routing_repair_daemon_stop cid=%s returncode=%s stdout=%r stderr=%r",
+            cid,
+            stop.returncode,
+            stop.stdout.strip(),
+            stop.stderr.strip(),
+        )
+        log_path = Path("v2_agent_network/ads_daemon_repair.log")
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("ab") as log_file:
+            subprocess.Popen(
+                [self.dirctl_path, "daemon", "start"],
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline:
+            status = subprocess.run(
+                [self.dirctl_path, "daemon", "status"],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            if _daemon_status_is_running(status):
+                logger.warning(
+                    "directory_real_publish_routing_repair_daemon_started cid=%s",
+                    cid,
+                )
+                return
+            time.sleep(0.5)
+        raise DirectoryUnavailable(
+            "ADS routing publish was stuck and ADS_ROUTING_RESTART_DAEMON_IF_STUCK=true, "
+            f"but dirctl daemon did not become healthy after restart. cid={cid!r}"
+        )
 
     def _routing_not_indexed(
         self,
@@ -676,13 +754,49 @@ def _card_data_from_ads_record(record: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def _ads_skill_hints(skill: str | None) -> list[str]:
-    if not skill or not skill.startswith("email/"):
+    if not skill:
         return []
-    return [
-        "natural_language_processing/information_retrieval_synthesis/information_retrieval_synthesis_search",
-        "natural_language_processing/natural_language_generation/summarization",
-        "retrieval_augmented_generation/retrieval_of_information/document_retrieval",
-    ]
+    normalized = skill.strip().lower()
+    email_terms = {
+        "calendar",
+        "docs",
+        "document",
+        "email",
+        "gmail",
+        "google",
+        "group",
+        "group email",
+        "group notice",
+        "notice",
+        "sheets",
+    }
+    code_terms = {
+        "bug",
+        "code",
+        "coding",
+        "program",
+        "programming",
+        "python",
+        "repo",
+        "repository",
+        "software",
+        "test",
+    }
+    if normalized.startswith("email/") or normalized in email_terms:
+        return [
+            "natural_language_processing/information_retrieval_synthesis/information_retrieval_synthesis_search",
+            "natural_language_processing/natural_language_generation/summarization",
+            "retrieval_augmented_generation/retrieval_of_information/document_retrieval",
+        ]
+    if normalized.startswith("code/") or normalized in code_terms:
+        return [
+            "analytical_skills/coding_skills",
+            "analytical_skills/coding_skills/code_optimization",
+            "analytical_skills/coding_skills/code_to_docstrings",
+            "evaluation_monitoring/test_case_generation",
+            "security_privacy/vulnerability_analysis",
+        ]
+    return []
 
 
 def _dedupe_values(values: list[str]) -> list[str]:
@@ -691,6 +805,11 @@ def _dedupe_values(values: list[str]) -> list[str]:
 
 def _looks_like_cid(value: str) -> bool:
     return value.startswith(("bafy", "bae", "bag", "zd", "Qm"))
+
+
+def _daemon_status_is_running(status: subprocess.CompletedProcess[str]) -> bool:
+    text = (status.stdout + status.stderr).lower()
+    return status.returncode == 0 and "daemon is running" in text and "not running" not in text
 
 
 def _package_version(package: str) -> str:

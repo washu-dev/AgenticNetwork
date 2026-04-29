@@ -172,7 +172,11 @@ def create_app(
                 len(incoming.text),
                 sorted(incoming.metadata.keys()),
             )
-            if incoming.context_id and _is_affirmative_confirmation(incoming.text):
+            if (
+                incoming.context_id
+                and _is_affirmative_confirmation(incoming.text)
+                and store.get_pending_confirmation(incoming.context_id)
+            ):
                 return await _confirm_pending_action(
                     request=ConfirmationRequest(
                         user_id=incoming.user_id,
@@ -187,7 +191,11 @@ def create_app(
                     store=store,
                     runtime=runtime if use_tool_loop else None,
                 )
-            if incoming.context_id and _is_negative_confirmation(incoming.text):
+            if (
+                incoming.context_id
+                and _is_negative_confirmation(incoming.text)
+                and store.get_pending_confirmation(incoming.context_id)
+            ):
                 try:
                     existing_context = store.get_context(incoming.context_id)
                 except KeyError as exc:
@@ -318,17 +326,15 @@ def create_app(
                         skill,
                         exc,
                     )
-                    if incoming.requested_skill:
-                        return _no_capable_agent_response(
-                            context=context,
-                            workflow_skills=workflow_skills,
-                            requested_skill=incoming.requested_skill,
-                            reason=str(exc),
-                            planner_mode=str(planning["planner_mode"]),
-                            llm_model=planning["llm_model"],
-                            errors=planning["errors"],
-                        )
-                    raise
+                    return _no_capable_agent_response(
+                        context=context,
+                        workflow_skills=workflow_skills,
+                        requested_skill=incoming.requested_skill or skill,
+                        reason=str(exc),
+                        planner_mode=str(planning["planner_mode"]),
+                        llm_model=planning["llm_model"],
+                        errors=planning["errors"],
+                    )
                 selected_agent = routing.selected_agents[0]
                 logger.info(
                     "pi_agent_selected context_id=%s skill=%s agent_id=%s agent_name=%s endpoint=%s source_record_id=%s",

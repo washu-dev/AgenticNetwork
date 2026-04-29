@@ -25,7 +25,7 @@ from v2_agent_network.services.common.models import (
     PolicyDecision,
     PolicyDecisionStatus,
 )
-from v2_agent_network.services.directory.client import DirectoryClient
+from v2_agent_network.services.directory.client import DirectoryClient, DirectoryUnavailable
 from v2_agent_network.services.pi_agent.llm_config import PILLMConfig
 from v2_agent_network.services.pi_agent.llm_planner import PILLMPlannerError
 from v2_agent_network.services.pi_agent.policy import evaluate_skill
@@ -53,6 +53,8 @@ class AgentTurnState(BaseModel):
     user_text: str
     requested_skill: str | None = None
     step: int = 0
+    ads_skill_catalog: list[dict[str, Any]] = Field(default_factory=list)
+    ads_catalog_error: str | None = None
     discovered_agents: dict[str, DiscoveredAgent] = Field(default_factory=dict)
     observations: list[AgentObservation] = Field(default_factory=list)
     selected_agents: list[dict[str, str | None]] = Field(default_factory=list)
@@ -233,6 +235,7 @@ class PIAgentRuntime:
         )
         if state.requested_skill and _looks_like_endpoint_url(state.requested_skill):
             raise ValueError("requested_skill must be a skill name, not an endpoint URL.")
+        self._load_ads_skill_catalog(state)
 
         for step in range(self.max_steps):
             state.step = step
@@ -252,6 +255,25 @@ class PIAgentRuntime:
             text="I reached the maximum number of tool steps before finishing.",
             a2a_state=A2ATaskState.input_required,
             errors=["max_steps_exceeded"],
+        )
+
+    def _load_ads_skill_catalog(self, state: AgentTurnState) -> None:
+        try:
+            agents = self.directory.search_agents()
+        except Exception as exc:
+            state.ads_catalog_error = f"{type(exc).__name__}: {exc}"
+            logger.warning(
+                "pi_tool_loop_ads_catalog_failed context_id=%s error=%s",
+                state.context_id,
+                state.ads_catalog_error,
+            )
+            return
+        state.ads_skill_catalog = _ads_skill_catalog(agents)
+        logger.info(
+            "pi_tool_loop_ads_catalog_loaded context_id=%s skills=%d agents=%s",
+            state.context_id,
+            len(state.ads_skill_catalog),
+            sorted({item["agent_id"] for item in state.ads_skill_catalog}),
         )
 
     async def resume_confirmed_action(
@@ -387,7 +409,24 @@ class PIAgentRuntime:
                 status="error",
                 content={"error": "skill_hint must be a skill name, not an endpoint URL."},
             )
-        agents = self.directory.search_agents(skill=skill_hint if isinstance(skill_hint, str) else None)
+        try:
+            agents = self.directory.search_agents(skill=skill_hint if isinstance(skill_hint, str) else None)
+        except DirectoryUnavailable as exc:
+            state.errors.append(str(exc))
+            return AgentObservation(
+                tool_name="discover_agents",
+                status="error",
+                content={
+                    "query": args.get("query"),
+                    "skill_hint": skill_hint,
+                    "error": str(exc),
+                    "hint": (
+                        "The requested capability was not discoverable in routed ADS. "
+                        "Use discover_agents with skill_hint=null to inspect currently routed agents, "
+                        "or ask the ADS host to route/republish the missing agent."
+                    ),
+                },
+            )
         for agent in agents:
             state.discovered_agents[agent.agent_id] = agent
         return AgentObservation(
@@ -667,12 +706,21 @@ class PIAgentRuntime:
 
 def _tool_loop_system_prompt() -> str:
     return (
-        "You are PI, a standard tool-loop agent. Work step by step. Use tools to inspect "
-        "context, discover agents through ADS, inspect their Agent Cards, call agents through "
-        "A2A, ask the user for missing information, request confirmation for side effects, "
-        "and call final_answer only when ready. Never invent endpoint URLs or call an "
-        "undiscovered agent. Policy is enforced by tools; do not claim writes happened unless "
-        "a tool observation proves it."
+        "You are PI, a standard tool-loop agent. Work step by step and call exactly one "
+        "tool at a time. ADS is the discovery service; A2A is the task transport. Use "
+        "the ads_skill_catalog in the user payload to choose likely skill ids, then call "
+        "discover_agents with that skill_hint. If the user intent is broad or the skill is "
+        "unclear, call discover_agents with skill_hint=null to list routed ADS agents. "
+        "After discovery, inspect_agent when you need capability details, examples, risk, "
+        "or input shape. Call call_agent only with an agent_id returned by discovery and a "
+        "skill advertised by that Agent Card. Never invent endpoint URLs, never call an "
+        "undiscovered agent, and never treat ADS record storage as proof of live discovery. "
+        "Policy is enforced by Python tools. For any send, create, append, replace, delete, "
+        "repo mutation, command execution, or other side effect, call_agent may return "
+        "confirmation_required; stop and wait for user confirmation. Do not claim writes "
+        "or sends happened unless a tool observation proves it. Use read_context for follow-up "
+        "questions, prior outputs, artifacts, task ids, and pending actions. Call final_answer "
+        "only when the answer is supported by context or tool observations."
     )
 
 
@@ -681,6 +729,14 @@ def _initial_llm_payload(state: AgentTurnState) -> dict[str, Any]:
         "user_text": state.user_text,
         "requested_skill": state.requested_skill,
         "context_id": state.context_id,
+        "ads_usage": {
+            "directory": "Use discover_agents. It searches ADS through DirectoryClient.",
+            "transport": "Use call_agent only after discovery. It invokes A2A through policy.",
+            "skill_hint": "Prefer exact skill ids from ads_skill_catalog. Use null for broad discovery.",
+            "safety": "Raw endpoint URLs are forbidden. Side effects require confirmation.",
+        },
+        "ads_skill_catalog": state.ads_skill_catalog,
+        "ads_catalog_error": state.ads_catalog_error,
         "instructions": "Call exactly one tool next.",
     }
 
@@ -831,6 +887,39 @@ def _context_snapshot(context: PIContext, store: InMemoryStateStore) -> dict[str
         "previous_outputs": previous_outputs,
         "source_artifacts": source_artifacts,
     }
+
+
+def _ads_skill_catalog(agents: list[DiscoveredAgent]) -> list[dict[str, Any]]:
+    catalog: dict[tuple[str, str], dict[str, Any]] = {}
+    for agent in agents:
+        for capability in agent.skills:
+            for skill in _skill_ids_for_capability(capability):
+                catalog[(skill, agent.agent_id)] = {
+                    "skill": skill,
+                    "agent_id": agent.agent_id,
+                    "agent_name": agent.name,
+                    "organization": agent.organization,
+                    "description": capability.description or agent.description,
+                    "risk_level": capability.risk_level.value,
+                    "action_type": capability.action_type,
+                    "input_modes": capability.input_modes or agent.input_modes,
+                    "output_modes": capability.output_modes or agent.output_modes,
+                    "examples": capability.examples,
+                    "source_record_id": agent.source_record_id,
+                }
+    return sorted(catalog.values(), key=lambda item: (item["agent_id"], item["skill"]))
+
+
+def _skill_ids_for_capability(capability: AgentCapability) -> list[str]:
+    return list(
+        dict.fromkeys(
+            [
+                *capability.skill_tags,
+                *capability.custom_skill_tags,
+                *(item.name for item in capability.official_oasf_skills),
+            ]
+        )
+    )
 
 
 def _safe_agent(agent: DiscoveredAgent, *, include_details: bool = False) -> dict[str, Any]:

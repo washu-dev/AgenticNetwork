@@ -12,6 +12,10 @@ import pytest
 
 from v2_agent_network.scripts import publish_agents
 from v2_agent_network.scripts.ads_diagnostics import _classify_cid
+from v2_agent_network.scripts.force_route_active_agents import (
+    StoredAgentRecord,
+    _select_latest_per_agent,
+)
 from v2_agent_network.services.a2a.client import A2AClient
 from v2_agent_network.services.directory import backends as backend_module
 from v2_agent_network.services.directory.backends import (
@@ -28,6 +32,7 @@ from v2_agent_network.services.pi_agent.main import create_app
 
 EMAIL_CARD = Path("v2_agent_network/configs/agent_cards/email_agent.card.json")
 WEATHER_CARD = Path("v2_agent_network/configs/agent_cards/weather_agent.card.json")
+CODING_CARD = Path("v2_agent_network/configs/agent_cards/coding_agent.card.json")
 
 
 class FakeDirctlRunner:
@@ -36,11 +41,17 @@ class FakeDirctlRunner:
         *,
         search_returns: bool = True,
         routing_returns: bool | None = None,
+        card_path: Path = EMAIL_CARD,
+        cid: str = "bafy-email-record",
+        routed_skills: set[str] | None = None,
     ) -> None:
         self.commands: list[list[str]] = []
         self.pushed_record: dict[str, Any] | None = None
         self.search_returns = search_returns
         self.routing_returns = search_returns if routing_returns is None else routing_returns
+        self.card_path = card_path
+        self.cid = cid
+        self.routed_skills = routed_skills
 
     def __call__(self, command: list[str]) -> subprocess.CompletedProcess[str]:
         self.commands.append(command)
@@ -48,27 +59,31 @@ class FakeDirctlRunner:
         if args[:1] == ["push"]:
             with Path(args[1]).open("r", encoding="utf-8") as fh:
                 self.pushed_record = json.load(fh)
-            return _completed(command, stdout="bafy-email-record\n")
+            return _completed(command, stdout=f"{self.cid}\n")
         if args[:2] == ["routing", "publish"]:
             return _completed(command, stdout="published\n")
         if args[:2] == ["routing", "search"]:
             if not self.routing_returns:
                 return _completed(command, stdout="[]")
+            if not self._skill_is_routed(args):
+                return _completed(command, stdout="[]")
             return _completed(
                 command,
-                stdout=json.dumps({"results": [{"record_ref": {"cid": "bafy-email-record"}}]}),
+                stdout=json.dumps({"results": [{"record_ref": {"cid": self.cid}}]}),
             )
         if args[:2] == ["routing", "list"]:
             if not self.routing_returns:
                 return _completed(command, stdout="[]")
+            if not self._skill_is_routed(args):
+                return _completed(command, stdout="[]")
             return _completed(
                 command,
-                stdout=json.dumps([{"cid": "bafy-email-record"}]),
+                stdout=json.dumps([{"cid": self.cid}]),
             )
         if args[:1] == ["search"]:
             if not self.search_returns:
                 return _completed(command, stdout="[]")
-            return _completed(command, stdout=json.dumps(["bafy-email-record"]))
+            return _completed(command, stdout=json.dumps([self.cid]))
         if args[:1] == ["pull"]:
             return _completed(command, stdout=json.dumps(self._record()))
         if args[:2] == ["routing", "info"]:
@@ -78,7 +93,15 @@ class FakeDirctlRunner:
     def _record(self) -> dict[str, Any]:
         if self.pushed_record is not None:
             return self.pushed_record
-        return agent_card_to_ads_record(load_agent_card(EMAIL_CARD))
+        return agent_card_to_ads_record(load_agent_card(self.card_path))
+
+    def _skill_is_routed(self, args: list[str]) -> bool:
+        if self.routed_skills is None or "--cid" in args:
+            return True
+        if "--skill" not in args:
+            return True
+        skill = args[args.index("--skill") + 1]
+        return skill in self.routed_skills
 
 
 class FailingA2AClient(A2AClient):
@@ -114,6 +137,7 @@ def test_real_ads_cli_publish_pushes_and_publishes_email_record() -> None:
 
 def test_real_ads_cli_publish_fails_when_routing_publish_is_not_indexed(monkeypatch) -> None:
     monkeypatch.setenv("ADS_ROUTING_PUBLISH_TIMEOUT_SECONDS", "0")
+    monkeypatch.setenv("ADS_ROUTING_RESTART_DAEMON_IF_STUCK", "false")
     runner = FakeDirctlRunner(routing_returns=False)
     backend = RealADSDirectoryBackend(
         ads_url="localhost:8888",
@@ -129,6 +153,41 @@ def test_real_ads_cli_publish_fails_when_routing_publish_is_not_indexed(monkeypa
     assert "bafy-email-record" in error
     assert "routing_info" in error
     assert "local_publication_status" in error
+
+
+def test_real_ads_cli_publish_can_repair_stuck_routing_with_explicit_restart(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("ADS_ROUTING_PUBLISH_TIMEOUT_SECONDS", "0")
+    monkeypatch.setenv("ADS_ROUTING_RESTART_DAEMON_IF_STUCK", "true")
+    runner = FakeDirctlRunner(routing_returns=False)
+
+    def fake_run(command: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
+        if command[:3] == ["dirctl", "daemon", "stop"]:
+            runner.routing_returns = True
+            return _completed(command, stdout="Daemon stopped\n")
+        if command[:3] == ["dirctl", "daemon", "status"]:
+            return _completed(command, stdout="Daemon is running\n")
+        raise AssertionError(f"unexpected subprocess.run command: {command}")
+
+    class FakePopen:
+        pid = 12345
+
+        def __init__(self, command: list[str], **kwargs) -> None:
+            assert command == ["dirctl", "daemon", "start"]
+
+    monkeypatch.setattr(backend_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(backend_module.subprocess, "Popen", FakePopen)
+    backend = RealADSDirectoryBackend(
+        ads_url="localhost:8888",
+        backend="cli",
+        runner=runner,
+    )
+
+    published = backend.publish_agent_card(load_agent_card(EMAIL_CARD))
+
+    assert published.backend_ref == "bafy-email-record"
+    assert any(command[3:5] == ["routing", "publish"] for command in runner.commands)
 
 
 def test_real_ads_cli_search_by_custom_skill_pulls_and_post_filters_record() -> None:
@@ -150,6 +209,83 @@ def test_real_ads_cli_search_by_custom_skill_pulls_and_post_filters_record() -> 
         for command in runner.commands
     )
     assert any(command[3:4] == ["pull"] for command in runner.commands)
+
+
+def test_real_ads_cli_search_by_coding_custom_skill_uses_official_routing_hint() -> None:
+    runner = FakeDirctlRunner(
+        card_path=CODING_CARD,
+        cid="bafy-coding-record",
+        routed_skills={"analytical_skills/coding_skills"},
+    )
+    backend = RealADSDirectoryBackend(
+        ads_url="localhost:8888",
+        backend="cli",
+        runner=runner,
+    )
+    backend.publish_agent_card(load_agent_card(CODING_CARD))
+
+    agents = backend.search_agents(skill="code/repository_inspection")
+
+    assert agents[0].agent_id == "coding-agent"
+    assert any(
+        command[3:6] == ["routing", "search", "--skill"]
+        and command[6] == "code/repository_inspection"
+        for command in runner.commands
+    )
+    assert any(
+        command[3:6] == ["routing", "search", "--skill"]
+        and command[6] == "analytical_skills/coding_skills"
+        for command in runner.commands
+    )
+
+
+def test_real_ads_cli_search_by_broad_code_hint_uses_official_routing_hint() -> None:
+    runner = FakeDirctlRunner(
+        card_path=CODING_CARD,
+        cid="bafy-coding-record",
+        routed_skills={"analytical_skills/coding_skills"},
+    )
+    backend = RealADSDirectoryBackend(
+        ads_url="localhost:8888",
+        backend="cli",
+        runner=runner,
+    )
+    backend.publish_agent_card(load_agent_card(CODING_CARD))
+
+    agents = backend.search_agents(skill="code")
+
+    assert agents[0].agent_id == "coding-agent"
+    assert any(
+        command[3:6] == ["routing", "search", "--skill"]
+        and command[6] == "analytical_skills/coding_skills"
+        for command in runner.commands
+    )
+
+
+def test_real_ads_cli_search_by_broad_email_hint_uses_official_routing_hint() -> None:
+    runner = FakeDirctlRunner(
+        card_path=EMAIL_CARD,
+        cid="bafy-email-record",
+        routed_skills={
+            "natural_language_processing/information_retrieval_synthesis/information_retrieval_synthesis_search"
+        },
+    )
+    backend = RealADSDirectoryBackend(
+        ads_url="localhost:8888",
+        backend="cli",
+        runner=runner,
+    )
+    backend.publish_agent_card(load_agent_card(EMAIL_CARD))
+
+    agents = backend.search_agents(skill="email")
+
+    assert agents[0].agent_id == "email-agent"
+    assert any(
+        command[3:6] == ["routing", "search", "--skill"]
+        and command[6]
+        == "natural_language_processing/information_retrieval_synthesis/information_retrieval_synthesis_search"
+        for command in runner.commands
+    )
 
 
 def test_real_ads_cli_search_reports_storage_only_records_by_default() -> None:
@@ -255,6 +391,7 @@ def test_publish_agents_real_cli_fails_if_routing_publish_is_not_indexed(
     capsys,
 ) -> None:
     monkeypatch.setenv("ADS_ROUTING_PUBLISH_TIMEOUT_SECONDS", "0")
+    monkeypatch.setenv("ADS_ROUTING_RESTART_DAEMON_IF_STUCK", "false")
     runner = FakeDirctlRunner(routing_returns=False)
 
     def fake_subprocess_run(command: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
@@ -376,6 +513,38 @@ def test_ads_diagnostics_classifies_routed_queued_stale_and_orphaned_records() -
         stored_cids={"orphaned-cid"},
         publications=publications,
     )["state"] == "orphaned"
+
+
+def test_force_route_active_agents_selects_latest_record_per_agent() -> None:
+    older_email = StoredAgentRecord(
+        cid="old-email-cid",
+        agent_key="email-agent|http://email",
+        agent_id="email-agent",
+        name="Email Agent",
+        endpoint="http://email",
+        created_at="2026-04-29T22:00:26Z",
+    )
+    newer_email = StoredAgentRecord(
+        cid="new-email-cid",
+        agent_key="email-agent|http://email",
+        agent_id="email-agent",
+        name="Email Agent",
+        endpoint="http://email",
+        created_at="2026-04-29T22:01:49Z",
+    )
+    coding = StoredAgentRecord(
+        cid="coding-cid",
+        agent_key="coding-agent|http://coding",
+        agent_id="coding-agent",
+        name="Coding Agent",
+        endpoint="http://coding",
+        created_at="2026-04-29T22:00:00Z",
+    )
+
+    selected, superseded = _select_latest_per_agent([older_email, coding, newer_email])
+
+    assert {record.cid for record in selected} == {"new-email-cid", "coding-cid"}
+    assert [record.cid for record in superseded] == ["old-email-cid"]
 
 
 @pytest.mark.skipif(

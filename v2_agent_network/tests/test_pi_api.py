@@ -32,6 +32,39 @@ def test_pi_api_fallback_discovers_weather_and_calls_via_a2a() -> None:
     asyncio.run(_pi_api_fallback_discovers_weather_and_calls_via_a2a())
 
 
+def test_pi_api_fallback_missing_agent_returns_no_capable_agent_not_500() -> None:
+    asyncio.run(_pi_api_fallback_missing_agent_returns_no_capable_agent_not_500())
+
+
+async def _pi_api_fallback_missing_agent_returns_no_capable_agent_not_500() -> None:
+    pi_app = create_app(
+        directory_client=DirectoryClient(fake_ads=True),
+        a2a_client=SpyA2AClient(A2AClient()),
+        publish_weather_card=False,
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=pi_app),
+        base_url="http://pi-agent",
+    ) as pi_http_client:
+        response = await pi_http_client.post(
+            "/messages",
+            json={
+                "user_id": "user-1",
+                "channel": "api",
+                "text": "Can the coding agent write a Python function?",
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["state"] == "input_required"
+    assert payload["no_capable_agent_found"] is True
+    assert payload["selected_agent"] is None
+    assert payload["task_ids"] == {}
+    assert "no capable agent found" in payload["final_response"]
+
+
 async def _pi_api_fallback_discovers_weather_and_calls_via_a2a() -> None:
     card = load_agent_card(WEATHER_CARD)
     weather_app = create_weather_a2a_app(card)
@@ -76,4 +109,3 @@ async def _pi_api_fallback_discovers_weather_and_calls_via_a2a() -> None:
     assert context.user_id == "user-1"
     assert context.channel == "api"
     assert context.active_tasks == [payload["task_id"]]
-
