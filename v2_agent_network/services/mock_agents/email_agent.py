@@ -7,39 +7,41 @@ from a2a.types import DataPart, Part, TextPart
 
 
 class EmailAgentExecutor(AgentExecutor):
+    """Placeholder Email/Workspace A2A executor for network and ADS development.
+
+    This fixture intentionally has no Gmail, Calendar, Docs, or Sheets side
+    effects. A real organization-owned Email Agent should run outside the
+    network repo and be discovered through its Agent Card endpoint.
+    """
+
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
         updater = TaskUpdater(event_queue, context.task_id, context.context_id)
         skill = _skill_from_context(context)
         if skill == "email/draft":
             await _draft_email(context, updater)
             return
-        if skill == "email/send" and not _confirmed(context):
-            await _send_requires_confirmation(context, updater)
+        if skill in _WRITE_SKILLS:
+            await _write_requires_external_agent(context, updater, skill)
             return
 
-        output = {
-            "skill": skill,
-            "status": "completed",
-            "summary": f"Mock {skill} completed.",
-            "context_id": context.context_id,
-            "task_id": context.task_id,
-        }
-        await updater.add_artifact(
-            [Part(root=DataPart(data=output))],
-            artifact_id="email-result",
-            name="email_result",
-            metadata={"skill": skill},
-        )
-        await updater.complete(
-            message=updater.new_agent_message(
-                [Part(root=TextPart(text=output["summary"]))],
-                metadata={"structured_output": output},
-            )
-        )
+        await _read_placeholder(context, updater, skill)
 
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
         updater = TaskUpdater(event_queue, context.task_id, context.context_id)
         await updater.reject()
+
+
+_WRITE_SKILLS = {
+    "email/send",
+    "email/calendar/create_event",
+    "email/docs/create",
+    "email/docs/append",
+    "email/docs/replace_text",
+    "email/docs/create_and_email",
+    "email/sheets/create",
+    "email/sheets/write",
+    "email/sheets/append",
+}
 
 
 async def _draft_email(context: RequestContext, updater: TaskUpdater) -> None:
@@ -60,39 +62,70 @@ async def _draft_email(context: RequestContext, updater: TaskUpdater) -> None:
     }
     output = {
         "skill": "email/draft",
+        "mode": "placeholder",
         "draft_email": draft,
         "used_slots": slots,
+        "note": "Placeholder executor only; no Gmail draft was created.",
         "context_id": context.context_id,
         "task_id": context.task_id,
     }
-    await updater.start_work()
-    await updater.add_artifact(
-        [Part(root=DataPart(data=output))],
+    await _complete(
+        updater,
+        skill="email/draft",
         artifact_id="email-draft",
-        name="email_draft",
-        metadata={"skill": "email/draft", "content_type": "application/json"},
-    )
-    await updater.complete(
-        message=updater.new_agent_message(
-            [Part(root=TextPart(text="Drafted an email to Bob with two meeting options."))],
-            metadata={"structured_output": output},
-        )
+        artifact_name="email_draft",
+        text="Prepared a placeholder email draft.",
+        output=output,
     )
 
 
-async def _send_requires_confirmation(context: RequestContext, updater: TaskUpdater) -> None:
+async def _read_placeholder(context: RequestContext, updater: TaskUpdater, skill: str) -> None:
     output = {
-        "skill": "email/send",
+        "skill": skill,
+        "mode": "placeholder",
+        "status": "completed",
+        "summary": f"Placeholder {skill} completed without external side effects.",
+        "note": (
+            "This AgenticNetwork fixture is for ADS/A2A contract development only. "
+            "Run the organization-owned Email Agent endpoint for real Gmail, "
+            "Calendar, Docs, or Sheets behavior."
+        ),
+        "context_id": context.context_id,
+        "task_id": context.task_id,
+    }
+    await _complete(
+        updater,
+        skill=skill,
+        artifact_id=skill.replace("/", "-"),
+        artifact_name=skill.replace("/", "_").replace("-", "_"),
+        text=output["summary"],
+        output=output,
+    )
+
+
+async def _write_requires_external_agent(
+    context: RequestContext,
+    updater: TaskUpdater,
+    skill: str,
+) -> None:
+    output = {
+        "skill": skill,
+        "mode": "placeholder",
         "confirmation_required": True,
-        "reason": "Sending email is a write action and requires explicit confirmation.",
+        "external_agent_required": True,
+        "reason": (
+            f"{skill} would change external Google Workspace state. "
+            "This network fixture does not perform real write actions; call the "
+            "organization-owned Email Agent endpoint discovered from its card."
+        ),
         "context_id": context.context_id,
         "task_id": context.task_id,
     }
     await updater.add_artifact(
         [Part(root=DataPart(data=output))],
-        artifact_id="email-send-confirmation-required",
-        name="email_send_confirmation_required",
-        metadata={"skill": "email/send"},
+        artifact_id=skill.replace("/", "-") + "-external-agent-required",
+        name=skill.replace("/", "_").replace("-", "_") + "_external_agent_required",
+        metadata={"skill": skill, "content_type": "application/json"},
     )
     await updater.requires_input(
         message=updater.new_agent_message(
@@ -103,14 +136,33 @@ async def _send_requires_confirmation(context: RequestContext, updater: TaskUpda
     )
 
 
+async def _complete(
+    updater: TaskUpdater,
+    *,
+    skill: str,
+    artifact_id: str,
+    artifact_name: str,
+    text: str,
+    output: dict,
+) -> None:
+    await updater.start_work()
+    await updater.add_artifact(
+        [Part(root=DataPart(data=output))],
+        artifact_id=artifact_id,
+        name=artifact_name,
+        metadata={"skill": skill, "content_type": "application/json"},
+    )
+    await updater.complete(
+        message=updater.new_agent_message(
+            [Part(root=TextPart(text=text))],
+            metadata={"structured_output": output},
+        )
+    )
+
+
 def _skill_from_context(context: RequestContext) -> str:
     metadata = context.metadata or {}
     return metadata.get("skill") or "email/draft"
-
-
-def _confirmed(context: RequestContext) -> bool:
-    metadata = context.metadata or {}
-    return metadata.get("confirmed") is True
 
 
 def _available_slots(context: RequestContext) -> list[dict[str, str]]:

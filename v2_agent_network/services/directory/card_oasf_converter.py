@@ -27,6 +27,14 @@ KNOWN_OASF_SKILLS: dict[str, OfficialOASFSkill] = {
 
 WRITE_SKILL_IDS = {
     "email/send",
+    "email/calendar/create_event",
+    "email/docs/create",
+    "email/docs/append",
+    "email/docs/replace_text",
+    "email/docs/create_and_email",
+    "email/sheets/create",
+    "email/sheets/write",
+    "email/sheets/append",
     "calendar/create_event",
     "calendar/update_event",
     "calendar/delete_event",
