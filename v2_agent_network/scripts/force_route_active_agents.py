@@ -70,7 +70,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"No stored records found at {args.server_addr}.")
         return 0
 
-    records = [_pull_agent_record(cid, args.server_addr) for cid in cids]
+    records: list[StoredAgentRecord] = []
+    unpullable: list[str] = []
+    for cid in cids:
+        record = _try_pull_agent_record(cid, args.server_addr)
+        if record is None:
+            unpullable.append(cid)
+            continue
+        records.append(record)
+    if unpullable:
+        print("Skipped unpullable stale search records:", file=sys.stderr)
+        for cid in unpullable:
+            print(f"  {cid}", file=sys.stderr)
+    if not records:
+        if args.delete_superseded:
+            _delete_unpullable(unpullable, args.server_addr)
+        print("No pullable stored agent records found.", file=sys.stderr)
+        return 1
+
     selected, superseded = _select_latest_per_agent(records)
 
     print(f"ADS server: {args.server_addr}")
@@ -103,6 +120,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             failures += 1
 
     if args.delete_superseded:
+        _delete_unpullable(unpullable, args.server_addr)
         for record in superseded:
             _run(
                 [
@@ -173,6 +191,30 @@ def _pull_agent_record(cid: str, server_addr: str) -> StoredAgentRecord:
         endpoint=str(endpoint),
         created_at=created_at,
     )
+
+
+def _try_pull_agent_record(cid: str, server_addr: str) -> StoredAgentRecord | None:
+    try:
+        return _pull_agent_record(cid, server_addr)
+    except Exception as exc:
+        print(f"Could not pull {cid}: {exc}", file=sys.stderr)
+        return None
+
+
+def _delete_unpullable(cids: list[str], server_addr: str) -> None:
+    for cid in cids:
+        result = _run(
+            ["dirctl", "--server-addr", server_addr, "delete", cid, "--output", "json"],
+            allow_fail=True,
+        )
+        if result.returncode == 0:
+            print(f"Deleted unpullable stale record: {cid}")
+        else:
+            print(
+                f"Could not delete unpullable stale record {cid}: "
+                f"stdout={result.stdout.strip()!r} stderr={result.stderr.strip()!r}",
+                file=sys.stderr,
+            )
 
 
 def _embedded_agent_card(record: dict[str, Any]) -> dict[str, Any] | None:

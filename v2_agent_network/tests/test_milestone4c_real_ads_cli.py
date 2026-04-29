@@ -9,8 +9,9 @@ from typing import Any
 
 import httpx
 import pytest
+from a2a.types import AgentCapabilities, AgentCard, AgentProvider, AgentSkill
 
-from v2_agent_network.scripts import publish_agents
+from v2_agent_network.scripts import force_route_active_agents, publish_agents
 from v2_agent_network.scripts.ads_diagnostics import _classify_cid
 from v2_agent_network.scripts.force_route_active_agents import (
     StoredAgentRecord,
@@ -44,6 +45,7 @@ class FakeDirctlRunner:
         card_path: Path = EMAIL_CARD,
         cid: str = "bafy-email-record",
         routed_skills: set[str] | None = None,
+        record: dict[str, Any] | None = None,
     ) -> None:
         self.commands: list[list[str]] = []
         self.pushed_record: dict[str, Any] | None = None
@@ -52,6 +54,7 @@ class FakeDirctlRunner:
         self.card_path = card_path
         self.cid = cid
         self.routed_skills = routed_skills
+        self.record = record
 
     def __call__(self, command: list[str]) -> subprocess.CompletedProcess[str]:
         self.commands.append(command)
@@ -91,6 +94,8 @@ class FakeDirctlRunner:
         raise AssertionError(f"unexpected dirctl command: {command}")
 
     def _record(self) -> dict[str, Any]:
+        if self.record is not None:
+            return self.record
         if self.pushed_record is not None:
             return self.pushed_record
         return agent_card_to_ads_record(load_agent_card(self.card_path))
@@ -286,6 +291,31 @@ def test_real_ads_cli_search_by_broad_email_hint_uses_official_routing_hint() ->
         == "natural_language_processing/information_retrieval_synthesis/information_retrieval_synthesis_search"
         for command in runner.commands
     )
+
+
+def test_real_ads_cli_search_custom_skill_falls_back_to_routed_index_post_filter() -> None:
+    runner = FakeDirctlRunner(
+        cid="bafy-disaster-record",
+        routed_skills=set(),
+        record=agent_card_to_ads_record(_disaster_card()),
+    )
+    backend = RealADSDirectoryBackend(
+        ads_url="localhost:8888",
+        backend="cli",
+        runner=runner,
+    )
+
+    agents = backend.search_agents(skill="disaster/response_plan")
+
+    assert agents[0].agent_id == "disaster-response-agent"
+    assert agents[0].endpoint == "http://10.229.117.223:9104/"
+    assert any(
+        command[3:6] == ["routing", "search", "--skill"]
+        and command[6] == "disaster/response_plan"
+        for command in runner.commands
+    )
+    assert any(command[3:5] == ["routing", "search"] and "--skill" not in command for command in runner.commands)
+    assert any(command[3:4] == ["pull"] for command in runner.commands)
 
 
 def test_real_ads_cli_search_reports_storage_only_records_by_default() -> None:
@@ -547,6 +577,59 @@ def test_force_route_active_agents_selects_latest_record_per_agent() -> None:
     assert [record.cid for record in superseded] == ["old-email-cid"]
 
 
+def test_force_route_active_agents_skips_and_deletes_unpullable_search_records(
+    monkeypatch,
+) -> None:
+    commands: list[list[str]] = []
+
+    def fake_run(command: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        args = command[3:]
+        if args[:1] == ["search"]:
+            return _completed(command, stdout=json.dumps(["missing-cid", "old-cid", "new-cid"]))
+        if args[:1] == ["pull"] and args[1] == "missing-cid":
+            return _completed(command, returncode=1, stderr="record not found")
+        if args[:1] == ["pull"] and args[1] in {"old-cid", "new-cid"}:
+            cid = args[1]
+            return _completed(
+                command,
+                stdout=json.dumps(
+                    {
+                        "annotations": {
+                            "agentic_network.agent_id": "email-agent",
+                            "agentic_network.display_name": "Email Agent",
+                            "a2a.url": "http://email-agent/",
+                        },
+                        "created_at": (
+                            "2026-04-29T22:00:00Z"
+                            if cid == "old-cid"
+                            else "2026-04-29T22:01:00Z"
+                        ),
+                    }
+                ),
+            )
+        if args[:2] == ["routing", "publish"]:
+            return _completed(command, stdout="published")
+        if args[:2] == ["routing", "list"]:
+            return _completed(command, stdout=json.dumps([{"record_ref": {"cid": "new-cid"}}]))
+        if args[:2] == ["routing", "unpublish"]:
+            return _completed(command, stdout="unpublished")
+        if args[:1] == ["delete"]:
+            return _completed(command, stdout=json.dumps(args[1]))
+        raise AssertionError(f"unexpected command: {command}")
+
+    monkeypatch.setattr(force_route_active_agents.subprocess, "run", fake_run)
+
+    exit_code = force_route_active_agents.main(
+        ["--server-addr", "localhost:8888", "--delete-superseded"]
+    )
+
+    assert exit_code == 0
+    assert any(command[3:6] == ["routing", "publish", "new-cid"] for command in commands)
+    assert any(command[3:5] == ["delete", "missing-cid"] for command in commands)
+    assert any(command[3:5] == ["delete", "old-cid"] for command in commands)
+
+
 @pytest.mark.skipif(
     os.getenv("RUN_REAL_ADS_TESTS") != "true",
     reason="Set RUN_REAL_ADS_TESTS=true and start dirctl daemon for real ADS integration.",
@@ -601,4 +684,47 @@ def _completed(
         returncode=returncode,
         stdout=stdout,
         stderr=stderr,
+    )
+
+
+def _disaster_card() -> AgentCard:
+    return AgentCard(
+        name="Disaster Response Agent",
+        description="A2A disaster response planning agent.",
+        url="http://10.229.117.223:9104/",
+        provider=AgentProvider(
+            organization="CSPL Disaster Response Agent",
+            url="https://example.invalid/cspl-disaster-response-agent",
+        ),
+        version="0.3.0",
+        protocolVersion="0.3.0",
+        preferredTransport="JSONRPC",
+        capabilities=AgentCapabilities(streaming=False, pushNotifications=False),
+        defaultInputModes=["text/plain", "application/json"],
+        defaultOutputModes=["text/plain", "application/json"],
+        skills=[
+            AgentSkill(
+                id="disaster/response_plan",
+                name="Build Disaster Response Plan",
+                description="Create immediate action guidance and response plans.",
+                tags=[
+                    "disaster/response_plan",
+                    "disaster",
+                    "emergency",
+                    "response",
+                    "planning",
+                    "read",
+                ],
+                inputModes=["text/plain", "application/json"],
+                outputModes=["text/plain", "application/json"],
+            ),
+            AgentSkill(
+                id="disaster/triage",
+                name="Triage Disaster Situation",
+                description="Identify likely incident type and first actions.",
+                tags=["disaster/triage", "disaster", "triage", "risk", "read"],
+                inputModes=["text/plain", "application/json"],
+                outputModes=["text/plain", "application/json"],
+            ),
+        ],
     )

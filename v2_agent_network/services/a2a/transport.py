@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from abc import ABC, abstractmethod
 from urllib.parse import urlsplit
 
@@ -28,9 +29,11 @@ class HTTPA2ATransport(A2ATransport):
         self,
         http_client: httpx.AsyncClient | None = None,
         http_clients_by_origin: dict[str, httpx.AsyncClient] | None = None,
+        timeout_seconds: float | None = None,
     ):
         self._http_client = http_client
         self._http_clients_by_origin = http_clients_by_origin or {}
+        self.timeout_seconds = timeout_seconds or float(os.getenv("A2A_HTTP_TIMEOUT_SECONDS", "30"))
 
     async def send_task(self, agent: DiscoveredAgent, request: A2ATaskRequest) -> A2ATaskResult:
         card = discovered_agent_to_a2a_agent_card(agent)
@@ -49,7 +52,7 @@ class HTTPA2ATransport(A2ATransport):
             sdk_client = SdkA2AClient(httpx_client=injected_client, agent_card=card)
             sdk_response = await sdk_client.send_message(sdk_request)
         else:
-            async with httpx.AsyncClient(timeout=30) as http_client:
+            async with httpx.AsyncClient(timeout=self.timeout_seconds) as http_client:
                 sdk_client = SdkA2AClient(httpx_client=http_client, agent_card=card)
                 sdk_response = await sdk_client.send_message(sdk_request)
         result = a2a_response_to_internal_task_result(sdk_response)

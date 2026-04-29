@@ -308,6 +308,24 @@ class RealADSDirectoryBackend:
                         search_skill,
                         local_search_cids,
                     )
+            if not cids:
+                routed_all = self._run_dirctl(["routing", "search", "--limit", str(limit), "--output", "json"])
+                routed_all_cids = _cids_from_routing_output(routed_all.stdout)
+                cids.extend(routed_all_cids)
+                logger.debug(
+                    "directory_real_search_routing_search_all_for_custom_skill skill=%s cids=%s",
+                    skill,
+                    routed_all_cids,
+                )
+            if not cids:
+                routed_list_all = self._run_dirctl(["routing", "list", "--output", "json"])
+                routed_list_all_cids = _cids_from_routing_output(routed_list_all.stdout)
+                cids.extend(routed_list_all_cids)
+                logger.debug(
+                    "directory_real_search_routing_list_all_for_custom_skill skill=%s cids=%s",
+                    skill,
+                    routed_list_all_cids,
+                )
         else:
             result = self._run_dirctl(["routing", "search", "--limit", str(limit), "--output", "json"])
             routing_search_cids = _cids_from_routing_output(result.stdout)
@@ -341,6 +359,14 @@ class RealADSDirectoryBackend:
             input_mode=input_mode,
             output_mode=output_mode,
         )
+        if skill and not agents and not self._allow_local_store_fallback():
+            self._raise_if_storage_only_matches(
+                skill=skill,
+                domain=domain,
+                input_mode=input_mode,
+                output_mode=output_mode,
+                limit=limit,
+            )
         logger.info(
             "directory_real_search_done skill=%s raw_cids=%s pulled_records=%d agents=%s",
             skill,

@@ -395,6 +395,139 @@ async def _tool_loop_confirmation_resumes_pending_call_once() -> None:
     assert payload["structured_output"]["sent_email"]["to"] == "wyy0115@outlook.com"
 
 
+def test_tool_loop_confirmation_a2a_timeout_returns_failed_response() -> None:
+    asyncio.run(_tool_loop_confirmation_a2a_timeout_returns_failed_response())
+
+
+async def _tool_loop_confirmation_a2a_timeout_returns_failed_response() -> None:
+    directory = SpyDirectoryClient(fake_ads=True)
+    directory.publish_agent_card(load_agent_card(EMAIL_CARD))
+    a2a_client = TimeoutA2AClient()
+    state_store = InMemoryStateStore()
+    llm_client = ScriptedToolLoopClient(
+        [
+            AgentToolCall(
+                tool_name="discover_agents",
+                arguments={"query": "send email", "skill_hint": "email/send"},
+            ),
+            AgentToolCall(
+                tool_name="call_agent",
+                arguments={
+                    "agent_id": "email-agent",
+                    "skill": "email/send",
+                    "task_input": {
+                        "to": ["wyy0115@outlook.com"],
+                        "subject": "Test",
+                        "body": "Test",
+                    },
+                },
+            ),
+        ]
+    )
+    pi_app = create_app(
+        directory_client=directory,
+        a2a_client=a2a_client,
+        state_store=state_store,
+        publish_weather_card=False,
+        llm_config=_llm_config(),
+        tool_loop_llm_client=llm_client,
+        agent_mode="tool_loop",
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=pi_app),
+        base_url="http://pi-agent",
+    ) as pi_http_client:
+        first = await pi_http_client.post(
+            "/messages",
+            json={
+                "user_id": "user-1",
+                "channel": "api",
+                "text": "Send an email to wyy0115@outlook.com.",
+            },
+        )
+        context_id = first.json()["context_id"]
+        confirmed = await pi_http_client.post(
+            "/messages",
+            json={
+                "user_id": "user-1",
+                "channel": "api",
+                "context_id": context_id,
+                "text": "yes",
+            },
+        )
+
+    assert confirmed.status_code == 200, confirmed.text
+    payload = confirmed.json()
+    assert a2a_client.calls == [("email-agent", "email/send")]
+    assert payload["state"] == "failed"
+    assert payload["confirmation_required"] is False
+    assert payload["confirmation_status"] == "confirmed"
+    assert payload["structured_output"]["status"] == "a2a_call_failed"
+    assert payload["structured_output"]["error_type"] == "TimeoutError"
+    assert "simulated timeout" in payload["final_response"]
+    assert state_store.get_pending_confirmation(context_id) is None
+
+
+def test_tool_loop_a2a_timeout_becomes_tool_observation_not_500() -> None:
+    asyncio.run(_tool_loop_a2a_timeout_becomes_tool_observation_not_500())
+
+
+async def _tool_loop_a2a_timeout_becomes_tool_observation_not_500() -> None:
+    directory = SpyDirectoryClient(fake_ads=True)
+    directory.publish_agent_card(load_agent_card(EMAIL_CARD))
+    llm_client = ScriptedToolLoopClient(
+        [
+            AgentToolCall(
+                tool_name="discover_agents",
+                arguments={"query": "email time", "skill_hint": "email/current_time"},
+            ),
+            AgentToolCall(
+                tool_name="call_agent",
+                arguments={
+                    "agent_id": "email-agent",
+                    "skill": "email/current_time",
+                    "task_input": {},
+                },
+            ),
+            AgentToolCall(
+                tool_name="final_answer",
+                arguments={"text": "The email agent timed out."},
+            ),
+        ]
+    )
+    pi_app = create_app(
+        directory_client=directory,
+        a2a_client=TimeoutA2AClient(),
+        publish_weather_card=False,
+        llm_config=_llm_config(),
+        tool_loop_llm_client=llm_client,
+        agent_mode="tool_loop",
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=pi_app),
+        base_url="http://pi-agent",
+    ) as pi_http_client:
+        response = await pi_http_client.post(
+            "/messages",
+            json={
+                "user_id": "user-1",
+                "channel": "api",
+                "text": "What time is it for the email agent?",
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["final_response"] == "The email agent timed out."
+    assert payload["task_states"]["email/current_time"] == "failed"
+    call_observation = payload["tool_trace"][1]
+    assert call_observation["tool_name"] == "call_agent"
+    assert call_observation["status"] == "failed"
+    assert call_observation["content"]["structured_output"]["status"] == "a2a_call_failed"
+
+
 def test_tool_loop_yes_without_pending_confirmation_continues_agent_loop() -> None:
     asyncio.run(_tool_loop_yes_without_pending_confirmation_continues_agent_loop())
 
@@ -648,6 +781,15 @@ class SpyA2AClient(A2AClient):
 class FailingA2AClient(A2AClient):
     async def send_task(self, agent, request):
         raise AssertionError(f"{request.skill} should not have invoked A2A")
+
+
+class TimeoutA2AClient(A2AClient):
+    def __init__(self):
+        self.calls: list[tuple[str, str]] = []
+
+    async def send_task(self, agent, request):
+        self.calls.append((agent.agent_id, request.skill))
+        raise TimeoutError("simulated timeout")
 
 
 def _llm_config() -> PILLMConfig:

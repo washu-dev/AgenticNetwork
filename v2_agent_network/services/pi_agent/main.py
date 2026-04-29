@@ -404,7 +404,22 @@ def create_app(
                     selected_agent.endpoint,
                     task_request.task_id,
                 )
-                result = await client.send_task(selected_agent, task_request)
+                try:
+                    result = await client.send_task(selected_agent, task_request)
+                except Exception as exc:
+                    logger.exception(
+                        "pi_a2a_invoke_failed context_id=%s skill=%s agent_id=%s endpoint=%s task_id=%s",
+                        context.context_id,
+                        skill,
+                        selected_agent.agent_id,
+                        selected_agent.endpoint,
+                        task_request.task_id,
+                    )
+                    result = _failed_agent_result(
+                        request=task_request,
+                        agent=selected_agent,
+                        exc=exc,
+                    )
                 logger.info(
                     "pi_a2a_invoke_done context_id=%s skill=%s agent_id=%s task_id=%s state=%s artifacts=%d structured_output=%s error=%s",
                     context.context_id,
@@ -704,7 +719,22 @@ async def _confirm_pending_action(
         selected_agent.endpoint,
         task_request.task_id,
     )
-    result = await client.send_task(selected_agent, task_request)
+    try:
+        result = await client.send_task(selected_agent, task_request)
+    except Exception as exc:
+        logger.exception(
+            "pi_confirmation_a2a_invoke_failed context_id=%s skill=%s agent_id=%s endpoint=%s task_id=%s",
+            context.context_id,
+            skill,
+            selected_agent.agent_id,
+            selected_agent.endpoint,
+            task_request.task_id,
+        )
+        result = _failed_agent_result(
+            request=task_request,
+            agent=selected_agent,
+            exc=exc,
+        )
     logger.info(
         "pi_confirmation_a2a_invoke_done context_id=%s skill=%s agent_id=%s task_id=%s state=%s",
         context.context_id,
@@ -1519,6 +1549,33 @@ def _artifact_references(result: A2ATaskResult, skill: str) -> list[dict[str, st
         }
         for artifact in result.artifacts
     ]
+
+
+def _failed_agent_result(
+    *,
+    request: A2ATaskRequest,
+    agent: DiscoveredAgent,
+    exc: BaseException,
+) -> A2ATaskResult:
+    message = (
+        f"A2A call to {agent.name or agent.agent_id} for {request.skill} failed: "
+        f"{type(exc).__name__}: {exc}"
+    )
+    return A2ATaskResult(
+        task_id=request.task_id or str(uuid4()),
+        context_id=request.context_id,
+        state=A2ATaskState.failed,
+        messages=[A2AMessage(role="agent", parts=[A2APart(kind="text", text=message)])],
+        structured_output={
+            "skill": request.skill,
+            "agent_id": agent.agent_id,
+            "endpoint": agent.endpoint,
+            "status": "a2a_call_failed",
+            "error_type": type(exc).__name__,
+            "error": str(exc),
+        },
+        error=message,
+    )
 
 
 def _list_from_situation(

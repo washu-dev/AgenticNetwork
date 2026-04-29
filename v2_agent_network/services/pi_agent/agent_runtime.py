@@ -312,7 +312,18 @@ class PIAgentRuntime:
             confirmed=True,
             metadata=metadata or {},
         )
-        result = await self.a2a_client.send_task(agent, request)
+        try:
+            result = await self.a2a_client.send_task(agent, request)
+        except Exception as exc:
+            logger.exception(
+                "pi_tool_loop_confirmed_a2a_failed context_id=%s skill=%s agent_id=%s endpoint=%s task_id=%s",
+                context.context_id,
+                skill,
+                agent.agent_id,
+                agent.endpoint,
+                request.task_id,
+            )
+            result = _failed_agent_result(request=request, agent=agent, exc=exc)
         self._save_invocation(
             context=context,
             agent=agent,
@@ -521,7 +532,18 @@ class PIAgentRuntime:
             reference_task_ids=list(state.task_ids.values()),
             metadata=getattr(incoming, "metadata", {}),
         )
-        result = await self.a2a_client.send_task(agent, request)
+        try:
+            result = await self.a2a_client.send_task(agent, request)
+        except Exception as exc:
+            logger.exception(
+                "pi_tool_loop_a2a_failed context_id=%s skill=%s agent_id=%s endpoint=%s task_id=%s",
+                context.context_id,
+                skill,
+                agent.agent_id,
+                agent.endpoint,
+                request.task_id,
+            )
+            result = _failed_agent_result(request=request, agent=agent, exc=exc)
         self._save_invocation(
             context=context,
             agent=agent,
@@ -1012,6 +1034,33 @@ def _artifact_references(result: A2ATaskResult, skill: str) -> list[dict[str, st
         }
         for artifact in result.artifacts
     ]
+
+
+def _failed_agent_result(
+    *,
+    request: A2ATaskRequest,
+    agent: DiscoveredAgent,
+    exc: BaseException,
+) -> A2ATaskResult:
+    message = (
+        f"A2A call to {agent.name or agent.agent_id} for {request.skill} failed: "
+        f"{type(exc).__name__}: {exc}"
+    )
+    return A2ATaskResult(
+        task_id=request.task_id or str(uuid4()),
+        context_id=request.context_id,
+        state=A2ATaskState.failed,
+        messages=[A2AMessage(role="agent", parts=[A2APart(kind="text", text=message)])],
+        structured_output={
+            "skill": request.skill,
+            "agent_id": agent.agent_id,
+            "endpoint": agent.endpoint,
+            "status": "a2a_call_failed",
+            "error_type": type(exc).__name__,
+            "error": str(exc),
+        },
+        error=message,
+    )
 
 
 def _draft_email_from_outputs(outputs: dict[str, object]) -> dict[str, object] | None:
