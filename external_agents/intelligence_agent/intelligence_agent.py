@@ -183,12 +183,14 @@ class IntelligenceAgentExecutor(_AgentExecutorBase):
 
         peer_calls: list[dict[str, Any]] = []
         web_search_calls: list[dict[str, Any]] = []
+        delivery_results: list[dict[str, Any]] = []
         discovered_cache: dict[str, list[dict[str, Any]]] = {}
 
         tool_handlers = self._build_tool_handlers(
             context_id=context.context_id,
             peer_calls=peer_calls,
             web_search_calls=web_search_calls,
+            delivery_results=delivery_results,
             discovered_cache=discovered_cache,
         )
 
@@ -217,10 +219,11 @@ class IntelligenceAgentExecutor(_AgentExecutorBase):
 
         logger.info(
             "agent loop finished: task_id=%s exit=%s steps=%d tools=%d "
-            "elapsed=%.2fs peer_calls=%d web_searches=%d",
+            "elapsed=%.2fs peer_calls=%d web_searches=%d deliveries=%d",
             context.task_id,
             trace.exit_reason, trace.n_steps, len(trace.tool_calls),
             trace.elapsed, len(peer_calls), len(web_search_calls),
+            len(delivery_results),
         )
 
         output: dict[str, Any] = {
@@ -229,6 +232,7 @@ class IntelligenceAgentExecutor(_AgentExecutorBase):
             "task_id": context.task_id,
             "peer_calls": peer_calls,
             "web_search_calls": web_search_calls,
+            "delivery_results": delivery_results,
             "agent": {
                 "final_message": trace.final_message,
                 "exit_reason": trace.exit_reason,
@@ -272,6 +276,7 @@ class IntelligenceAgentExecutor(_AgentExecutorBase):
         context_id: str,
         peer_calls: list[dict[str, Any]],
         web_search_calls: list[dict[str, Any]],
+        delivery_results: list[dict[str, Any]],
         discovered_cache: dict[str, list[dict[str, Any]]],
     ) -> dict[str, Any]:
 
@@ -437,10 +442,93 @@ class IntelligenceAgentExecutor(_AgentExecutorBase):
             logger.info("web_search: query=%r results=%d", query[:60], len(results))
             return outcome
 
+        async def tool_group_email(args: Any) -> dict[str, Any]:
+            args = args or {}
+            subject = str(args.get("subject") or "").strip()
+            body = str(args.get("body") or "").strip()
+            importance = str(args.get("importance") or "normal").strip().lower()
+            if importance not in {"normal", "high"}:
+                importance = "normal"
+            if not subject:
+                return {"error": "send_group_email_via_directory requires non-empty 'subject'"}
+            if not body:
+                return {"error": "send_group_email_via_directory requires non-empty 'body'"}
+
+            skill_query = "email/group_send"
+            try:
+                matches = await _discover(skill_query)
+            except Exception as exc:
+                outcome = {
+                    "status": "directory_unavailable",
+                    "kind": "group_email",
+                    "skill_query": skill_query,
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+                delivery_results.append(outcome)
+                return outcome
+            if not matches:
+                outcome = {
+                    "status": "no_agent_found",
+                    "kind": "group_email",
+                    "skill_query": skill_query,
+                }
+                delivery_results.append(outcome)
+                return outcome
+            target = matches[0]
+
+            try:
+                send_result = await _send_a2a_group_email_request(
+                    agent=target,
+                    subject=subject,
+                    body=body,
+                    importance=importance,
+                    context_id=context_id,
+                    transport=self._transport,
+                )
+            except Exception as exc:
+                outcome = {
+                    "status": "send_failed",
+                    "kind": "group_email",
+                    "agent_id": getattr(target, "agent_id", None),
+                    "agent_endpoint": getattr(target, "endpoint", None),
+                    "skill_query": skill_query,
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+                delivery_results.append(outcome)
+                return outcome
+
+            state = send_result.get("state")
+            if state == "completed" and not send_result.get("error"):
+                status = "sent"
+            elif state == "input_required" and not send_result.get("error"):
+                status = "pending_confirmation"
+            else:
+                status = "send_rejected"
+            outcome = {
+                "status": status,
+                "kind": "group_email",
+                "agent_id": getattr(target, "agent_id", None),
+                "agent_name": getattr(target, "name", None),
+                "agent_endpoint": getattr(target, "endpoint", None),
+                "skill_query": skill_query,
+                "subject": subject,
+                "importance": importance,
+                "send_state": state,
+                "summary": send_result.get("summary"),
+                "error": send_result.get("error"),
+            }
+            delivery_results.append(outcome)
+            logger.info(
+                "send_group_email_via_directory: status=%s agent=%s subject=%r importance=%s",
+                status, outcome["agent_id"], subject[:80], importance,
+            )
+            return outcome
+
         return {
             "discover_agents": tool_discover_agents,
             "query_peer_agent": tool_query_peer,
             "web_search": tool_web_search,
+            "send_group_email_via_directory": tool_group_email,
         }
 
     async def cancel(
@@ -622,6 +710,92 @@ async def _send_a2a_request(
     return {
         "state": state,
         "message_id": (structured or {}).get("message_id") if isinstance(structured, dict) else None,
+        "structured_output": structured,
+        "summary": summary,
+        "error": error,
+    }
+
+
+async def _send_a2a_group_email_request(
+    *,
+    agent: Any,
+    subject: str,
+    body: str,
+    importance: str,
+    context_id: str,
+    transport: Any | None,
+) -> dict[str, Any]:
+    """Send an A2A ``email/group_send`` request to a discovered email agent.
+
+    The email agent owns the recipient list (``notice_list.txt``); we only
+    pass subject + body + an optional importance flag. Sent confirmed so the
+    email agent doesn't bounce back an ``input_required`` for routine
+    intelligence-side broadcasts.
+    """
+    from v2_agent_network.services.a2a.client import A2AClient
+    from v2_agent_network.services.a2a.transport import HTTPA2ATransport
+    from v2_agent_network.services.common.models import (
+        A2AMessage,
+        A2APart,
+        A2ATaskRequest,
+    )
+
+    skill = "email/group_send"
+    payload: dict[str, Any] = {
+        "subject": subject,
+        "body": body,
+        "importance": importance,
+    }
+    metadata: dict[str, Any] = {
+        "skill": skill,
+        "requested_skill": skill,
+        "confirmation_status": "confirmed",
+        "confirmed": True,
+        **payload,
+    }
+    text_intro = f"[group_send importance={importance}] {subject}\n\n{body}"
+
+    request = A2ATaskRequest(
+        task_id=str(uuid.uuid4()),
+        context_id=context_id,
+        target_agent_id=getattr(agent, "agent_id", None) or "email-agent",
+        skill=skill,
+        user_goal=f"Broadcast intelligence brief: {subject[:160]}",
+        messages=[
+            A2AMessage(
+                role="user",
+                parts=[
+                    A2APart(kind="text", text=text_intro),
+                    A2APart(
+                        kind="data",
+                        content_type="application/json",
+                        data=payload,
+                    ),
+                ],
+            )
+        ],
+        metadata=metadata,
+    )
+
+    if transport is None:
+        transport = HTTPA2ATransport()
+    client = A2AClient(transport)
+    result = await client.send_task(agent, request)
+    state = result.state.value if hasattr(result.state, "value") else str(result.state)
+
+    summary = None
+    if result.messages:
+        last = result.messages[-1]
+        for part in last.parts:
+            if part.kind == "text" and part.text:
+                summary = part.text
+                break
+    structured = result.structured_output if isinstance(result.structured_output, dict) else None
+    error = (structured or {}).get("error") if structured else None
+
+    return {
+        "state": state,
+        "message_id": (structured or {}).get("message_id") if structured else None,
         "structured_output": structured,
         "summary": summary,
         "error": error,
@@ -1118,6 +1292,7 @@ def _cli_run_once(args: argparse.Namespace) -> int:
         context_id=str(uuid.uuid4()),
         peer_calls=[],
         web_search_calls=[],
+        delivery_results=[],
         discovered_cache={},
     )
     from agent_loop import run_agent_loop
