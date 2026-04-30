@@ -67,6 +67,11 @@ You have three tools:
 
 - web_search(query, count=5): runs a Brave web search and returns the top results (title, url, snippet). Use this for: external context the recon agent does not own (news, doctrine, weather, terrain, prior incidents at this location), corroboration of peer-reported entities, or background on adversary platforms / civilian-population dynamics.
 
+- send_group_email_via_directory(subject, body, importance="normal"|"high"): discover an agent advertising the ``email/group_send`` skill (today: the Gmail-backed email agent) and broadcast ONE message to its locally-managed group recipient list. The email agent owns the recipient list (``notice_list.txt``) — you only provide subject, body, and an optional importance flag. The body should be the full intelligence brief in concise, readable form (not raw JSON). Use this **only** when:
+    * the brief describes a HIGH-IMPACT situation that decision-makers beyond the requester need to see — emerging hostile activity, civilian-risk scenario, urgent / time-critical COA, or escalation; OR
+    * the user explicitly asked you to broadcast / disseminate / notify the team / email the brief to the group.
+  Otherwise, do NOT call this tool — your final reply IS the brief and the requester (PI) will route it. Call AT MOST ONCE per request, AFTER the brief is fully synthesized. Set ``importance="high"`` only when the situation is genuinely time-critical. The recipient list is fixed on the email agent side; you cannot override it from here.
+
 Workflow:
 1. Briefly state your intelligence question and what you need to answer it.
 2. Pick the right spider-fleet skill for the user's question:
@@ -78,7 +83,8 @@ Workflow:
    Then call query_peer_agent with that skill_query.
 3. If useful, follow up with web_search or another query_peer_agent against an OSINT-style skill for context the recon agent doesn't have (terrain, weather, doctrine, similar past engagements).
 4. Synthesize a final intelligence brief covering, in this order: SITUATIONAL AWARENESS (what is happening now, who/what/where), THREAT ASSESSMENT (categorized: hostile / civilian / unknown; confidence; immediate vs. emerging), COURSE OF ACTION (2-3 prioritized COAs with tradeoffs and a recommended one), INFORMATION GAPS (what you still don't know and how to fill it).
-5. Stop calling tools after step 4 — your final reply IS the brief.
+5. If — and only if — the brief is HIGH-IMPACT (urgent threat, civilian-risk, escalation, or a recommended COA that requires immediate action) OR the user explicitly asked you to disseminate it, call ``send_group_email_via_directory`` ONCE with a clear subject and the brief as the body (``importance="high"`` only for time-critical). Note in your final reply that the brief was broadcast to the group. The brief is still in your final reply regardless.
+6. Stop calling tools after step 5 — your final reply IS the brief.
 
 Constraints:
 - You are an analyst, not an operator. Recommend actions; do not direct kinetic strikes. The spider fleet has a ``multi_spider/move_robots`` skill — DO NOT call it from this agent.
@@ -86,6 +92,7 @@ Constraints:
 - Cite peer agents and web sources by their identifier (peer agent_id or URL) when you reference their findings. Distinguish what you observed from what you inferred.
 - Keep each section short — the consumer is a decision-maker who wants signal, not prose. Bulleted sub-headings are fine.
 - If the recon fleet is unreachable or returns no data, say so explicitly under INFORMATION GAPS instead of fabricating mission state.
+- Default to NOT broadcasting. Routine sitreps, mission recaps, and status checks are not "high-impact" — only escalate to group email when withholding the brief would materially delay a needed decision.
 """
 
 
@@ -188,6 +195,56 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                     },
                 },
                 "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "send_group_email_via_directory",
+            "description": (
+                "Discover an agent advertising the 'email/group_send' skill "
+                "(today: the Gmail-backed email agent) and broadcast ONE "
+                "message to its locally-managed group recipient list "
+                "(notice_list.txt on the email agent). You DO NOT supply "
+                "recipients — only subject + body + optional importance. "
+                "Call AT MOST ONCE per request and only when the brief is "
+                "high-impact (urgent threat, civilian risk, escalation, "
+                "time-critical COA) or the user explicitly asked you to "
+                "broadcast / disseminate it."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "subject": {
+                        "type": "string",
+                        "description": (
+                            "Concise email subject (e.g. 'INTEL BRIEF: hostile "
+                            "activity in ALPHA-3' or 'SITREP — area BRAVO-2'). "
+                            "Keep under ~80 chars."
+                        ),
+                    },
+                    "body": {
+                        "type": "string",
+                        "description": (
+                            "The full intelligence brief in readable plaintext "
+                            "(not JSON). Include the same SITUATIONAL "
+                            "AWARENESS / THREAT ASSESSMENT / COURSE OF ACTION "
+                            "/ INFORMATION GAPS sections you put in your final "
+                            "reply, condensed for an email reader."
+                        ),
+                    },
+                    "importance": {
+                        "type": "string",
+                        "enum": ["normal", "high"],
+                        "description": (
+                            "Use 'high' only when the situation is genuinely "
+                            "time-critical (active hostile activity, civilian "
+                            "risk, urgent COA). Default 'normal'."
+                        ),
+                    },
+                },
+                "required": ["subject", "body"],
             },
         },
     },

@@ -213,7 +213,7 @@ class CodingAgentExecutor(_AgentExecutorBase):
         delivery_directory: Any | None = None,
         delivery_transport: Any | None = None,
         completion_fn: Any | None = None,
-        agent_step_limit: int = 8,
+        agent_step_limit: int = 4,
         agent_time_limit_s: float = 900.0,
         state_store: Any | None = None,
     ) -> None:
@@ -499,7 +499,7 @@ class CodingAgentExecutor(_AgentExecutorBase):
         run_coder_calls: list[dict[str, Any]],
         delivery_results: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        runner_limits = {"step_limit": 25, "cost_limit": 1.50}
+        runner_limits = {"step_limit": 6, "cost_limit": 1.50}
 
         async def _seed_extra_files(files: Any) -> list[str]:
             written: list[str] = []
@@ -525,13 +525,22 @@ class CodingAgentExecutor(_AgentExecutorBase):
             task_text = str((args or {}).get("task") or "").strip()
             if not task_text:
                 return {"error": "run_coder requires non-empty 'task'"}
+            framed_task = (
+                "FINISH RULE (read first): When the work is done, your VERY NEXT "
+                "command must be exactly `echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT` "
+                "on its own — no `&&`, no chaining, no leading/trailing commands. "
+                "The harness only detects submission when this string is the FIRST "
+                "LINE of stdout. If you chain it, the run is wasted and you will "
+                "loop until the step limit.\n\n"
+                f"TASK:\n{task_text}"
+            )
             extra = await _seed_extra_files((args or {}).get("files"))
             before = _snapshot_workspace(workspace)
             runner_started = time.monotonic()
             try:
                 run_result = await asyncio.to_thread(
                     self._runner,
-                    task=task_text,
+                    task=framed_task,
                     skill="agent_loop/run_coder",
                     workspace=str(workspace),
                     limits=runner_limits,
@@ -1393,7 +1402,43 @@ def _default_minisweagent_runner(
     from minisweagent.agents.default import DefaultAgent
     from minisweagent.agents.interactive import InteractiveAgent
     from minisweagent.environments.local import LocalEnvironment
+    from minisweagent.exceptions import Submitted
     from minisweagent.models.litellm_model import LitellmModel
+
+    _SUBMIT_MARKER = "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT"
+
+    class _LenientSubmissionEnvironment(LocalEnvironment):
+        """LocalEnvironment that also accepts the submit marker mid-output.
+
+        Upstream's ``_check_finished`` only fires when the marker is the very
+        first stripped line of stdout. Some models chain the marker after a
+        successful command (``... && echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT``)
+        and the upstream check misses it, so the inner loop burns its full
+        ``step_limit`` retrying instead of exiting. This subclass first defers
+        to the strict upstream check (zero behaviour change for well-behaved
+        models) and then does a permissive scan: if any line equals the marker
+        and the command succeeded, treat it as a submission.
+        """
+
+        def _check_finished(self, output: dict) -> None:
+            super()._check_finished(output)
+            if output.get("returncode") != 0:
+                return
+            text = output.get("output", "") or ""
+            lines = text.splitlines()
+            for idx, line in enumerate(lines):
+                if line.strip() == _SUBMIT_MARKER:
+                    submission = "\n".join(lines[idx + 1 :])
+                    raise Submitted(
+                        {
+                            "role": "exit",
+                            "content": submission,
+                            "extra": {
+                                "exit_status": "Submitted",
+                                "submission": submission,
+                            },
+                        }
+                    )
 
     model_name = os.getenv("CODING_AGENT_MODEL") or os.getenv("MSWEA_MODEL_NAME")
     if not model_name:
@@ -1414,7 +1459,7 @@ def _default_minisweagent_runner(
         model_name=model_name,
         model_kwargs=(config.get("model") or {}).get("model_kwargs") or {},
     )
-    env = LocalEnvironment(
+    env = _LenientSubmissionEnvironment(
         cwd=workspace,
         env=(config.get("environment") or {}).get("env") or {},
     )
