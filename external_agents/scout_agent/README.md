@@ -29,20 +29,20 @@ JSON-schema input and an async `invoke()` method. The ReAct loop dispatches
 through a `CapabilityRegistry` and never imports adapters directly.
 
 ```
-                 ┌──────────────────────────────────────┐
-                 │     ScoutSession (ReAct loop)        │
-                 │   plan → tool_call → observe → …     │
-                 └────────┬──────────────────┬──────────┘
-                          │                  │
-                ┌─────────▼─────┐   ┌────────▼─────────┐
-                │ BraveCapabili-│   │ A2APeerCapability │
-                │ ties (web,    │   │ (one per peer    │
-                │  news)        │   │  discovered in   │
-                │               │   │  the directory)  │
-                └───────────────┘   └────────┬─────────┘
-                                             │ JSON-RPC over HTTP
-                                             ▼
-                                    other agents on the network
+   ┌──────────────────────────────────────┐
+   │     ScoutSession (ReAct loop)        │
+   │   plan → tool_call → observe → …     │
+   └────────┬──────────────────┬──────────┘
+            │                  │
+  ┌─────────▼─────┐   ┌─────────▼─────────┐
+  │ BraveCapabili-│   │ A2APeerCapability │
+  │ ties (web,    │   │  (one per peer    │
+  │  news)        │   │   discovered in   │
+  │               │   │   the directory)  │
+  └───────────────┘   └─────────┬─────────┘
+                                │ JSON-RPC over HTTP
+                                ▼
+                    other agents on the network
 ```
 
 When `scout serve` starts, it:
@@ -69,8 +69,6 @@ own record from the dir.
 ### Install
 
 ```bash
-git clone <this-repo> scout
-cd scout
 python3.12 -m venv .venv
 .venv/bin/pip install -e .
 

@@ -10,3 +10,4 @@ __pycache__/
 .env.*.local
 v2_agent_network/*.log
 v2_agent_network/.runtime/
+.venv/

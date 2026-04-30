@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from typing import Any
 
-from a2a.types import AgentCapabilities, AgentCard, AgentInterface, AgentSkill
+from a2a.types import AgentCapabilities, AgentCard, AgentInterface, AgentProvider, AgentSkill
 from agntcy_app_sdk.directory.oasf_converter import (
     CARD_SCHEMA_VERSION,
     MODULE_ID_A2A,
@@ -111,6 +111,10 @@ def build_scout_card(
         description="Environment-centric OSINT research & trend analysis agent.",
         version=version,
         url=http_endpoint,
+        provider=AgentProvider(
+            organization="CSPL Scout Agent",
+            url="https://example.invalid/cspl-scout-agent",
+        ),
         defaultInputModes=["text"],
         defaultOutputModes=["text"],
         capabilities=AgentCapabilities(streaming=True),
