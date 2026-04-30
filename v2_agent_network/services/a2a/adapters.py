@@ -227,7 +227,7 @@ def discovered_agent_to_a2a_agent_card(agent: DiscoveredAgent) -> AgentCard:
         version="0.1.0",
         protocolVersion="0.3.0",
         preferredTransport="JSONRPC",
-        capabilities=AgentCapabilities(streaming=False, pushNotifications=False),
+        capabilities=AgentCapabilities(streaming=True, pushNotifications=False),
         defaultInputModes=agent.input_modes or ["text/plain"],
         defaultOutputModes=agent.output_modes or ["text/plain"],
         skills=skills,

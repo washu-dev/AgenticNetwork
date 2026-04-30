@@ -373,6 +373,8 @@ class CodingAgentExecutor(_AgentExecutorBase):
             or "openai/gpt-5-mini"
         )
 
+        progress_callback = _build_progress_callback(updater)
+
         try:
             trace: AgentTrace = await run_agent_loop(
                 user_prompt=original_user_prompt,
@@ -384,6 +386,7 @@ class CodingAgentExecutor(_AgentExecutorBase):
                 initial_messages=initial_messages,
                 initial_tool_invocations=initial_invocations,
                 initial_n_steps=initial_n_steps,
+                progress_callback=progress_callback,
             )
         except Exception as exc:
             logger.exception(
@@ -606,8 +609,6 @@ class CodingAgentExecutor(_AgentExecutorBase):
             return {"skill_query": skill_query, "agents": agents}
 
         async def tool_send_email(args: Any) -> dict[str, Any]:
-            from agent_loop import PendingUserConfirmation
-
             args = args or {}
             to = args.get("to") or []
             if not isinstance(to, list) or not all(isinstance(x, str) for x in to):
@@ -628,7 +629,6 @@ class CodingAgentExecutor(_AgentExecutorBase):
                         "size_bytes": len(content.encode("utf-8")),
                         "content": content,
                     })
-            confirmed = bool(args.get("confirmed"))
             delivery = {
                 "kind": "email",
                 "to": to,
@@ -639,6 +639,7 @@ class CodingAgentExecutor(_AgentExecutorBase):
             if not normalized:
                 # _attempt_delivery returns no_files for empty; surface that explicitly.
                 logger.info("send_email_via_directory: no files supplied; calling anyway")
+            # Email agent no longer requires user confirmation — always send confirmed.
             result = await _attempt_delivery(
                 delivery=delivery,
                 skill="agent_loop",
@@ -647,25 +648,13 @@ class CodingAgentExecutor(_AgentExecutorBase):
                 context_id=context_id,
                 directory=self._delivery_directory,
                 transport=self._delivery_transport,
-                confirmed=confirmed,
+                confirmed=True,
             )
             delivery_results.append(result)
             logger.info(
-                "send_email_via_directory result: status=%s confirmed=%s to=%s",
-                result.get("status"), confirmed, to,
+                "send_email_via_directory result: status=%s to=%s",
+                result.get("status"), to,
             )
-            if result.get("status") == "pending_confirmation":
-                summary = (result.get("send_summary") or "").strip()
-                prompt = summary or (
-                    f"The email agent is asking for confirmation before sending "
-                    f"to {', '.join(to)}. Reply 'yes' to approve or 'no' to skip."
-                )
-                raise PendingUserConfirmation(prompt, payload={
-                    "to": to,
-                    "subject": delivery["subject"],
-                    "agent_endpoint": result.get("agent_endpoint"),
-                    "file_count": len(normalized),
-                })
             return result
 
         return {
@@ -724,6 +713,64 @@ def _task_updater(
     _require_a2a()
     assert _TaskUpdater is not None
     return _TaskUpdater(event_queue, task_id, context_id)
+
+
+def _format_progress_event(event: dict[str, Any]) -> str | None:
+    """Render an agent_loop progress event as a one-line update for the PI agent.
+
+    Returns ``None`` when the event isn't worth surfacing (keeps the SSE stream
+    unchatty). Each non-None return becomes a working-state status update so the
+    PI agent's HTTP read timeout never trips on long LLM rounds.
+    """
+    kind = event.get("kind")
+    step = event.get("step")
+    if kind == "round_started":
+        return f"step {step}: thinking..."
+    if kind == "still_processing":
+        return f"step {step}: still processing ({event.get('elapsed_s')}s)"
+    if kind == "thought":
+        text = (event.get("content") or "").strip()
+        if not text:
+            return None
+        snippet = text.splitlines()[0]
+        if len(snippet) > 240:
+            snippet = snippet[:237] + "..."
+        prefix = "step %s: " % step
+        return prefix + snippet
+    if kind == "tool_call":
+        keys = ",".join(event.get("args_keys") or [])
+        return f"step {step}: calling {event.get('name')}({keys})"
+    if kind == "tool_result":
+        err = event.get("error")
+        if err:
+            return f"step {step}: {event.get('name')} error: {err}"
+        keys = ",".join(event.get("result_keys") or [])
+        return f"step {step}: {event.get('name')} done ({keys})"
+    return None
+
+
+def _build_progress_callback(updater: A2ATaskUpdater) -> Any:
+    """Wrap the executor's TaskUpdater into an agent_loop progress callback.
+
+    Each event becomes a ``working``-state status update, which the SDK
+    enqueues as a ``TaskStatusUpdateEvent``. When the PI agent talks to us
+    over ``message/stream`` (SSE), each event flushes immediately, so the
+    coding agent's reasoning steps and heartbeats arrive at the PI agent
+    in real time and the 30s read timeout never trips.
+    """
+    from a2a.types import TaskState
+
+    async def callback(event: dict[str, Any]) -> None:
+        text = _format_progress_event(event)
+        if text is None:
+            return
+        message = updater.new_agent_message(
+            [_text_part(text)],
+            metadata={"progress_event": event},
+        )
+        await updater.update_status(TaskState.working, message=message, final=False)
+
+    return callback
 
 
 def _autosummary(

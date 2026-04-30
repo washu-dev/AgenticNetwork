@@ -10,7 +10,7 @@
     "url": "https://example.invalid/coding-agent"
   },
   "capabilities": {
-    "streaming": false,
+    "streaming": true,
     "pushNotifications": false,
     "stateTransitionHistory": true
   },

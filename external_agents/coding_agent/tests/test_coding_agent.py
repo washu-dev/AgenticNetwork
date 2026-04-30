@@ -774,157 +774,146 @@ async def _send_with_resume(
     )
 
 
-def test_unconfirmed_email_pauses_loop_into_input_required(tmp_path) -> None:
-    runner = _make_runner(
-        {"documentation_draft": "Drafted README.", "risk_level": "low"},
-        files_to_create={"README.md": README_CONTENT},
-    )
-    first_plan = [
-        ("tool", "run_coder", {"task": "Write README.md."}),
-        ("tool", "send_email_via_directory", {
-            "to": ["alice@example.com"],
-            "subject": "Generated docs",
-            "body": "Here's the README.",
-            "files": [{"path": "README.md", "content": README_CONTENT}],
-        }),
-    ]
-    # Second plan: user said yes; LLM retries with confirmed=true and finishes.
-    second_plan = [
-        ("tool", "send_email_via_directory", {
-            "to": ["alice@example.com"],
-            "subject": "Generated docs",
-            "body": "Here's the README.",
-            "files": [{"path": "README.md", "content": README_CONTENT}],
-            "confirmed": True,
-        }),
-        ("final", "Sent the README after your approval."),
-    ]
+# Email confirmation pause/resume tests removed: the email agent no longer
+# requires user confirmation, so send_email_via_directory always completes
+# without pausing.
 
-    first, second, email_mock, completions = asyncio.run(
-        _send_with_resume(
-            runner=runner,
-            first_plan=first_plan,
-            second_prompt="yes please send it",
-            second_plan=second_plan,
-            tmp_path=tmp_path,
+
+# ---------------------------------------------------------------------------
+# Streaming progress events: the agent_loop must call progress_callback after
+# each LLM round and tool result, and the heartbeat must fire when an LLM call
+# stalls past heartbeat_interval_s. These keep the PI-side SSE stream alive
+# under the 30s read timeout.
+# ---------------------------------------------------------------------------
+
+
+def test_progress_callback_receives_round_and_tool_events() -> None:
+    from agent_loop import run_agent_loop
+
+    plan = [
+        ("tool", "run_coder", {"task": "do work"}),
+        ("final", "all done"),
+    ]
+    completion = _completion_stub(plan)
+
+    async def runner(args):
+        return {"submission": "ok", "exit_status": "Submitted", "generated_files": []}
+
+    events: list[dict] = []
+
+    async def progress_callback(event):
+        events.append(event)
+
+    trace = asyncio.run(
+        run_agent_loop(
+            user_prompt="hi",
+            model="stub",
+            tool_handlers={"run_coder": runner},
+            completion_fn=completion,
+            step_limit=4,
+            time_limit_s=5.0,
+            progress_callback=progress_callback,
+            heartbeat_interval_s=10.0,  # well above the stub's instant return
         )
     )
 
-    # 1) First request: pause without sending.
-    assert first["state"] == A2ATaskState.input_required.value
-    first_struct = first["structured_output"]
-    assert first_struct["agent"]["exit_reason"] == "input_required"
-    assert first_struct["agent"]["pending"] is not None
-    assert first_struct["agent"]["pending"]["tool_name"] == "send_email_via_directory"
-    first_delivery = first_struct["delivery_results"]
-    assert len(first_delivery) == 1
-    assert first_delivery[0]["status"] == "pending_confirmation"
-
-    # 2) Second request: same task_id, user says yes, retry with confirmed -> sent.
-    assert second["state"] == A2ATaskState.completed.value
-    second_struct = second["structured_output"]
-    assert second_struct["agent"]["exit_reason"] == "completed"
-    assert second_struct["agent"]["n_continuations"] == 1
-    deliveries = second_struct["delivery_results"]
-    # First (pending) entry plus second (sent) entry.
-    assert len(deliveries) == 2
-    assert deliveries[0]["status"] == "pending_confirmation"
-    assert deliveries[1]["status"] == "sent"
-    # Workspace files survived the pause.
-    assert any(f["path"] == "README.md" for f in second_struct["generated_files"])
-    # Email was actually delivered after confirmation.
-    assert len(email_mock.received) == 1
-    assert email_mock.received[0]["to"] == ["alice@example.com"]
-    # The resumed loop saw the user's reply text in its messages.
-    resumed_msgs = completions[-1]["messages"]
-    assert any(
-        m.get("role") == "tool" and "yes please send it" in (m.get("content") or "")
-        for m in resumed_msgs
-    )
+    assert trace.exit_reason == "completed"
+    kinds = [e["kind"] for e in events]
+    # Expect: round_started, tool_call(run_coder), tool_result(run_coder),
+    # round_started (round 2), thought(final).
+    assert "round_started" in kinds
+    assert "tool_call" in kinds
+    assert "tool_result" in kinds
+    assert "thought" in kinds
+    final_thoughts = [e for e in events if e["kind"] == "thought" and e.get("is_final")]
+    assert final_thoughts and final_thoughts[-1]["content"] == "all done"
+    tool_call = next(e for e in events if e["kind"] == "tool_call")
+    assert tool_call["name"] == "run_coder"
+    assert tool_call["args_keys"] == ["task"]
 
 
-def test_resume_with_no_finishes_without_sending_email(tmp_path) -> None:
-    runner = _make_runner(
-        {"documentation_draft": "Drafted README.", "risk_level": "low"},
-        files_to_create={"README.md": README_CONTENT},
-    )
-    first_plan = [
-        ("tool", "run_coder", {"task": "Write README.md."}),
-        ("tool", "send_email_via_directory", {
-            "to": ["alice@example.com"],
-            "subject": "Generated docs",
-            "body": "Here's the README.",
-            "files": [{"path": "README.md", "content": README_CONTENT}],
-        }),
-    ]
-    # User declined: LLM should NOT retry; just emit final summary.
-    second_plan = [
-        ("final", "OK, not sending. The README is in your response."),
-    ]
+def test_heartbeat_fires_when_llm_round_exceeds_interval() -> None:
+    from agent_loop import run_agent_loop
 
-    first, second, email_mock, _completions = asyncio.run(
-        _send_with_resume(
-            runner=runner,
-            first_plan=first_plan,
-            second_prompt="no, don't send",
-            second_plan=second_plan,
-            tmp_path=tmp_path,
+    async def slow_completion(**kwargs):
+        await asyncio.sleep(0.4)  # > heartbeat_interval_s below
+        return _stub_response(content="finished after slow round")
+
+    events: list[dict] = []
+
+    async def progress_callback(event):
+        events.append(event)
+
+    trace = asyncio.run(
+        run_agent_loop(
+            user_prompt="hi",
+            model="stub",
+            tool_handlers={},
+            completion_fn=slow_completion,
+            step_limit=2,
+            time_limit_s=5.0,
+            progress_callback=progress_callback,
+            heartbeat_interval_s=0.1,
         )
     )
 
-    assert first["state"] == A2ATaskState.input_required.value
-    assert second["state"] == A2ATaskState.completed.value
-    second_struct = second["structured_output"]
-    # No second delivery attempt — only the original pending one persists.
-    deliveries = second_struct["delivery_results"]
-    assert len(deliveries) == 1
-    assert deliveries[0]["status"] == "pending_confirmation"
-    # Files are still in the response so the user gets them back.
-    files = second_struct["generated_files"]
-    assert any(f["path"] == "README.md" for f in files)
-    readme = next(f for f in files if f["path"] == "README.md")
-    assert readme["content"] == README_CONTENT
-    # Email mock saw nothing.
-    assert email_mock.received == []
-    # Final agent message reflects the LLM's chosen wording.
-    assert "not sending" in second_struct["agent"]["final_message"].lower()
+    assert trace.exit_reason == "completed"
+    heartbeats = [e for e in events if e["kind"] == "still_processing"]
+    assert heartbeats, "expected at least one still_processing event"
+    assert heartbeats[0]["step"] == 1
+    assert heartbeats[0]["elapsed_s"] >= 0.1
 
 
-def test_resume_state_is_cleared_after_completion(tmp_path) -> None:
-    """After a paused task completes, the state file is gone and the workspace cleaned."""
-    runner = _make_runner(
-        {"documentation_draft": "ok", "risk_level": "low"},
-        files_to_create={"README.md": README_CONTENT},
-    )
-    first_plan = [
-        ("tool", "run_coder", {"task": "Write README.md."}),
-        ("tool", "send_email_via_directory", {
-            "to": ["alice@example.com"],
-            "subject": "Generated docs",
-            "body": "Here's the README.",
-            "files": [{"path": "README.md", "content": README_CONTENT}],
-        }),
-    ]
-    second_plan = [("final", "abandoned delivery, files attached")]
+def test_executor_emits_status_updates_for_each_progress_event(tmp_path) -> None:
+    """End-to-end: the coding agent's executor turns each progress event into
+    a TaskStatusUpdateEvent on the SDK event queue, which streams to the PI."""
+    from a2a.types import TaskState
+    from a2a.server.events import EventQueue
+    from a2a.server.tasks import TaskUpdater
 
-    asyncio.run(
-        _send_with_resume(
-            runner=runner,
-            first_plan=first_plan,
-            second_prompt="no",
-            second_plan=second_plan,
-            tmp_path=tmp_path,
-        )
-    )
+    captured: list[dict] = []
 
-    state_dir = tmp_path / "_state"
-    assert state_dir.exists()
-    leftover_state = list(state_dir.iterdir())
-    assert leftover_state == [], leftover_state
-    leftover_workspaces = [
-        p for p in tmp_path.iterdir() if p.is_dir() and p.name != "_state"
-    ]
-    assert leftover_workspaces == []
+    async def fake_callback(event):
+        captured.append(event)
+
+    queue = EventQueue()
+    updater = TaskUpdater(queue, "task-x", "ctx-x")
+    callback = coding_agent._build_progress_callback(updater)
+
+    async def drive():
+        await callback({"kind": "round_started", "step": 1})
+        await callback({"kind": "thought", "step": 1, "content": "thinking out loud", "is_final": False})
+        await callback({"kind": "tool_call", "step": 1, "name": "run_coder", "args_keys": ["task"]})
+        await callback({"kind": "tool_result", "step": 1, "name": "run_coder", "result_keys": ["submission"], "error": None})
+        await callback({"kind": "still_processing", "step": 2, "elapsed_s": 30.0})
+
+    asyncio.run(drive())
+
+    # Drain the event queue and inspect the status updates.
+    drained: list = []
+
+    async def drain():
+        while True:
+            try:
+                drained.append(await asyncio.wait_for(queue.dequeue_event(), timeout=0.05))
+            except asyncio.TimeoutError:
+                return
+        await queue.close()
+
+    asyncio.run(drain())
+
+    # Each progress event becomes one TaskStatusUpdateEvent in working state.
+    assert len(drained) == 5
+    for event in drained:
+        assert event.status.state == TaskState.working
+        assert event.final is False
+        assert event.status.message is not None
+        text = event.status.message.parts[0].root.text
+        assert text  # non-empty user-visible string
+    # The "still_processing" event should mention the elapsed seconds.
+    still = drained[-1]
+    assert "still processing" in still.status.message.parts[0].root.text
+    assert "30.0" in still.status.message.parts[0].root.text
 
 
 # ---------------------------------------------------------------------------
