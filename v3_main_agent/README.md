@@ -1,0 +1,255 @@
+# v3 Main Agent
+
+A re-write of the main / PI agent for the Internet-of-Agents demo.
+
+> **New here?** See [`HANDOVER.md`](./HANDOVER.md) for the 30-second onboarding.
+> One-shot environment self-check: `v3_main_agent/scripts/doctor.sh`.
+
+The `v2_agent_network` ADS publishing, A2A transport, agent cards, and mock
+agents are kept and reused as-is. Only the **main agent** (the one the user
+chats with, that discovers other agents through ADS and delegates to them)
+is new. It lives in this directory; nothing in `v2_agent_network/` is
+modified.
+
+## What was wrong with the old PI Agent
+
+The v2 `pi_agent/main.py` was ~1700 lines and had a lot of hardcoded
+skill-specific logic (`_extract_available_slots`, `_extract_draft_email`,
+`_extract_weather_forecast`, `_extract_situation_summary`,
+`_extract_coding_output`, …). Whenever someone added a new ADS-registered
+agent with a new skill, the PI agent had no idea how to surface its outputs
+without new Python code. The deterministic router was a giant keyword table
+hard-coded for the known skills.
+
+## Design of the new main agent
+
+The new main agent is **agent-agnostic**. Domain logic lives in the agents
+ADS publishes; the main agent is a thin tool-loop coordinator.
+
+The LLM only sees five safe primitives:
+
+| Tool             | Purpose                                                                 |
+| ---------------- | ----------------------------------------------------------------------- |
+| `list_agents`    | Enumerate every agent in ADS with a one-line summary                    |
+| `describe_agent` | Full skill catalog (ids, descriptions, examples) for one agent          |
+| `call_agent`     | Invoke a skill on a discovered agent through A2A                        |
+| `ask_user`       | Stop the turn and ask a clarifying question                             |
+| `final_answer`   | Final response to the user                                              |
+
+ADS discovery, A2A transport, conversation memory, policy gating, and
+confirmation state all live in Python — never in the model's hands. The LLM
+cannot see endpoint URLs or credentials.
+
+This design directly answers the front-end test prompts:
+
+| User prompt                                  | What the LLM does                                                 |
+| -------------------------------------------- | ----------------------------------------------------------------- |
+| "what agents are available now?"             | `list_agents` → `final_answer`                                    |
+| "what can the disaster agent do?"            | `list_agents` → `describe_agent` → `final_answer`                 |
+| "draft me a tornado plan"                    | `list_agents` → `call_agent(disaster, …)` → `final_answer`        |
+| "send this plan to xxx by email"             | `list_agents` → `call_agent(email, send, {to, subject, body})`    |
+| "write me a python program"                  | `final_answer` (no agent needed; LLM answers from knowledge)      |
+| "send the program to xxx" (follow-up)        | LLM sees prior assistant code in `conversation_history` and uses it as the body |
+
+### LLM reasoning is surfaced
+
+For reasoning models (gpt-5.x, o-series), each tool step is preceded by a
+`{"tool": "reasoning", ...}` entry in `tool_trace`. The chat UI renders it
+as a blue italic block ("thinking → … chose: list_agents") so the user can
+see *why* the LLM picked the next tool. This requires
+`MAIN_AGENT_REASONING_EFFORT=medium` (or higher); `low` and `minimal`
+produce empty summaries.
+
+## Layout
+
+```
+v3_main_agent/
+├── HANDOVER.md             # 30-second teammate onboarding
+├── README.md               # this file
+├── .env.example            # config template (copy to .env.local)
+├── main_agent/
+│   ├── config.py           # MainAgentConfig from env vars
+│   ├── tools.py            # 5 tool schemas + system prompt
+│   ├── llm_client.py       # OpenAI Responses client + ScriptedLLMClient
+│   ├── runtime.py          # tool loop, ADS, A2A, memory, policy, dedup
+│   ├── server.py           # FastAPI: /messages /confirmations /agents /health /
+│   └── web/index.html      # chat UI (sidebar + tool-trace + reasoning blocks)
+├── scripts/
+│   ├── start.sh            # auto-loads .env.local, starts uvicorn
+│   ├── doctor.sh           # one-shot self-check (env, dirctl, ADS, server, OpenAI, tests)
+│   └── run_server.py       # python entrypoint (called by start.sh)
+└── tests/                  # 17 tests, all run with mocked LLM + ADS
+```
+
+What gets reused from `v2_agent_network/`:
+
+- `services/common/models.py` — `DiscoveredAgent`, `A2A*`, `PIContext`, etc.
+- `services/directory/` — `DirectoryClient` (fake ADS + real ADS via `dirctl`)
+- `services/a2a/` — `A2AClient` and HTTP transport
+- `services/state/store.py` — in-memory state store
+- `configs/agent_cards/*.card.json` — sample Agent Cards
+- `services/mock_agents/` — mock A2A agent executors (used for end-to-end runs)
+
+## Running
+
+### 1. Tests (no network, no ADS, no OpenAI key)
+
+```bash
+cd /home/server2/Jian/MAS_demo/AgenticNetwork
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
+  /home/server2/miniconda3/envs/mas_spider/bin/python -m pytest v3_main_agent/tests -q
+```
+
+17 tests cover: list/describe/call agent flows, write-skill confirmation +
+resume, negative confirmation, undiscovered agent error handling, follow-up
+context across turns, dedup of repeated calls, retry after a failed A2A call,
+empty `task_input` augmentation from user text, reasoning-block in trace,
+per-turn (not per-client) chain state, and a dynamic agent (Disaster Agent)
+added without any change to the main agent code.
+
+### 2. Local fake-ADS demo (no real ADS daemon needed)
+
+First-time setup — copy the env template and put your OpenAI key in:
+
+```bash
+cd /home/server2/Jian/MAS_demo/AgenticNetwork
+cp v3_main_agent/.env.example v3_main_agent/.env.local
+$EDITOR v3_main_agent/.env.local      # set OPENAI_API_KEY=sk-...
+```
+
+`.env.local` is gitignored. Then start the server with the wrapper script
+that auto-loads it:
+
+```bash
+v3_main_agent/scripts/start.sh --fake-ads \
+  --card v2_agent_network/configs/agent_cards/email_agent.card.json \
+  --card v2_agent_network/configs/agent_cards/weather_agent.card.json
+```
+
+Use a different env file:
+
+```bash
+ENV_FILE=/path/to/custom.env v3_main_agent/scripts/start.sh --fake-ads
+```
+
+Skip the wrapper and export by hand:
+
+```bash
+export OPENAI_API_KEY=sk-...
+export AGENT_NETWORK_FAKE_ADS=true
+/home/server2/miniconda3/envs/mas_spider/bin/python -m v3_main_agent.scripts.run_server \
+  --fake-ads \
+  --card v2_agent_network/configs/agent_cards/email_agent.card.json
+```
+
+Open `http://localhost:8090/` for the chat UI, or POST to `/messages`:
+
+```bash
+curl -s http://localhost:8090/messages \
+  -H 'Content-Type: application/json' \
+  -d '{"user_id":"demo","channel":"api","text":"What agents are available?"}' | jq
+```
+
+`GET /agents` returns the raw ADS listing for inspection.
+
+### 3. Real local ADS
+
+Make sure `dirctl` is installed (the doctor script will tell you if it
+isn't), start the ADS daemon, publish cards if needed, then point the main
+agent at it. The current demo uses a remote ADS at `10.229.117.37:8888`,
+so this section is mostly for self-hosted testing.
+
+```bash
+# Start ADS daemon if you're hosting one locally
+dirctl daemon start
+
+# Publish (using v2_agent_network's existing publisher)
+cd /home/server2/Jian/MAS_demo/AgenticNetwork
+AGENT_NETWORK_FAKE_ADS=false ADS_BACKEND=cli ADS_SERVER_ADDR=localhost:8888 \
+  /home/server2/miniconda3/envs/mas_spider/bin/python -m v2_agent_network.scripts.publish_agents \
+  --card v2_agent_network/configs/agent_cards/email_agent.card.json
+
+# Run main agent against real ADS
+export OPENAI_API_KEY=sk-...
+export AGENT_NETWORK_FAKE_ADS=false
+export ADS_BACKEND=cli
+export ADS_SERVER_ADDR=localhost:8888       # or 10.229.117.37:8888 for the shared one
+/home/server2/miniconda3/envs/mas_spider/bin/python -m v3_main_agent.scripts.run_server
+```
+
+The same `/messages` and `/agents` endpoints work; they just hit real ADS
+through `dirctl` instead of the in-process fake.
+
+## Environment variables
+
+| Variable                       | Default       | Purpose                                                       |
+| ------------------------------ | ------------- | ------------------------------------------------------------- |
+| `OPENAI_API_KEY`               | —             | Required when LLM enabled                                     |
+| `MAIN_AGENT_LLM_ENABLED`       | `true`        | Set false for purely scripted (test) runs                     |
+| `MAIN_AGENT_LLM_PROVIDER`      | `openai`      | Only `openai` is supported today                              |
+| `MAIN_AGENT_LLM_MODEL`         | `gpt-4o-mini` | OpenAI model id (we ship `.env.example` with `gpt-5.1`)       |
+| `MAIN_AGENT_REASONING_EFFORT`  | (unset)       | `minimal`/`low`/`medium`/`high`. Use `medium` to surface reasoning summaries in the UI |
+| `MAIN_AGENT_VERBOSITY`         | (unset)       | `low`/`medium`/`high` for OpenAI Responses verbosity          |
+| `MAIN_AGENT_MAX_OUTPUT_TOKENS` | `1500`        | Per-turn output cap. Bump to ≥4000 for reasoning models       |
+| `MAIN_AGENT_MAX_STEPS`         | `10`          | Max tool-loop iterations per user message                     |
+| `MAIN_AGENT_TIMEOUT_SECONDS`   | `60`          | OpenAI call timeout                                           |
+| `MAIN_AGENT_POLICY_MODE`       | `permissive`  | `permissive` allows write skills; `strict` requires confirmation |
+| `MAIN_AGENT_HISTORY_LIMIT`     | `20`          | Last-N user/assistant turns sent to LLM                       |
+| `AGENT_NETWORK_FAKE_ADS`       | `false`       | Use in-process fake ADS                                       |
+| `ADS_BACKEND`                  | `cli`         | `cli` (uses `dirctl`) or `sdk`                                |
+| `ADS_SERVER_ADDR`              | —             | e.g. `localhost:8888` or `10.229.117.37:8888`                 |
+| `MAIN_AGENT_PORT`              | `8090`        | HTTP port (avoids collision with v2's 8080)                   |
+
+## Confirmation flow (when `policy_mode=strict`)
+
+1. User: "Send an email to bob@example.com saying hi."
+2. LLM: `list_agents` → `call_agent(email-agent, email/send, {to, subject, body})`.
+3. Runtime detects `email/send` is a write skill, returns
+   `confirmation_required=true` with a saved pending action.
+4. User replies "yes" / "no":
+   - `yes` resumes the saved A2A call with `confirmed=true` and appends the
+     confirmation turn to the conversation history.
+   - `no` clears the pending action and tells the user it was cancelled.
+
+Affirmative tokens: `yes y confirm confirmed go ahead send send it ok okay`.
+Negative tokens: `no n cancel stop abort do not send don't send`.
+
+## Defensive layers
+
+The runtime carries a few belt-and-braces protections so flaky LLM behavior
+doesn't break the demo:
+
+- **Lenient agent resolver** — `Disaster Response Agent`, `disaster-response-agent`,
+  `DisasterResponseAgent`, and even `disaster` (substring) all resolve to the
+  same agent record. The LLM doesn't have to be picky.
+- **Per-turn dedup** — same `(agent_id, skill)` already completed in this
+  turn returns a `skipped` observation instead of re-invoking A2A. Prevents
+  duplicate emails when the LLM second-guesses itself.
+- **Retry after failure** — failed A2A calls do *not* count toward dedup, so
+  the LLM can retry transient errors.
+- **Email task-input augmentation** — if the LLM forgets to fill `to`,
+  `subject`, or `body` on `email/*` skills, the runtime extracts them from
+  the user text and conversation history before sending the A2A request.
+- **Empty `final_answer` salvage** — if a reasoning model truncates output
+  and emits `final_answer({})`, the runtime falls back to the most recent
+  `call_agent` text so the user sees the agent's actual reply, not
+  `(empty)`.
+- **Per-turn OpenAI chain ids** — `previous_response_id` and `last_call_id`
+  live on `TurnState`, not on the client instance, so concurrent
+  `/messages` requests can't interleave each other's response chains.
+
+## What is NOT included
+
+- No skill-specific output extractors (`_extract_available_slots`,
+  `_extract_draft_email`, `_extract_weather_forecast`, etc. from v2). The
+  structured outputs are returned to the LLM as-is and rendered through
+  `final_answer`.
+- No deterministic keyword router (v2's `router.py`). The LLM picks the
+  agent.
+- No legacy planner mode. Tool loop only.
+- No persistence. `InMemoryStateStore` resets on restart. Add SQLite if you
+  need it.
+
+If a future user prompt needs a domain-specific renderer (a chart, a map,
+etc.), add a renderer in the front-end on top of `structured_outputs` —
+not in the main agent.
