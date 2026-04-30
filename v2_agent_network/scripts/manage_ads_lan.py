@@ -15,6 +15,8 @@ from typing import Sequence
 RUN_DIR = Path("v2_agent_network/.runtime")
 DEFAULT_PID_FILE = RUN_DIR / "ads_lan_proxy.pid"
 DEFAULT_LOG_FILE = Path("v2_agent_network/ads_lan_proxy.log")
+DEFAULT_DAEMON_LOG_FILE = Path("v2_agent_network/ads_daemon.log")
+DEFAULT_DAEMON_CONFIG = Path("v2_agent_network/configs/ads_daemon_fast_routing.yaml")
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -25,6 +27,18 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--target-port", type=int, default=int(os.getenv("ADS_TARGET_PORT", "8888")))
     parser.add_argument("--pid-file", type=Path, default=DEFAULT_PID_FILE)
     parser.add_argument("--log-file", type=Path, default=DEFAULT_LOG_FILE)
+    parser.add_argument(
+        "--daemon-config",
+        type=Path,
+        default=Path(os.getenv("ADS_DAEMON_CONFIG", str(DEFAULT_DAEMON_CONFIG))),
+        help="dirctl daemon config used when this launcher starts the daemon.",
+    )
+    parser.add_argument(
+        "--daemon-log-file",
+        type=Path,
+        default=Path(os.getenv("ADS_DAEMON_LOG_FILE", str(DEFAULT_DAEMON_LOG_FILE))),
+        help="Log file for a daemon started by this launcher.",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("start")
     stop = subparsers.add_parser("stop")
@@ -50,8 +64,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 def _start(args: argparse.Namespace) -> int:
     args.pid_file.parent.mkdir(parents=True, exist_ok=True)
-    if not _ensure_daemon():
-        print("dirctl daemon failed to start; see v2_agent_network/ads_daemon.log", file=sys.stderr)
+    if not _ensure_daemon(args.daemon_config, args.daemon_log_file):
+        print(f"dirctl daemon failed to start; see {args.daemon_log_file}", file=sys.stderr)
         return 1
     if _pid_running(_read_pid(args.pid_file)):
         print(f"ADS LAN proxy already running pid={_read_pid(args.pid_file)}")
@@ -73,6 +87,10 @@ def _start(args: argparse.Namespace) -> int:
         str(args.pid_file),
         "--log-file",
         str(args.log_file),
+        "--daemon-config",
+        str(args.daemon_config),
+        "--daemon-log-file",
+        str(args.daemon_log_file),
         "proxy",
     ]
     with args.log_file.open("ab") as log_file:
@@ -114,6 +132,7 @@ def _status(args: argparse.Namespace) -> int:
         f"listen={args.listen_host}:{args.listen_port} "
         f"target={args.target_host}:{args.target_port} log={args.log_file}"
     )
+    print(f"daemon_config={args.daemon_config} daemon_log={args.daemon_log_file}")
     return 0
 
 
@@ -161,15 +180,18 @@ async def _pipe(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> N
         writer.close()
 
 
-def _ensure_daemon() -> bool:
+def _ensure_daemon(daemon_config: Path, log_path: Path) -> bool:
     status = subprocess.run(["dirctl", "daemon", "status"], text=True, capture_output=True, check=False)
     if _daemon_status_is_running(status):
         return True
-    log_path = Path("v2_agent_network/ads_daemon.log")
+    if not daemon_config.exists():
+        print(f"dirctl daemon config does not exist: {daemon_config}", file=sys.stderr)
+        return False
     log_path.parent.mkdir(parents=True, exist_ok=True)
+    command = ["dirctl", "daemon", "start", "--config", str(daemon_config)]
     with log_path.open("ab") as log_file:
         subprocess.Popen(
-            ["dirctl", "daemon", "start"],
+            command,
             stdout=log_file,
             stderr=subprocess.STDOUT,
             start_new_session=True,

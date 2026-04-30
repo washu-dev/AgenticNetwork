@@ -1,0 +1,76 @@
+# Reference config for the local dirctl daemon used by v2_agent_network.
+#
+# This mirrors the built-in local daemon defaults but reduces the two routing
+# delays that can leave freshly re-published records absent from routing list:
+# - server.publication.scheduler_interval
+# - reconciler.indexer.interval
+#
+# A dirctl daemon config is read as a complete config, so keep the local SQLite,
+# local OCI store, and local routing datastore settings explicit here.
+server:
+  listen_address: "localhost:8888"
+  oasf_api_validation:
+    schema_url: "https://schema.oasf.outshift.com"
+  store:
+    provider: "oci"
+    oci:
+      local_dir: "store"
+      registry_address: "localhost:5000"
+      repository_name: "dir"
+  verification:
+    enabled: true
+  routing:
+    listen_address: "/ip4/0.0.0.0/tcp/8999"
+    key_path: "node.key"
+    datastore_dir: "routing"
+    gossipsub:
+      enabled: true
+  database:
+    type: "sqlite"
+    sqlite:
+      path: "dir.db"
+    postgres:
+      host: "localhost"
+      port: 5432
+      database: "dir"
+      ssl_mode: "disable"
+  publication:
+    scheduler_interval: 5s
+    worker_count: 1
+    worker_timeout: 30m
+  naming:
+    ttl: 168h
+
+reconciler:
+  regsync:
+    enabled: false
+  indexer:
+    enabled: true
+    interval: 5s
+  signature:
+    enabled: true
+    interval: 1m
+    ttl: 168h
+    record_timeout: 30s
+  name:
+    enabled: true
+    interval: 1h
+    ttl: 168h
+    record_timeout: 30s
+
+runtime:
+  enabled: false
+  adapter:
+    type: "docker"
+    docker:
+      host: "unix:///var/run/docker.sock"
+      host_mode: true
+    kubernetes:
+      kubeconfig: "~/.kube/config"
+  resolver:
+    a2a:
+      enabled: true
+    oasf:
+      enabled: true
+  store:
+    type: "sqlite"

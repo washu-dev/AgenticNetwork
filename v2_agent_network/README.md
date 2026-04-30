@@ -380,6 +380,31 @@ v1_classification/.venv/bin/python -m v2_agent_network.scripts.repair_ads_routin
 Add `--restart-daemon-if-stuck` only when you intentionally want the repair tool
 to restart the local `dirctl` daemon and re-check the routing index.
 
+For the shared LAN ADS host, use the managed launcher with the fast-routing
+daemon config. It keeps the local SQLite/OCI state but reduces the publication
+and indexer intervals to 5 seconds:
+
+```bash
+cd /home/cspl-yi/Downloads/agentic_network/AgenticNetwork
+# If a daemon is already running with old defaults, do this during a quiet window:
+v1_classification/.venv/bin/python -m v2_agent_network.scripts.manage_ads_lan \
+  --listen-host 10.229.117.37 \
+  stop --stop-daemon
+v1_classification/.venv/bin/python -m v2_agent_network.scripts.manage_ads_lan \
+  --listen-host 10.229.117.37 \
+  start
+```
+
+For an additional no-restart guard, run the routing watcher on the ADS host. It
+listens for ADS publish/unpublish events and retries missing published CIDs
+without restarting the daemon unless explicitly requested:
+
+```bash
+cd /home/cspl-yi/Downloads/agentic_network/AgenticNetwork
+v1_classification/.venv/bin/python -m v2_agent_network.scripts.watch_ads_routing \
+  --server-addr 10.229.117.37:8888
+```
+
 Run the safe PI -> real ADS -> live Email Agent demo:
 
 ```bash
