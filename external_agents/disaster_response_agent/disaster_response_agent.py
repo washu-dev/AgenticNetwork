@@ -5,8 +5,10 @@ from __future__ import annotations
 
 import argparse
 import atexit
+import html as html_lib
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -55,6 +57,17 @@ DEFAULT_ADS_BACKEND = "cli"
 DEFAULT_AGENT_URL = "http://10.229.117.223:9104/"
 DEFAULT_CARD_PATH = Path(__file__).resolve().parent / "disaster_response_agent.card.json"
 DEFAULT_REMOTE_A2A_TIMEOUT_SECONDS = 30
+DISASTER_STATUS_LOG_FALSE_VALUES = {"0", "false", "no", "off"}
+LOG_REDACT_KEY_PARTS = {
+    "authorization",
+    "client_secret",
+    "credential",
+    "password",
+    "refresh_token",
+    "token",
+    "api_key",
+}
+DEFAULT_LOG_VALUE_CHARS = 900
 OFFICIAL_ADS_ROUTING_SKILLS = [
     {
         "name": "natural_language_processing/natural_language_generation/summarization",
@@ -65,6 +78,57 @@ OFFICIAL_ADS_ROUTING_SKILLS = [
         "id": 10306,
     },
 ]
+
+
+def _disaster_status(message: str, **details: Any) -> None:
+    if os.getenv("DISASTER_AGENT_STATUS_LOGS", "1").strip().lower() in DISASTER_STATUS_LOG_FALSE_VALUES:
+        return
+    timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
+    rendered = " ".join(
+        f"{key}={_log_render(value)}"
+        for key, value in details.items()
+        if value is not None and value != ""
+    )
+    suffix = f" {rendered}" if rendered else ""
+    print(f"[disaster-agent] {timestamp} {message}{suffix}", file=sys.stderr, flush=True)
+
+
+def _log_render(value: Any) -> str:
+    sanitized = _log_sanitize(value)
+    if isinstance(sanitized, str):
+        rendered = sanitized.replace("\n", "\\n")
+    else:
+        rendered = json.dumps(sanitized, default=str, sort_keys=True)
+    max_chars = int(os.getenv("DISASTER_AGENT_LOG_MAX_CHARS", str(DEFAULT_LOG_VALUE_CHARS)))
+    if len(rendered) > max_chars:
+        return rendered[:max_chars] + "...[truncated]"
+    return rendered
+
+
+def _log_sanitize(value: Any, *, depth: int = 0) -> Any:
+    if depth > 4:
+        return f"<{type(value).__name__}>"
+    if isinstance(value, dict):
+        sanitized: dict[str, Any] = {}
+        for key, item in value.items():
+            key_text = str(key)
+            lowered = key_text.lower()
+            if any(part in lowered for part in LOG_REDACT_KEY_PARTS):
+                sanitized[key_text] = "[redacted]"
+            else:
+                sanitized[key_text] = _log_sanitize(item, depth=depth + 1)
+        return sanitized
+    if isinstance(value, (list, tuple, set)):
+        items = list(value)
+        sanitized_items = [_log_sanitize(item, depth=depth + 1) for item in items[:20]]
+        if len(items) > 20:
+            sanitized_items.append(f"... {len(items) - 20} more")
+        return sanitized_items
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    return str(value)
 
 
 @dataclass(frozen=True)
@@ -171,9 +235,16 @@ def _disaster_system_prompt() -> str:
         "ADS agents and ask another A2A agent for relevant help, such as weather, map, "
         "email/notice drafting, geospatial, shelter, logistics, or communications. "
         "Use discover_ads_agents before send_a2a_request. Do not invent agents or endpoints. "
-        "If a disaster happens on campus or could influence campus, call the email agent "
-        "through A2A and ask it to send the group notice email; include clear "
-        "Subject: and Body: lines in that request. "
+        "Call the email agent to send a campus group notice only when the request clearly "
+        "describes an active or imminent real incident on campus, or an incident that could "
+        "affect campus, and include clear Subject: and Body: lines in that request. "
+        "For notification email bodies, write mobile-friendly text: short paragraphs, "
+        "short bullet items, and no hard line wrapping inside sentences. Put line breaks "
+        "only between paragraphs, headings, and bullet items. "
+        "If the user asks only for a draft, template, drill, hypothetical scenario, "
+        "preparedness guidance, or response plan without a real current threat, do not "
+        "send or request any notification email. If it is unclear whether the threat is "
+        "real, treat the request as planning guidance and do not notify. "
         "Contact other ADS agents directly when their help is useful. "
         "Do not ask remote agents to perform unsafe or offensive actions. Return ONLY valid JSON with "
         "these keys: summary (string), risk_level (low|medium|high|critical|unknown), "
@@ -323,6 +394,13 @@ class DisasterResponseAgent:
             and not pending_actions
             and not _mentions_email_agent(response_text)
         ):
+            _disaster_status(
+                "Campus notice trigger matched",
+                description=description,
+                location=location,
+                audience=audience,
+                severity=severity,
+            )
             campus_notice_result = _send_campus_group_notice(
                 description=description,
                 location=location,
@@ -371,6 +449,7 @@ class DisasterResponseAgent:
         except ImportError as exc:
             raise RuntimeError("The openai package is required for disaster response AI mode.") from exc
 
+        _disaster_status("Model request started", model=self.model, payload=payload)
         client = OpenAI()
         response = client.responses.create(
             model=self.model,
@@ -399,9 +478,28 @@ class DisasterResponseAgent:
                 raw_arguments = _object_get(call, "arguments", "{}")
                 try:
                     arguments = json.loads(raw_arguments or "{}")
+                    _disaster_status(
+                        "Agent tool call received",
+                        tool=name,
+                        call_id=call_id,
+                        arguments=arguments,
+                    )
                     result = self._run_tool(name, arguments)
+                    _disaster_status(
+                        "Agent tool call completed",
+                        tool=name,
+                        call_id=call_id,
+                        ok=bool(result.get("ok", False)),
+                        result=result,
+                    )
                 except Exception as exc:
                     result = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+                    _disaster_status(
+                        "Agent tool call failed",
+                        tool=name,
+                        call_id=call_id,
+                        error=result["error"],
+                    )
                 pending_actions.extend(_pending_actions_from_tool_result(result, tool_name=name))
                 tool_outputs.append(
                     {
@@ -417,6 +515,11 @@ class DisasterResponseAgent:
                 previous_response_id=_object_get(response, "id"),
                 parallel_tool_calls=False,
             )
+        _disaster_status(
+            "Model request completed",
+            model=self.model,
+            pending_action_count=len(pending_actions),
+        )
         return _response_text(response), pending_actions
 
     def _run_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -438,11 +541,16 @@ class DisasterResponseAgent:
                     120,
                 ),
             )
+            skill = str(arguments.get("skill") or "")
+            message = str(arguments.get("message") or "")
+            data = dict(arguments.get("data") or {})
+            if skill == "email/group_send":
+                message, data = _prepare_group_notice_a2a_payload(message=message, data=data)
             result = _send_a2a_request_direct(
                 agent_ref=str(arguments.get("agent_ref") or ""),
-                skill=str(arguments.get("skill") or ""),
-                message=str(arguments.get("message") or ""),
-                data=dict(arguments.get("data") or {}),
+                skill=skill,
+                message=message,
+                data=data,
                 timeout_seconds=timeout_seconds,
             )
             return {"ok": True, **result}
@@ -488,12 +596,26 @@ class DisasterResponseAgentExecutor(_AgentExecutorBase):
         skill = _a2a_skill_from_context(context)
         payload = _a2a_payload_from_context(context)
         user_text = _a2a_user_text(context)
+        request_id = uuid.uuid4().hex[:12]
+        outcome = "completed"
+        _disaster_status(
+            "A2A request received",
+            request_id=request_id,
+            skill=skill,
+            task_id=context.task_id,
+            context_id=context.context_id,
+            user_text=user_text,
+            payload=payload,
+        )
         try:
+            _disaster_status("A2A skill dispatching", request_id=request_id, skill=skill)
             if skill not in {
                 "disaster/response_plan",
                 "disaster/triage",
                 "disaster/checklist",
             }:
+                outcome = "unsupported"
+                _disaster_status("A2A unsupported skill", request_id=request_id, skill=skill)
                 await _a2a_complete(
                     updater,
                     skill=skill,
@@ -514,6 +636,13 @@ class DisasterResponseAgentExecutor(_AgentExecutorBase):
                 ("situation", "description", "incident", "event", "prompt", "message"),
             ) or user_text
             if not description.strip():
+                outcome = "input_required"
+                _disaster_status(
+                    "A2A request missing input",
+                    request_id=request_id,
+                    skill=skill,
+                    missing="description",
+                )
                 await _a2a_requires_input(
                     updater,
                     skill=skill,
@@ -554,7 +683,16 @@ class DisasterResponseAgentExecutor(_AgentExecutorBase):
                 output=result,
             )
         except Exception as exc:
-            await _a2a_complete(
+            outcome = "error"
+            _disaster_status(
+                "A2A request failed",
+                request_id=request_id,
+                skill=skill,
+                task_id=context.task_id,
+                context_id=context.context_id,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            await _a2a_failed(
                 updater,
                 skill=skill,
                 artifact_id="disaster-error",
@@ -568,8 +706,22 @@ class DisasterResponseAgentExecutor(_AgentExecutorBase):
                     "task_id": context.task_id,
                 },
             )
+        finally:
+            _disaster_status(
+                "A2A request finished",
+                request_id=request_id,
+                skill=skill,
+                task_id=context.task_id,
+                context_id=context.context_id,
+                outcome=outcome,
+            )
 
     async def cancel(self, context: A2ARequestContext, event_queue: A2AEventQueue) -> None:
+        _disaster_status(
+            "A2A request cancelled",
+            task_id=context.task_id,
+            context_id=context.context_id,
+        )
         updater = _task_updater(event_queue, context.task_id, context.context_id)
         await updater.reject()
 
@@ -738,10 +890,12 @@ def publish_disaster_a2a_agent_card_to_ads(
         json.dump(ads_record, fh, indent=2, sort_keys=True)
         temp_path = Path(fh.name)
     try:
+        _disaster_status("Pushing Disaster Response Agent ADS record", record_file=str(temp_path))
         push = _run_dirctl(["push", str(temp_path), "--output", "raw"], ads_url=ads_url)
         cid = push.stdout.strip()
         if not cid:
             raise RuntimeError("dirctl push did not return a CID.")
+        _disaster_status("Publishing Disaster Response Agent ADS routing entry", cid=cid)
         _run_dirctl(["routing", "publish", cid], ads_url=ads_url)
     finally:
         temp_path.unlink(missing_ok=True)
@@ -782,19 +936,21 @@ def unpublish_disaster_a2a_agent_card_from_ads(
         return False
     cid = published if isinstance(published, str) else published.backend_ref
     if not cid:
-        print("Skipping ADS unpublish: missing published CID.", file=sys.stderr)
+        _disaster_status("Skipping ADS unpublish", reason="missing published CID")
         return False
 
+    _disaster_status("Unpublishing Disaster Response Agent from ADS", cid=cid)
     try:
         _run_dirctl(["routing", "unpublish", cid], ads_url=ads_url)
     except Exception as exc:
-        print(
-            f"Failed to unpublish Disaster Response Agent from ADS ({cid}): {exc}",
-            file=sys.stderr,
+        _disaster_status(
+            "Failed to unpublish Disaster Response Agent from ADS",
+            cid=cid,
+            error=str(exc),
         )
         return False
 
-    print(f"Unpublished Disaster Response Agent from ADS: {cid}", file=sys.stderr)
+    _disaster_status("Disaster Response Agent unpublished from ADS", cid=cid)
     return True
 
 
@@ -1202,16 +1358,16 @@ async def send_a2a_request_to_ads_agent(
 
     try:
         import httpx
-        from a2a.client import A2AClient as SdkA2AClient
+        from a2a.client import ClientConfig as SdkClientConfig
+        from a2a.client import ClientFactory as SdkClientFactory
         from a2a.types import (
             AgentCard,
             DataPart,
             Message,
-            MessageSendParams,
             Part,
             Role,
-            SendMessageRequest,
             TextPart,
+            TransportProtocol,
         )
     except ImportError as exc:
         raise RuntimeError("Remote A2A requests require the a2a-sdk and httpx packages.") from exc
@@ -1223,6 +1379,14 @@ async def send_a2a_request_to_ads_agent(
     if data:
         parts.append(Part(root=DataPart(data=data, metadata={"skill": skill})))
     preauthorized_metadata = {"confirmed": True}
+    _disaster_status(
+        "Sending remote A2A request",
+        agent=summary.get("agent_id"),
+        skill=skill,
+        endpoint=summary.get("endpoint"),
+        data=data or {},
+        request_text=message,
+    )
     sdk_message = Message(
         role=Role.user,
         message_id=str(uuid.uuid4()),
@@ -1236,21 +1400,21 @@ async def send_a2a_request_to_ads_agent(
             **preauthorized_metadata,
         },
     )
-    request = SendMessageRequest(
-        id=str(uuid.uuid4()),
-        params=MessageSendParams(
-            message=sdk_message,
-            metadata={
-                "target_agent_id": summary.get("agent_id"),
-                "skill": skill,
-                "user_goal": message,
-                **preauthorized_metadata,
-            },
-        ),
-    )
     async with httpx.AsyncClient(timeout=timeout_seconds) as http_client:
-        sdk_client = SdkA2AClient(httpx_client=http_client, agent_card=card)
-        response = await sdk_client.send_message(request)
+        client_config = SdkClientConfig(
+            streaming=False,
+            polling=False,
+            httpx_client=http_client,
+            supported_transports=[TransportProtocol.jsonrpc],
+            use_client_preference=True,
+            accepted_output_modes=list(getattr(card, "default_output_modes", None) or []),
+        )
+        sdk_client = SdkClientFactory(client_config).create(card)
+        response = None
+        async for event in sdk_client.send_message(sdk_message):
+            response = event
+        if response is None:
+            raise RuntimeError("A2A request completed without a response event.")
     result = _summarize_a2a_response(response)
     result["agent"] = {
         key: summary.get(key)
@@ -1262,10 +1426,19 @@ async def send_a2a_request_to_ads_agent(
         if isinstance(action, dict):
             action.setdefault("agent", result["agent"])
             action.setdefault("skill", skill)
+    _disaster_status(
+        "Remote A2A request completed",
+        agent=summary.get("agent_id"),
+        skill=skill,
+        state=result.get("state"),
+        structured_output=result.get("structured_output"),
+    )
     return result
 
 
 def _summarize_a2a_response(response: Any) -> dict[str, Any]:
+    if isinstance(response, tuple) and response:
+        response = response[0]
     root = getattr(response, "root", response)
     error = getattr(root, "error", None)
     if error is not None:
@@ -1437,6 +1610,9 @@ def _should_notify_campus(
     audience: str,
     plan: dict[str, Any],
 ) -> bool:
+    if _is_planning_only_request(description):
+        return False
+
     haystack = " ".join(
         [
             description,
@@ -1462,6 +1638,55 @@ def _should_notify_campus(
         "library",
     }
     return any(term in haystack for term in campus_terms)
+
+
+def _is_planning_only_request(description: str) -> bool:
+    lowered = description.lower()
+    no_threat_markers = {
+        "no real threat",
+        "not a real threat",
+        "not real",
+        "hypothetical",
+        "example scenario",
+        "practice scenario",
+        "training scenario",
+        "simulation",
+        "tabletop",
+        "drill",
+        "preparedness",
+        "template",
+    }
+    if any(marker in lowered for marker in no_threat_markers):
+        return True
+
+    planning_markers = {
+        "draft a response plan",
+        "draft response plan",
+        "write a response plan",
+        "make a response plan",
+        "create a response plan",
+        "prepare a response plan",
+        "sample response plan",
+        "response plan for",
+    }
+    active_markers = {
+        "active",
+        "actual",
+        "currently",
+        "happening",
+        "in progress",
+        "in effect",
+        "issued",
+        "now",
+        "real emergency",
+        "real incident",
+        "people are",
+        "there is",
+        "there are",
+    }
+    return any(marker in lowered for marker in planning_markers) and not any(
+        marker in lowered for marker in active_markers
+    )
 
 
 def _mentions_email_agent(text: str) -> bool:
@@ -1526,8 +1751,14 @@ def _send_campus_group_notice(
         audience=audience,
         plan=plan,
     )
+    html = _campus_notice_html(
+        description=description,
+        location=location,
+        audience=audience,
+        plan=plan,
+    )
     message = (
-        "Send the group notice email to the local notice list.\n"
+        "Send the group notice email.\n"
         f"Subject: {subject}\n"
         "Body:\n"
         f"{body}"
@@ -1536,7 +1767,12 @@ def _send_campus_group_notice(
         agent_ref=str(agent.get("cid") or agent.get("record_id") or agent.get("agent_id") or ""),
         skill="email/group_send",
         message=message,
-        data={},
+        data={
+            "subject": subject,
+            "body": body,
+            "html": html,
+            "high_importance": True,
+        },
         timeout_seconds=DEFAULT_REMOTE_A2A_TIMEOUT_SECONDS,
         ads_url=ads_url,
     )
@@ -1558,7 +1794,7 @@ def _campus_notice_body(
     plan: dict[str, Any],
 ) -> str:
     lines = [
-        str(plan.get("summary") or description).strip(),
+        _normalize_email_plain_text(str(plan.get("summary") or description).strip()),
         "",
         "Immediate actions:",
         *_bullet_lines(plan.get("immediate_actions"), max_items=5),
@@ -1575,37 +1811,260 @@ def _campus_notice_body(
         lines.insert(0, f"Location: {location}")
     if audience:
         lines.insert(0, f"Audience: {audience}")
-    return "\n".join(line for line in lines if line is not None).strip()
+    return _normalize_email_plain_text("\n".join(line for line in lines if line is not None))
+
+
+def _campus_notice_html(
+    *,
+    description: str,
+    location: str,
+    audience: str,
+    plan: dict[str, Any],
+) -> str:
+    summary = _normalize_email_plain_text(str(plan.get("summary") or description).strip())
+    sections = [
+        ("Immediate actions", _as_string_list(plan.get("immediate_actions"))[:5]),
+        ("Shelter guidance", _as_string_list(plan.get("shelter_guidance"))[:4]),
+        ("Avoid", _as_string_list(plan.get("avoid"))[:4]),
+    ]
+    parts = [
+        '<div style="font-family: Arial, sans-serif; font-size: 16px; line-height: 1.45; color: #202124;">'
+    ]
+    if audience:
+        parts.append(f'<p style="margin: 0 0 12px 0;"><strong>Audience:</strong> {html_lib.escape(audience)}</p>')
+    if location:
+        parts.append(f'<p style="margin: 0 0 12px 0;"><strong>Location:</strong> {html_lib.escape(location)}</p>')
+    if summary:
+        parts.append(f'<p style="margin: 0 0 16px 0;">{html_lib.escape(summary)}</p>')
+    for title, items in sections:
+        if not items:
+            continue
+        parts.append(f'<p style="margin: 18px 0 6px 0;"><strong>{html_lib.escape(title)}:</strong></p>')
+        parts.append('<ul style="margin: 0 0 16px 22px; padding: 0;">')
+        for item in items:
+            clean_item = _normalize_email_plain_text(str(item))
+            parts.append(f'<li style="margin: 0 0 7px 0;">{html_lib.escape(clean_item)}</li>')
+        parts.append("</ul>")
+    parts.append(
+        '<p style="margin: 18px 0 0 0;">'
+        "Follow official campus safety and emergency responder instructions. "
+        "Call 911 for life-threatening emergencies."
+        "</p>"
+    )
+    parts.append("</div>")
+    return "\n".join(parts)
 
 
 def _bullet_lines(value: Any, *, max_items: int) -> list[str]:
     items = _as_string_list(value)[:max_items]
-    return [f"- {item}" for item in items] or ["- Follow official emergency instructions."]
+    return [f"- {_normalize_email_plain_text(item)}" for item in items] or [
+        "- Follow official emergency instructions."
+    ]
+
+
+def _prepare_group_notice_a2a_payload(
+    *,
+    message: str,
+    data: dict[str, Any],
+) -> tuple[str, dict[str, Any]]:
+    subject = str(data.get("subject") or _extract_labeled_text(message, "Subject") or "").strip()
+    body = str(data.get("body") or _extract_labeled_body(message) or message).strip()
+    subject = subject or "Campus Alert: Take Safety Action"
+    body = _normalize_email_plain_text(body)
+    html = str(data.get("html") or "").strip() or _plain_text_notice_to_html(body)
+    prepared = {
+        **data,
+        "subject": subject,
+        "body": body,
+        "html": html,
+        "high_importance": bool(data.get("high_importance", True)),
+    }
+    prepared_message = (
+        "Send the group notice email.\n"
+        f"Subject: {subject}\n"
+        "Body:\n"
+        f"{body}"
+    )
+    return prepared_message, prepared
+
+
+def _extract_labeled_text(text: str, label: str) -> str:
+    match = re.search(rf"(?im)^\s*{re.escape(label)}\s*:\s*(.+?)\s*$", text)
+    return match.group(1).strip() if match else ""
+
+
+def _extract_labeled_body(text: str) -> str:
+    match = re.search(r"(?ims)^\s*Body\s*:\s*(.+)\s*$", text)
+    return match.group(1).strip() if match else ""
+
+
+def _normalize_email_plain_text(text: str) -> str:
+    raw_lines = [line.rstrip() for line in str(text or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")]
+    blocks: list[list[str]] = []
+    current: list[str] = []
+    for line in raw_lines:
+        stripped = line.strip()
+        if not stripped:
+            if current:
+                blocks.append(current)
+                current = []
+            continue
+        current.append(stripped)
+    if current:
+        blocks.append(current)
+
+    normalized_blocks = [_normalize_email_text_block(block) for block in blocks]
+    return "\n\n".join(block for block in normalized_blocks if block).strip()
+
+
+def _normalize_email_text_block(lines: list[str]) -> str:
+    output: list[str] = []
+    paragraph: list[str] = []
+    current_bullet = ""
+
+    def flush_paragraph() -> None:
+        nonlocal paragraph
+        if paragraph:
+            output.append(" ".join(paragraph))
+            paragraph = []
+
+    def flush_bullet() -> None:
+        nonlocal current_bullet
+        if current_bullet:
+            output.append(f"- {current_bullet.strip()}")
+            current_bullet = ""
+
+    for line in lines:
+        bullet_match = re.match(r"^(?:[-*•]|\d+[.)])\s+(.+)$", line)
+        if bullet_match:
+            flush_paragraph()
+            flush_bullet()
+            current_bullet = bullet_match.group(1).strip()
+            continue
+        if current_bullet:
+            current_bullet = f"{current_bullet} {line.strip()}"
+            continue
+        if len(lines) == 1 and line.endswith(":"):
+            output.append(line)
+            continue
+        paragraph.append(line)
+
+    flush_paragraph()
+    flush_bullet()
+    return "\n".join(output)
+
+
+def _plain_text_notice_to_html(text: str) -> str:
+    normalized = _normalize_email_plain_text(text)
+    parts = [
+        '<div style="font-family: Arial, sans-serif; font-size: 16px; line-height: 1.45; color: #202124;">'
+    ]
+    in_list = False
+
+    def close_list() -> None:
+        nonlocal in_list
+        if in_list:
+            parts.append("</ul>")
+            in_list = False
+
+    for block in normalized.split("\n\n"):
+        lines = [line for line in block.splitlines() if line.strip()]
+        if not lines:
+            continue
+        if len(lines) == 1 and lines[0].endswith(":"):
+            close_list()
+            parts.append(f'<p style="margin: 18px 0 6px 0;"><strong>{html_lib.escape(lines[0])}</strong></p>')
+            continue
+        for line in lines:
+            if line.startswith("- "):
+                if not in_list:
+                    parts.append('<ul style="margin: 0 0 16px 22px; padding: 0;">')
+                    in_list = True
+                parts.append(f'<li style="margin: 0 0 7px 0;">{html_lib.escape(line[2:].strip())}</li>')
+            else:
+                close_list()
+                parts.append(f'<p style="margin: 0 0 16px 0;">{html_lib.escape(line)}</p>')
+    close_list()
+    parts.append("</div>")
+    return "\n".join(parts)
 
 
 def _campus_notice_result_summary(result: dict[str, Any]) -> dict[str, Any]:
+    structured_output = result.get("structured_output")
     return {
-        "ok": bool(result.get("ok", True)),
+        "ok": _campus_notice_was_sent(result),
         "state": result.get("state"),
         "skill": result.get("skill"),
         "agent": result.get("agent"),
         "requires_follow_up": False,
         "pending_actions": [],
         "text": result.get("text", ""),
-        "structured_output": result.get("structured_output"),
+        "message_id": _campus_notice_message_id(result),
+        "structured_status": (
+            structured_output.get("status")
+            if isinstance(structured_output, dict)
+            else None
+        ),
+        "structured_output": structured_output,
     }
 
 
 def _append_campus_notice_result_to_text(text: str, result: dict[str, Any]) -> str:
     agent = result.get("agent") if isinstance(result.get("agent"), dict) else {}
     agent_name = str(agent.get("name") or agent.get("agent_id") or "Email Agent")
-    if result.get("state") == "completed":
-        line = f"Campus notice: {agent_name} completed the group notice request."
+    message_id = _campus_notice_message_id(result)
+    if _campus_notice_was_sent(result):
+        suffix = f" Message ID: {message_id}." if message_id else ""
+        line = f"Campus notice: {agent_name} sent the group notice email.{suffix}"
     else:
-        line = f"Campus notice: attempted to contact {agent_name}; remote state was {result.get('state') or 'unknown'}."
+        detail = _campus_notice_error_detail(result)
+        if detail:
+            line = f"Campus notice: {agent_name} did not confirm that the email was sent. Detail: {detail}"
+        else:
+            line = f"Campus notice: attempted to contact {agent_name}; remote state was {result.get('state') or 'unknown'}."
     if line in text:
         return text
     return f"{text.rstrip()}\n\n{line}" if text.strip() else line
+
+
+def _campus_notice_was_sent(result: dict[str, Any]) -> bool:
+    structured_output = result.get("structured_output")
+    if not isinstance(structured_output, dict):
+        return False
+    if str(structured_output.get("status") or "").lower() == "error":
+        return False
+    return bool(
+        structured_output.get("message_id")
+        or structured_output.get("sent_email")
+        or structured_output.get("recipient_count")
+    )
+
+
+def _campus_notice_message_id(result: dict[str, Any]) -> str:
+    structured_output = result.get("structured_output")
+    if not isinstance(structured_output, dict):
+        return ""
+    return str(structured_output.get("message_id") or "").strip()
+
+
+def _campus_notice_error_detail(result: dict[str, Any]) -> str:
+    structured_output = result.get("structured_output")
+    if isinstance(structured_output, dict):
+        error = str(structured_output.get("error") or structured_output.get("message") or "").strip()
+        if error:
+            return error
+        status = str(structured_output.get("status") or "").strip()
+        if status and status.lower() != "completed":
+            return f"structured status {status}"
+    text = str(result.get("text") or "").strip()
+    if text:
+        return _preview_text(text, 240)
+    return ""
+
+
+def _preview_text(value: Any, limit: int = 160) -> str:
+    text = str(value or "").replace("\n", " ").strip()
+    return text if len(text) <= limit else text[:limit] + "...[truncated]"
 
 
 def _pending_action_follow_up_lines(actions: list[dict[str, Any]]) -> list[str]:
@@ -1683,8 +2142,11 @@ def _is_data_part(value: Any) -> bool:
 
 
 def _a2a_skill_from_context(context: A2ARequestContext) -> str:
-    metadata = context.metadata or {}
-    return str(metadata.get("skill") or "disaster/response_plan")
+    for metadata in _a2a_metadata_sources(context):
+        skill = metadata.get("skill")
+        if skill:
+            return str(skill)
+    return "disaster/response_plan"
 
 
 def _a2a_user_text(context: A2ARequestContext) -> str:
@@ -1697,11 +2159,33 @@ def _a2a_user_text(context: A2ARequestContext) -> str:
 def _a2a_payload_from_context(context: A2ARequestContext) -> dict[str, Any]:
     payload: dict[str, Any] = dict(context.metadata or {})
     if context.message:
+        message_metadata = getattr(context.message, "metadata", None)
+        if isinstance(message_metadata, dict):
+            payload.update(message_metadata)
         for part in context.message.parts:
             root = part.root
+            part_metadata = getattr(root, "metadata", None) or getattr(part, "metadata", None)
+            if isinstance(part_metadata, dict):
+                payload.update(part_metadata)
             if _is_data_part(root) and isinstance(root.data, dict):
                 payload.update(root.data)
     return payload
+
+
+def _a2a_metadata_sources(context: A2ARequestContext) -> list[dict[str, Any]]:
+    sources: list[dict[str, Any]] = []
+    if isinstance(context.metadata, dict):
+        sources.append(context.metadata)
+    if context.message:
+        message_metadata = getattr(context.message, "metadata", None)
+        if isinstance(message_metadata, dict):
+            sources.append(message_metadata)
+        for part in context.message.parts:
+            root = part.root
+            part_metadata = getattr(root, "metadata", None) or getattr(part, "metadata", None)
+            if isinstance(part_metadata, dict):
+                sources.append(part_metadata)
+    return sources
 
 
 async def _a2a_complete(
@@ -1721,6 +2205,30 @@ async def _a2a_complete(
         metadata={"skill": skill, "content_type": "application/json"},
     )
     await updater.complete(
+        message=updater.new_agent_message(
+            [_text_part(text)],
+            metadata={"structured_output": output},
+        )
+    )
+
+
+async def _a2a_failed(
+    updater: A2ATaskUpdater,
+    *,
+    skill: str,
+    artifact_id: str,
+    artifact_name: str,
+    text: str,
+    output: dict[str, Any],
+) -> None:
+    await updater.start_work()
+    await updater.add_artifact(
+        [_data_part(output)],
+        artifact_id=artifact_id,
+        name=artifact_name,
+        metadata={"skill": skill, "content_type": "application/json"},
+    )
+    await updater.failed(
         message=updater.new_agent_message(
             [_text_part(text)],
             metadata={"structured_output": output},
@@ -1931,13 +2439,18 @@ def main() -> None:
                 )
 
             atexit.register(cleanup_ads_publication)
-            print(
-                f"Published Disaster Response Agent to ADS: {published.backend_ref}",
-                file=sys.stderr,
+            _disaster_status(
+                "Disaster Response Agent card published to ADS",
+                backend=published.backend,
+                record=published.backend_ref,
             )
-        print(
-            f"Starting Disaster Response Agent A2A server on {args.host}:{args.port} ({card.url})",
-            file=sys.stderr,
+        else:
+            _disaster_status("Skipping ADS publication", reason="--no-publish-ads")
+        _disaster_status(
+            "Starting Disaster Response Agent A2A server",
+            host=args.host,
+            port=args.port,
+            agent_url=card.url,
         )
         try:
             uvicorn.run(create_disaster_a2a_app(card, agent), host=args.host, port=args.port)

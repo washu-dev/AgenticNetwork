@@ -167,18 +167,67 @@ EMAIL_ADDRESS_RE = re.compile(
     r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
     r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+"
 )
+LOG_REDACT_KEY_PARTS = {
+    "authorization",
+    "client_secret",
+    "credential",
+    "password",
+    "refresh_token",
+    "token",
+    "api_key",
+}
+DEFAULT_LOG_VALUE_CHARS = 900
 
 
 def _email_status(message: str, **details: Any) -> None:
     if os.getenv("EMAIL_AGENT_STATUS_LOGS", "1").strip().lower() in EMAIL_STATUS_LOG_FALSE_VALUES:
         return
+    timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
     rendered = " ".join(
-        f"{key}={value}"
+        f"{key}={_log_render(value)}"
         for key, value in details.items()
         if value is not None and value != ""
     )
     suffix = f" {rendered}" if rendered else ""
-    print(f"[email-agent] {message}{suffix}", file=sys.stderr, flush=True)
+    print(f"[email-agent] {timestamp} {message}{suffix}", file=sys.stderr, flush=True)
+
+
+def _log_render(value: Any) -> str:
+    sanitized = _log_sanitize(value)
+    if isinstance(sanitized, str):
+        rendered = sanitized.replace("\n", "\\n")
+    else:
+        rendered = json.dumps(sanitized, default=str, sort_keys=True)
+    max_chars = int(os.getenv("EMAIL_AGENT_LOG_MAX_CHARS", str(DEFAULT_LOG_VALUE_CHARS)))
+    if len(rendered) > max_chars:
+        return rendered[:max_chars] + "...[truncated]"
+    return rendered
+
+
+def _log_sanitize(value: Any, *, depth: int = 0) -> Any:
+    if depth > 4:
+        return f"<{type(value).__name__}>"
+    if isinstance(value, dict):
+        sanitized: dict[str, Any] = {}
+        for key, item in value.items():
+            key_text = str(key)
+            lowered = key_text.lower()
+            if any(part in lowered for part in LOG_REDACT_KEY_PARTS):
+                sanitized[key_text] = "[redacted]"
+            else:
+                sanitized[key_text] = _log_sanitize(item, depth=depth + 1)
+        return sanitized
+    if isinstance(value, (list, tuple, set)):
+        items = list(value)
+        sanitized_items = [_log_sanitize(item, depth=depth + 1) for item in items[:20]]
+        if len(items) > 20:
+            sanitized_items.append(f"... {len(items) - 20} more")
+        return sanitized_items
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    return str(value)
 
 
 @dataclass(frozen=True)
@@ -324,7 +373,7 @@ class EmailAgent:
         return message_id
 
     def load_notice_recipients(self, recipient_file: Path | str | None = None) -> list[str]:
-        """Load notice-list recipients from a local text file."""
+        """Load configured notice recipients."""
         path = _notice_list_path(recipient_file)
         _email_status("Loading notice recipients", path=str(path))
         recipients = load_recipients_from_file(path)
@@ -346,7 +395,7 @@ class EmailAgent:
         recipient_source: str | None = None,
         to: list[str] | None = None,
     ) -> dict[str, Any]:
-        """Send one email to the local notice list."""
+        """Send one email using configured group notice recipients."""
         if recipient_source:
             _normalize_recipient_source(recipient_source)
         explicit_recipients = _normalize_addresses(to)
@@ -1588,10 +1637,10 @@ AGENT_TOOL_SCHEMAS: list[dict[str, Any]] = [
         "type": "function",
         "name": "send_group_email",
         "description": (
-            "Send one email to the local notice_list.txt group. Use this when the "
+            "Send one group notice email with the Email Agent's configured group delivery mode. Use this when the "
             "user says group notice, notice group, notice list, or asks to send "
             "the group notice email. Do not ask for recipient addresses; this tool "
-            "always reads the local notice_list.txt by default."
+            "resolves the group internally."
         ),
         "parameters": {
             "type": "object",
@@ -2151,6 +2200,12 @@ class ToolCallingEmailAgent:
                 arguments: dict[str, Any] = {}
                 try:
                     arguments = json.loads(raw_arguments or "{}")
+                    _email_status(
+                        "Agent tool call received",
+                        tool=name,
+                        call_id=call_id,
+                        arguments=arguments,
+                    )
                     self.status.update(
                         "calling_tool",
                         f"Calling tool: {name}",
@@ -2158,6 +2213,13 @@ class ToolCallingEmailAgent:
                         tool_args=_redact_status_arguments(arguments),
                     )
                     result = self._run_tool(name, arguments)
+                    _email_status(
+                        "Agent tool call completed",
+                        tool=name,
+                        call_id=call_id,
+                        ok=bool(result.get("ok", False)),
+                        result=result,
+                    )
                     self.status.update(
                         "tool_finished",
                         f"Tool finished: {name}",
@@ -2169,6 +2231,12 @@ class ToolCallingEmailAgent:
                         "ok": False,
                         "error": f"{type(exc).__name__}: {exc}",
                     }
+                    _email_status(
+                        "Agent tool call failed",
+                        tool=name,
+                        call_id=call_id,
+                        error=result["error"],
+                    )
                     self.status.update(
                         "tool_error",
                         f"Tool error: {name}",
@@ -2272,7 +2340,8 @@ class ToolCallingEmailAgent:
             "are registered in ADS. Do not invent remote agents or endpoints. If "
             "a suitable remote agent is discovered, call send_a2a_request with an "
             "agent_ref from discovery, the discovered skill tag, and a concise "
-            "task message. Prefer local tools for work this agent can do directly. "
+            "task message. For all requests, if there is a suitable remote agent, "
+            "use the remote agent and do not solve the task yourself. "
             "Ask the user for missing email addresses, dates, or times instead of "
             "guessing. Keep final answers concise and include the concrete result "
             "of any tool action. If the user explicitly asks you to send an email "
@@ -2282,7 +2351,7 @@ class ToolCallingEmailAgent:
             "For an email to multiple explicit recipients, include every address "
             "in the same to list with send_email. When the user says group notice, "
             "notice group, notice list, or group notice email, use send_group_email; "
-            "it always reads the local notice_list.txt file and does not need "
+            "it resolves its recipients internally and does not need "
             "recipients from the request. Ask for a subject or body if either is missing. "
             "When the user asks to mark an email urgent, important, high priority, "
             "or high importance, set high_importance true on draft/send tools. "
@@ -2556,8 +2625,22 @@ class GmailEmailAgentExecutor(_AgentExecutorBase):
     async def execute(self, context: A2ARequestContext, event_queue: A2AEventQueue) -> None:
         updater = _task_updater(event_queue, context.task_id, context.context_id)
         skill = _a2a_skill_from_context(context)
+        request_id = uuid.uuid4().hex[:12]
+        payload = _a2a_payload_from_context(context)
+        user_text = _a2a_user_text(context)
+        outcome = "completed"
+        _email_status(
+            "A2A request received",
+            request_id=request_id,
+            skill=skill,
+            task_id=context.task_id,
+            context_id=context.context_id,
+            user_text=user_text,
+            payload=payload,
+        )
 
         try:
+            _email_status("A2A skill dispatching", request_id=request_id, skill=skill)
             if skill in {"email/search", "email/read"}:
                 await self._read_or_search_email(context, updater, skill)
                 return
@@ -2600,6 +2683,8 @@ class GmailEmailAgentExecutor(_AgentExecutorBase):
                 await self._sheets_action(context, updater, skill)
                 return
 
+            outcome = "unsupported"
+            _email_status("A2A unsupported skill", request_id=request_id, skill=skill)
             await _a2a_complete(
                 updater,
                 skill=skill,
@@ -2614,7 +2699,16 @@ class GmailEmailAgentExecutor(_AgentExecutorBase):
                 },
             )
         except Exception as exc:
-            await _a2a_complete(
+            outcome = "error"
+            _email_status(
+                "A2A request failed",
+                request_id=request_id,
+                skill=skill,
+                task_id=context.task_id,
+                context_id=context.context_id,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            await _a2a_failed(
                 updater,
                 skill=skill,
                 artifact_id="email-error",
@@ -2628,8 +2722,22 @@ class GmailEmailAgentExecutor(_AgentExecutorBase):
                     "task_id": context.task_id,
                 },
             )
+        finally:
+            _email_status(
+                "A2A request finished",
+                request_id=request_id,
+                skill=skill,
+                task_id=context.task_id,
+                context_id=context.context_id,
+                outcome=outcome,
+            )
 
     async def cancel(self, context: A2ARequestContext, event_queue: A2AEventQueue) -> None:
+        _email_status(
+            "A2A request cancelled",
+            task_id=context.task_id,
+            context_id=context.context_id,
+        )
         updater = _task_updater(event_queue, context.task_id, context.context_id)
         await updater.reject()
 
@@ -4238,8 +4346,11 @@ def _is_data_part(value: Any) -> bool:
 
 
 def _a2a_skill_from_context(context: A2ARequestContext) -> str:
-    metadata = context.metadata or {}
-    return str(metadata.get("skill") or "email/draft")
+    for metadata in _a2a_metadata_sources(context):
+        skill = metadata.get("skill")
+        if skill:
+            return str(skill)
+    return "email/draft"
 
 
 def _a2a_user_text(context: A2ARequestContext) -> str:
@@ -4252,11 +4363,33 @@ def _a2a_user_text(context: A2ARequestContext) -> str:
 def _a2a_payload_from_context(context: A2ARequestContext) -> dict[str, Any]:
     payload: dict[str, Any] = dict(context.metadata or {})
     if context.message:
+        message_metadata = getattr(context.message, "metadata", None)
+        if isinstance(message_metadata, dict):
+            payload.update(message_metadata)
         for part in context.message.parts:
             root = part.root
+            part_metadata = getattr(root, "metadata", None) or getattr(part, "metadata", None)
+            if isinstance(part_metadata, dict):
+                payload.update(part_metadata)
             if _is_data_part(root) and isinstance(root.data, dict):
                 payload.update(root.data)
     return payload
+
+
+def _a2a_metadata_sources(context: A2ARequestContext) -> list[dict[str, Any]]:
+    sources: list[dict[str, Any]] = []
+    if isinstance(context.metadata, dict):
+        sources.append(context.metadata)
+    if context.message:
+        message_metadata = getattr(context.message, "metadata", None)
+        if isinstance(message_metadata, dict):
+            sources.append(message_metadata)
+        for part in context.message.parts:
+            root = part.root
+            part_metadata = getattr(root, "metadata", None) or getattr(part, "metadata", None)
+            if isinstance(part_metadata, dict):
+                sources.append(part_metadata)
+    return sources
 
 
 def _a2a_available_slots(payload: dict[str, Any]) -> list[dict[str, str]]:
@@ -4321,6 +4454,7 @@ def _a2a_draft_from_payload(
     body = str(payload.get("body") or _a2a_labeled_body(user_text)).strip()
     if not body:
         body = _a2a_default_draft_body(recipient_name, slots)
+    html = payload.get("html") or payload.get("body_html")
 
     return {
         "to": ", ".join(to),
@@ -4329,6 +4463,7 @@ def _a2a_draft_from_payload(
         "recipient_name": recipient_name,
         "subject": subject,
         "body": body,
+        "html": str(html) if html is not None else None,
         "recipient_source": recipient_source,
         "high_importance": _a2a_bool(payload.get("high_importance"), default=False),
     }
@@ -4341,6 +4476,10 @@ def _a2a_normalize_draft(draft: dict[str, Any]) -> dict[str, Any]:
     normalized["bcc"] = ", ".join(_normalize_addresses(normalized.get("bcc")))
     normalized["subject"] = str(normalized.get("subject") or "")
     normalized["body"] = str(normalized.get("body") or "")
+    if normalized.get("html") is not None:
+        normalized["html"] = str(normalized.get("html") or "")
+    elif normalized.get("body_html") is not None:
+        normalized["html"] = str(normalized.get("body_html") or "")
     normalized["recipient_source"] = _normalize_recipient_source(
         str(normalized.get("recipient_source") or normalized.get("recipient_group") or "")
     )
@@ -4441,6 +4580,30 @@ async def _a2a_complete(
         metadata={"skill": skill, "content_type": "application/json"},
     )
     await updater.complete(
+        message=updater.new_agent_message(
+            [_text_part(text)],
+            metadata={"structured_output": output},
+        )
+    )
+
+
+async def _a2a_failed(
+    updater: A2ATaskUpdater,
+    *,
+    skill: str,
+    artifact_id: str,
+    artifact_name: str,
+    text: str,
+    output: dict[str, Any],
+) -> None:
+    await updater.start_work()
+    await updater.add_artifact(
+        [_data_part(output)],
+        artifact_id=artifact_id,
+        name=artifact_name,
+        metadata={"skill": skill, "content_type": "application/json"},
+    )
+    await updater.failed(
         message=updater.new_agent_message(
             [_text_part(text)],
             metadata={"structured_output": output},

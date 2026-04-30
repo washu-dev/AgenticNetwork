@@ -2,7 +2,7 @@
   "name": "Email Agent",
   "description": "Gmail-backed A2A Google Workspace agent for email, group notice email, calendar invites, Google Docs, and Google Sheets workflows.",
   "url": "http://10.229.117.223:9103/",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "protocolVersion": "0.3.0",
   "preferredTransport": "JSONRPC",
   "provider": {
@@ -124,7 +124,7 @@
     {
       "id": "email/group_send",
       "name": "Send Group Email",
-      "description": "Send one Gmail message directly to all recipients loaded from the local notice_list.txt group.",
+      "description": "Send one Gmail group notice message directly using the Email Agent's configured group delivery mode.",
       "tags": [
         "email/group_send",
         "email/send",
@@ -134,7 +134,7 @@
         "group",
         "group-email",
         "notice",
-        "notice-list"
+        "notice-delivery"
       ],
       "examples": [
         "Send the group notice email.",
