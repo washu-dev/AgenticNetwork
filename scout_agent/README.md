@@ -20,7 +20,7 @@ Scout runs in three modes, all sharing the same ReAct loop:
 |---|---|---|---|
 | One-shot | `scout "your mission"` | none | Single research request, batch / pipe |
 | REPL | `scout` | none | Interactive multi-turn research |
-| Networked | `scout serve` | publishes to AGNTCY dir, listens for A2A calls, can call peers | Production deployment in a multi-agent network |
+| Networked | `scout serve` | publishes to AGNTCY dir, listens for A2A calls; can optionally fan out to peers (`--enable-peer-discovery`) | Production deployment in a multi-agent network |
 
 The core abstraction is the `Capability` interface ([scout/capabilities/base.py](scout/capabilities/base.py)):
 the LLM doesn't distinguish between calling a local tool (Brave Search) and
@@ -33,7 +33,7 @@ through a `CapabilityRegistry` and never imports adapters directly.
    │     ScoutSession (ReAct loop)        │
    │   plan → tool_call → observe → …     │
    └────────┬──────────────────┬──────────┘
-            │                  │
+            │                  │  (only when --enable-peer-discovery)
   ┌─────────▼─────┐   ┌─────────▼─────────┐
   │ BraveCapabili-│   │ A2APeerCapability │
   │ ties (web,    │   │  (one per peer    │
@@ -48,10 +48,17 @@ through a `CapabilityRegistry` and never imports adapters directly.
 When `scout serve` starts, it:
 1. Connects to the AGNTCY directory daemon
 2. Cleans up stale records named `Scout` from previous runs
-3. Discovers all A2A peers in the dir (via `MODULE_NAME=integration/a2a` query)
-4. Registers each peer as an `A2APeerCapability` in the LLM's tool list
-5. Starts a JSON-RPC HTTP server (uvicorn) on `SCOUT_HTTP_PORT`
-6. Pushes its own OASF record to the dir + announces it on the routing layer
+3. Starts a JSON-RPC HTTP server (uvicorn) on `SCOUT_HTTP_PORT`
+4. Pushes its own OASF record to the dir + announces it on the routing layer
+5. *Optional, off by default:* if `--enable-peer-discovery` (or
+   `SCOUT_ENABLE_PEER_DISCOVERY=1`) is set, also discovers all A2A peers in
+   the dir (via `MODULE_NAME=integration/a2a` query) and registers each as an
+   `A2APeerCapability` in the LLM's tool list.
+
+By default Scout runs in **tool-only mode**: it publishes itself and answers
+incoming A2A calls (other agents can use it as a tool), but its own ReAct loop
+will not fan out to peers — only Brave Search tools are registered. Pass
+`--enable-peer-discovery` if you want Scout to be able to call other agents.
 
 On graceful shutdown (Ctrl-C / Ctrl-D / EOF), Scout unpublishes + deletes its
 own record from the dir.
@@ -115,6 +122,13 @@ Server-only mode (no REPL):
 .venv/bin/scout serve --no-repl -v
 ```
 
+Enable fan-out to peers (Scout will discover other A2A agents in the
+directory and call them as tools from its own ReAct loop). Off by default:
+
+```bash
+.venv/bin/scout serve --enable-peer-discovery -v
+```
+
 ## Configuration
 
 All config is environment variables (loaded from `.env` automatically via
@@ -134,7 +148,8 @@ Network-mode keys (only used by `scout serve`):
 | `SCOUT_HTTP_HOST` | Bind address for the JSON-RPC server | `0.0.0.0` |
 | `SCOUT_HTTP_PORT` | Port for the JSON-RPC server | `9104` |
 | `SCOUT_PUBLIC_HOST` | Host advertised in the AgentCard URL | `127.0.0.1` |
-| `SCOUT_PEER_SKILLS` | Optional CSV of OASF skill IDs / agent names to additionally search for | (empty) |
+| `SCOUT_ENABLE_PEER_DISCOVERY` | If `1`/`true`/`yes`/`on`, Scout discovers peers in the directory and registers them as tools so its ReAct loop can call them. Off by default (tool-only mode). Same effect as `--enable-peer-discovery`. | (off) |
+| `SCOUT_PEER_SKILLS` | Optional CSV of OASF skill IDs / agent names to additionally search for. Only used when peer discovery is enabled. | (empty) |
 
 ### `SCOUT_PUBLIC_HOST` matters
 

@@ -239,7 +239,20 @@ def _serve_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "OASF skill id (or substring of agent name) to look for at startup. "
-            "Repeat for multiple. Empty = broad search."
+            "Repeat for multiple. Empty = broad search. Only used when "
+            "--enable-peer-discovery is set."
+        ),
+    )
+    p.add_argument(
+        "--enable-peer-discovery",
+        action="store_true",
+        default=None,
+        help=(
+            "Discover other agents in the directory and register them as tools, "
+            "so Scout can fan out and call peers from its ReAct loop. Default OFF: "
+            "Scout still publishes itself and answers incoming A2A calls (acts as "
+            "a tool for others), but does not initiate calls to peers. Can also "
+            "be enabled via SCOUT_ENABLE_PEER_DISCOVERY=1."
         ),
     )
     p.add_argument("--model", default=None, help="Override the OpenAI model id.")
@@ -251,13 +264,10 @@ def _serve_parser() -> argparse.ArgumentParser:
 
 async def _run_serve(args: argparse.Namespace) -> int:
     # Lazy imports so legacy mode doesn't need agntcy/a2a installed at import time.
-    from scout.capabilities.a2a_peer import A2APeerCapability
     from scout.network.card import build_scout_card, build_scout_oasf_record
-    from scout.network.client_factory import make_a2a_client_factory
     from scout.network.directory import (
         cleanup_records_by_name,
         close_directory,
-        discover_peers,
         open_directory,
         publish_self,
         unpublish_cid,
@@ -289,37 +299,58 @@ async def _run_serve(args: argparse.Namespace) -> int:
     if args.peer_skill:
         settings.peer_skill_filters = args.peer_skill
 
+    peer_discovery_enabled = bool(args.enable_peer_discovery) or (
+        os.environ.get("SCOUT_ENABLE_PEER_DISCOVERY", "").strip().lower()
+        in {"1", "true", "yes", "on"}
+    )
+
     # 1. Brave capabilities
     registry = _build_brave_registry(brave_key, settings)
 
-    # 2. Directory: connect, discover peers, register them
+    # 2. Directory: always connect (we need it to publish ourselves), but only
+    #    discover + register peers as tools when fan-out is explicitly enabled.
+    #    With discovery off, Scout still answers incoming A2A calls but won't
+    #    initiate calls to other agents from its own ReAct loop.
     print(
         f"[scout] connecting to directory at {settings.directory_endpoint}...",
         file=sys.stderr,
     )
     dir_client = await open_directory(settings.directory_endpoint)
-    try:
-        peer_cards = await discover_peers(
-            dir_client,
-            skill_filters=settings.peer_skill_filters or None,
-            exclude_names={settings.agent_name},
-        )
-    except Exception as e:
-        print(f"[scout] peer discovery failed: {e}", file=sys.stderr)
-        peer_cards = []
 
-    print(
-        f"[scout] discovered {len(peer_cards)} peer(s): "
-        f"{[c.name for c in peer_cards]}",
-        file=sys.stderr,
-    )
+    if peer_discovery_enabled:
+        from scout.capabilities.a2a_peer import A2APeerCapability
+        from scout.network.client_factory import make_a2a_client_factory
+        from scout.network.directory import discover_peers
 
-    client_factory = make_a2a_client_factory()
-    for peer in peer_cards:
         try:
-            registry.register(A2APeerCapability(peer, client_factory))
-        except ValueError as e:  # duplicate name
-            print(f"[scout] skip peer {peer.name}: {e}", file=sys.stderr)
+            peer_cards = await discover_peers(
+                dir_client,
+                skill_filters=settings.peer_skill_filters or None,
+                exclude_names={settings.agent_name},
+            )
+        except Exception as e:
+            print(f"[scout] peer discovery failed: {e}", file=sys.stderr)
+            peer_cards = []
+
+        print(
+            f"[scout] discovered {len(peer_cards)} peer(s): "
+            f"{[c.name for c in peer_cards]}",
+            file=sys.stderr,
+        )
+
+        client_factory = make_a2a_client_factory()
+        for peer in peer_cards:
+            try:
+                registry.register(A2APeerCapability(peer, client_factory))
+            except ValueError as e:  # duplicate name
+                print(f"[scout] skip peer {peer.name}: {e}", file=sys.stderr)
+    else:
+        peer_cards = []
+        print(
+            "[scout] peer discovery disabled (tool-only mode); "
+            "pass --enable-peer-discovery to fan out to peers",
+            file=sys.stderr,
+        )
 
     # 3. Build server card. We listen on http_host:http_port but advertise
     #    public_host:http_port so peers on other machines can reach us.

@@ -1,7 +1,14 @@
 from datetime import datetime, timezone
 from typing import Any
 
-from a2a.types import AgentCapabilities, AgentCard, AgentInterface, AgentProvider, AgentSkill
+from a2a.types import (
+    AgentCapabilities,
+    AgentCard,
+    AgentInterface,
+    AgentProvider,
+    AgentSkill,
+    TransportProtocol,
+)
 from agntcy_app_sdk.directory.oasf_converter import (
     CARD_SCHEMA_VERSION,
     MODULE_ID_A2A,
@@ -9,7 +16,6 @@ from agntcy_app_sdk.directory.oasf_converter import (
     OASF_SCHEMA_VERSION,
     agent_card_to_oasf,
 )
-from agntcy_app_sdk.semantic.a2a.transport_types import InterfaceTransport
 
 SCOUT_AGENT_NAME_DEFAULT = "Scout"
 
@@ -119,10 +125,10 @@ def build_scout_card(
         defaultOutputModes=["text"],
         capabilities=AgentCapabilities(streaming=True),
         skills=SCOUT_SKILLS,
-        preferredTransport=InterfaceTransport.JSONRPC,
+        preferredTransport=TransportProtocol.jsonrpc,
         additional_interfaces=[
             AgentInterface(
-                transport=InterfaceTransport.JSONRPC,
+                transport=TransportProtocol.jsonrpc,
                 url=http_endpoint,
             ),
         ],
