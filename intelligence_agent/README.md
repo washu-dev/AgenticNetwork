@@ -106,7 +106,7 @@ keep discovery on but skip self-registration.
 ## Setup
 
 ```bash
-cd external_agents/intelligence_agent
+cd intelligence_agent
 conda env create -f environment.yml
 conda activate intelligence-agent-a2a
 ```
@@ -179,8 +179,8 @@ python send_request.py \
 
 ```bash
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
-PYTHONPATH=external_agents/intelligence_agent \
-pytest external_agents/intelligence_agent/tests -q
+PYTHONPATH=intelligence_agent \
+pytest intelligence_agent/tests -q
 ```
 
 The test suite stubs the LLM completion, the directory, the peer A2A

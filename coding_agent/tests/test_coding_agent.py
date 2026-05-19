@@ -7,8 +7,8 @@ the full A2A round-trip (RequestContext -> EventQueue -> Task -> A2ATaskResult)
 They run from the repo root with the AgenticNetwork venv:
 
     PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \\
-    PYTHONPATH=external_agents/coding_agent \\
-    pytest external_agents/coding_agent/tests -q
+    PYTHONPATH=coding_agent \\
+    pytest coding_agent/tests -q
 """
 from __future__ import annotations
 
@@ -419,7 +419,7 @@ from a2a.types import DataPart, Part, TextPart
 from _vendor_v2.directory.client import DirectoryClient
 
 
-EMAIL_CARD = _REPO_ROOT / "external_agents/email_agent/email_agent.card.json"
+EMAIL_CARD = _AGENT_DIR.parent / "email_agent/email_agent.card.json"
 
 
 class _RecordingEmailExecutor(AgentExecutor):

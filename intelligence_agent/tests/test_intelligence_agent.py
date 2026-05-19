@@ -16,9 +16,9 @@ synthesis is exercised.
 Run from the AgenticNetwork repo root with the v1 venv::
 
     PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \\
-    PYTHONPATH=external_agents/intelligence_agent \\
+    PYTHONPATH=intelligence_agent \\
     v1_classification/.venv/bin/python -m pytest \\
-        external_agents/intelligence_agent/tests -q
+        intelligence_agent/tests -q
 """
 from __future__ import annotations
 

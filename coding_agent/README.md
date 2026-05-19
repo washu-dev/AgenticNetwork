@@ -250,8 +250,8 @@ python coding_agent.py tools   # list registered skills
 
 ```bash
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
-PYTHONPATH=external_agents/coding_agent \
-pytest external_agents/coding_agent/tests -q
+PYTHONPATH=coding_agent \
+pytest coding_agent/tests -q
 ```
 
 The test suite injects fake runners and a fake directory; no LLM, no

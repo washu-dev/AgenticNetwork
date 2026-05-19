@@ -176,7 +176,7 @@ Do not edit:
 
 ```text
 v1_classification/
-external_agents/email_agent/email_agent.py
+email_agent/email_agent.py
 ```
 
 Do not change dependency files unless explicitly approved.
