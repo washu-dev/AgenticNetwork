@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+import base64
+import inspect
 import logging
+import json
+import os
 import re
-from typing import Any
+from pathlib import Path
+from typing import Any, Awaitable, Callable
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
-from v2_agent_network.services.a2a.client import A2AClient
-from v2_agent_network.services.common.models import (
+from v3_main_agent.main_agent.a2a.client import A2AClient
+from v3_main_agent.main_agent.models import (
     A2AMessage,
     A2APart,
     A2ATaskRequest,
@@ -25,14 +30,16 @@ from v2_agent_network.services.common.models import (
     UserMessage,
     utc_now,
 )
-from v2_agent_network.services.directory.client import DirectoryClient
-from v2_agent_network.services.directory.backends import DirectoryUnavailable
-from v2_agent_network.services.state.store import InMemoryStateStore
+from v3_main_agent.main_agent.directory.client import DirectoryClient
+from v3_main_agent.main_agent.directory.backends import DirectoryUnavailable
+from v3_main_agent.main_agent.state.store import InMemoryStateStore
 
 from v3_main_agent.main_agent.config import MainAgentConfig
 from v3_main_agent.main_agent.llm_client import LLMClient, ToolCall, TurnState
 
 logger = logging.getLogger(__name__)
+
+ProgressCallback = Callable[[dict[str, Any]], Awaitable[None]]
 
 
 # Skills we treat as side-effecting in strict policy mode.
@@ -113,6 +120,7 @@ class MainAgentRuntime:
         text: str,
         context_id: str | None = None,
         metadata: dict[str, Any] | None = None,
+        progress_callback: ProgressCallback | None = None,
     ) -> TurnResult:
         if context_id and self._is_affirmative(text):
             pending = self.store.get_pending_confirmation(context_id)
@@ -126,14 +134,20 @@ class MainAgentRuntime:
                 return self._cancel_confirmation(context_id, pending, user_text=text)
 
         context = self._open_context(user_id, channel, text, context_id)
+        uploaded_images = _uploaded_images_from_metadata(metadata or {})
         state = TurnState(
             context_id=context.context_id,
             user_text=text,
             conversation_history=list(context.conversation_history)[-self.config.history_limit :],
             pending_confirmation=self.store.get_pending_confirmation(context.context_id),
+            uploaded_images=uploaded_images,
         )
 
-        result = await self._run_loop(state=state, context=context)
+        result = await self._run_loop(
+            state=state,
+            context=context,
+            progress_callback=progress_callback,
+        )
         # Append assistant final text to conversation history.
         if result.text and result.state in {A2ATaskState.completed, A2ATaskState.input_required}:
             entry = f"assistant: {result.text}"
@@ -145,14 +159,21 @@ class MainAgentRuntime:
 
     # -------- core loop --------
 
-    async def _run_loop(self, *, state: TurnState, context: PIContext) -> TurnResult:
+    async def _run_loop(
+        self,
+        *,
+        state: TurnState,
+        context: PIContext,
+        progress_callback: ProgressCallback | None = None,
+    ) -> TurnResult:
         tool_trace: list[dict[str, Any]] = []
         selected_agents: list[dict[str, Any]] = []
         structured_outputs: dict[str, Any] = {}
-        # (agent_id, skill) tuples for calls that completed successfully in this
-        # turn. Only successful ones gate dedup so transient A2A failures can be
-        # retried by the LLM.
-        successful_calls: set[tuple[str, str]] = set()
+        # Per-turn request fingerprints for calls that completed successfully.
+        # Skill is now advisory, so dedup keys on the actual request shape
+        # rather than just (agent_id, skill). Failed calls intentionally skip
+        # this gate so the LLM can retry transient A2A failures.
+        successful_calls: set[str] = set()
         errors: list[str] = []
         # Cache the most recent list_agents result so describe_agent / call_agent
         # can resolve agent_id without re-querying ADS.
@@ -185,12 +206,14 @@ class MainAgentRuntime:
             )
 
             if tool_call.reasoning:
-                tool_trace.append(
+                await _record_trace(
+                    tool_trace,
                     {
                         "tool": "reasoning",
                         "status": "ok",
                         "content": {"text": tool_call.reasoning, "next_tool": tool_call.tool_name},
-                    }
+                    },
+                    progress_callback,
                 )
 
             terminal = await self._dispatch_tool(
@@ -202,6 +225,7 @@ class MainAgentRuntime:
                 structured_outputs=structured_outputs,
                 successful_calls=successful_calls,
                 discovered=discovered,
+                progress_callback=progress_callback,
             )
             if terminal is not None:
                 return terminal
@@ -228,8 +252,9 @@ class MainAgentRuntime:
         tool_trace: list[dict[str, Any]],
         selected_agents: list[dict[str, Any]],
         structured_outputs: dict[str, Any],
-        successful_calls: set[tuple[str, str]],
+        successful_calls: set[str],
         discovered: dict[str, DiscoveredAgent],
+        progress_callback: ProgressCallback | None = None,
     ) -> TurnResult | None:
         name = tool_call.tool_name
         args = dict(tool_call.arguments or {})
@@ -242,7 +267,11 @@ class MainAgentRuntime:
                 # Fall back to the last call_agent text so the user still sees
                 # the agent's actual output instead of "(empty)".
                 text = _salvage_final_text(state, structured_outputs)
-            tool_trace.append({"tool": name, "status": "ok", "args": args})
+            await _record_trace(
+                tool_trace,
+                _with_token_usage({"tool": name, "status": "ok", "args": args}, tool_call),
+                progress_callback,
+            )
             return TurnResult(
                 context_id=context.context_id,
                 state=A2ATaskState.completed,
@@ -255,7 +284,11 @@ class MainAgentRuntime:
 
         if name == "ask_user":
             text = str(args.get("text") or "Could you clarify?")
-            tool_trace.append({"tool": name, "status": "ok", "args": args})
+            await _record_trace(
+                tool_trace,
+                _with_token_usage({"tool": name, "status": "ok", "args": args}, tool_call),
+                progress_callback,
+            )
             return TurnResult(
                 context_id=context.context_id,
                 state=A2ATaskState.input_required,
@@ -275,12 +308,21 @@ class MainAgentRuntime:
                 args=args,
                 state=state,
                 context=context,
+                tool_trace=tool_trace,
                 discovered=discovered,
                 selected_agents=selected_agents,
                 structured_outputs=structured_outputs,
                 successful_calls=successful_calls,
+                progress_callback=progress_callback,
             )
-            tool_trace.append({"tool": name, "status": obs["status"], "content": obs["content"]})
+            await _record_trace(
+                tool_trace,
+                _with_token_usage(
+                    {"tool": name, "status": obs["status"], "content": obs["content"]},
+                    tool_call,
+                ),
+                progress_callback,
+            )
             state.observations.append(obs)
             if pending is not None:
                 # confirmation_required: build the terminal TurnResult HERE
@@ -300,7 +342,7 @@ class MainAgentRuntime:
         else:
             obs = {"tool": name, "status": "error", "content": {"error": f"Unknown tool {name!r}."}}
 
-        tool_trace.append(obs)
+        await _record_trace(tool_trace, _with_token_usage(obs, tool_call), progress_callback)
         # Trim observation content for state — LLM sees the same info, no transformations.
         state.observations.append(obs)
         return None
@@ -360,38 +402,33 @@ class MainAgentRuntime:
         args: dict[str, Any],
         state: TurnState,
         context: PIContext,
+        tool_trace: list[dict[str, Any]],
         discovered: dict[str, DiscoveredAgent],
         selected_agents: list[dict[str, Any]],
         structured_outputs: dict[str, Any],
-        successful_calls: set[tuple[str, str]],
+        successful_calls: set[str],
+        progress_callback: ProgressCallback | None = None,
     ) -> tuple[dict[str, Any], dict[str, Any] | None]:
         agent_id = str(args.get("agent_id") or "").strip()
-        skill = str(args.get("skill") or "").strip()
+        requested_skill = str(args.get("skill") or "").strip() or None
         task_input = args.get("task_input") if isinstance(args.get("task_input"), dict) else {}
 
-        if not agent_id or not skill:
-            return _err("call_agent", "Both agent_id and skill are required."), None
-        if "://" in agent_id or "://" in skill:
-            return _err("call_agent", "URLs are not accepted; use discovered agent_id and skill."), None
+        if not agent_id:
+            return _err("call_agent", "agent_id is required."), None
+        if "://" in agent_id or (requested_skill and "://" in requested_skill):
+            return _err("call_agent", "URLs are not accepted; use discovered agent_id and optional skill hint."), None
 
         logger.info(
-            "main_agent_call_agent_args context_id=%s agent_id=%s skill=%s task_input_keys=%s",
+            "main_agent_call_agent_args context_id=%s agent_id=%s requested_skill=%s task_input_keys=%s",
             context.context_id,
             agent_id,
-            skill,
+            requested_skill,
             sorted(task_input.keys()) if task_input else [],
         )
 
         # Belt-and-braces: if the LLM forgot to fill task_input for an email-like skill,
         # extract recipient/subject/body from the user's text and conversation history
         # so the email agent doesn't bounce on "missing recipient address".
-        if _is_email_skill(skill):
-            task_input = _augment_email_task_input(
-                task_input=task_input,
-                user_text=state.user_text,
-                conversation_history=context.conversation_history,
-            )
-
         agent = self._resolve_agent_lenient(agent_id, discovered)
         if agent is None:
             return (
@@ -403,28 +440,47 @@ class MainAgentRuntime:
                 None,
             )
 
-        canonical_skill = _canonical_skill(agent, skill) or skill
-        capability = _capability_for_skill(agent, canonical_skill)
-        if capability is None:
-            return (
-                _err(
-                    "call_agent",
-                    f"Skill {skill!r} is not advertised by agent {agent_id!r}. "
-                    f"Available: {sorted(_advertised_skills(agent))}",
-                ),
-                None,
+        if requested_skill and _is_email_skill(requested_skill):
+            task_input = _augment_email_task_input(
+                task_input=task_input,
+                user_text=state.user_text,
+                conversation_history=context.conversation_history,
+            )
+        elif not requested_skill and _agent_has_email_skills(agent):
+            task_input = _augment_email_task_input(
+                task_input=task_input,
+                user_text=state.user_text,
+                conversation_history=context.conversation_history,
             )
 
-        # Deduplicate: same (agent, skill) already completed *successfully* in
-        # this turn. Failed calls (a2a_call_failed, etc.) intentionally skip
-        # this gate so the LLM can retry transient errors.
-        if (agent.agent_id, canonical_skill) in successful_calls:
+        canonical_hint = (
+            _canonical_skill(agent, requested_skill)
+            if requested_skill
+            else None
+        )
+        capability = _capability_for_skill(agent, canonical_hint) if canonical_hint else None
+        if requested_skill and canonical_hint is None:
+            logger.info(
+                "main_agent_skill_hint_not_advertised context_id=%s agent_id=%s requested_skill=%s advertised=%s",
+                context.context_id,
+                agent.agent_id,
+                requested_skill,
+                sorted(_advertised_skills(agent)),
+            )
+
+        fingerprint = _request_fingerprint(
+            agent_id=agent.agent_id,
+            user_text=state.user_text,
+            task_input=task_input,
+            requested_skill=requested_skill,
+        )
+        if fingerprint in successful_calls:
             prior_task = next(
                 (
                     step["task_id"]
                     for step in selected_agents
                     if step.get("agent_id") == agent.agent_id
-                    and step.get("skill") == canonical_skill
+                    and step.get("request_fingerprint") == fingerprint
                     and step.get("task_id")
                 ),
                 None,
@@ -434,10 +490,12 @@ class MainAgentRuntime:
                     "tool": "call_agent",
                     "status": "skipped",
                     "content": {
-                        "skill": canonical_skill,
+                        "requested_skill": requested_skill,
+                        "skill_hint": requested_skill,
+                        "chosen_skill": None,
                         "agent_id": agent.agent_id,
                         "reason": (
-                            f"{canonical_skill} already ran successfully on {agent.agent_id} "
+                            f"This request already ran successfully on {agent.agent_id} "
                             "in this turn. The previous structured_output is in your context — "
                             "do NOT call it again; call final_answer with the result."
                         ),
@@ -447,10 +505,43 @@ class MainAgentRuntime:
                 None,
             )
 
-        decision = self._evaluate_policy(canonical_skill, capability)
+        prior_dispatch = _first_completed_dispatch(selected_agents)
+        if prior_dispatch is not None:
+            if not _prior_dispatch_reports_failed_handoff(structured_outputs):
+                return (
+                    {
+                        "tool": "call_agent",
+                        "status": "skipped",
+                        "content": {
+                            "requested_skill": requested_skill,
+                            "skill_hint": requested_skill,
+                            "chosen_skill": None,
+                            "agent_id": agent.agent_id,
+                            "reason": (
+                                "The main agent already dispatched this user task to "
+                                f"{prior_dispatch.get('agent_id')}. External agents are responsible "
+                                "for any peer A2A coordination; call final_answer using the existing "
+                                "structured_output instead of dispatching another agent."
+                            ),
+                            "previous_agent_id": prior_dispatch.get("agent_id"),
+                            "previous_task_id": prior_dispatch.get("task_id"),
+                        },
+                    },
+                    None,
+                )
+            logger.info(
+                "main_agent_followup_dispatch_after_failed_peer_handoff context_id=%s prior_agent_id=%s next_agent_id=%s",
+                context.context_id,
+                prior_dispatch.get("agent_id"),
+                agent.agent_id,
+            )
+
+        decision = self._evaluate_policy(canonical_hint, capability)
         if decision.status == PolicyDecisionStatus.requires_confirmation:
             pending = {
-                "skill": canonical_skill,
+                "skill": canonical_hint,
+                "requested_skill": requested_skill,
+                "skill_hint": requested_skill,
                 "agent_id": agent.agent_id,
                 "task_input": task_input,
                 "reason": decision.reason,
@@ -459,12 +550,24 @@ class MainAgentRuntime:
                 "selected_agent": agent.model_dump(mode="json"),
             }
             self.store.save_pending_confirmation(context.context_id, pending)
-            selected_agents.append({"skill": canonical_skill, "agent_id": agent.agent_id, "task_id": None})
+            selected_agents.append(
+                {
+                    "skill": canonical_hint,
+                    "requested_skill": requested_skill,
+                    "chosen_skill": None,
+                    "agent_id": agent.agent_id,
+                    "task_id": None,
+                    "request_fingerprint": fingerprint,
+                    "state": "confirmation_required",
+                }
+            )
             obs = {
                 "tool": "call_agent",
                 "status": "confirmation_required",
                 "content": {
-                    "skill": canonical_skill,
+                    "requested_skill": requested_skill,
+                    "skill_hint": requested_skill,
+                    "chosen_skill": None,
                     "agent_id": agent.agent_id,
                     "reason": decision.reason,
                     "task_input": task_input,
@@ -472,7 +575,7 @@ class MainAgentRuntime:
             }
             terminal_payload = {
                 "text": (
-                    f"This action ({canonical_skill}) needs your confirmation. "
+                    f"This action ({canonical_hint}) needs your confirmation. "
                     f"Reply 'yes' to proceed, 'no' to cancel."
                 ),
                 "pending_confirmation": pending,
@@ -483,26 +586,45 @@ class MainAgentRuntime:
         request = self._build_a2a_request(
             context=context,
             agent=agent,
-            skill=canonical_skill,
+            skill=requested_skill,
             task_input=task_input,
             user_text=state.user_text,
             confirmed=False,
+            uploaded_images=state.uploaded_images,
         )
-        result = await self._send_task(agent, request)
-        self._save_invocation(context, agent, canonical_skill, result, decision)
+        remote_progress_callback = None
+        if progress_callback is not None:
+            async def remote_progress_callback(entry: dict[str, Any]) -> None:
+                await _record_trace(tool_trace, entry, progress_callback)
+
+        result = await self._send_task(agent, request, progress_callback=remote_progress_callback)
+        chosen_skill = _chosen_skill_from_result(result, requested_skill=canonical_hint or requested_skill)
+        record_skill = chosen_skill or canonical_hint or requested_skill or "agent/autonomous"
+        self._save_invocation(context, agent, record_skill, result, decision)
         selected_agents.append(
-            {"skill": canonical_skill, "agent_id": agent.agent_id, "task_id": result.task_id}
+            {
+                "skill": record_skill,
+                "requested_skill": requested_skill,
+                "chosen_skill": chosen_skill,
+                "agent_id": agent.agent_id,
+                "task_id": result.task_id,
+                "request_fingerprint": fingerprint,
+                "state": result.state.value,
+            }
         )
         if result.structured_output:
-            structured_outputs[canonical_skill] = result.structured_output
+            structured_outputs[record_skill] = result.structured_output
         if result.state == A2ATaskState.completed:
-            successful_calls.add((agent.agent_id, canonical_skill))
+            successful_calls.add(fingerprint)
 
         obs = {
             "tool": "call_agent",
             "status": result.state.value,
             "content": {
-                "skill": canonical_skill,
+                "skill": record_skill,
+                "requested_skill": requested_skill,
+                "skill_hint": requested_skill,
+                "chosen_skill": chosen_skill,
                 "agent_id": agent.agent_id,
                 "task_id": result.task_id,
                 "state": result.state.value,
@@ -596,6 +718,7 @@ class MainAgentRuntime:
             task_input=task_input,
             user_text=context.current_goal,
             confirmed=True,
+            uploaded_images=[],
         )
         result = await self._send_task(agent, request)
         confirmed_decision = PolicyDecision(
@@ -669,20 +792,17 @@ class MainAgentRuntime:
         text: str,
         context_id: str | None,
     ) -> PIContext:
-        if context_id:
-            try:
-                context = self.store.get_context(context_id)
-            except KeyError:
-                context = self._new_context(user_id, channel, text)
-            else:
-                context.current_goal = text
-                context.updated_at = utc_now()
-                context.conversation_history.append(f"user: {text}")
-                return context
-        else:
+        context = self.store.get_server_context()
+        if context is None:
             context = self._new_context(user_id, channel, text)
-        self.store.save_context(context)
-        return context
+            return self.store.save_server_context(context)
+
+        context.user_id = user_id
+        context.channel = channel
+        context.current_goal = text
+        context.updated_at = utc_now()
+        context.conversation_history.append(f"user: {text}")
+        return self.store.save_server_context(context)
 
     def _new_context(self, user_id: str, channel: Channel, text: str) -> PIContext:
         msg = UserMessage(channel=channel, sender_id=user_id, text=text)
@@ -695,11 +815,17 @@ class MainAgentRuntime:
             conversation_history=[f"user: {text}"],
         )
 
-    def _evaluate_policy(self, skill: str, capability: AgentCapability) -> PolicyDecision:
+    def _evaluate_policy(self, skill: str | None, capability: AgentCapability | None) -> PolicyDecision:
         if self.config.policy_mode in {"permissive", "off", "disabled"}:
             return PolicyDecision(
                 status=PolicyDecisionStatus.allowed,
-                reason=f"{skill} allowed in permissive mode.",
+                reason=f"{skill or 'autonomous agent request'} allowed in permissive mode.",
+                confirmation_status=ConfirmationStatus.not_required,
+            )
+        if not skill or capability is None:
+            return PolicyDecision(
+                status=PolicyDecisionStatus.allowed,
+                reason="No definite write skill was requested; external agent may choose the operation.",
                 confirmation_status=ConfirmationStatus.not_required,
             )
         if capability.action_type == "write" or _is_write_skill(skill):
@@ -719,23 +845,47 @@ class MainAgentRuntime:
         *,
         context: PIContext,
         agent: DiscoveredAgent,
-        skill: str,
+        skill: str | None,
         task_input: dict[str, Any],
         user_text: str,
         confirmed: bool,
+        uploaded_images: list[dict[str, Any]] | None = None,
     ) -> A2ATaskRequest:
+        should_attach_images = bool(uploaded_images) and _is_geospatial_agent(agent, skill)
+        outbound_task_input = dict(task_input)
+        image_parts: list[A2APart] = []
+        attached_images: list[dict[str, Any]] = []
+        if should_attach_images:
+            for image in (uploaded_images or [])[:1]:
+                image_part = _uploaded_image_to_a2a_part(image)
+                if image_part is None:
+                    continue
+                image_parts.append(image_part)
+                attached_images.append(_uploaded_image_summary(image))
+            if attached_images:
+                first = attached_images[0]
+                outbound_task_input.setdefault("image_filename", first.get("filename"))
+                outbound_task_input.setdefault("image_content_type", first.get("content_type"))
+
         metadata: dict[str, Any] = {
             "user_id": context.user_id,
             "channel": context.channel.value,
-            "skill": skill,
-            **{k: v for k, v in task_input.items() if k not in {"user_id", "channel", "skill"}},
+            **{k: v for k, v in outbound_task_input.items() if k not in {"user_id", "channel", "skill"}},
         }
+        if attached_images:
+            metadata["uploaded_images"] = attached_images
+            metadata["image_transfer"] = "a2a_file_bytes"
+        if skill:
+            metadata["skill"] = skill
+            metadata["requested_skill"] = skill
+            metadata["skill_hint"] = skill
         if confirmed:
             metadata["confirmed"] = True
             metadata["confirmation_status"] = ConfirmationStatus.confirmed.value
         parts = [A2APart(kind="text", text=user_text)]
-        if task_input:
-            parts.append(A2APart(kind="data", data=dict(task_input)))
+        if outbound_task_input:
+            parts.append(A2APart(kind="data", data=outbound_task_input))
+        parts.extend(image_parts)
         return A2ATaskRequest(
             task_id=str(uuid4()),
             context_id=context.context_id,
@@ -746,9 +896,17 @@ class MainAgentRuntime:
             metadata=metadata,
         )
 
-    async def _send_task(self, agent: DiscoveredAgent, request: A2ATaskRequest) -> A2ATaskResult:
+    async def _send_task(
+        self,
+        agent: DiscoveredAgent,
+        request: A2ATaskRequest,
+        progress_callback: ProgressCallback | None = None,
+    ) -> A2ATaskResult:
         try:
-            return await self.a2a_client.send_task(agent, request)
+            send_task = self.a2a_client.send_task
+            if progress_callback is not None and "progress_callback" in inspect.signature(send_task).parameters:
+                return await send_task(agent, request, progress_callback=progress_callback)
+            return await send_task(agent, request)
         except Exception as exc:
             logger.exception(
                 "main_agent_a2a_failed agent_id=%s skill=%s endpoint=%s",
@@ -767,6 +925,9 @@ class MainAgentRuntime:
                 messages=[A2AMessage(role="agent", parts=[A2APart(kind="text", text=text)])],
                 structured_output={
                     "skill": request.skill,
+                    "requested_skill": request.skill,
+                    "skill_hint": request.skill,
+                    "chosen_skill": None,
                     "agent_id": agent.agent_id,
                     "status": "a2a_call_failed",
                     "error_type": type(exc).__name__,
@@ -818,11 +979,63 @@ def _normalize(text: str) -> str:
     return " ".join(text.strip().lower().replace(".", "").replace("!", "").split())
 
 
+async def _record_trace(
+    tool_trace: list[dict[str, Any]],
+    entry: dict[str, Any],
+    progress_callback: ProgressCallback | None,
+) -> None:
+    tool_trace.append(entry)
+    if progress_callback is None:
+        return
+    try:
+        await progress_callback(entry)
+    except Exception:
+        logger.exception("main_agent_progress_callback_failed")
+
+
+def _with_token_usage(entry: dict[str, Any], tool_call: ToolCall) -> dict[str, Any]:
+    if not tool_call.token_usage:
+        return entry
+    return {**entry, "token_usage": tool_call.token_usage}
+
+
 def _normalize_agent_key(value: str) -> str:
     """Lowercase + strip non-alphanumerics so that 'Disaster Response Agent',
     'disaster-response-agent', 'disaster_response_agent', and 'DisasterResponseAgent'
     all collapse to the same key."""
     return "".join(ch for ch in value.lower() if ch.isalnum())
+
+
+def _first_completed_dispatch(selected_agents: list[dict[str, Any]]) -> dict[str, Any] | None:
+    for step in selected_agents:
+        if step.get("state") == A2ATaskState.completed.value and step.get("task_id"):
+            return step
+    return None
+
+
+def _prior_dispatch_reports_failed_handoff(structured_outputs: dict[str, Any]) -> bool:
+    failed_statuses = {
+        "directory_unavailable",
+        "discovery_failed",
+        "no_agent_found",
+        "send_failed",
+        "send_rejected",
+        "unsupported_kind",
+    }
+    for output in structured_outputs.values():
+        if not isinstance(output, dict):
+            continue
+        delivery_items: list[Any] = []
+        delivery_result = output.get("delivery_result")
+        if isinstance(delivery_result, dict):
+            delivery_items.append(delivery_result)
+        delivery_results = output.get("delivery_results")
+        if isinstance(delivery_results, list):
+            delivery_items.extend(item for item in delivery_results if isinstance(item, dict))
+        for item in delivery_items:
+            if str(item.get("status") or "").lower() in failed_statuses:
+                return True
+    return False
 
 
 def _err(tool: str, message: str) -> dict[str, Any]:
@@ -902,6 +1115,44 @@ def _advertised_skills(agent: DiscoveredAgent) -> set[str]:
     return out
 
 
+def _agent_has_email_skills(agent: DiscoveredAgent) -> bool:
+    return any(skill.startswith("email/") for skill in _advertised_skills(agent))
+
+
+def _request_fingerprint(
+    *,
+    agent_id: str,
+    user_text: str,
+    task_input: dict[str, Any],
+    requested_skill: str | None,
+) -> str:
+    return json.dumps(
+        {
+            "agent_id": agent_id,
+            "user_goal": _normalize(user_text),
+            "task_input": task_input,
+            "requested_skill": requested_skill or "",
+        },
+        default=str,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _chosen_skill_from_result(
+    result: A2ATaskResult,
+    *,
+    requested_skill: str | None,
+) -> str | None:
+    output = result.structured_output or {}
+    if isinstance(output, dict):
+        for key in ("chosen_skill", "actual_skill", "selected_skill", "skill"):
+            value = output.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return requested_skill
+
+
 def _last_text(result: A2ATaskResult) -> str:
     for message in reversed(result.messages):
         for part in message.parts:
@@ -917,6 +1168,81 @@ def _is_write_skill(skill: str) -> bool:
 
 def _is_email_skill(skill: str) -> bool:
     return skill.startswith("email/")
+
+
+def _is_geospatial_agent(agent: DiscoveredAgent, skill: str | None) -> bool:
+    advertised = _advertised_skills(agent)
+    haystack = " ".join(
+        [
+            agent.agent_id,
+            agent.name,
+            agent.description,
+            skill or "",
+            *advertised,
+        ]
+    ).lower()
+    return "geospatial" in haystack or "geo-spatial" in haystack
+
+
+def _uploaded_images_from_metadata(metadata: dict[str, Any]) -> list[dict[str, Any]]:
+    raw = metadata.get("uploaded_images")
+    if not isinstance(raw, list):
+        return []
+    images: list[dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        path = str(item.get("path") or "")
+        if not _is_safe_uploaded_file(path):
+            continue
+        images.append(
+            {
+                "path": str(Path(path).resolve()),
+                "filename": str(item.get("filename") or Path(path).name),
+                "content_type": str(item.get("content_type") or "application/octet-stream"),
+                "size": item.get("size"),
+            }
+        )
+    return images
+
+
+def _is_safe_uploaded_file(path_text: str) -> bool:
+    if not path_text:
+        return False
+    try:
+        path = Path(path_text).expanduser().resolve()
+        upload_dir = Path(os.getenv("MAIN_AGENT_UPLOAD_DIR", "/tmp/v3_main_agent_uploads")).resolve()
+        path.relative_to(upload_dir)
+    except (OSError, ValueError):
+        return False
+    return path.is_file()
+
+
+def _uploaded_image_to_a2a_part(image: dict[str, Any]) -> A2APart | None:
+    path = Path(str(image.get("path") or ""))
+    if not _is_safe_uploaded_file(str(path)):
+        return None
+    content_type = str(image.get("content_type") or "application/octet-stream")
+    if not content_type.startswith("image/"):
+        return None
+    data = path.read_bytes()
+    return A2APart(
+        kind="image",
+        content_type=content_type,
+        bytes=base64.b64encode(data).decode("ascii"),
+        metadata={
+            "name": str(image.get("filename") or path.name),
+            "transfer": "a2a_file_bytes",
+        },
+    )
+
+
+def _uploaded_image_summary(image: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "filename": image.get("filename"),
+        "content_type": image.get("content_type"),
+        "size": image.get("size"),
+    }
 
 
 def _salvage_final_text(state: TurnState, structured_outputs: dict[str, Any]) -> str:

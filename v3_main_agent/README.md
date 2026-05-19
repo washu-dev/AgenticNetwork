@@ -5,11 +5,10 @@ A re-write of the main / PI agent for the Internet-of-Agents demo.
 > **New here?** See [`HANDOVER.md`](./HANDOVER.md) for the 30-second onboarding.
 > One-shot environment self-check: `v3_main_agent/scripts/doctor.sh`.
 
-The `v2_agent_network` ADS publishing, A2A transport, agent cards, and mock
-agents are kept and reused as-is. Only the **main agent** (the one the user
-chats with, that discovers other agents through ADS and delegates to them)
-is new. It lives in this directory; nothing in `v2_agent_network/` is
-modified.
+The v3 main agent is standalone: its ADS publishing/discovery helpers, A2A
+transport, state models, state store, and sample Agent Cards live under
+`v3_main_agent/`. The deprecated v1/v2 PI implementations are not imported by
+the active v3 runtime.
 
 ## What was wrong with the old PI Agent
 
@@ -32,7 +31,7 @@ The LLM only sees five safe primitives:
 | ---------------- | ----------------------------------------------------------------------- |
 | `list_agents`    | Enumerate every agent in ADS with a one-line summary                    |
 | `describe_agent` | Full skill catalog (ids, descriptions, examples) for one agent          |
-| `call_agent`     | Invoke a skill on a discovered agent through A2A                        |
+| `call_agent`     | Dispatch the whole task to one discovered agent through A2A             |
 | `ask_user`       | Stop the turn and ask a clarifying question                             |
 | `final_answer`   | Final response to the user                                              |
 
@@ -46,10 +45,10 @@ This design directly answers the front-end test prompts:
 | -------------------------------------------- | ----------------------------------------------------------------- |
 | "what agents are available now?"             | `list_agents` → `final_answer`                                    |
 | "what can the disaster agent do?"            | `list_agents` → `describe_agent` → `final_answer`                 |
-| "draft me a tornado plan"                    | `list_agents` → `call_agent(disaster, …)` → `final_answer`        |
-| "send this plan to xxx by email"             | `list_agents` → `call_agent(email, send, {to, subject, body})`    |
-| "write me a python program"                  | `final_answer` (no agent needed; LLM answers from knowledge)      |
-| "send the program to xxx" (follow-up)        | LLM sees prior assistant code in `conversation_history` and uses it as the body |
+| "draft me a tornado plan"                    | `list_agents` → `call_agent(disaster, whole task)` → `final_answer` |
+| "send this plan to xxx by email"             | `list_agents` → `call_agent(email, whole task)` → `final_answer`  |
+| "write me a python program"                  | `list_agents` → `call_agent(coding, whole task)` → `final_answer` |
+| "write a program and email it"               | `list_agents` → one `call_agent` to a primary related agent; that agent handles peer A2A |
 
 ### LLM reasoning is surfaced
 
@@ -69,26 +68,32 @@ v3_main_agent/
 ├── .env.example            # config template (copy to .env.local)
 ├── main_agent/
 │   ├── config.py           # MainAgentConfig from env vars
+│   ├── models.py           # v3-local A2A, ADS, policy, and state models
+│   ├── a2a/                # v3-local A2A client, adapters, HTTP transport
+│   ├── directory/          # v3-local fake/real ADS client + card converter
+│   ├── state/              # v3-local in-memory state store
 │   ├── tools.py            # 5 tool schemas + system prompt
 │   ├── llm_client.py       # OpenAI Responses client + ScriptedLLMClient
 │   ├── runtime.py          # tool loop, ADS, A2A, memory, policy, dedup
 │   ├── server.py           # FastAPI: /messages /confirmations /agents /health /
 │   └── web/index.html      # chat UI (sidebar + tool-trace + reasoning blocks)
+├── configs/agent_cards/    # v3-local Agent Card fixtures for fake ADS/tests
 ├── scripts/
 │   ├── start.sh            # auto-loads .env.local, starts uvicorn
 │   ├── doctor.sh           # one-shot self-check (env, dirctl, ADS, server, OpenAI, tests)
+│   ├── publish_agents.py   # v3-local Agent Card publisher for fake/real ADS
 │   └── run_server.py       # python entrypoint (called by start.sh)
-└── tests/                  # 17 tests, all run with mocked LLM + ADS
+└── tests/                  # tests run with mocked LLM + ADS
 ```
 
-What gets reused from `v2_agent_network/`:
+Standalone v3 infrastructure:
 
-- `services/common/models.py` — `DiscoveredAgent`, `A2A*`, `PIContext`, etc.
-- `services/directory/` — `DirectoryClient` (fake ADS + real ADS via `dirctl`)
-- `services/a2a/` — `A2AClient` and HTTP transport
-- `services/state/store.py` — in-memory state store
+- `main_agent/models.py` — `DiscoveredAgent`, `A2A*`, `PIContext`, policy records, etc.
+- `main_agent/directory/` — `DirectoryClient` (fake ADS + real ADS via `dirctl`)
+- `main_agent/a2a/` — `A2AClient`, SDK adapters, and HTTP streaming transport
+- `main_agent/state/store.py` — in-memory state store
 - `configs/agent_cards/*.card.json` — sample Agent Cards
-- `services/mock_agents/` — mock A2A agent executors (used for end-to-end runs)
+- `scripts/publish_agents.py` — v3-local publisher for cards in `configs/agent_cards/`
 
 ## Running
 
@@ -100,12 +105,13 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
   /home/server2/miniconda3/envs/mas_spider/bin/python -m pytest v3_main_agent/tests -q
 ```
 
-17 tests cover: list/describe/call agent flows, write-skill confirmation +
+19 tests cover: list/describe/call agent flows, write-skill confirmation +
 resume, negative confirmation, undiscovered agent error handling, follow-up
 context across turns, dedup of repeated calls, retry after a failed A2A call,
 empty `task_input` augmentation from user text, reasoning-block in trace,
-per-turn (not per-client) chain state, and a dynamic agent (Disaster Agent)
-added without any change to the main agent code.
+per-turn (not per-client) chain state, single-dispatch compound workflow
+guarding, and a dynamic agent (Disaster Agent) added without any change to the
+main agent code.
 
 ### 2. Local fake-ADS demo (no real ADS daemon needed)
 
@@ -122,8 +128,8 @@ that auto-loads it:
 
 ```bash
 v3_main_agent/scripts/start.sh --fake-ads \
-  --card v2_agent_network/configs/agent_cards/email_agent.card.json \
-  --card v2_agent_network/configs/agent_cards/weather_agent.card.json
+  --card v3_main_agent/configs/agent_cards/email_agent.card.json \
+  --card v3_main_agent/configs/agent_cards/weather_agent.card.json
 ```
 
 Use a different env file:
@@ -139,7 +145,7 @@ export OPENAI_API_KEY=sk-...
 export AGENT_NETWORK_FAKE_ADS=true
 /home/server2/miniconda3/envs/mas_spider/bin/python -m v3_main_agent.scripts.run_server \
   --fake-ads \
-  --card v2_agent_network/configs/agent_cards/email_agent.card.json
+  --card v3_main_agent/configs/agent_cards/email_agent.card.json
 ```
 
 Open `http://localhost:8090/` for the chat UI, or POST to `/messages`:
@@ -163,11 +169,11 @@ so this section is mostly for self-hosted testing.
 # Start ADS daemon if you're hosting one locally
 dirctl daemon start
 
-# Publish (using v2_agent_network's existing publisher)
+# Publish with the v3-local publisher
 cd /home/server2/Jian/MAS_demo/AgenticNetwork
 AGENT_NETWORK_FAKE_ADS=false ADS_BACKEND=cli ADS_SERVER_ADDR=localhost:8888 \
-  /home/server2/miniconda3/envs/mas_spider/bin/python -m v2_agent_network.scripts.publish_agents \
-  --card v2_agent_network/configs/agent_cards/email_agent.card.json
+  /home/server2/miniconda3/envs/mas_spider/bin/python -m v3_main_agent.scripts.publish_agents \
+  --card v3_main_agent/configs/agent_cards/email_agent.card.json
 
 # Run main agent against real ADS
 export OPENAI_API_KEY=sk-...
@@ -222,9 +228,12 @@ doesn't break the demo:
 - **Lenient agent resolver** — `Disaster Response Agent`, `disaster-response-agent`,
   `DisasterResponseAgent`, and even `disaster` (substring) all resolve to the
   same agent record. The LLM doesn't have to be picky.
-- **Per-turn dedup** — same `(agent_id, skill)` already completed in this
+- **Per-turn dedup** — the same request fingerprint already completed in this
   turn returns a `skipped` observation instead of re-invoking A2A. Prevents
   duplicate emails when the LLM second-guesses itself.
+- **Single-dispatch guard** — after one successful external-agent dispatch in a
+  user turn, a second different dispatch is skipped. External agents are
+  responsible for peer A2A coordination.
 - **Retry after failure** — failed A2A calls do *not* count toward dedup, so
   the LLM can retry transient errors.
 - **Email task-input augmentation** — if the LLM forgets to fill `to`,

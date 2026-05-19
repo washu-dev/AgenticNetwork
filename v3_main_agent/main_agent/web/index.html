@@ -17,14 +17,21 @@
     --code-bg: #0f172a;
     --code-fg: #e2e8f0;
     --warn: #b45309;
+    --ads-width: 320px;
+    --activity-width: 380px;
     font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Inter, sans-serif;
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--text); height: 100vh; overflow: hidden; }
+  body.resizing-panels {
+    cursor: col-resize;
+    user-select: none;
+  }
   .layout {
     display: grid;
-    grid-template-columns: 320px 1fr;
+    grid-template-columns: var(--ads-width) 1fr;
     height: 100vh;
+    position: relative;
   }
 
   /* sidebar */
@@ -68,7 +75,7 @@
   .quick button:hover { border-color: var(--accent); }
 
   /* chat */
-  main { display: flex; flex-direction: column; min-width: 0; min-height: 0; height: 100%; }
+  main { display: flex; flex-direction: column; min-width: 0; min-height: 0; height: 100%; position: relative; }
   main > header {
     padding: 14px 18px 10px;
     border-bottom: 1px solid var(--line);
@@ -79,13 +86,105 @@
   .status { font-size: 12px; color: var(--muted); }
   .status.busy { color: var(--accent); }
   .status.error { color: #b91c1c; }
-  #log { flex: 1 1 0; min-height: 0; overflow-y: auto; padding: 18px; display: flex; flex-direction: column; gap: 12px; }
+  .chat-body {
+    flex: 1 1 0;
+    min-height: 0;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    background: var(--bg);
+  }
+  .chat-body.activity-open {
+    grid-template-columns: minmax(0, 1fr) 8px var(--activity-width);
+  }
+  .resize-handle {
+    background: transparent;
+    border: 0;
+    padding: 0;
+    cursor: col-resize;
+    touch-action: none;
+  }
+  .resize-handle:focus-visible {
+    outline: 2px solid rgba(15,124,108,.32);
+    outline-offset: -2px;
+  }
+  .resize-handle::after {
+    content: "";
+    display: block;
+    height: 100%;
+    width: 1px;
+    margin: 0 auto;
+    background: transparent;
+    transition: background .12s;
+  }
+  .resize-handle:hover::after,
+  .resize-handle.dragging::after {
+    background: var(--accent);
+  }
+  .ads-resize-handle {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: calc(var(--ads-width) - 4px);
+    width: 8px;
+    z-index: 10;
+  }
+  .activity-resize-handle {
+    min-height: 0;
+    display: none;
+  }
+  .chat-body.activity-open .activity-resize-handle {
+    display: block;
+  }
+  #log { min-height: 0; overflow-y: auto; padding: 18px; display: flex; flex-direction: column; gap: 12px; }
 
   .msg { max-width: 78%; padding: 11px 14px; border-radius: 10px; line-height: 1.45; box-shadow: 0 1px 2px rgba(20,32,52,.06); word-wrap: break-word; }
   .msg.user { align-self: flex-end; background: var(--user); color: white; }
   .msg.agent { align-self: flex-start; background: var(--panel); border: 1px solid var(--line); }
+  .msg.agent.live { min-width: 260px; }
   .msg.tool { align-self: flex-start; background: #fff7ed; border: 1px solid #fed7aa; font-size: 12px; color: #9a3412; max-width: 78%; padding: 8px 12px; border-radius: 8px; }
   .msg.error { align-self: flex-start; background: #fef2f2; border: 1px solid #fecaca; color: #b91c1c; }
+  .thinking-line {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 22px;
+    color: var(--accent);
+    font-weight: 650;
+  }
+  .thinking-line.clickable {
+    width: max-content;
+    max-width: 100%;
+    margin-left: -4px;
+    padding: 2px 5px;
+    border-radius: 5px;
+    cursor: pointer;
+  }
+  .thinking-line.clickable:hover { background: #e6f5f2; }
+  .thinking-line.clickable:focus-visible {
+    outline: 2px solid rgba(15,124,108,.32);
+    outline-offset: 2px;
+  }
+  .dots {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    width: 24px;
+  }
+  .dots span {
+    width: 5px;
+    height: 5px;
+    border-radius: 999px;
+    background: var(--accent);
+    opacity: .35;
+    animation: dotPulse 1.15s infinite ease-in-out;
+  }
+  .dots span:nth-child(2) { animation-delay: .16s; }
+  .dots span:nth-child(3) { animation-delay: .32s; }
+  @keyframes dotPulse {
+    0%, 80%, 100% { transform: translateY(0); opacity: .35; }
+    40% { transform: translateY(-4px); opacity: 1; }
+  }
+  .final-content:empty { display: none; }
   .msg pre {
     background: var(--code-bg); color: var(--code-fg);
     padding: 11px 13px; border-radius: 7px;
@@ -95,6 +194,20 @@
   .msg code { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
   .msg :not(pre) > code { background: #eef2f7; padding: 1px 5px; border-radius: 3px; font-size: 12.5px; }
   .msg .meta { display: block; margin-top: 8px; color: var(--muted); font-size: 11px; }
+  .image-preview {
+    display: block;
+    width: min(360px, 100%);
+    max-height: 260px;
+    margin-top: 10px;
+    border-radius: 7px;
+    object-fit: contain;
+    background: rgba(255,255,255,.18);
+    border: 1px solid rgba(255,255,255,.35);
+  }
+  .msg.agent .image-preview {
+    background: #f8fafc;
+    border-color: var(--line);
+  }
   .trace { margin-top: 8px; }
   .trace summary { font-size: 11px; color: var(--muted); cursor: pointer; user-select: none; padding: 2px 0; }
   .trace .trace-list {
@@ -117,13 +230,137 @@
     white-space: pre-wrap;
   }
   .trace .reasoning b { font-style: normal; color: #1e3a8a; }
+  .thought-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-top: 8px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--muted);
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .thought-link:hover { color: var(--accent); }
+  .thought-link:focus-visible {
+    outline: 2px solid rgba(15,124,108,.32);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+
+  .activity-panel {
+    min-height: 0;
+    border-left: 1px solid var(--line);
+    background: var(--panel);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    box-shadow: -10px 0 26px rgba(15, 23, 42, .08);
+  }
+  .activity-panel[hidden] { display: none; }
+  .activity-panel header {
+    padding: 14px 16px 12px;
+    border-bottom: 1px solid var(--line);
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 10px;
+  }
+  .activity-title { margin: 0; font-size: 15px; font-weight: 700; }
+  .activity-subtitle { margin-top: 2px; font-size: 11px; color: var(--muted); }
+  .activity-close {
+    width: 30px;
+    height: 30px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: white;
+    color: var(--muted);
+    font-size: 20px;
+    line-height: 1;
+    cursor: pointer;
+  }
+  .activity-close:hover { color: var(--text); border-color: #b9c3d1; }
+  .activity-scroll {
+    min-height: 0;
+    overflow-y: auto;
+    padding: 14px 16px 18px;
+  }
+  .activity-section-title {
+    margin: 0 0 12px;
+    font-size: 13px;
+    color: var(--muted);
+    font-weight: 700;
+  }
+  .activity-empty {
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.45;
+    border-left: 2px solid var(--line);
+    padding-left: 10px;
+  }
+  .activity-list {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .activity-item {
+    border-left: 2px solid #7dbdb3;
+    padding-left: 10px;
+  }
+  .activity-item-title {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--text);
+  }
+  .activity-item-meta {
+    margin-top: 2px;
+    font-size: 11px;
+    line-height: 1.35;
+    color: var(--muted);
+  }
+  .activity-item-text {
+    margin-top: 6px;
+    font-size: 12px;
+    line-height: 1.5;
+    color: #334155;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  @media (max-width: 980px) {
+    .layout { grid-template-columns: 280px 1fr; }
+    .chat-body.activity-open { grid-template-columns: minmax(0, 1fr); }
+    .ads-resize-handle,
+    .chat-body.activity-open .activity-resize-handle {
+      display: none;
+    }
+    .activity-panel {
+      position: absolute;
+      top: 62px;
+      right: 0;
+      bottom: 76px;
+      width: min(380px, calc(100% - 14px));
+      z-index: 5;
+      border-top: 1px solid var(--line);
+    }
+  }
 
   /* form */
   form {
-    display: grid; grid-template-columns: 1fr auto;
+    display: grid; grid-template-columns: auto 1fr auto;
     gap: 8px; padding: 12px 16px 14px;
     border-top: 1px solid var(--line); background: var(--panel);
+    align-items: end;
   }
+  .file-input { display: none; }
+  .attach {
+    width: 44px; height: 46px; display: inline-flex; align-items: center; justify-content: center;
+    border: 1px solid #c9d1de; border-radius: 7px; background: white; color: var(--accent);
+    font-size: 24px; line-height: 1; cursor: pointer; user-select: none;
+  }
+  .attach:hover { border-color: var(--accent); background: #f5fbfa; }
   textarea {
     resize: none; min-height: 46px; max-height: 160px;
     padding: 11px 13px; border: 1px solid #c9d1de; border-radius: 7px; font: inherit; font-size: 14px;
@@ -132,8 +369,33 @@
   button.send {
     border: 0; border-radius: 7px; background: var(--accent); color: white;
     padding: 0 22px; font: inherit; font-weight: 600; cursor: pointer;
+    min-height: 46px;
   }
   button.send:disabled { background: #9aa4b2; cursor: wait; }
+  .attachment-row {
+    grid-column: 2 / 4;
+    display: flex; align-items: center; gap: 8px; min-width: 0;
+    font-size: 12px; color: var(--muted);
+  }
+  .attachment-row[hidden] { display: none; }
+  .attachment-thumb {
+    width: 52px;
+    height: 38px;
+    border-radius: 5px;
+    object-fit: cover;
+    border: 1px solid var(--line);
+    background: #f8fafc;
+    flex: 0 0 auto;
+  }
+  .attachment-chip {
+    max-width: 100%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    border: 1px solid var(--line); background: #f8fafc; border-radius: 5px; padding: 4px 8px;
+  }
+  .clear-file {
+    border: 0; background: transparent; color: var(--muted); cursor: pointer;
+    font: inherit; padding: 2px 5px;
+  }
+  .msg.user .meta { color: rgba(255,255,255,.78); }
   .pending-hint { padding: 8px 16px; background: #fffbeb; color: var(--warn); font-size: 12px; border-top: 1px solid #fde68a; }
 </style>
 </head>
@@ -155,6 +417,14 @@
     </div>
   </aside>
 
+  <button
+    type="button"
+    class="resize-handle ads-resize-handle"
+    id="adsResizeHandle"
+    aria-label="Resize ADS agents panel"
+    aria-orientation="vertical"
+  ></button>
+
   <main>
     <header>
       <div>
@@ -166,11 +436,41 @@
         <div id="ctxLine">ctx: —</div>
       </div>
     </header>
-    <section id="log"></section>
+    <div class="chat-body" id="chatBody">
+      <section id="log"></section>
+      <button
+        type="button"
+        class="resize-handle activity-resize-handle"
+        id="activityResizeHandle"
+        aria-label="Resize activity panel"
+        aria-orientation="vertical"
+      ></button>
+      <section class="activity-panel" id="activityPanel" aria-label="Activity panel" hidden>
+        <header>
+          <div>
+            <h2 class="activity-title">Activity</h2>
+            <div class="activity-subtitle" id="activityCount">0 items</div>
+          </div>
+          <button type="button" class="activity-close" id="activityClose" aria-label="Close activity panel">×</button>
+        </header>
+        <div class="activity-scroll" id="activityScroll">
+          <h3 class="activity-section-title">Reasoning &amp; Tool Activity</h3>
+          <div class="activity-empty" id="activityEmpty">Click Thinking while an agent is running to watch reasoning, tool calls, and GeoSpatial inference details here.</div>
+          <div class="activity-list" id="activityList"></div>
+        </div>
+      </section>
+    </div>
     <div class="pending-hint" id="pendingHint" style="display:none"></div>
     <form id="form">
+      <label class="attach" for="imageInput" title="Attach image" aria-label="Attach image">+</label>
+      <input class="file-input" id="imageInput" type="file" accept="image/*">
       <textarea id="input" placeholder="Ask the main agent…  (Enter to send, Shift+Enter for newline)" autofocus></textarea>
       <button type="submit" class="send" id="sendBtn">Send</button>
+      <div class="attachment-row" id="attachmentRow" hidden>
+        <img class="attachment-thumb" id="attachmentThumb" alt="">
+        <span class="attachment-chip" id="attachmentName"></span>
+        <button type="button" class="clear-file" id="clearImage">remove</button>
+      </div>
     </form>
   </main>
 
@@ -178,8 +478,23 @@
 
 <script>
 let contextId = null;
+const layout = document.querySelector('.layout');
+const chatBody = document.getElementById('chatBody');
 const log = document.getElementById('log');
+const activityPanel = document.getElementById('activityPanel');
+const adsResizeHandle = document.getElementById('adsResizeHandle');
+const activityResizeHandle = document.getElementById('activityResizeHandle');
+const activityClose = document.getElementById('activityClose');
+const activityCount = document.getElementById('activityCount');
+const activityScroll = document.getElementById('activityScroll');
+const activityEmpty = document.getElementById('activityEmpty');
+const activityList = document.getElementById('activityList');
 const input = document.getElementById('input');
+const imageInput = document.getElementById('imageInput');
+const attachmentRow = document.getElementById('attachmentRow');
+const attachmentName = document.getElementById('attachmentName');
+const attachmentThumb = document.getElementById('attachmentThumb');
+const clearImage = document.getElementById('clearImage');
 const sendBtn = document.getElementById('sendBtn');
 const status = document.getElementById('status');
 const ctxLine = document.getElementById('ctxLine');
@@ -187,10 +502,137 @@ const modelLine = document.getElementById('modelLine');
 const adsStatus = document.getElementById('adsStatus');
 const agentList = document.getElementById('agentList');
 const pendingHint = document.getElementById('pendingHint');
+let attachmentPreviewUrl = null;
+let activityEntries = [];
+
+const panelStorageKeys = {
+  ads: 'main-agent-v3-ads-width',
+  activity: 'main-agent-v3-activity-width',
+};
+
+function clampNumber(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function safeStorageGet(key) {
+  try {
+    return window.localStorage.getItem(key);
+  } catch (e) {
+    return null;
+  }
+}
+
+function safeStorageSet(key, value) {
+  try {
+    window.localStorage.setItem(key, value);
+  } catch (e) { /* ignore storage failures */ }
+}
+
+function panelBounds(kind) {
+  const viewport = Math.max(window.innerWidth || 0, 900);
+  if (kind === 'ads') {
+    return {min: 220, max: Math.max(220, Math.min(560, viewport - 520))};
+  }
+  const chatWidth = chatBody ? chatBody.getBoundingClientRect().width : viewport;
+  return {min: 300, max: Math.max(300, Math.min(640, chatWidth - 360))};
+}
+
+function currentPanelWidth(kind) {
+  const property = kind === 'ads' ? '--ads-width' : '--activity-width';
+  const value = getComputedStyle(document.documentElement).getPropertyValue(property);
+  return Number.parseFloat(value) || (kind === 'ads' ? 320 : 380);
+}
+
+function setPanelWidth(kind, value, persist = false) {
+  const bounds = panelBounds(kind);
+  const width = Math.round(clampNumber(value, bounds.min, bounds.max));
+  const property = kind === 'ads' ? '--ads-width' : '--activity-width';
+  const handle = kind === 'ads' ? adsResizeHandle : activityResizeHandle;
+  document.documentElement.style.setProperty(property, `${width}px`);
+  if (handle) {
+    handle.setAttribute('aria-valuemin', String(bounds.min));
+    handle.setAttribute('aria-valuemax', String(bounds.max));
+    handle.setAttribute('aria-valuenow', String(width));
+  }
+  if (persist) safeStorageSet(panelStorageKeys[kind], String(width));
+  return width;
+}
+
+function loadPanelSizes() {
+  Object.keys(panelStorageKeys).forEach((kind) => {
+    const stored = Number.parseFloat(safeStorageGet(panelStorageKeys[kind]));
+    setPanelWidth(kind, Number.isFinite(stored) ? stored : currentPanelWidth(kind));
+  });
+}
+
+function startPanelResize(kind, event) {
+  if (event.button != null && event.button !== 0) return;
+  event.preventDefault();
+
+  const handle = kind === 'ads' ? adsResizeHandle : activityResizeHandle;
+  handle.classList.add('dragging');
+  document.body.classList.add('resizing-panels');
+  if (handle.setPointerCapture && event.pointerId != null) {
+    handle.setPointerCapture(event.pointerId);
+  }
+
+  const move = (moveEvent) => {
+    if (kind === 'ads') {
+      const rect = layout.getBoundingClientRect();
+      setPanelWidth(kind, moveEvent.clientX - rect.left);
+      setPanelWidth('activity', currentPanelWidth('activity'));
+    } else {
+      const rect = chatBody.getBoundingClientRect();
+      setPanelWidth(kind, rect.right - moveEvent.clientX);
+    }
+  };
+  const stop = () => {
+    handle.classList.remove('dragging');
+    document.body.classList.remove('resizing-panels');
+    setPanelWidth(kind, currentPanelWidth(kind), true);
+    window.removeEventListener('pointermove', move);
+    window.removeEventListener('pointerup', stop);
+    window.removeEventListener('pointercancel', stop);
+  };
+
+  window.addEventListener('pointermove', move);
+  window.addEventListener('pointerup', stop);
+  window.addEventListener('pointercancel', stop);
+  move(event);
+}
+
+function resizePanelFromKeyboard(kind, event) {
+  const bounds = panelBounds(kind);
+  const step = event.shiftKey ? 40 : 16;
+  let width = currentPanelWidth(kind);
+  if (event.key === 'Home') width = bounds.min;
+  else if (event.key === 'End') width = bounds.max;
+  else if (event.key === 'ArrowLeft') width += kind === 'activity' ? step : -step;
+  else if (event.key === 'ArrowRight') width += kind === 'activity' ? -step : step;
+  else return;
+
+  event.preventDefault();
+  setPanelWidth(kind, width, true);
+}
+
+function attachPanelResize(handle, kind) {
+  handle.setAttribute('role', 'separator');
+  handle.setAttribute('tabindex', '0');
+  handle.addEventListener('pointerdown', (event) => startPanelResize(kind, event));
+  handle.addEventListener('keydown', (event) => resizePanelFromKeyboard(kind, event));
+}
+
+loadPanelSizes();
+attachPanelResize(adsResizeHandle, 'ads');
+attachPanelResize(activityResizeHandle, 'activity');
+window.addEventListener('resize', () => {
+  setPanelWidth('ads', currentPanelWidth('ads'));
+  setPanelWidth('activity', currentPanelWidth('activity'));
+});
 
 // --- minimal markdown: ```code blocks``` and `inline` ---
 function escapeHtml(s) {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 function renderMarkdown(text) {
   if (!text) return '';
@@ -200,7 +642,7 @@ function renderMarkdown(text) {
   safe = safe.replace(/```([a-zA-Z0-9_+-]*)\n([\s\S]*?)```/g, (_, lang, body) => {
     const i = blocks.length;
     blocks.push(`<pre><code class="lang-${lang}">${body.replace(/\n$/, '')}</code></pre>`);
-    return ` BLOCK${i} `;
+    return `@@BLOCK${i}@@`;
   });
   // inline code
   safe = safe.replace(/`([^`\n]+)`/g, '<code>$1</code>');
@@ -209,82 +651,609 @@ function renderMarkdown(text) {
   // newlines
   safe = safe.replace(/\n/g, '<br>');
   // restore code blocks
-  safe = safe.replace(/ BLOCK(\d+) /g, (_, i) => blocks[+i]);
+  safe = safe.replace(/@@BLOCK(\d+)@@/g, (_, i) => blocks[+i]);
   return safe;
 }
 
-function addUser(text) {
+function humanizeActivityEvent(value) {
+  const text = String(value || 'update').replace(/^geospatial[_-]?/i, '');
+  return text
+    .split(/[_\s-]+/)
+    .filter(Boolean)
+    .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
+}
+
+function isGeoSpatialStatus(t) {
+  const c = t && t.content;
+  if (!c || t.tool !== 'remote_status') return false;
+  const kind = String(c.kind || '').toLowerCase();
+  const agentId = String(c.agent_id || '').toLowerCase();
+  const agentName = String(c.agent_name || c.agent || '').toLowerCase();
+  return kind === 'geospatial_inference'
+    || kind === 'geospatial_model_stream'
+    || agentId.includes('geospatial')
+    || agentName.includes('geospatial');
+}
+
+function isGeoSpatialModelOutput(t) {
+  const c = t && t.content;
+  return Boolean(c && (c.kind === 'geospatial_model_stream' || c.event === 'model_output_chunk'));
+}
+
+function buildActivityEntries(entries = activityEntries) {
+  const merged = [];
+  entries.forEach((entry) => {
+    const last = merged[merged.length - 1];
+    if (
+      last
+      && isGeoSpatialModelOutput(last)
+      && isGeoSpatialModelOutput(entry)
+      && last.content.stage === entry.content.stage
+      && last.content.model === entry.content.model
+    ) {
+      last.content.text = `${last.content.text || ''}${entry.content.text || ''}`;
+      last._time = entry._time || last._time;
+      return;
+    }
+    merged.push({
+      ...entry,
+      content: {...(entry.content || {})},
+    });
+  });
+  return merged;
+}
+
+function activitySource(t) {
+  const c = t.content || {};
+  if (isGeoSpatialStatus(t)) return 'GeoSpatial Agent';
+  if (t.tool === 'remote_status') return c.agent_name || c.agent_id || c.agent || 'Remote Agent';
+  if (t.tool === 'reasoning') return 'Main Agent';
+  return 'Main Agent Tool';
+}
+
+function activityTitle(t) {
+  const c = t.content || {};
+  if (t.tool === 'reasoning') return 'Main Agent Thinking';
+  if (t.tool === 'final_answer') return 'Final Answer';
+  if (t.tool === 'call_agent') return 'Agent Call';
+  if (t.tool === 'list_agents') return 'Agent Discovery';
+  if (isGeoSpatialStatus(t)) {
+    if (c.event === 'model_output_chunk') return 'GeoSpatial Model Output';
+    return `GeoSpatial ${humanizeActivityEvent(c.event || c.stage || c.state || 'update')}`;
+  }
+  if (t.tool === 'remote_status') {
+    return `${activitySource(t)} ${humanizeActivityEvent(c.event || c.state || 'update')}`;
+  }
+  return `Tool Call: ${t.tool || 'unknown'}`;
+}
+
+function stripCodeFence(text) {
+  return String(text || '')
+    .trim()
+    .replace(/^```(?:json|JSON)?\s*/, '')
+    .replace(/```\s*$/, '')
+    .trim();
+}
+
+function tryParseJsonish(text) {
+  const clean = stripCodeFence(text);
+  const candidates = [clean];
+  const start = clean.indexOf('{');
+  const end = clean.lastIndexOf('}');
+  if (start !== -1 && end > start) candidates.push(clean.slice(start, end + 1));
+  for (const candidate of candidates) {
+    try {
+      return JSON.parse(candidate);
+    } catch (e) { /* keep trying */ }
+  }
+  return null;
+}
+
+function labelizeKey(key) {
+  return String(key || '')
+    .replace(/[_-]+/g, ' ')
+    .replace(/\b\w/g, ch => ch.toUpperCase());
+}
+
+function formatScalar(value) {
+  if (value == null || value === '') return '';
+  if (typeof value === 'number') return Number.isInteger(value) ? String(value) : String(Number(value.toFixed(6)));
+  if (typeof value === 'boolean') return value ? 'yes' : 'no';
+  return String(value).trim();
+}
+
+function firstTokenNumber(...values) {
+  for (const value of values) {
+    if (value == null || value === '') continue;
+    const number = Number(value);
+    if (Number.isFinite(number)) return number;
+  }
+  return null;
+}
+
+function formatTokenNumber(value) {
+  return new Intl.NumberFormat(undefined, {maximumFractionDigits: 0}).format(value);
+}
+
+function formatTokenUsage(usage) {
+  if (!usage || typeof usage !== 'object') return '';
+  const input = firstTokenNumber(usage.input_tokens, usage.prompt_tokens);
+  const output = firstTokenNumber(usage.output_tokens, usage.completion_tokens);
+  const total = firstTokenNumber(
+    usage.total_tokens,
+    usage.total,
+    input != null && output != null ? input + output : null,
+  );
+  if (total == null) return '';
+
+  const details = [];
+  if (input != null) details.push(`${formatTokenNumber(input)} in`);
+  if (output != null) details.push(`${formatTokenNumber(output)} out`);
+  return `LLM tokens: ${formatTokenNumber(total)}${details.length ? ` (${details.join(', ')})` : ''}`;
+}
+
+function formatGeoJsonObject(obj) {
+  const final = obj && (obj.final_answer || obj.location_inference || obj.location || obj);
+  if (!final || typeof final !== 'object') return '';
+  const lines = [];
+  if (final.description) lines.push(`Location: ${final.description}`);
+  if (final.latitude != null && final.longitude != null) {
+    lines.push(`Coordinates: ${formatScalar(final.latitude)}, ${formatScalar(final.longitude)}`);
+  }
+  if (final.precision_level) lines.push(`Precision: ${final.precision_level}`);
+  if (final.confidence != null) lines.push(`Confidence: ${formatScalar(final.confidence)}`);
+  if (final.rationale) lines.push(`Rationale: ${final.rationale}`);
+  if (Array.isArray(final.alternatives) && final.alternatives.length) {
+    lines.push('Alternatives:');
+    final.alternatives.slice(0, 5).forEach((alt) => {
+      if (typeof alt === 'string') lines.push(`- ${alt}`);
+      else if (alt && typeof alt === 'object') lines.push(`- ${alt.description || formatGenericObject(alt).replace(/\n/g, '; ')}`);
+    });
+  }
+  const chain = obj.hypothesis_chain || final.hypothesis_chain;
+  if (Array.isArray(chain) && chain.length) {
+    lines.push('Hypothesis chain:');
+    chain.slice(0, 8).forEach(item => lines.push(`- ${typeof item === 'string' ? item : JSON.stringify(item)}`));
+  }
+  return lines.join('\n');
+}
+
+function formatGenericObject(obj, depth = 0) {
+  if (!obj || typeof obj !== 'object') return formatScalar(obj);
+  if (Array.isArray(obj)) {
+    return obj
+      .slice(0, 10)
+      .map(item => `- ${formatGenericObject(item, depth + 1).replace(/\n/g, '\n  ')}`)
+      .join('\n');
+  }
+  const lines = [];
+  Object.entries(obj).forEach(([key, value]) => {
+    if (value == null || value === '' || key === 'visible_file_paths') return;
+    const label = labelizeKey(key);
+    if (typeof value === 'object') {
+      const rendered = formatGenericObject(value, depth + 1);
+      if (rendered) lines.push(`${label}:\n${rendered.split('\n').map(line => `  ${line}`).join('\n')}`);
+    } else {
+      lines.push(`${label}: ${formatScalar(value)}`);
+    }
+  });
+  return lines.join('\n');
+}
+
+function cloneWithoutDuplicateSummary(obj, summaryText) {
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return obj;
+  const clean = {};
+  const summary = String(summaryText || '').trim();
+  Object.entries(obj).forEach(([key, value]) => {
+    const isSummaryKey = ['summary', 'response_text', 'final_text', 'text'].includes(key);
+    if (summary && isSummaryKey && formatScalar(value) === summary) return;
+    clean[key] = value;
+  });
+  return clean;
+}
+
+function formatAgentsResult(agents) {
+  if (!Array.isArray(agents)) return '';
+  if (!agents.length) return 'Agents: none';
+  return `Agents (${agents.length}):\n` + agents.map((agent) => {
+    const name = agent.name ? `${agent.name} ` : '';
+    const skills = Array.isArray(agent.skills)
+      ? agent.skills.slice(0, 6).join(', ')
+      : '';
+    return `- ${name}(${agent.agent_id || 'unknown'})${skills ? `: ${skills}` : ''}`;
+  }).join('\n');
+}
+
+function formatToolResult(t) {
+  const c = (t && t.content) || {};
+  if (!c || typeof c !== 'object') return '';
+  if (c.error) return `Error: ${c.error}`;
+  if (Array.isArray(c.agents)) return formatAgentsResult(c.agents);
+  if (c.structured_output && typeof c.structured_output === 'object') {
+    const result = cloneWithoutDuplicateSummary(c.structured_output, c.text);
+    const rendered = formatGeoJsonObject(result) || formatGenericObject(result);
+    return rendered ? `Result:\n${rendered}` : '';
+  }
+  if (t.tool === 'remote_status') return '';
+
+  const metadataKeys = new Set([
+    'agent_id', 'agent_name', 'agent', 'chosen_skill', 'confirmed', 'event', 'final',
+    'kind', 'model', 'requested_skill', 'skill', 'skill_hint', 'stage', 'state',
+    'task_id', 'text',
+  ]);
+  const result = {};
+  Object.entries(c).forEach(([key, value]) => {
+    if (metadataKeys.has(key)) return;
+    if (value == null || value === '') return;
+    result[key] = value;
+  });
+  const rendered = formatGenericObject(result);
+  return rendered ? `Result:\n${rendered}` : '';
+}
+
+function cleanJsonishText(text) {
+  const parsed = tryParseJsonish(text);
+  if (parsed) return formatGeoJsonObject(parsed) || formatGenericObject(parsed);
+  return stripCodeFence(text)
+    .split('\n')
+    .map(line => line.trim())
+    .filter(line => line && !/^[{},]+$/.test(line))
+    .map(line => line
+      .replace(/^"([^"]+)"\s*:\s*"?/, (_, key) => `${labelizeKey(key)}: `)
+      .replace(/",?\s*$/, '')
+      .replace(/,$/, '')
+      .replace(/\\"/g, '"')
+    )
+    .join('\n');
+}
+
+function formatToolArguments(tool, args) {
+  if (!args || typeof args !== 'object') return '';
+  if (tool === 'final_answer' && args.text) return String(args.text).trim();
+  const lines = [];
+  Object.entries(args).forEach(([key, value]) => {
+    if (value == null || value === '' || key === 'visible_file_paths') return;
+    let rendered;
+    if (Array.isArray(value)) {
+      rendered = value.length
+        ? value.map(item => (item && typeof item === 'object') ? formatGenericObject(item).replace(/\n/g, '; ') : formatScalar(item)).join(', ')
+        : '';
+    } else if (typeof value === 'object') {
+      rendered = formatGenericObject(value).split('\n').map(line => `  ${line}`).join('\n');
+    } else {
+      rendered = formatScalar(value);
+    }
+    if (rendered) lines.push(`${labelizeKey(key)}: ${rendered}`);
+  });
+  return lines.length ? `Parameters:\n${lines.map(line => `- ${line}`).join('\n')}` : '';
+}
+
+function activityText(t) {
+  const c = t.content || {};
+  if (t.tool === 'reasoning') {
+    const text = c.text || '';
+    const next = c.next_tool ? `\nChose tool: ${c.next_tool}` : '';
+    return `${text}${next}`.trim();
+  }
+  if (isGeoSpatialModelOutput(t)) return cleanJsonishText(c.text || '');
+  const parts = [];
+  if (t.args) {
+    const args = formatToolArguments(t.tool, t.args);
+    if (args) parts.push(args);
+  }
+  if (c.text) parts.push(`Output:\n${c.text}`);
+  const result = formatToolResult(t);
+  if (result) parts.push(result);
+  if (!c.text && !result) {
+    const body = traceBody(t);
+    if (body && body !== '{}') parts.push(body);
+  }
+  return parts.join('\n\n');
+}
+
+function activityMeta(t) {
+  const c = t.content || {};
+  const bits = [activitySource(t)];
+  if (c.stage && c.stage !== c.event) bits.push(humanizeActivityEvent(c.stage));
+  if (c.model) bits.push(c.model);
+  if (c.skill) bits.push(c.skill);
+  if (c.agent_id && activitySource(t) !== c.agent_id) bits.push(c.agent_id);
+  if (t.status) bits.push(t.status);
+  if (c.state && c.state !== t.status) bits.push(c.final ? `${c.state}, final` : c.state);
+  bits.push(formatTokenUsage(t.token_usage));
+  if (t._time) {
+    bits.push(t._time.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit', second: '2-digit'}));
+  }
+  return bits.filter(Boolean);
+}
+
+function renderActivityPanel() {
+  const previousScrollTop = activityScroll.scrollTop;
+  const displayEntries = buildActivityEntries();
+  activityCount.textContent = `${displayEntries.length} item${displayEntries.length === 1 ? '' : 's'}`;
+  activityEmpty.hidden = displayEntries.length > 0;
+  activityList.innerHTML = '';
+  displayEntries.forEach((entry) => {
+    const item = document.createElement('div');
+    item.className = 'activity-item';
+
+    const title = document.createElement('div');
+    title.className = 'activity-item-title';
+    title.textContent = activityTitle(entry);
+    item.appendChild(title);
+
+    const metaBits = activityMeta(entry);
+    if (metaBits.length) {
+      const meta = document.createElement('div');
+      meta.className = 'activity-item-meta';
+      meta.textContent = metaBits.join(' · ');
+      item.appendChild(meta);
+    }
+
+    const text = activityText(entry);
+    if (text) {
+      const body = document.createElement('div');
+      body.className = 'activity-item-text';
+      body.innerHTML = renderMarkdown(text);
+      item.appendChild(body);
+    }
+
+    activityList.appendChild(item);
+  });
+  activityScroll.scrollTop = previousScrollTop;
+}
+
+function cloneActivityEntries(entries = activityEntries) {
+  return entries.map(entry => ({
+    ...entry,
+    content: {...(entry.content || {})},
+    _time: entry._time,
+  }));
+}
+
+function openActivityPanel(entries) {
+  if (Array.isArray(entries)) activityEntries = cloneActivityEntries(entries);
+  activityPanel.hidden = false;
+  chatBody.classList.add('activity-open');
+  setPanelWidth('activity', currentPanelWidth('activity'));
+  renderActivityPanel();
+}
+
+function closeActivityPanel() {
+  activityPanel.hidden = true;
+  chatBody.classList.remove('activity-open');
+}
+
+function resetActivityPanel() {
+  activityEntries = [];
+  renderActivityPanel();
+}
+
+function recordActivityEntry(t) {
+  activityEntries.push({
+    ...t,
+    content: {...(t.content || {})},
+    _time: new Date(),
+  });
+  if (!activityPanel.hidden) renderActivityPanel();
+}
+
+function makeThinkingClickable(thinking) {
+  thinking.classList.add('clickable');
+  thinking.setAttribute('role', 'button');
+  thinking.setAttribute('tabindex', '0');
+  thinking.setAttribute('title', 'Show thinking and tool activity');
+  thinking.addEventListener('click', openActivityPanel);
+  thinking.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      openActivityPanel();
+    }
+  });
+}
+
+function liveStatusText(t) {
+  const c = (t && t.content) || {};
+  if (t && t.tool === 'remote_status') {
+    const who = c.agent_name || c.agent_id || c.agent || 'Remote agent';
+    if (c.final || c.state === 'completed') return `${who} completed`;
+    return `${who} is working`;
+  }
+  if (t && t.tool === 'reasoning') return 'Main agent is reasoning';
+  if (t && t.tool === 'list_agents') return 'Discovering agents';
+  if (t && t.tool === 'call_agent') return 'Calling an agent';
+  if (t && t.tool) return `Running ${t.tool}`;
+  return 'Thinking';
+}
+
+function setThinkingText(thinking, text) {
+  const label = thinking && thinking.querySelector('.thinking-label');
+  if (label) label.textContent = text || 'Thinking';
+}
+
+function addThoughtLink(div, beforeNode) {
+  if (!activityEntries.length) return;
+  const snapshot = cloneActivityEntries();
+  const link = document.createElement('button');
+  link.type = 'button';
+  link.className = 'thought-link';
+  link.textContent = `Thinking (${snapshot.length}) ›`;
+  link.addEventListener('click', () => openActivityPanel(snapshot));
+  div.insertBefore(link, beforeNode || null);
+}
+
+function addUser(text, imageFile) {
   const div = document.createElement('div');
   div.className = 'msg user';
-  div.textContent = text;
+  div.textContent = text || '(image)';
+  if (imageFile) {
+    const img = document.createElement('img');
+    img.className = 'image-preview';
+    img.alt = imageFile.name || 'uploaded image';
+    img.src = URL.createObjectURL(imageFile);
+    div.appendChild(img);
+
+    const meta = document.createElement('span');
+    meta.className = 'meta';
+    meta.textContent = `image: ${imageFile.name}`;
+    div.appendChild(meta);
+  }
   log.appendChild(div);
   log.scrollTop = log.scrollHeight;
+}
+
+function createTraceDetails() {
+  const det = document.createElement('details');
+  det.className = 'trace';
+  det.open = true;
+  const sum = document.createElement('summary');
+  sum.textContent = 'agent steps (0)';
+  det.appendChild(sum);
+  const list = document.createElement('div');
+  list.className = 'trace-list';
+  det.appendChild(list);
+  const state = {details: det, summary: sum, list, count: 0, nonReasoningIdx: 0, tools: []};
+  return {details: det, state};
+}
+
+function updateTraceSummary(traceState) {
+  const chain = traceState.tools.length ? ` - ${traceState.tools.join(' -> ')}` : '';
+  traceState.summary.textContent = `agent steps (${traceState.count})${chain}`;
+}
+
+function traceBody(t) {
+  if (t.content) {
+    const c = t.content;
+    if (t.tool === 'remote_status') {
+      const who = c.agent_id || c.agent_name || 'remote agent';
+      const state = c.state ? ` (${c.state}${c.final ? ', final' : ''})` : '';
+      const event = c.event ? ` [${c.event}]` : '';
+      return `${who}${state}${event}` + (c.text ? `\n${c.text}` : '');
+    }
+    if (c.agents) return `agents: ${c.agents.map(a => a.agent_id).join(', ')}`;
+    if (c.skill && c.agent_id) return `${c.agent_id} :: ${c.skill}` + (c.state ? ` (${c.state})` : '');
+    if (c.agent_id && c.requested_skill) return `${c.agent_id} :: requested ${c.requested_skill}` + (c.state ? ` (${c.state})` : '');
+    if (c.agent_id) return `${c.agent_id}` + (c.state ? ` (${c.state})` : '');
+    if (c.error) return `error: ${c.error}`;
+    return JSON.stringify(c).slice(0, 240);
+  }
+  if (t.args) return JSON.stringify(t.args).slice(0, 240);
+  return '';
+}
+
+function appendTraceEntry(traceState, t) {
+  recordActivityEntry(t);
+  traceState.count += 1;
+  if (t.tool === 'reasoning') {
+    const r = document.createElement('div');
+    r.className = 'reasoning';
+    const txt = (t.content && t.content.text) || '';
+    const next = (t.content && t.content.next_tool) || '';
+    r.innerHTML = `<b>thinking -></b> ${escapeHtml(txt)}` + (next ? `\n<b>chose:</b> ${escapeHtml(next)}` : '');
+    traceState.list.appendChild(r);
+    updateTraceSummary(traceState);
+    log.scrollTop = log.scrollHeight;
+    return;
+  }
+
+  traceState.nonReasoningIdx += 1;
+  traceState.tools.push(t.tool);
+  const step = document.createElement('div');
+  step.className = 'step';
+  const head = `[${traceState.nonReasoningIdx}] <b>${escapeHtml(t.tool)}</b> - ${escapeHtml(t.status || '')}`;
+  const body = traceBody(t);
+  step.innerHTML = head + (body ? `\n    ${escapeHtml(body)}` : '');
+  traceState.list.appendChild(step);
+  updateTraceSummary(traceState);
+  log.scrollTop = log.scrollHeight;
+}
+
+function appendMeta(div, data) {
+  if (!data) return;
+  const bits = [];
+  if (data.selected_agent) bits.push(`selected: ${data.selected_agent}`);
+  if (data.state && data.state !== 'completed') bits.push(`state: ${data.state}`);
+  if (data.confirmation_required) bits.push('confirmation required');
+  if (!bits.length) return;
+  const meta = document.createElement('span');
+  meta.className = 'meta';
+  meta.textContent = bits.join('  ·  ');
+  div.appendChild(meta);
 }
 
 function addAgent(text, data) {
   const div = document.createElement('div');
   div.className = 'msg agent';
-  div.innerHTML = renderMarkdown(text || '(empty)');
+  const content = document.createElement('div');
+  content.className = 'final-content';
+  content.innerHTML = renderMarkdown(text || '(empty)');
+  div.appendChild(content);
 
-  // tool trace
   if (data && data.tool_trace && data.tool_trace.length) {
-    const det = document.createElement('details');
-    det.className = 'trace';
-    det.open = true;  // open by default so the reasoning is visible
-    const sum = document.createElement('summary');
-    // Show only non-reasoning tools in the summary header to keep it tight.
-    const headerTools = data.tool_trace
-      .filter(t => t.tool !== 'reasoning')
-      .map(t => t.tool);
-    sum.textContent = `agent steps (${data.tool_trace.length}) — ${headerTools.join(' → ')}`;
-    det.appendChild(sum);
-    const list = document.createElement('div');
-    list.className = 'trace-list';
-    let nonReasoningIdx = 0;
-    data.tool_trace.forEach((t) => {
-      if (t.tool === 'reasoning') {
-        // Render reasoning summaries as a "thinking" block before the tool entry.
-        const r = document.createElement('div');
-        r.className = 'reasoning';
-        const txt = (t.content && t.content.text) || '';
-        const next = (t.content && t.content.next_tool) || '';
-        r.innerHTML = `<b>thinking →</b> ${escapeHtml(txt)}` + (next ? `\n<b>chose:</b> ${escapeHtml(next)}` : '');
-        list.appendChild(r);
-        return;
-      }
-      nonReasoningIdx += 1;
-      const step = document.createElement('div');
-      step.className = 'step';
-      const head = `[${nonReasoningIdx}] <b>${t.tool}</b> — ${t.status}`;
-      let body = '';
-      if (t.content) {
-        const c = t.content;
-        if (c.agents) body = `agents: ${c.agents.map(a => a.agent_id).join(', ')}`;
-        else if (c.skill && c.agent_id) body = `${c.agent_id} :: ${c.skill}` + (c.state ? ` (${c.state})` : '');
-        else if (c.error) body = `error: ${c.error}`;
-        else body = JSON.stringify(c).slice(0, 240);
-      } else if (t.args) {
-        body = JSON.stringify(t.args).slice(0, 240);
-      }
-      step.innerHTML = head + (body ? `\n    ${body}` : '');
-      list.appendChild(step);
-    });
-    det.appendChild(list);
-    div.appendChild(det);
+    const trace = createTraceDetails();
+    data.tool_trace.forEach(t => appendTraceEntry(trace.state, t));
+    addThoughtLink(div);
   }
-
-  if (data) {
-    const meta = document.createElement('span');
-    meta.className = 'meta';
-    const bits = [];
-    if (data.selected_agent) bits.push(`selected: ${data.selected_agent}`);
-    if (data.state && data.state !== 'completed') bits.push(`state: ${data.state}`);
-    if (data.confirmation_required) bits.push('⚠ confirmation required');
-    if (bits.length) meta.textContent = bits.join('  ·  ');
-    if (meta.textContent) div.appendChild(meta);
-  }
+  appendMeta(div, data);
 
   log.appendChild(div);
+  log.scrollTop = log.scrollHeight;
+}
+
+function addLiveAgent() {
+  const div = document.createElement('div');
+  div.className = 'msg agent live';
+
+  const thinking = document.createElement('div');
+  thinking.className = 'thinking-line';
+  thinking.innerHTML = '<span class="thinking-label">Thinking</span><span class="dots" aria-hidden="true"><span></span><span></span><span></span></span>';
+  makeThinkingClickable(thinking);
+  div.appendChild(thinking);
+
+  const content = document.createElement('div');
+  content.className = 'final-content';
+  div.appendChild(content);
+
+  const trace = createTraceDetails();
+  trace.details.style.display = 'none';
+  div._live = {thinking, content, traceState: trace.state};
+
+  log.appendChild(div);
+  log.scrollTop = log.scrollHeight;
+  return div;
+}
+
+function appendLiveTrace(div, traceEntry) {
+  if (!div || !div._live) return;
+  setThinkingText(div._live.thinking, liveStatusText(traceEntry));
+  appendTraceEntry(div._live.traceState, traceEntry);
+}
+
+function finalizeLiveAgent(div, data) {
+  if (!div || !div._live) {
+    addAgent((data && (data.final_response || data.text)) || '', data);
+    return;
+  }
+  div.classList.remove('live');
+  div._live.thinking.remove();
+  div._live.content.innerHTML = renderMarkdown((data && (data.final_response || data.text)) || '(empty)');
+  const fullTrace = (data && data.tool_trace) || [];
+  fullTrace.slice(div._live.traceState.count).forEach(t => appendLiveTrace(div, t));
+  addThoughtLink(div);
+  appendMeta(div, data);
+  log.scrollTop = log.scrollHeight;
+}
+
+function failLiveAgent(div, message) {
+  if (!div || !div._live) {
+    addError(message);
+    return;
+  }
+  div.classList.remove('live');
+  div.classList.add('error');
+  div._live.thinking.remove();
+  div._live.content.textContent = message;
   log.scrollTop = log.scrollHeight;
 }
 
@@ -334,30 +1303,119 @@ async function loadHealth() {
   } catch (e) { /* noop */ }
 }
 
-async function send(text) {
-  addUser(text);
-  sendBtn.disabled = true; status.className = 'status busy'; status.textContent = 'Working…';
+function parseSseMessage(raw) {
+  const lines = raw.replace(/\r/g, '').split('\n');
+  let event = 'message';
+  const dataLines = [];
+  lines.forEach(line => {
+    if (line.startsWith('event:')) event = line.slice(6).trim();
+    if (line.startsWith('data:')) dataLines.push(line.slice(5).trimStart());
+  });
+  const dataText = dataLines.join('\n') || '{}';
+  let data = {};
   try {
-    const r = await fetch('/messages', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({user_id: 'web-gui', channel: 'api', text, context_id: contextId}),
-    });
-    const data = await r.json();
-    if (!r.ok) throw new Error(data.detail || r.statusText);
-    contextId = data.context_id || contextId;
-    ctxLine.textContent = 'ctx: ' + (contextId || '—').slice(0, 8);
-    addAgent(data.final_response || data.text, data);
-    if (data.confirmation_required) {
-      pendingHint.style.display = 'block';
-      pendingHint.textContent = `⚠ Pending confirmation for "${data.pending_confirmation && data.pending_confirmation.skill}". Reply 'yes' to proceed or 'no' to cancel.`;
-      status.className = 'status'; status.textContent = 'Waiting for confirmation.';
-    } else {
-      pendingHint.style.display = 'none';
-      status.className = 'status'; status.textContent = 'Ready.';
-    }
+    data = JSON.parse(dataText);
   } catch (e) {
-    addError('Error: ' + e.message);
+    data = {detail: dataText};
+  }
+  return {event, data};
+}
+
+function applyTurnState(data) {
+  contextId = data.context_id || contextId;
+  ctxLine.textContent = 'ctx: ' + (contextId || '—').slice(0, 8);
+  if (data.confirmation_required) {
+    pendingHint.style.display = 'block';
+    pendingHint.textContent = `Pending confirmation for "${data.pending_confirmation && data.pending_confirmation.skill}". Reply 'yes' to proceed or 'no' to cancel.`;
+    status.className = 'status';
+    status.textContent = 'Waiting for confirmation.';
+  } else {
+    pendingHint.style.display = 'none';
+    status.className = 'status';
+    status.textContent = 'Ready.';
+  }
+}
+
+function updateAttachmentUi() {
+  const file = imageInput.files && imageInput.files[0];
+  if (attachmentPreviewUrl) {
+    URL.revokeObjectURL(attachmentPreviewUrl);
+    attachmentPreviewUrl = null;
+  }
+  if (!file) {
+    attachmentRow.hidden = true;
+    attachmentName.textContent = '';
+    attachmentThumb.removeAttribute('src');
+    attachmentThumb.alt = '';
+    return;
+  }
+  attachmentPreviewUrl = URL.createObjectURL(file);
+  attachmentThumb.src = attachmentPreviewUrl;
+  attachmentThumb.alt = file.name;
+  attachmentName.textContent = file.name;
+  attachmentRow.hidden = false;
+}
+
+async function send(text, imageFile) {
+  resetActivityPanel();
+  addUser(text, imageFile);
+  const live = addLiveAgent();
+  sendBtn.disabled = true; status.className = 'status busy'; status.textContent = 'Thinking...';
+  try {
+    let requestOptions;
+    if (imageFile) {
+      const formData = new FormData();
+      formData.append('user_id', 'web-gui');
+      formData.append('channel', 'api');
+      formData.append('text', text);
+      if (contextId) formData.append('context_id', contextId);
+      formData.append('image', imageFile, imageFile.name);
+      requestOptions = {method: 'POST', body: formData};
+    } else {
+      requestOptions = {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({user_id: 'web-gui', channel: 'api', text, context_id: contextId}),
+      };
+    }
+    const r = await fetch('/messages/stream', requestOptions);
+    if (!r.ok) {
+      const data = await r.json().catch(() => ({}));
+      throw new Error(data.detail || r.statusText);
+    }
+    if (!r.body) throw new Error('Streaming response is unavailable.');
+
+    const reader = r.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let finalData = null;
+    while (true) {
+      const {value, done} = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, {stream: true});
+      let splitAt = buffer.indexOf('\n\n');
+      while (splitAt !== -1) {
+        const raw = buffer.slice(0, splitAt).trim();
+        buffer = buffer.slice(splitAt + 2);
+        if (raw) {
+          const msg = parseSseMessage(raw);
+          if (msg.event === 'trace') {
+            status.textContent = 'Working...';
+            appendLiveTrace(live, msg.data);
+          } else if (msg.event === 'final') {
+            finalData = msg.data;
+            finalizeLiveAgent(live, finalData);
+            applyTurnState(finalData);
+          } else if (msg.event === 'error') {
+            throw new Error(msg.data.detail || 'The main agent stream failed.');
+          }
+        }
+        splitAt = buffer.indexOf('\n\n');
+      }
+    }
+    if (!finalData) throw new Error('The main agent stream ended without a final response.');
+  } catch (e) {
+    failLiveAgent(live, 'Error: ' + e.message);
     status.className = 'status error'; status.textContent = 'Error.';
   } finally {
     sendBtn.disabled = false; input.focus();
@@ -366,8 +1424,22 @@ async function send(text) {
 
 document.getElementById('form').addEventListener('submit', (e) => {
   e.preventDefault();
-  const text = input.value.trim(); if (!text) return;
-  input.value = ''; send(text);
+  const imageFile = imageInput.files && imageInput.files[0];
+  let text = input.value.trim();
+  if (!text && imageFile) text = 'Analyze this image, infer its likely location, and describe what happened.';
+  if (!text && !imageFile) return;
+  input.value = '';
+  imageInput.value = '';
+  updateAttachmentUi();
+  send(text, imageFile || null);
+});
+
+imageInput.addEventListener('change', updateAttachmentUi);
+activityClose.addEventListener('click', closeActivityPanel);
+clearImage.addEventListener('click', () => {
+  imageInput.value = '';
+  updateAttachmentUi();
+  input.focus();
 });
 
 input.addEventListener('keydown', (e) => {
@@ -381,7 +1453,7 @@ document.querySelectorAll('.quick button').forEach(btn => {
   btn.addEventListener('click', () => {
     const p = btn.getAttribute('data-prompt');
     input.value = p;
-    send(p);
+    send(p, null);
     input.value = '';
   });
 });

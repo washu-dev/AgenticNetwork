@@ -1,0 +1,222 @@
+{
+  "name": "Email Agent",
+  "description": "Gmail-backed A2A Google Workspace agent for email, calendar, Google Docs, and Google Sheets workflows.",
+  "url": "http://10.229.117.223:9103/",
+  "version": "0.2.5",
+  "protocolVersion": "0.3.0",
+  "preferredTransport": "JSONRPC",
+  "provider": {
+    "organization": "CSPL Email Agent",
+    "url": "https://example.invalid/cspl-email-agent"
+  },
+  "capabilities": {
+    "streaming": true,
+    "pushNotifications": false,
+    "stateTransitionHistory": true
+  },
+  "defaultInputModes": [
+    "text/plain",
+    "application/json"
+  ],
+  "defaultOutputModes": [
+    "text/plain",
+    "application/json"
+  ],
+  "securitySchemes": {},
+  "security": [],
+  "skills": [
+    {
+      "id": "email/search",
+      "name": "Search Email",
+      "description": "Search Gmail message metadata using Gmail query criteria.",
+      "tags": [
+        "email/search",
+        "email",
+        "gmail",
+        "search"
+      ],
+      "examples": [
+        "Find Bob's last email."
+      ],
+      "inputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "outputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "security": []
+    },
+    {
+      "id": "email/read",
+      "name": "Read Email",
+      "description": "Read Gmail messages, optionally including body text and attachment previews.",
+      "tags": [
+        "email/read",
+        "email",
+        "gmail",
+        "read"
+      ],
+      "examples": [
+        "Read the latest unread email."
+      ],
+      "inputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "outputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "security": []
+    },
+    {
+      "id": "email/draft",
+      "name": "Draft Email",
+      "description": "Prepare a structured email draft from user instructions.",
+      "tags": [
+        "email/draft",
+        "email",
+        "gmail",
+        "draft"
+      ],
+      "examples": [
+        "Draft an email to Bob with two meeting options."
+      ],
+      "inputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "outputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "security": []
+    },
+    {
+      "id": "email/send",
+      "name": "Send Email",
+      "description": "Send email through Gmail.",
+      "tags": [
+        "email/send",
+        "email",
+        "gmail",
+        "send",
+        "write"
+      ],
+      "examples": [
+        "Send this email to Bob."
+      ],
+      "inputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "outputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "security": []
+    },
+    {
+      "id": "email/current_time",
+      "name": "Current Time",
+      "description": "Return the email agent's current local time and timezone.",
+      "tags": [
+        "email/current_time",
+        "email",
+        "time"
+      ],
+      "examples": [
+        "What time is it for the email agent?"
+      ],
+      "inputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "outputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "security": []
+    },
+    {
+      "id": "email/calendar/list_events",
+      "name": "List Calendar Events",
+      "description": "List Google Calendar events in a time window.",
+      "tags": [
+        "email/calendar/list_events",
+        "email",
+        "calendar",
+        "events",
+        "read"
+      ],
+      "examples": [
+        "List my calendar events for tomorrow."
+      ],
+      "inputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "outputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "security": []
+    },
+    {
+      "id": "email/calendar/update_event",
+      "name": "Update Calendar Event",
+      "description": "Update an existing Google Calendar event by event ID, including title, time, attendees, description, or location.",
+      "tags": [
+        "email/calendar/update_event",
+        "email",
+        "calendar",
+        "events",
+        "update",
+        "modify",
+        "write"
+      ],
+      "examples": [
+        "Move my 2pm calendar event to 3pm.",
+        "Update the location of my project meeting."
+      ],
+      "inputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "outputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "security": []
+    },
+    {
+      "id": "email/calendar/delete_event",
+      "name": "Delete Calendar Event",
+      "description": "Delete or cancel an existing Google Calendar event by event ID.",
+      "tags": [
+        "email/calendar/delete_event",
+        "email",
+        "calendar",
+        "events",
+        "delete",
+        "cancel",
+        "write"
+      ],
+      "examples": [
+        "Cancel my dentist appointment tomorrow.",
+        "Delete the calendar event with this ID."
+      ],
+      "inputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "outputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "security": []
+    }
+  ]
+}

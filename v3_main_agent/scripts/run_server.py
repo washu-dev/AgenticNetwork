@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 from typing import Sequence
 
-from v2_agent_network.services.directory.client import DirectoryClient
+from v3_main_agent.main_agent.directory.client import DirectoryClient
 from v3_main_agent.main_agent.config import load_config
 from v3_main_agent.main_agent.server import create_app
 

@@ -16,6 +16,7 @@ class ToolCall(BaseModel):
     tool_name: str
     arguments: dict[str, Any] = Field(default_factory=dict)
     call_id: str | None = None
+    token_usage: dict[str, Any] | None = None
     # Free-text reasoning summary from the model (when available, e.g. gpt-5.x
     # reasoning models with reasoning.summary='auto'). Surfaced to the UI as a
     # "thinking" step before the tool entry. Empty for non-reasoning models.
@@ -36,6 +37,7 @@ class TurnState(BaseModel):
     conversation_history: list[str] = Field(default_factory=list)
     observations: list[dict[str, Any]] = Field(default_factory=list)
     pending_confirmation: dict[str, Any] | None = None
+    uploaded_images: list[dict[str, Any]] = Field(default_factory=list)
     previous_response_id: str | None = None
     last_call_id: str | None = None
 
@@ -119,9 +121,7 @@ class OpenAIToolLoopClient:
             response.get("id") if isinstance(response, dict) else None
         )
         # Log token usage and incomplete-state so token-starvation truncation is visible.
-        usage = getattr(response, "usage", None) or (
-            response.get("usage") if isinstance(response, dict) else None
-        )
+        usage = _response_usage(response)
         incomplete = getattr(response, "incomplete_details", None) or (
             response.get("incomplete_details") if isinstance(response, dict) else None
         )
@@ -137,6 +137,7 @@ class OpenAIToolLoopClient:
             usage,
         )
         call = _extract_tool_call(response)
+        call.token_usage = _usage_to_dict(usage)
         if call.call_id:
             state.last_call_id = call.call_id
         return call
@@ -148,12 +149,31 @@ def _initial_payload(state: TurnState) -> dict[str, Any]:
         "context_id": state.context_id,
         "conversation_history": state.conversation_history,
         "pending_confirmation": state.pending_confirmation,
+        "uploaded_images": _uploaded_image_summary(state.uploaded_images),
         "instructions": (
-            "Pick exactly one tool. Prefer list_agents first when you don't yet know which "
-            "agent fits. Use describe_agent only when capability detail is needed. Use "
-            "call_agent to delegate. Use final_answer to reply to the user."
+            "Pick exactly one tool for this model step. The runtime will feed the observation "
+            "back so you can take another step in the same user request. Prefer list_agents "
+            "first when you don't yet know which agent fits, then continue to call_agent when "
+            "a suitable agent exists. Use describe_agent only when capability detail is needed. "
+            "If uploaded_images is non-empty, choose an image/geospatial-capable agent when the "
+            "user asks to analyze, localize, or explain the photo; the runtime will attach the "
+            "actual image bytes to that geospatial A2A call. "
+            "For compound requests, choose one primary related agent and send the whole task; "
+            "external agents coordinate peer A2A calls when needed. "
+            "Use final_answer only after the user request has been answered or delegated."
         ),
     }
+
+
+def _uploaded_image_summary(images: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "filename": image.get("filename"),
+            "content_type": image.get("content_type"),
+            "size": image.get("size"),
+        }
+        for image in images
+    ]
 
 
 def _extract_tool_call(response: Any) -> ToolCall:
@@ -181,6 +201,45 @@ def _extract_tool_call(response: Any) -> ToolCall:
         arguments={"text": _response_text(response)},
         reasoning=reasoning_text,
     )
+
+
+def _response_usage(response: Any) -> Any | None:
+    return getattr(response, "usage", None) or (
+        response.get("usage") if isinstance(response, dict) else None
+    )
+
+
+def _usage_to_dict(usage: Any) -> dict[str, Any] | None:
+    if not usage:
+        return None
+    if hasattr(usage, "model_dump"):
+        data = usage.model_dump(mode="json", exclude_none=True)
+        return data if isinstance(data, dict) else None
+    if isinstance(usage, dict):
+        return {str(key): _jsonable_usage_value(value) for key, value in usage.items() if value is not None}
+
+    data: dict[str, Any] = {}
+    for key in (
+        "input_tokens",
+        "output_tokens",
+        "total_tokens",
+        "prompt_tokens",
+        "completion_tokens",
+    ):
+        value = getattr(usage, key, None)
+        if value is not None:
+            data[key] = value
+    return data or None
+
+
+def _jsonable_usage_value(value: Any) -> Any:
+    if hasattr(value, "model_dump"):
+        return value.model_dump(mode="json", exclude_none=True)
+    if isinstance(value, dict):
+        return {str(key): _jsonable_usage_value(item) for key, item in value.items() if item is not None}
+    if isinstance(value, list):
+        return [_jsonable_usage_value(item) for item in value]
+    return value
 
 
 def _extract_reasoning_summary(output: Any) -> str | None:

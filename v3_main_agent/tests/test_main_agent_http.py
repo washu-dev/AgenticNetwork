@@ -5,13 +5,13 @@ from pathlib import Path
 
 import httpx
 
-from v2_agent_network.services.directory.card_oasf_converter import load_agent_card
-from v2_agent_network.services.directory.client import DirectoryClient
+from v3_main_agent.main_agent.directory.card_oasf_converter import load_agent_card
+from v3_main_agent.main_agent.directory.client import DirectoryClient
 
 from v3_main_agent.main_agent.config import MainAgentConfig
 from v3_main_agent.main_agent.llm_client import ScriptedLLMClient, ToolCall
 from v3_main_agent.main_agent.server import create_app
-from v3_main_agent.tests.test_main_agent_runtime import FailA2A, EMAIL_CARD
+from v3_main_agent.tests.test_main_agent_runtime import FailA2A, EMAIL_CARD, SpyA2A, _geospatial_card
 
 
 def _config() -> MainAgentConfig:
@@ -55,3 +55,45 @@ async def _agents_listing() -> None:
     assert data["count"] == 1
     assert data["agents"][0]["agent_id"] == "email-agent"
     assert "email/send" in data["agents"][0]["skills"]
+
+
+def test_messages_endpoint_accepts_image_upload(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("MAIN_AGENT_UPLOAD_DIR", str(tmp_path))
+    asyncio.run(_messages_accepts_image_upload())
+
+
+async def _messages_accepts_image_upload() -> None:
+    directory = DirectoryClient(fake_ads=True)
+    directory.publish_agent_card(_geospatial_card())
+    a2a = SpyA2A()
+    llm = ScriptedLLMClient(
+        [
+            ToolCall(tool_name="list_agents", arguments={}),
+            ToolCall(
+                tool_name="call_agent",
+                arguments={
+                    "agent_id": "geospatial-agent",
+                    "skill": "geospatial/analyze_image",
+                    "task_input": {"request": "Analyze the uploaded image."},
+                },
+            ),
+            ToolCall(tool_name="final_answer", arguments={"text": "Analyzed."}),
+        ]
+    )
+    app = create_app(
+        config=_config(),
+        directory_client=directory,
+        a2a_client=a2a,
+        llm_client=llm,
+    )
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client:
+        resp = await client.post(
+            "/messages",
+            data={"user_id": "u", "channel": "api", "text": "Analyze this image."},
+            files={"image": ("storm.jpg", b"image-bytes", "image/jpeg")},
+        )
+    assert resp.status_code == 200, resp.text
+    assert a2a.calls == [("geospatial-agent", "geospatial/analyze_image")]
+    image_parts = [part for part in a2a.requests[0].messages[0].parts if part.kind == "image"]
+    assert len(image_parts) == 1
+    assert image_parts[0].bytes
