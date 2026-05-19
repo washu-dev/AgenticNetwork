@@ -5,7 +5,7 @@
 Copy the env template and put your OpenAI key in it:
 
 ```bash
-cd /home/server2/Jian/MAS_demo/AgenticNetwork
+cd /path/to/AgenticNetwork
 cp planner_agent/.env.example planner_agent/.env.local
 $EDITOR planner_agent/.env.local   # set OPENAI_API_KEY=sk-...
 ```
@@ -15,7 +15,7 @@ $EDITOR planner_agent/.env.local   # set OPENAI_API_KEY=sk-...
 ## Start
 
 ```bash
-cd /home/server2/Jian/MAS_demo/AgenticNetwork
+cd /path/to/AgenticNetwork
 planner_agent/scripts/start.sh
 ```
 

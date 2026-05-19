@@ -32,13 +32,29 @@ if [[ "${OPENAI_API_KEY:-sk-REPLACE_ME}" == sk-REPLACE_ME* ]]; then
   exit 1
 fi
 
-PYTHON_BIN="${PYTHON_BIN:-/home/server2/miniconda3/envs/mas_spider/bin/python}"
-if [[ ! -x "$PYTHON_BIN" ]]; then
-  echo "Python interpreter not found at $PYTHON_BIN" >&2
+if [[ -z "${PYTHON_BIN:-}" ]]; then
+  if [[ -x "$PLANNER_DIR/.venv/bin/python" ]]; then
+    PYTHON_BIN="$PLANNER_DIR/.venv/bin/python"
+  elif [[ -x "$REPO_ROOT/.venv/bin/python" ]]; then
+    PYTHON_BIN="$REPO_ROOT/.venv/bin/python"
+  elif command -v python3 >/dev/null 2>&1; then
+    PYTHON_BIN="$(command -v python3)"
+  elif command -v python >/dev/null 2>&1; then
+    PYTHON_BIN="$(command -v python)"
+  else
+    echo "Python interpreter not found." >&2
+    echo "Create planner_agent/.venv, repo .venv, install python3, or run with:" >&2
+    echo "  PYTHON_BIN=/path/to/python planner_agent/scripts/start.sh" >&2
+    exit 1
+  fi
+fi
+
+if ! command -v "$PYTHON_BIN" >/dev/null 2>&1 && [[ ! -x "$PYTHON_BIN" ]]; then
+  echo "Python interpreter not found: $PYTHON_BIN" >&2
   echo "Override with: PYTHON_BIN=/path/to/python planner_agent/scripts/start.sh" >&2
   exit 1
 fi
 
 cd "$REPO_ROOT"
-echo "main_agent_start env=$ENV_FILE port=${MAIN_AGENT_PORT:-8090} fake_ads=${AGENT_NETWORK_FAKE_ADS:-false} model=${MAIN_AGENT_LLM_MODEL:-gpt-4o-mini}"
+echo "main_agent_start python=$PYTHON_BIN env=$ENV_FILE port=${MAIN_AGENT_PORT:-8090} fake_ads=${AGENT_NETWORK_FAKE_ADS:-false} model=${MAIN_AGENT_LLM_MODEL:-gpt-4o-mini}"
 exec "$PYTHON_BIN" -m planner_agent.scripts.run_server "$@"

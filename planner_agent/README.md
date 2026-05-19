@@ -100,12 +100,12 @@ Standalone planner infrastructure:
 ### 1. Tests (no network, no ADS, no OpenAI key)
 
 ```bash
-cd /home/server2/Jian/MAS_demo/AgenticNetwork
+cd /path/to/AgenticNetwork
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
-  /home/server2/miniconda3/envs/mas_spider/bin/python -m pytest planner_agent/tests -q
+  python3 -m pytest planner_agent/tests -q
 ```
 
-19 tests cover: list/describe/call agent flows, write-skill confirmation +
+27 tests cover: list/describe/call agent flows, write-skill confirmation +
 resume, negative confirmation, undiscovered agent error handling, follow-up
 context across turns, dedup of repeated calls, retry after a failed A2A call,
 empty `task_input` augmentation from user text, reasoning-block in trace,
@@ -118,7 +118,7 @@ main agent code.
 First-time setup — copy the env template and put your OpenAI key in:
 
 ```bash
-cd /home/server2/Jian/MAS_demo/AgenticNetwork
+cd /path/to/AgenticNetwork
 cp planner_agent/.env.example planner_agent/.env.local
 $EDITOR planner_agent/.env.local      # set OPENAI_API_KEY=sk-...
 ```
@@ -143,7 +143,7 @@ Skip the wrapper and export by hand:
 ```bash
 export OPENAI_API_KEY=sk-...
 export AGENT_NETWORK_FAKE_ADS=true
-/home/server2/miniconda3/envs/mas_spider/bin/python -m planner_agent.scripts.run_server \
+python3 -m planner_agent.scripts.run_server \
   --fake-ads \
   --card planner_agent/configs/agent_cards/email_agent.card.json
 ```
@@ -170,9 +170,9 @@ so this section is mostly for self-hosted testing.
 dirctl daemon start
 
 # Publish with the planner-local publisher
-cd /home/server2/Jian/MAS_demo/AgenticNetwork
+cd /path/to/AgenticNetwork
 AGENT_NETWORK_FAKE_ADS=false ADS_BACKEND=cli ADS_SERVER_ADDR=localhost:8888 \
-  /home/server2/miniconda3/envs/mas_spider/bin/python -m planner_agent.scripts.publish_agents \
+  python3 -m planner_agent.scripts.publish_agents \
   --card planner_agent/configs/agent_cards/email_agent.card.json
 
 # Run main agent against real ADS
@@ -180,7 +180,7 @@ export OPENAI_API_KEY=sk-...
 export AGENT_NETWORK_FAKE_ADS=false
 export ADS_BACKEND=cli
 export ADS_SERVER_ADDR=localhost:8888       # or 10.229.117.37:8888 for the shared one
-/home/server2/miniconda3/envs/mas_spider/bin/python -m planner_agent.scripts.run_server
+python3 -m planner_agent.scripts.run_server
 ```
 
 The same `/messages` and `/agents` endpoints work; they just hit real ADS
@@ -205,6 +205,7 @@ through `dirctl` instead of the in-process fake.
 | `ADS_BACKEND`                  | `cli`         | `cli` (uses `dirctl`) or `sdk`                                |
 | `ADS_SERVER_ADDR`              | —             | e.g. `localhost:8888` or `10.229.117.37:8888`                 |
 | `MAIN_AGENT_PORT`              | `8090`        | HTTP port (avoids collision with v2's 8080)                   |
+| `PYTHON_BIN`                   | auto-detected | Optional interpreter override for wrapper scripts             |
 
 ## Confirmation flow (when `policy_mode=strict`)
 

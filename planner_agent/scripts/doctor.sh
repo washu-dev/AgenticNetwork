@@ -12,6 +12,20 @@ ENV_FILE="${ENV_FILE:-$PLANNER_DIR/.env.local}"
 DIRCTL="${DIRCTL_BIN:-$HOME/.local/bin/dirctl}"
 PORT="${MAIN_AGENT_PORT:-8090}"
 
+if [[ -z "${PYTHON_BIN:-}" ]]; then
+  if [[ -x "$PLANNER_DIR/.venv/bin/python" ]]; then
+    PYTHON_BIN="$PLANNER_DIR/.venv/bin/python"
+  elif [[ -x "$REPO_ROOT/.venv/bin/python" ]]; then
+    PYTHON_BIN="$REPO_ROOT/.venv/bin/python"
+  elif command -v python3 >/dev/null 2>&1; then
+    PYTHON_BIN="$(command -v python3)"
+  elif command -v python >/dev/null 2>&1; then
+    PYTHON_BIN="$(command -v python)"
+  else
+    PYTHON_BIN=""
+  fi
+fi
+
 GREEN='\033[0;32m'; RED='\033[0;31m'; YELLOW='\033[0;33m'; BOLD='\033[1m'; RESET='\033[0m'
 ok()    { echo -e "  ${GREEN}✓${RESET} $1"; }
 warn()  { echo -e "  ${YELLOW}⚠${RESET} $1"; }
@@ -40,8 +54,16 @@ else
   fail "$ENV_FILE does not exist. Copy from .env.example."
 fi
 
+# ---- 2. python ----
+section "2) python"
+if [[ -n "$PYTHON_BIN" ]] && { command -v "$PYTHON_BIN" >/dev/null 2>&1 || [[ -x "$PYTHON_BIN" ]]; }; then
+  ok "python: $PYTHON_BIN ($("$PYTHON_BIN" --version 2>&1))"
+else
+  fail "python not found. Create planner_agent/.venv, repo .venv, install python3, or set PYTHON_BIN=/path/to/python."
+fi
+
 # ---- 2. dirctl ----
-section "2) dirctl binary"
+section "3) dirctl binary"
 if [[ -x "$DIRCTL" ]]; then
   ok "dirctl found: $DIRCTL ($($DIRCTL version 2>&1 | head -1))"
 else
@@ -56,16 +78,16 @@ else
 fi
 
 # ---- 3. ADS reachability ----
-section "3) ADS routing reachability"
+section "4) ADS routing reachability"
 ADS_ADDR="${ADS_SERVER_ADDR:-10.229.117.37:8888}"
 if [[ "${AGENT_NETWORK_FAKE_ADS:-false}" == "true" ]]; then
   warn "fake_ads mode — skipping real ADS check"
 elif [[ -x "$DIRCTL" ]] || command -v dirctl >/dev/null 2>&1; then
   if AGENTS=$("$DIRCTL" --server-addr "$ADS_ADDR" routing list --output json 2>&1); then
-    COUNT=$(echo "$AGENTS" | python3 -c "import sys, json; d = json.loads(sys.stdin.read()); print(len(d) if isinstance(d, list) else 0)" 2>/dev/null || echo "?")
+    COUNT=$(echo "$AGENTS" | "$PYTHON_BIN" -c "import sys, json; d = json.loads(sys.stdin.read()); print(len(d) if isinstance(d, list) else 0)" 2>/dev/null || echo "?")
     ok "ADS reachable at $ADS_ADDR — $COUNT agent(s) routed"
     if [[ "$COUNT" != "0" ]] && [[ "$COUNT" != "?" ]]; then
-      echo "$AGENTS" | python3 -c "
+      echo "$AGENTS" | "$PYTHON_BIN" -c "
 import sys, json
 d = json.loads(sys.stdin.read())
 for r in d:
@@ -81,12 +103,12 @@ for r in d:
 fi
 
 # ---- 4. planner agent server ----
-section "4) planner agent server"
+section "5) planner agent server"
 HEALTH=$(curl -s -m 3 "http://localhost:$PORT/health" 2>&1)
 if [[ -n "$HEALTH" ]] && [[ "$HEALTH" == *'"status":"ok"'* ]]; then
   ok "server is running on port $PORT"
   ok "  $HEALTH"
-  AGENTS_COUNT=$(curl -s -m 5 "http://localhost:$PORT/agents" 2>&1 | python3 -c "import sys,json; print(json.load(sys.stdin).get('count', '?'))" 2>/dev/null || echo "?")
+  AGENTS_COUNT=$(curl -s -m 5 "http://localhost:$PORT/agents" 2>&1 | "$PYTHON_BIN" -c "import sys,json; print(json.load(sys.stdin).get('count', '?'))" 2>/dev/null || echo "?")
   ok "  /agents returns $AGENTS_COUNT discovered agents"
 else
   fail "server NOT running on port $PORT"
@@ -94,7 +116,7 @@ else
 fi
 
 # ---- 5. OpenAI quick ping ----
-section "5) OpenAI ping"
+section "6) OpenAI ping"
 if [[ -n "${OPENAI_API_KEY:-}" ]] && [[ "${OPENAI_API_KEY:0:3}" == "sk-" ]]; then
   CODE=$(curl -s -o /dev/null -w "%{http_code}" -m 5 \
     -H "Authorization: Bearer $OPENAI_API_KEY" \
@@ -110,10 +132,9 @@ else
 fi
 
 # ---- 6. tests ----
-section "6) test suite"
+section "7) test suite"
 if cd "$REPO_ROOT" 2>/dev/null; then
-  TEST_OUT=$(PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
-    /home/server2/miniconda3/envs/mas_spider/bin/python -m pytest planner_agent/tests -q 2>&1 | tail -3)
+  TEST_OUT=$(PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 "$PYTHON_BIN" -m pytest planner_agent/tests -q 2>&1 | tail -3)
   if echo "$TEST_OUT" | grep -q "passed"; then
     ok "$(echo "$TEST_OUT" | grep passed | head -1)"
   else
