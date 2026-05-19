@@ -5,7 +5,7 @@ This repository contains the current AgenticNetwork components:
 - `agent_directory_service/`: AGNTCY ADS operator tooling for starting the
   shared directory service, publishing Agent Cards, inspecting routes, and
   repairing stale routing state.
-- `v3_main_agent/`: product main agent runtime.
+- `planner_agent/`: product main agent runtime.
 - Root-level specialized agents such as `email_agent/`, `coding_agent/`,
   `calendar_agent/`, `disaster_response_agent/`, `geoSpatial_agent/`, and
   `intelligence_agent/`.

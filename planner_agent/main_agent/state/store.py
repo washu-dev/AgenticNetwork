@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from v3_main_agent.main_agent.models import AgentInvocationRecord, PIContext
+from planner_agent.main_agent.models import AgentInvocationRecord, PIContext
 
 
 class InMemoryStateStore:

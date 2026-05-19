@@ -12,8 +12,8 @@ from typing import Any, Callable, Protocol
 
 from a2a.types import AgentCard
 
-from v3_main_agent.main_agent.models import DiscoveredAgent, PublishedRecord
-from v3_main_agent.main_agent.directory.card_oasf_converter import (
+from planner_agent.main_agent.models import DiscoveredAgent, PublishedRecord
+from planner_agent.main_agent.directory.card_oasf_converter import (
     agent_card_to_ads_record,
     agent_card_to_oasf_record,
     oasf_record_to_discovered_agent,
@@ -426,7 +426,7 @@ class RealADSDirectoryBackend:
             "Agent record exists in ADS storage but is not routed/discoverable. "
             f"skill={skill!r}; storage_cids={storage_cids!r}; matching_agents={agent_ids!r}. "
             "Live discovery uses the routing index, not plain dirctl search. "
-            "Run the ADS diagnostics or repair routing with the v3 main-agent tools."
+            "Run the ADS diagnostics or repair routing with the planner agent tools."
         )
 
     def _resolve_agent_cli(self, agent_id_or_record_id: str) -> DiscoveredAgent:
@@ -457,7 +457,7 @@ class RealADSDirectoryBackend:
             return agent_card_to_ads_record(AgentCard.model_validate(card))
         if "interaction" in record and "discovery" in record:
             return record
-        raise self._unavailable("Record is missing v3 interaction/discovery metadata.", None)
+        raise self._unavailable("Record is missing supported interaction/discovery metadata.", None)
 
     def _normalize_for_internal(self, record: dict[str, Any]) -> dict[str, Any]:
         if "interaction" in record and "discovery" in record:
@@ -540,7 +540,7 @@ class RealADSDirectoryBackend:
             stop.stdout.strip(),
             stop.stderr.strip(),
         )
-        log_path = Path("v3_main_agent/ads_daemon_repair.log")
+        log_path = Path("planner_agent/ads_daemon_repair.log")
         log_path.parent.mkdir(parents=True, exist_ok=True)
         with log_path.open("ab") as log_file:
             subprocess.Popen(

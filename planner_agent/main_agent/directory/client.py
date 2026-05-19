@@ -5,8 +5,8 @@ from typing import Any
 
 from a2a.types import AgentCard
 
-from v3_main_agent.main_agent.models import DiscoveredAgent, PublishedRecord
-from v3_main_agent.main_agent.directory.backends import (
+from planner_agent.main_agent.models import DiscoveredAgent, PublishedRecord
+from planner_agent.main_agent.directory.backends import (
     DirectoryBackend,
     DirectoryUnavailable,
     FakeDirectoryBackend,

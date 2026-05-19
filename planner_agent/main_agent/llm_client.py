@@ -6,8 +6,8 @@ from typing import Any, Protocol
 
 from pydantic import BaseModel, Field
 
-from v3_main_agent.main_agent.config import MainAgentConfig
-from v3_main_agent.main_agent.tools import SYSTEM_PROMPT
+from planner_agent.main_agent.config import MainAgentConfig
+from planner_agent.main_agent.tools import SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +52,7 @@ _SCHEMAS_CACHE: list[dict[str, Any]] | None = None
 def _cached_tool_schemas() -> list[dict[str, Any]]:
     global _SCHEMAS_CACHE
     if _SCHEMAS_CACHE is None:
-        from v3_main_agent.main_agent.tools import tool_schemas
+        from planner_agent.main_agent.tools import tool_schemas
         _SCHEMAS_CACHE = tool_schemas()
     return _SCHEMAS_CACHE
 

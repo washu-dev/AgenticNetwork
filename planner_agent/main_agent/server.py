@@ -15,15 +15,15 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from v3_main_agent.main_agent.a2a.client import A2AClient
-from v3_main_agent.main_agent.models import Channel
-from v3_main_agent.main_agent.directory.card_oasf_converter import load_agent_card
-from v3_main_agent.main_agent.directory.client import DirectoryClient
-from v3_main_agent.main_agent.state.store import InMemoryStateStore
+from planner_agent.main_agent.a2a.client import A2AClient
+from planner_agent.main_agent.models import Channel
+from planner_agent.main_agent.directory.card_oasf_converter import load_agent_card
+from planner_agent.main_agent.directory.client import DirectoryClient
+from planner_agent.main_agent.state.store import InMemoryStateStore
 
-from v3_main_agent.main_agent.config import MainAgentConfig, load_config
-from v3_main_agent.main_agent.llm_client import LLMClient, OpenAIToolLoopClient
-from v3_main_agent.main_agent.runtime import MainAgentRuntime
+from planner_agent.main_agent.config import MainAgentConfig, load_config
+from planner_agent.main_agent.llm_client import LLMClient, OpenAIToolLoopClient
+from planner_agent.main_agent.runtime import MainAgentRuntime
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +80,7 @@ def create_app(
     for card_path in _agent_card_paths(agent_card_paths, allow_local=cfg.fake_ads):
         directory.publish_agent_card(load_agent_card(card_path))
 
-    app = FastAPI(title="V3 Main Agent", version="0.1.0")
+    app = FastAPI(title="Planner Agent", version="0.1.0")
     app.state.config = cfg
     app.state.runtime = runtime
     app.state.directory = directory
@@ -268,7 +268,7 @@ async def _store_uploaded_image(upload: Any) -> dict[str, Any]:
     if suffix not in {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tif", ".tiff"}:
         suffix = mimetypes.guess_extension(content_type) or ".img"
     safe_stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", Path(filename).stem).strip("._") or "image"
-    out_dir = Path(os.getenv("MAIN_AGENT_UPLOAD_DIR", "/tmp/v3_main_agent_uploads"))
+    out_dir = Path(os.getenv("MAIN_AGENT_UPLOAD_DIR", "/tmp/planner_agent_uploads"))
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / f"{uuid4().hex}_{safe_stem}{suffix}"
     path.write_bytes(data)

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Main Agent (v3) — Chat</title>
+<title>Planner Agent — Chat</title>
 <style>
   :root {
     color-scheme: light;
@@ -428,7 +428,7 @@
   <main>
     <header>
       <div>
-        <h1>Main Agent (v3)</h1>
+        <h1>Planner Agent</h1>
         <div class="status" id="status">Ready.</div>
       </div>
       <div style="font-size: 11px; color: var(--muted); text-align: right;">
@@ -506,8 +506,8 @@ let attachmentPreviewUrl = null;
 let activityEntries = [];
 
 const panelStorageKeys = {
-  ads: 'main-agent-v3-ads-width',
-  activity: 'main-agent-v3-activity-width',
+  ads: 'planner-agent-ads-width',
+  activity: 'planner-agent-activity-width',
 };
 
 function clampNumber(value, min, max) {

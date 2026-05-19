@@ -5,13 +5,13 @@ from pathlib import Path
 
 import httpx
 
-from v3_main_agent.main_agent.directory.card_oasf_converter import load_agent_card
-from v3_main_agent.main_agent.directory.client import DirectoryClient
+from planner_agent.main_agent.directory.card_oasf_converter import load_agent_card
+from planner_agent.main_agent.directory.client import DirectoryClient
 
-from v3_main_agent.main_agent.config import MainAgentConfig
-from v3_main_agent.main_agent.llm_client import ScriptedLLMClient, ToolCall
-from v3_main_agent.main_agent.server import create_app
-from v3_main_agent.tests.test_main_agent_runtime import FailA2A, EMAIL_CARD, SpyA2A, _geospatial_card
+from planner_agent.main_agent.config import MainAgentConfig
+from planner_agent.main_agent.llm_client import ScriptedLLMClient, ToolCall
+from planner_agent.main_agent.server import create_app
+from planner_agent.tests.test_main_agent_runtime import FailA2A, EMAIL_CARD, SpyA2A, _geospatial_card
 
 
 def _config() -> MainAgentConfig:

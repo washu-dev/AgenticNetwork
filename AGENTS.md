@@ -6,7 +6,7 @@ The active repo is split into separate product components:
 
 - `agent_directory_service/` owns ADS operation, publication, route inspection,
   diagnostics, and repair tooling.
-- `v3_main_agent/` owns the product main-agent runtime.
+- `planner_agent/` owns the product main-agent runtime.
 - Root-level agent folders own their individual A2A services and Agent Cards.
 
 Do not reintroduce the old prototype, milestone demo agents, or PI runtime under

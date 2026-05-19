@@ -24,7 +24,7 @@ from a2a.types import (
     TextPart,
 )
 
-from v3_main_agent.main_agent.models import (
+from planner_agent.main_agent.models import (
     A2AArtifact,
     A2AMessage,
     A2APart,
@@ -34,7 +34,7 @@ from v3_main_agent.main_agent.models import (
     AgentCapability,
     DiscoveredAgent,
 )
-from v3_main_agent.main_agent.directory.card_oasf_converter import (
+from planner_agent.main_agent.directory.card_oasf_converter import (
     agent_card_to_oasf_record,
     oasf_record_to_discovered_agent,
 )

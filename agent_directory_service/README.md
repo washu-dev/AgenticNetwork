@@ -2,7 +2,7 @@
 
 Agent Directory Service is the repo-local tooling for running, publishing to,
 inspecting, and repairing the shared AGNTCY ADS directory. The product main
-agent lives in `v3_main_agent`; PI runtime code is intentionally not part of
+agent lives in `planner_agent`; PI runtime code is intentionally not part of
 this package. This README is the short runbook; for more detail, see
 [`DETAILED_GUIDE.md`](DETAILED_GUIDE.md).
 

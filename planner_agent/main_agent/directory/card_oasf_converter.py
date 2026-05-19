@@ -8,7 +8,7 @@ from uuid import uuid5, NAMESPACE_URL
 
 from a2a.types import AgentCard
 
-from v3_main_agent.main_agent.models import (
+from planner_agent.main_agent.models import (
     AgentCapability,
     DiscoveredAgent,
     OfficialOASFSkill,
@@ -112,7 +112,7 @@ def agent_card_to_oasf_record(card: AgentCard) -> dict[str, Any]:
     validate_agent_card(card)
     official, custom = _official_and_custom_skills(card)
     provider = card.provider.organization if card.provider else "unknown"
-    record_id = str(uuid5(NAMESPACE_URL, f"v3-main-agent:{card.name}:{card.version}"))
+    record_id = str(uuid5(NAMESPACE_URL, f"planner-agent:{card.name}:{card.version}"))
     skill_policies = {skill.id: _skill_policy(skill) for skill in card.skills}
     has_write_skill = any(policy["action_type"] == "write" for policy in skill_policies.values())
 
@@ -153,7 +153,7 @@ def agent_card_to_oasf_record(card: AgentCard) -> dict[str, Any]:
             "skill_policies": skill_policies,
         },
         "metadata": {
-            "source": "v3_main_agent",
+            "source": "planner_agent",
             "demo_specific_custom_skills": custom,
         },
     }

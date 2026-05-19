@@ -12,8 +12,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
-from v3_main_agent.main_agent.a2a.client import A2AClient
-from v3_main_agent.main_agent.models import (
+from planner_agent.main_agent.a2a.client import A2AClient
+from planner_agent.main_agent.models import (
     A2AMessage,
     A2APart,
     A2ATaskRequest,
@@ -30,12 +30,12 @@ from v3_main_agent.main_agent.models import (
     UserMessage,
     utc_now,
 )
-from v3_main_agent.main_agent.directory.client import DirectoryClient
-from v3_main_agent.main_agent.directory.backends import DirectoryUnavailable
-from v3_main_agent.main_agent.state.store import InMemoryStateStore
+from planner_agent.main_agent.directory.client import DirectoryClient
+from planner_agent.main_agent.directory.backends import DirectoryUnavailable
+from planner_agent.main_agent.state.store import InMemoryStateStore
 
-from v3_main_agent.main_agent.config import MainAgentConfig
-from v3_main_agent.main_agent.llm_client import LLMClient, ToolCall, TurnState
+from planner_agent.main_agent.config import MainAgentConfig
+from planner_agent.main_agent.llm_client import LLMClient, ToolCall, TurnState
 
 logger = logging.getLogger(__name__)
 
@@ -1211,7 +1211,7 @@ def _is_safe_uploaded_file(path_text: str) -> bool:
         return False
     try:
         path = Path(path_text).expanduser().resolve()
-        upload_dir = Path(os.getenv("MAIN_AGENT_UPLOAD_DIR", "/tmp/v3_main_agent_uploads")).resolve()
+        upload_dir = Path(os.getenv("MAIN_AGENT_UPLOAD_DIR", "/tmp/planner_agent_uploads")).resolve()
         path.relative_to(upload_dir)
     except (OSError, ValueError):
         return False

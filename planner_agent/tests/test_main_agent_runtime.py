@@ -8,8 +8,8 @@ from typing import Any
 import httpx
 from a2a.types import AgentCapabilities, AgentCard, AgentProvider, AgentSkill
 
-from v3_main_agent.main_agent.a2a.client import A2AClient
-from v3_main_agent.main_agent.models import (
+from planner_agent.main_agent.a2a.client import A2AClient
+from planner_agent.main_agent.models import (
     A2AArtifact,
     A2AMessage,
     A2APart,
@@ -17,19 +17,19 @@ from v3_main_agent.main_agent.models import (
     A2ATaskState,
     Channel,
 )
-from v3_main_agent.main_agent.directory.card_oasf_converter import load_agent_card
-from v3_main_agent.main_agent.directory.client import DirectoryClient
-from v3_main_agent.main_agent.state.store import InMemoryStateStore
+from planner_agent.main_agent.directory.card_oasf_converter import load_agent_card
+from planner_agent.main_agent.directory.client import DirectoryClient
+from planner_agent.main_agent.state.store import InMemoryStateStore
 
-from v3_main_agent.main_agent.config import MainAgentConfig
-from v3_main_agent.main_agent.llm_client import ScriptedLLMClient, ToolCall
-from v3_main_agent.main_agent.server import create_app
+from planner_agent.main_agent.config import MainAgentConfig
+from planner_agent.main_agent.llm_client import ScriptedLLMClient, ToolCall
+from planner_agent.main_agent.server import create_app
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-EMAIL_CARD = REPO_ROOT / "v3_main_agent" / "configs" / "agent_cards" / "email_agent.card.json"
-WEATHER_CARD = REPO_ROOT / "v3_main_agent" / "configs" / "agent_cards" / "weather_agent.card.json"
-CODING_CARD = REPO_ROOT / "v3_main_agent" / "configs" / "agent_cards" / "coding_agent.card.json"
+EMAIL_CARD = REPO_ROOT / "planner_agent" / "configs" / "agent_cards" / "email_agent.card.json"
+WEATHER_CARD = REPO_ROOT / "planner_agent" / "configs" / "agent_cards" / "weather_agent.card.json"
+CODING_CARD = REPO_ROOT / "planner_agent" / "configs" / "agent_cards" / "coding_agent.card.json"
 
 
 # ---------- mock support ----------
@@ -1178,7 +1178,7 @@ def test_openai_chain_state_is_per_turn_not_per_client() -> None:
     client instance, so concurrent /messages requests cannot interleave each
     other's chains.
     """
-    from v3_main_agent.main_agent.llm_client import OpenAIToolLoopClient
+    from planner_agent.main_agent.llm_client import OpenAIToolLoopClient
     client = OpenAIToolLoopClient(_config())
     # The client instance must NOT carry any per-request chain state.
     assert not hasattr(client, "_previous_response_id")

@@ -19,12 +19,12 @@ from a2a.types import (
     TaskStatusUpdateEvent,
 )
 
-from v3_main_agent.main_agent.a2a.adapters import (
+from planner_agent.main_agent.a2a.adapters import (
     a2a_response_to_internal_task_result,
     discovered_agent_to_a2a_agent_card,
     internal_task_request_to_a2a_request,
 )
-from v3_main_agent.main_agent.models import A2ATaskRequest, A2ATaskResult, DiscoveredAgent
+from planner_agent.main_agent.models import A2ATaskRequest, A2ATaskResult, DiscoveredAgent
 
 logger = logging.getLogger(__name__)
 ProgressCallback = Callable[[dict[str, Any]], Awaitable[None] | None]

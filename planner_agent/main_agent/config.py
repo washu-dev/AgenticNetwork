@@ -10,7 +10,7 @@ class MainAgentConfigError(RuntimeError):
 
 
 class MainAgentConfig(BaseModel):
-    """Runtime config for the v3 main agent.
+    """Runtime config for the planner agent.
 
     The main agent is LLM-driven by default. When llm_enabled is False,
     a deterministic mock client (used for tests) must be passed in.

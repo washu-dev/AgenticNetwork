@@ -1,7 +1,7 @@
 # Agent Directory Service Detailed Guide
 
 This package is now ADS-only. It does not host the product main agent; use
-`v3_main_agent` for that runtime. The files here are for operating the AGNTCY
+`planner_agent` for that runtime. The files here are for operating the AGNTCY
 directory service, publishing Agent Cards, checking routed records, and repairing
 stale ADS routing state.
 

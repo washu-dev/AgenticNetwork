@@ -6,12 +6,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
 
-from v3_main_agent.main_agent.directory.card_oasf_converter import (
+from planner_agent.main_agent.directory.card_oasf_converter import (
     agent_card_to_oasf_record,
     load_agent_card,
     validate_agent_card,
 )
-from v3_main_agent.main_agent.directory.client import DirectoryClient, DirectoryUnavailable
+from planner_agent.main_agent.directory.client import DirectoryClient, DirectoryUnavailable
 
 
 DEFAULT_CARD_DIR = Path(__file__).parents[1] / "configs" / "agent_cards"
@@ -115,7 +115,7 @@ def render_table(rows: Sequence[PublishRow]) -> str:
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Publish v3 Agent Cards to fake or real ADS.")
+    parser = argparse.ArgumentParser(description="Publish planner Agent Cards to fake or real ADS.")
     parser.add_argument(
         "--card-dir",
         type=Path,

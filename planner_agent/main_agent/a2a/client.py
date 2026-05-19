@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from v3_main_agent.main_agent.a2a.transport import A2ATransport, HTTPA2ATransport, ProgressCallback
-from v3_main_agent.main_agent.models import A2ATaskRequest, A2ATaskResult, DiscoveredAgent
+from planner_agent.main_agent.a2a.transport import A2ATransport, HTTPA2ATransport, ProgressCallback
+from planner_agent.main_agent.models import A2ATaskRequest, A2ATaskResult, DiscoveredAgent
 
 
 class A2AClient:

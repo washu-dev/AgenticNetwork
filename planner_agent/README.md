@@ -1,14 +1,14 @@
-# v3 Main Agent
+# Planner Agent
 
 A re-write of the main / PI agent for the Internet-of-Agents demo.
 
 > **New here?** See [`HANDOVER.md`](./HANDOVER.md) for the 30-second onboarding.
-> One-shot environment self-check: `v3_main_agent/scripts/doctor.sh`.
+> One-shot environment self-check: `planner_agent/scripts/doctor.sh`.
 
-The v3 main agent is standalone: its ADS publishing/discovery helpers, A2A
+The planner agent is standalone: its ADS publishing/discovery helpers, A2A
 transport, state models, state store, and sample Agent Cards live under
-`v3_main_agent/`. The deprecated v1/v2 PI implementations are not imported by
-the active v3 runtime.
+`planner_agent/`. The deprecated v1/v2 PI implementations are not imported by
+the active planner runtime.
 
 ## What was wrong with the old PI Agent
 
@@ -62,38 +62,38 @@ produce empty summaries.
 ## Layout
 
 ```
-v3_main_agent/
+planner_agent/
 ├── HANDOVER.md             # 30-second teammate onboarding
 ├── README.md               # this file
 ├── .env.example            # config template (copy to .env.local)
 ├── main_agent/
 │   ├── config.py           # MainAgentConfig from env vars
-│   ├── models.py           # v3-local A2A, ADS, policy, and state models
-│   ├── a2a/                # v3-local A2A client, adapters, HTTP transport
-│   ├── directory/          # v3-local fake/real ADS client + card converter
-│   ├── state/              # v3-local in-memory state store
+│   ├── models.py           # planner-local A2A, ADS, policy, and state models
+│   ├── a2a/                # planner-local A2A client, adapters, HTTP transport
+│   ├── directory/          # planner-local fake/real ADS client + card converter
+│   ├── state/              # planner-local in-memory state store
 │   ├── tools.py            # 5 tool schemas + system prompt
 │   ├── llm_client.py       # OpenAI Responses client + ScriptedLLMClient
 │   ├── runtime.py          # tool loop, ADS, A2A, memory, policy, dedup
 │   ├── server.py           # FastAPI: /messages /confirmations /agents /health /
 │   └── web/index.html      # chat UI (sidebar + tool-trace + reasoning blocks)
-├── configs/agent_cards/    # v3-local Agent Card fixtures for fake ADS/tests
+├── configs/agent_cards/    # planner-local Agent Card fixtures for fake ADS/tests
 ├── scripts/
 │   ├── start.sh            # auto-loads .env.local, starts uvicorn
 │   ├── doctor.sh           # one-shot self-check (env, dirctl, ADS, server, OpenAI, tests)
-│   ├── publish_agents.py   # v3-local Agent Card publisher for fake/real ADS
+│   ├── publish_agents.py   # planner-local Agent Card publisher for fake/real ADS
 │   └── run_server.py       # python entrypoint (called by start.sh)
 └── tests/                  # tests run with mocked LLM + ADS
 ```
 
-Standalone v3 infrastructure:
+Standalone planner infrastructure:
 
 - `main_agent/models.py` — `DiscoveredAgent`, `A2A*`, `PIContext`, policy records, etc.
 - `main_agent/directory/` — `DirectoryClient` (fake ADS + real ADS via `dirctl`)
 - `main_agent/a2a/` — `A2AClient`, SDK adapters, and HTTP streaming transport
 - `main_agent/state/store.py` — in-memory state store
 - `configs/agent_cards/*.card.json` — sample Agent Cards
-- `scripts/publish_agents.py` — v3-local publisher for cards in `configs/agent_cards/`
+- `scripts/publish_agents.py` — planner-local publisher for cards in `configs/agent_cards/`
 
 ## Running
 
@@ -102,7 +102,7 @@ Standalone v3 infrastructure:
 ```bash
 cd /home/server2/Jian/MAS_demo/AgenticNetwork
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
-  /home/server2/miniconda3/envs/mas_spider/bin/python -m pytest v3_main_agent/tests -q
+  /home/server2/miniconda3/envs/mas_spider/bin/python -m pytest planner_agent/tests -q
 ```
 
 19 tests cover: list/describe/call agent flows, write-skill confirmation +
@@ -119,23 +119,23 @@ First-time setup — copy the env template and put your OpenAI key in:
 
 ```bash
 cd /home/server2/Jian/MAS_demo/AgenticNetwork
-cp v3_main_agent/.env.example v3_main_agent/.env.local
-$EDITOR v3_main_agent/.env.local      # set OPENAI_API_KEY=sk-...
+cp planner_agent/.env.example planner_agent/.env.local
+$EDITOR planner_agent/.env.local      # set OPENAI_API_KEY=sk-...
 ```
 
 `.env.local` is gitignored. Then start the server with the wrapper script
 that auto-loads it:
 
 ```bash
-v3_main_agent/scripts/start.sh --fake-ads \
-  --card v3_main_agent/configs/agent_cards/email_agent.card.json \
-  --card v3_main_agent/configs/agent_cards/weather_agent.card.json
+planner_agent/scripts/start.sh --fake-ads \
+  --card planner_agent/configs/agent_cards/email_agent.card.json \
+  --card planner_agent/configs/agent_cards/weather_agent.card.json
 ```
 
 Use a different env file:
 
 ```bash
-ENV_FILE=/path/to/custom.env v3_main_agent/scripts/start.sh --fake-ads
+ENV_FILE=/path/to/custom.env planner_agent/scripts/start.sh --fake-ads
 ```
 
 Skip the wrapper and export by hand:
@@ -143,9 +143,9 @@ Skip the wrapper and export by hand:
 ```bash
 export OPENAI_API_KEY=sk-...
 export AGENT_NETWORK_FAKE_ADS=true
-/home/server2/miniconda3/envs/mas_spider/bin/python -m v3_main_agent.scripts.run_server \
+/home/server2/miniconda3/envs/mas_spider/bin/python -m planner_agent.scripts.run_server \
   --fake-ads \
-  --card v3_main_agent/configs/agent_cards/email_agent.card.json
+  --card planner_agent/configs/agent_cards/email_agent.card.json
 ```
 
 Open `http://localhost:8090/` for the chat UI, or POST to `/messages`:
@@ -169,18 +169,18 @@ so this section is mostly for self-hosted testing.
 # Start ADS daemon if you're hosting one locally
 dirctl daemon start
 
-# Publish with the v3-local publisher
+# Publish with the planner-local publisher
 cd /home/server2/Jian/MAS_demo/AgenticNetwork
 AGENT_NETWORK_FAKE_ADS=false ADS_BACKEND=cli ADS_SERVER_ADDR=localhost:8888 \
-  /home/server2/miniconda3/envs/mas_spider/bin/python -m v3_main_agent.scripts.publish_agents \
-  --card v3_main_agent/configs/agent_cards/email_agent.card.json
+  /home/server2/miniconda3/envs/mas_spider/bin/python -m planner_agent.scripts.publish_agents \
+  --card planner_agent/configs/agent_cards/email_agent.card.json
 
 # Run main agent against real ADS
 export OPENAI_API_KEY=sk-...
 export AGENT_NETWORK_FAKE_ADS=false
 export ADS_BACKEND=cli
 export ADS_SERVER_ADDR=localhost:8888       # or 10.229.117.37:8888 for the shared one
-/home/server2/miniconda3/envs/mas_spider/bin/python -m v3_main_agent.scripts.run_server
+/home/server2/miniconda3/envs/mas_spider/bin/python -m planner_agent.scripts.run_server
 ```
 
 The same `/messages` and `/agents` endpoints work; they just hit real ADS

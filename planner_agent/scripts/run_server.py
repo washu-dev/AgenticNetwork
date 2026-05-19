@@ -6,13 +6,13 @@ import os
 from pathlib import Path
 from typing import Sequence
 
-from v3_main_agent.main_agent.directory.client import DirectoryClient
-from v3_main_agent.main_agent.config import load_config
-from v3_main_agent.main_agent.server import create_app
+from planner_agent.main_agent.directory.client import DirectoryClient
+from planner_agent.main_agent.config import load_config
+from planner_agent.main_agent.server import create_app
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run the v3 Main Agent server.")
+    parser = argparse.ArgumentParser(description="Run the planner agent server.")
     parser.add_argument("--host", default=os.getenv("MAIN_AGENT_HOST", "0.0.0.0"))
     parser.add_argument("--port", type=int, default=int(os.getenv("MAIN_AGENT_PORT", "8090")))
     parser.add_argument(
@@ -39,7 +39,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         import uvicorn
     except ImportError as exc:
-        raise RuntimeError("uvicorn is required to run the v3 main agent server.") from exc
+        raise RuntimeError("uvicorn is required to run the planner agent server.") from exc
     directory = DirectoryClient(fake_ads=cfg.fake_ads, ads_url=cfg.ads_server_addr)
     app = create_app(
         config=cfg,
