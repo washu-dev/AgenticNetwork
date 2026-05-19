@@ -9,7 +9,7 @@ dependencies:
       # OASF SDK packages are hosted on the buf.build registry.
       - --extra-index-url=https://buf.build/gen/python
 
-      # A2A / AGNTCY network runtime from AgenticNetwork/v1_classification.
+      # A2A / AGNTCY network runtime from AgenticNetwork/v2_agent_network.
       - fastapi>=0.115.0
       - starlette>=0.37.0
       - uvicorn[standard]>=0.32.0

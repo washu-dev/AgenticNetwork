@@ -25,6 +25,29 @@ outside the model.
 
 This is not the v1 image-classification demo.
 
+## Local Python Environment
+
+V2 owns its runtime now. Create the local venv from the repo root:
+
+```bash
+python3 -m venv v2_agent_network/.venv
+v2_agent_network/.venv/bin/python -m pip install --upgrade pip
+v2_agent_network/.venv/bin/python -m pip install -r v2_agent_network/requirements.txt
+```
+
+All commands below assume this interpreter:
+
+```bash
+v2_agent_network/.venv/bin/python
+```
+
+For conda-based setups, use:
+
+```bash
+conda env create -f v2_agent_network/environment.yml
+conda activate v2-agent-network
+```
+
 ## OASF Skill Handling
 
 Agent Cards describe how to interact with A2A servers. OASF/ADS records describe
@@ -55,14 +78,14 @@ invocation. Custom tags are not treated as official OASF taxonomy entries.
 
 ```bash
 cd /home/cspl-yi/Downloads/agentic_network/AgenticNetwork
-AGENT_NETWORK_FAKE_ADS=true v1_classification/.venv/bin/python -m v2_agent_network.scripts.run_weather_demo
+AGENT_NETWORK_FAKE_ADS=true v2_agent_network/.venv/bin/python -m v2_agent_network.scripts.run_weather_demo
 ```
 
 ## Milestone 3A Calendar + Email Demo
 
 ```bash
 cd /home/cspl-yi/Downloads/agentic_network/AgenticNetwork
-AGENT_NETWORK_FAKE_ADS=true v1_classification/.venv/bin/python -m v2_agent_network.scripts.run_calendar_email_demo
+AGENT_NETWORK_FAKE_ADS=true v2_agent_network/.venv/bin/python -m v2_agent_network.scripts.run_calendar_email_demo
 ```
 
 The demo prompt is:
@@ -80,7 +103,7 @@ pending confirmation requirement and is not executed automatically.
 
 ```bash
 cd /home/cspl-yi/Downloads/agentic_network/AgenticNetwork
-AGENT_NETWORK_FAKE_ADS=true v1_classification/.venv/bin/python -m v2_agent_network.scripts.run_geo_weather_intelligence_demo
+AGENT_NETWORK_FAKE_ADS=true v2_agent_network/.venv/bin/python -m v2_agent_network.scripts.run_geo_weather_intelligence_demo
 ```
 
 The demo prompt is:
@@ -99,7 +122,7 @@ recommended plan, assumptions, and source artifact references.
 
 ```bash
 cd /home/cspl-yi/Downloads/agentic_network/AgenticNetwork
-AGENT_NETWORK_FAKE_ADS=true v1_classification/.venv/bin/python -m v2_agent_network.scripts.run_coding_demo
+AGENT_NETWORK_FAKE_ADS=true v2_agent_network/.venv/bin/python -m v2_agent_network.scripts.run_coding_demo
 ```
 
 The demo sends two PI fallback messages:
@@ -127,14 +150,14 @@ Dry-run all sample Agent Cards without publishing:
 
 ```bash
 cd /home/cspl-yi/Downloads/agentic_network/AgenticNetwork
-AGENT_NETWORK_FAKE_ADS=true v1_classification/.venv/bin/python -m v2_agent_network.scripts.publish_agents --dry-run
+AGENT_NETWORK_FAKE_ADS=true v2_agent_network/.venv/bin/python -m v2_agent_network.scripts.publish_agents --dry-run
 ```
 
 Publish all six sample Agent Cards to fake ADS:
 
 ```bash
 cd /home/cspl-yi/Downloads/agentic_network/AgenticNetwork
-AGENT_NETWORK_FAKE_ADS=true v1_classification/.venv/bin/python -m v2_agent_network.scripts.publish_agents
+AGENT_NETWORK_FAKE_ADS=true v2_agent_network/.venv/bin/python -m v2_agent_network.scripts.publish_agents
 ```
 
 Publish the live Email Agent card to a real local ADS daemon through `dirctl`:
@@ -145,7 +168,7 @@ dirctl daemon start
 AGENT_NETWORK_FAKE_ADS=false \
 ADS_BACKEND=cli \
 ADS_SERVER_ADDR=localhost:8888 \
-v1_classification/.venv/bin/python -m v2_agent_network.scripts.publish_agents \
+v2_agent_network/.venv/bin/python -m v2_agent_network.scripts.publish_agents \
   --card v2_agent_network/configs/agent_cards/email_agent.card.json
 ```
 
@@ -169,7 +192,7 @@ server:
 
 ```bash
 cd /home/cspl-yi/Downloads/agentic_network/AgenticNetwork
-v1_classification/.venv/bin/python -m v2_agent_network.scripts.validate_agent_endpoint \
+v2_agent_network/.venv/bin/python -m v2_agent_network.scripts.validate_agent_endpoint \
   --card v2_agent_network/configs/agent_cards/weather_agent.card.json \
   --skill weather/forecast \
   --prompt "What is the weather near Austin?" \
@@ -180,7 +203,7 @@ Validate a separately running external A2A HTTP endpoint:
 
 ```bash
 cd /home/cspl-yi/Downloads/agentic_network/AgenticNetwork
-v1_classification/.venv/bin/python -m v2_agent_network.scripts.validate_agent_endpoint \
+v2_agent_network/.venv/bin/python -m v2_agent_network.scripts.validate_agent_endpoint \
   --card path/to/agent.card.json \
   --skill weather/forecast \
   --prompt "What is the weather near Austin?" \
@@ -261,7 +284,7 @@ Or use the helper:
 
 ```bash
 cd /home/cspl-yi/Downloads/agentic_network/AgenticNetwork
-v1_classification/.venv/bin/python -m v2_agent_network.scripts.run_pi_agent_server \
+v2_agent_network/.venv/bin/python -m v2_agent_network.scripts.run_pi_agent_server \
   --fake-ads \
   --card v2_agent_network/configs/agent_cards/email_agent.card.json
 ```
@@ -270,7 +293,7 @@ Safely validate the live Email Agent endpoint without discovery or publishing:
 
 ```bash
 cd /home/cspl-yi/Downloads/agentic_network/AgenticNetwork
-v1_classification/.venv/bin/python -m v2_agent_network.scripts.validate_agent_endpoint \
+v2_agent_network/.venv/bin/python -m v2_agent_network.scripts.validate_agent_endpoint \
   --card v2_agent_network/configs/agent_cards/email_agent.card.json \
   --skill email/current_time \
   --prompt "What time is it for the email agent?" \
@@ -279,7 +302,7 @@ v1_classification/.venv/bin/python -m v2_agent_network.scripts.validate_agent_en
 
 ```bash
 cd /home/cspl-yi/Downloads/agentic_network/AgenticNetwork
-v1_classification/.venv/bin/python -m v2_agent_network.scripts.validate_agent_endpoint \
+v2_agent_network/.venv/bin/python -m v2_agent_network.scripts.validate_agent_endpoint \
   --card v2_agent_network/configs/agent_cards/email_agent.card.json \
   --skill email/draft \
   --prompt "Draft a short test email to myself, but do not create a Gmail draft and do not send it." \
@@ -295,13 +318,13 @@ Safe PI real-email demo:
 
 ```bash
 cd /home/cspl-yi/Downloads/agentic_network/AgenticNetwork
-AGENT_NETWORK_FAKE_ADS=true v1_classification/.venv/bin/python -m v2_agent_network.scripts.run_real_email_agent_demo
+AGENT_NETWORK_FAKE_ADS=true v2_agent_network/.venv/bin/python -m v2_agent_network.scripts.run_real_email_agent_demo
 ```
 
 Override the endpoint if needed:
 
 ```bash
-AGENT_NETWORK_FAKE_ADS=true v1_classification/.venv/bin/python -m v2_agent_network.scripts.run_real_email_agent_demo \
+AGENT_NETWORK_FAKE_ADS=true v2_agent_network/.venv/bin/python -m v2_agent_network.scripts.run_real_email_agent_demo \
   --endpoint http://10.229.117.223:9103/
 ```
 
@@ -323,10 +346,10 @@ instead of an ad-hoc background command:
 
 ```bash
 cd /home/cspl-yi/Downloads/agentic_network/AgenticNetwork
-v1_classification/.venv/bin/python -m v2_agent_network.scripts.manage_ads_lan start \
+v2_agent_network/.venv/bin/python -m v2_agent_network.scripts.manage_ads_lan start \
   --listen-host 10.229.117.37 \
   --listen-port 8888
-v1_classification/.venv/bin/python -m v2_agent_network.scripts.manage_ads_lan status
+v2_agent_network/.venv/bin/python -m v2_agent_network.scripts.manage_ads_lan status
 ```
 
 Publish the live Email Agent record into ADS. This command now waits for routing
@@ -337,7 +360,7 @@ cd /home/cspl-yi/Downloads/agentic_network/AgenticNetwork
 AGENT_NETWORK_FAKE_ADS=false \
 ADS_BACKEND=cli \
 ADS_SERVER_ADDR=localhost:8888 \
-v1_classification/.venv/bin/python -m v2_agent_network.scripts.publish_agents \
+v2_agent_network/.venv/bin/python -m v2_agent_network.scripts.publish_agents \
   --card v2_agent_network/configs/agent_cards/email_agent.card.json
 ```
 
@@ -361,7 +384,7 @@ Diagnose stored-but-not-routed records:
 
 ```bash
 cd /home/cspl-yi/Downloads/agentic_network/AgenticNetwork
-v1_classification/.venv/bin/python -m v2_agent_network.scripts.ads_diagnostics \
+v2_agent_network/.venv/bin/python -m v2_agent_network.scripts.ads_diagnostics \
   --server-addr localhost:8888
 ```
 
@@ -372,7 +395,7 @@ host operator can deliberately repair routing:
 
 ```bash
 cd /home/cspl-yi/Downloads/agentic_network/AgenticNetwork
-v1_classification/.venv/bin/python -m v2_agent_network.scripts.repair_ads_routing \
+v2_agent_network/.venv/bin/python -m v2_agent_network.scripts.repair_ads_routing \
   --server-addr localhost:8888 \
   --cid <cid>
 ```
@@ -387,10 +410,10 @@ and indexer intervals to 5 seconds:
 ```bash
 cd /home/cspl-yi/Downloads/agentic_network/AgenticNetwork
 # If a daemon is already running with old defaults, do this during a quiet window:
-v1_classification/.venv/bin/python -m v2_agent_network.scripts.manage_ads_lan \
+v2_agent_network/.venv/bin/python -m v2_agent_network.scripts.manage_ads_lan \
   --listen-host 10.229.117.37 \
   stop --stop-daemon
-v1_classification/.venv/bin/python -m v2_agent_network.scripts.manage_ads_lan \
+v2_agent_network/.venv/bin/python -m v2_agent_network.scripts.manage_ads_lan \
   --listen-host 10.229.117.37 \
   start
 ```
@@ -401,7 +424,7 @@ without restarting the daemon unless explicitly requested:
 
 ```bash
 cd /home/cspl-yi/Downloads/agentic_network/AgenticNetwork
-v1_classification/.venv/bin/python -m v2_agent_network.scripts.watch_ads_routing \
+v2_agent_network/.venv/bin/python -m v2_agent_network.scripts.watch_ads_routing \
   --server-addr 10.229.117.37:8888
 ```
 
@@ -412,7 +435,7 @@ cd /home/cspl-yi/Downloads/agentic_network/AgenticNetwork
 AGENT_NETWORK_FAKE_ADS=false \
 ADS_BACKEND=cli \
 ADS_SERVER_ADDR=localhost:8888 \
-v1_classification/.venv/bin/python -m v2_agent_network.scripts.run_real_ads_email_discovery_demo \
+v2_agent_network/.venv/bin/python -m v2_agent_network.scripts.run_real_ads_email_discovery_demo \
   --skill email/current_time \
   --prompt "What time is it for the email agent?"
 ```
@@ -421,7 +444,7 @@ Run the policy-blocked send safety test:
 
 ```bash
 cd /home/cspl-yi/Downloads/agentic_network/AgenticNetwork
-PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 v1_classification/.venv/bin/python -m pytest \
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 v2_agent_network/.venv/bin/python -m pytest \
   v2_agent_network/tests/test_milestone4c_real_ads_cli.py::test_requested_skill_email_send_requires_confirmation_before_a2a -q
 ```
 
@@ -518,7 +541,7 @@ PI_AGENT_MODE=tool_loop \
 AGENT_NETWORK_FAKE_ADS=false \
 ADS_BACKEND=cli \
 ADS_SERVER_ADDR=localhost:8888 \
-v1_classification/.venv/bin/python -m v2_agent_network.scripts.run_pi_agent_server \
+v2_agent_network/.venv/bin/python -m v2_agent_network.scripts.run_pi_agent_server \
   --host 0.0.0.0 \
   --port 8080
 ```
@@ -537,7 +560,7 @@ PI_AGENT_MODE=tool_loop \
 AGENT_NETWORK_FAKE_ADS=false \
 ADS_BACKEND=cli \
 ADS_SERVER_ADDR=localhost:8888 \
-v1_classification/.venv/bin/python -m v2_agent_network.scripts.run_llm_pi_email_demo \
+v2_agent_network/.venv/bin/python -m v2_agent_network.scripts.run_llm_pi_email_demo \
   --prompt "What time is it for the email agent?" \
   --expected-skill email/current_time
 ```
@@ -592,14 +615,14 @@ loading unrelated system plugins from the ROS environment.
 
 ```bash
 cd /home/cspl-yi/Downloads/agentic_network/AgenticNetwork
-PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 v1_classification/.venv/bin/python -m pytest v2_agent_network/tests -q
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 v2_agent_network/.venv/bin/python -m pytest v2_agent_network/tests -q
 ```
 
 Print the dependency report:
 
 ```bash
 cd /home/cspl-yi/Downloads/agentic_network/AgenticNetwork
-v1_classification/.venv/bin/python -m v2_agent_network.scripts.print_versions
+v2_agent_network/.venv/bin/python -m v2_agent_network.scripts.print_versions
 ```
 
 Known local versions:

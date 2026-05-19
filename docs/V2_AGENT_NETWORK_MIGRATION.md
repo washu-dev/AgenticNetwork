@@ -84,7 +84,7 @@ v2_agent_network/
   README.md
 ```
 
-Keep the old image-classification implementation available as `v1_classification/` or legacy code. Do not delete it unless explicitly requested.
+The old image-classification implementation was the starting prototype; after migration, v2 is the default documented demo and no longer depends on that source tree.
 
 The new `v2_agent_network/` system should be the default documented demo.
 
@@ -1038,7 +1038,7 @@ Before editing files, inspect the repository and produce a short migration plan.
 The migration plan must answer:
 
 1. What parts of the old image-classification repo can be reused?
-2. What parts should be deprecated or moved under legacy/v1_classification?
+2. What parts should be deprecated or moved under a legacy prototype area?
 3. Is there already an AGNTCY Directory client?
 4. Is there already an A2A client/server abstraction?
 5. Is NATS currently used as arbitrary JSON messaging or true A2A-compatible transport?

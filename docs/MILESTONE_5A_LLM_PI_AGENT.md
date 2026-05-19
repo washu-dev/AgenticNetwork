@@ -175,7 +175,6 @@ v2_agent_network/docs/REAL_AGENT_INTEGRATION.md
 Do not edit:
 
 ```text
-v1_classification/
 email_agent/email_agent.py
 ```
 
@@ -527,7 +526,7 @@ cd /home/cspl-yi/Downloads/agentic_network/AgenticNetwork
 AGENT_NETWORK_FAKE_ADS=false \
 ADS_BACKEND=cli \
 ADS_SERVER_ADDR=localhost:8888 \
-v1_classification/.venv/bin/python -m v2_agent_network.scripts.publish_agents \
+v2_agent_network/.venv/bin/python -m v2_agent_network.scripts.publish_agents \
   --card v2_agent_network/configs/agent_cards/email_agent.card.json
 ```
 
@@ -544,7 +543,7 @@ PI_LLM_VERBOSITY=low \
 AGENT_NETWORK_FAKE_ADS=false \
 ADS_BACKEND=cli \
 ADS_SERVER_ADDR=localhost:8888 \
-v1_classification/.venv/bin/python -m v2_agent_network.scripts.run_pi_agent_server \
+v2_agent_network/.venv/bin/python -m v2_agent_network.scripts.run_pi_agent_server \
   --host 0.0.0.0 \
   --port 8080
 ```
@@ -623,7 +622,6 @@ whether real ADS was contacted
 whether any write skill was invoked
 safe demo command
 blocked-send safety command
-confirmation that v1_classification/ was untouched
 confirmation that no dependency files changed
 ```
 

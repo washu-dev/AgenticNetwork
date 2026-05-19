@@ -55,7 +55,7 @@ Current known local versions:
 
 Known constraints:
 
-- `v1_classification/` must remain untouched.
+- The old image-classification prototype is not part of the ADS runtime.
 - Mock agents are contract fixtures, not real intelligence.
 - Fake ADS is allowed only when `AGENT_NETWORK_FAKE_ADS=true` or an explicit test constructor requests fake mode.
 - Real ADS failures must be explicit. Do not silently fall back to fake ADS.
@@ -104,7 +104,7 @@ Do not implement in this milestone:
 - Real SLIM/NATS transport.
 - Real agent intelligence.
 - Real code-modifying Coding Agent behavior.
-- Deleting or rewriting `v1_classification/`.
+- Reintroducing dependencies on the old image-classification prototype.
 
 ---
 
@@ -262,19 +262,19 @@ backend: fake | real
 Dry run with fake ADS:
 
 ```bash
-AGENT_NETWORK_FAKE_ADS=true v1_classification/.venv/bin/python -m v2_agent_network.scripts.publish_agents --dry-run
+AGENT_NETWORK_FAKE_ADS=true v2_agent_network/.venv/bin/python -m v2_agent_network.scripts.publish_agents --dry-run
 ```
 
 Publish to fake ADS:
 
 ```bash
-AGENT_NETWORK_FAKE_ADS=true v1_classification/.venv/bin/python -m v2_agent_network.scripts.publish_agents
+AGENT_NETWORK_FAKE_ADS=true v2_agent_network/.venv/bin/python -m v2_agent_network.scripts.publish_agents
 ```
 
 Real ADS example:
 
 ```bash
-AGENT_NETWORK_FAKE_ADS=false ADS_URL=... v1_classification/.venv/bin/python -m v2_agent_network.scripts.publish_agents
+AGENT_NETWORK_FAKE_ADS=false ADS_URL=... v2_agent_network/.venv/bin/python -m v2_agent_network.scripts.publish_agents
 ```
 
 If real ADS requires additional configuration, document it.
@@ -642,7 +642,7 @@ Add optional CLI support in `validate_agent_endpoint.py` for testing a separatel
 Example:
 
 ```bash
-v1_classification/.venv/bin/python -m v2_agent_network.scripts.validate_agent_endpoint \
+v2_agent_network/.venv/bin/python -m v2_agent_network.scripts.validate_agent_endpoint \
   --card path/to/weather_agent.card.json \
   --skill weather/forecast \
   --prompt "What is the weather tomorrow near Austin?" \
@@ -687,27 +687,27 @@ Correct any outdated line that says later milestones will add more mock agents, 
 Include:
 
 ```bash
-AGENT_NETWORK_FAKE_ADS=true v1_classification/.venv/bin/python -m v2_agent_network.scripts.publish_agents --dry-run
+AGENT_NETWORK_FAKE_ADS=true v2_agent_network/.venv/bin/python -m v2_agent_network.scripts.publish_agents --dry-run
 ```
 
 ```bash
-AGENT_NETWORK_FAKE_ADS=true v1_classification/.venv/bin/python -m v2_agent_network.scripts.publish_agents
+AGENT_NETWORK_FAKE_ADS=true v2_agent_network/.venv/bin/python -m v2_agent_network.scripts.publish_agents
 ```
 
 ```bash
-AGENT_NETWORK_FAKE_ADS=true v1_classification/.venv/bin/python -m v2_agent_network.scripts.run_weather_demo
+AGENT_NETWORK_FAKE_ADS=true v2_agent_network/.venv/bin/python -m v2_agent_network.scripts.run_weather_demo
 ```
 
 ```bash
-AGENT_NETWORK_FAKE_ADS=true v1_classification/.venv/bin/python -m v2_agent_network.scripts.run_calendar_email_demo
+AGENT_NETWORK_FAKE_ADS=true v2_agent_network/.venv/bin/python -m v2_agent_network.scripts.run_calendar_email_demo
 ```
 
 ```bash
-AGENT_NETWORK_FAKE_ADS=true v1_classification/.venv/bin/python -m v2_agent_network.scripts.run_geo_weather_intelligence_demo
+AGENT_NETWORK_FAKE_ADS=true v2_agent_network/.venv/bin/python -m v2_agent_network.scripts.run_geo_weather_intelligence_demo
 ```
 
 ```bash
-AGENT_NETWORK_FAKE_ADS=true v1_classification/.venv/bin/python -m v2_agent_network.scripts.run_coding_demo
+AGENT_NETWORK_FAKE_ADS=true v2_agent_network/.venv/bin/python -m v2_agent_network.scripts.run_coding_demo
 ```
 
 ---
@@ -738,7 +738,7 @@ Use:
 
 ```bash
 env PYTHONDONTWRITEBYTECODE=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
-  v1_classification/.venv/bin/python -m pytest v2_agent_network/tests -q -p no:cacheprovider
+  v2_agent_network/.venv/bin/python -m pytest v2_agent_network/tests -q -p no:cacheprovider
 ```
 
 ---
@@ -832,7 +832,7 @@ Implement:
 
 Do not implement validate_agent_endpoint.py, REAL_AGENT_INTEGRATION.md, seventh-agent acceptance, Telegram, WhatsApp, Docker Compose, observability, persistent database state, or real SLIM/NATS.
 
-Keep v1_classification/ untouched.
+Keep the old image-classification prototype out of this milestone's runtime path.
 Keep all existing Weather, Calendar+Email, Geo+Weather+Intelligence, and Coding tests/demos working.
 
 Stop after Checkpoint 1 and report changed files, tests, failures/skips, and remaining gaps.
@@ -853,7 +853,7 @@ Implement:
 
 Do not implement seventh-agent acceptance, Telegram, WhatsApp, Docker Compose, observability, persistent database state, or real SLIM/NATS.
 
-Keep v1_classification/ untouched.
+Keep the old image-classification prototype out of this milestone's runtime path.
 Keep all existing tests/demos working.
 
 Stop after Checkpoint 2 and report changed files, tests, failures/skips, and remaining gaps.
@@ -874,7 +874,7 @@ Implement:
 
 Do not implement Telegram, WhatsApp, Docker Compose, observability, persistent database state, or real SLIM/NATS.
 
-Keep v1_classification/ untouched.
+Keep the old image-classification prototype out of this milestone's runtime path.
 Keep all existing tests/demos working.
 
 Stop after Checkpoint 3 and report final 4A status.

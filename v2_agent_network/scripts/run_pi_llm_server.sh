@@ -32,7 +32,7 @@ export ADS_SERVER_ADDR="${ADS_SERVER_ADDR:-localhost:8888}"
 
 PI_AGENT_HOST="${PI_AGENT_HOST:-0.0.0.0}"
 PI_AGENT_PORT="${PI_AGENT_PORT:-8080}"
-PYTHON_BIN="${PYTHON_BIN:-$REPO_ROOT/v1_classification/.venv/bin/python}"
+PYTHON_BIN="${PYTHON_BIN:-$REPO_ROOT/v2_agent_network/.venv/bin/python}"
 export PYTHONUNBUFFERED="${PYTHONUNBUFFERED:-1}"
 
 if [[ -z "${OPENAI_API_KEY:-}" ]]; then

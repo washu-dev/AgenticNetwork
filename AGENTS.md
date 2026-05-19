@@ -2,7 +2,7 @@
 
 ## Project direction
 
-This repository is shifting from the old v1 image-classification demo to a new v2 AGNTCY-based agent network.
+This repository has moved from the old image-classification prototype to the AGNTCY-based agent network.
 
 The new target system is **not** an image classifier.
 
@@ -20,7 +20,6 @@ Treat that file as the authoritative implementation specification for the v2 mig
 
 ## Working rules
 
-- Do not delete or overwrite the old v1 image-classification implementation unless explicitly instructed.
 - Prefer creating a new `v2_agent_network/` implementation area.
 - Do not implement the real specialized agents' intelligence.
 - Implement infrastructure, contracts, mock agents, discovery, A2A client/server abstractions, state, policy, messaging ingress, tests, and docs.
@@ -38,8 +37,8 @@ Treat that file as the authoritative implementation specification for the v2 mig
 
 First inspect the repository and produce a migration plan that answers:
 
-1. What can be reused from v1?
-2. What should move under legacy or remain as v1?
+1. What legacy assumptions remain from the old image-classification prototype?
+2. What should move under `v2_agent_network/`, `v3_main_agent/`, or root-level agent folders?
 3. Whether there is already an AGNTCY Directory client.
 4. Whether there is already an A2A client/server abstraction.
 5. Whether current NATS usage is custom JSON or A2A-compatible.

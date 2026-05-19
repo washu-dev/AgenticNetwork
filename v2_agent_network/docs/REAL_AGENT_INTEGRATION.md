@@ -70,13 +70,13 @@ Runtime modes:
 Dry-run local card validation:
 
 ```bash
-AGENT_NETWORK_FAKE_ADS=false v1_classification/.venv/bin/python -m v2_agent_network.scripts.publish_agents --dry-run
+AGENT_NETWORK_FAKE_ADS=false v2_agent_network/.venv/bin/python -m v2_agent_network.scripts.publish_agents --dry-run
 ```
 
 Publish sample records to fake ADS:
 
 ```bash
-AGENT_NETWORK_FAKE_ADS=true v1_classification/.venv/bin/python -m v2_agent_network.scripts.publish_agents
+AGENT_NETWORK_FAKE_ADS=true v2_agent_network/.venv/bin/python -m v2_agent_network.scripts.publish_agents
 ```
 
 Start local ADS and publish the live Email Agent record to real ADS:
@@ -87,7 +87,7 @@ dirctl daemon start
 AGENT_NETWORK_FAKE_ADS=false \
 ADS_BACKEND=cli \
 ADS_SERVER_ADDR=localhost:8888 \
-v1_classification/.venv/bin/python -m v2_agent_network.scripts.publish_agents \
+v2_agent_network/.venv/bin/python -m v2_agent_network.scripts.publish_agents \
   --card v2_agent_network/configs/agent_cards/email_agent.card.json
 ```
 
@@ -115,10 +115,10 @@ protobuf-compatible environment.
 To expose a local ADS daemon on the LAN, prefer the managed launcher:
 
 ```bash
-v1_classification/.venv/bin/python -m v2_agent_network.scripts.manage_ads_lan start \
+v2_agent_network/.venv/bin/python -m v2_agent_network.scripts.manage_ads_lan start \
   --listen-host 10.229.117.37 \
   --listen-port 8888
-v1_classification/.venv/bin/python -m v2_agent_network.scripts.manage_ads_lan status
+v2_agent_network/.venv/bin/python -m v2_agent_network.scripts.manage_ads_lan status
 ```
 
 The launcher starts `dirctl daemon start` if needed, proxies
@@ -129,7 +129,7 @@ Use the diagnostic command when a record appears in storage but not in routed
 discovery:
 
 ```bash
-v1_classification/.venv/bin/python -m v2_agent_network.scripts.ads_diagnostics \
+v2_agent_network/.venv/bin/python -m v2_agent_network.scripts.ads_diagnostics \
   --server-addr localhost:8888
 ```
 
@@ -143,7 +143,7 @@ CID states:
 The host operator can re-submit routing for a selected CID:
 
 ```bash
-v1_classification/.venv/bin/python -m v2_agent_network.scripts.repair_ads_routing \
+v2_agent_network/.venv/bin/python -m v2_agent_network.scripts.repair_ads_routing \
   --server-addr localhost:8888 \
   --cid <cid>
 ```
@@ -156,7 +156,7 @@ by default so daemon restarts are never hidden behavior.
 Local mock validation without a running HTTP server:
 
 ```bash
-v1_classification/.venv/bin/python -m v2_agent_network.scripts.validate_agent_endpoint \
+v2_agent_network/.venv/bin/python -m v2_agent_network.scripts.validate_agent_endpoint \
   --card v2_agent_network/configs/agent_cards/weather_agent.card.json \
   --skill weather/forecast \
   --prompt "What is the weather near Austin?" \
@@ -166,7 +166,7 @@ v1_classification/.venv/bin/python -m v2_agent_network.scripts.validate_agent_en
 External endpoint validation:
 
 ```bash
-v1_classification/.venv/bin/python -m v2_agent_network.scripts.validate_agent_endpoint \
+v2_agent_network/.venv/bin/python -m v2_agent_network.scripts.validate_agent_endpoint \
   --card path/to/real_agent.card.json \
   --skill weather/forecast \
   --prompt "What is the weather near Austin?" \
@@ -180,7 +180,7 @@ the endpoint should also be registered through Directory. Use `--fake-ads` with
 Safe live Email Agent validation commands:
 
 ```bash
-v1_classification/.venv/bin/python -m v2_agent_network.scripts.validate_agent_endpoint \
+v2_agent_network/.venv/bin/python -m v2_agent_network.scripts.validate_agent_endpoint \
   --card v2_agent_network/configs/agent_cards/email_agent.card.json \
   --skill email/current_time \
   --prompt "What time is it for the email agent?" \
@@ -188,7 +188,7 @@ v1_classification/.venv/bin/python -m v2_agent_network.scripts.validate_agent_en
 ```
 
 ```bash
-v1_classification/.venv/bin/python -m v2_agent_network.scripts.validate_agent_endpoint \
+v2_agent_network/.venv/bin/python -m v2_agent_network.scripts.validate_agent_endpoint \
   --card v2_agent_network/configs/agent_cards/email_agent.card.json \
   --skill email/draft \
   --prompt "Draft a short test email to myself, but do not create a Gmail draft and do not send it." \
@@ -216,7 +216,7 @@ uvicorn v2_agent_network.services.pi_agent.main:create_app --factory --host 0.0.
 Alternatively:
 
 ```bash
-v1_classification/.venv/bin/python -m v2_agent_network.scripts.run_pi_agent_server \
+v2_agent_network/.venv/bin/python -m v2_agent_network.scripts.run_pi_agent_server \
   --fake-ads \
   --card v2_agent_network/configs/agent_cards/email_agent.card.json
 ```
@@ -230,7 +230,7 @@ in-process:
 AGENT_NETWORK_FAKE_ADS=false \
 ADS_BACKEND=cli \
 ADS_SERVER_ADDR=localhost:8888 \
-v1_classification/.venv/bin/python -m v2_agent_network.scripts.run_real_ads_email_discovery_demo \
+v2_agent_network/.venv/bin/python -m v2_agent_network.scripts.run_real_ads_email_discovery_demo \
   --skill email/current_time \
   --prompt "What time is it for the email agent?"
 ```
@@ -267,7 +267,7 @@ PI_AGENT_MODE=tool_loop \
 AGENT_NETWORK_FAKE_ADS=false \
 ADS_BACKEND=cli \
 ADS_SERVER_ADDR=localhost:8888 \
-v1_classification/.venv/bin/python -m v2_agent_network.scripts.run_pi_agent_server \
+v2_agent_network/.venv/bin/python -m v2_agent_network.scripts.run_pi_agent_server \
   --host 0.0.0.0 \
   --port 8080
 ```
