@@ -6,6 +6,9 @@ Copy the env template and put your OpenAI key in it:
 
 ```bash
 cd /path/to/AgenticNetwork
+python3 -m venv planner_agent/.venv
+planner_agent/.venv/bin/python -m pip install --upgrade pip
+planner_agent/.venv/bin/python -m pip install -r planner_agent/requirements.txt
 cp planner_agent/.env.example planner_agent/.env.local
 $EDITOR planner_agent/.env.local   # set OPENAI_API_KEY=sk-...
 ```

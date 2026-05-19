@@ -3,12 +3,12 @@ __pycache__/
 *$py.class
 
 .pytest_cache/
+*.log
 
 # Local secrets / runtime configuration
 .env
 .env.local
 .env.*.local
-agent_directory_service/*.log
 agent_directory_service/.runtime/
 .venv/
 .claude/

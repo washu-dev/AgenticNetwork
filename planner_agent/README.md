@@ -97,12 +97,27 @@ Standalone planner infrastructure:
 
 ## Running
 
-### 1. Tests (no network, no ADS, no OpenAI key)
+### 1. Install
+
+Run from the repository root:
+
+```bash
+cd /path/to/AgenticNetwork
+python3 -m venv planner_agent/.venv
+planner_agent/.venv/bin/python -m pip install --upgrade pip
+planner_agent/.venv/bin/python -m pip install -r planner_agent/requirements.txt
+planner_agent/.venv/bin/python -m pip check
+```
+
+The wrapper scripts auto-detect `planner_agent/.venv/bin/python`. To use a
+different interpreter, set `PYTHON_BIN=/path/to/python`.
+
+### 2. Tests (no network, no ADS, no OpenAI key)
 
 ```bash
 cd /path/to/AgenticNetwork
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
-  python3 -m pytest planner_agent/tests -q
+  planner_agent/.venv/bin/python -m pytest planner_agent/tests -q
 ```
 
 27 tests cover: list/describe/call agent flows, write-skill confirmation +
@@ -113,7 +128,7 @@ per-turn (not per-client) chain state, single-dispatch compound workflow
 guarding, and a dynamic agent (Disaster Agent) added without any change to the
 main agent code.
 
-### 2. Local fake-ADS demo (no real ADS daemon needed)
+### 3. Local fake-ADS demo (no real ADS daemon needed)
 
 First-time setup — copy the env template and put your OpenAI key in:
 
@@ -143,7 +158,7 @@ Skip the wrapper and export by hand:
 ```bash
 export OPENAI_API_KEY=sk-...
 export AGENT_NETWORK_FAKE_ADS=true
-python3 -m planner_agent.scripts.run_server \
+planner_agent/.venv/bin/python -m planner_agent.scripts.run_server \
   --fake-ads \
   --card planner_agent/configs/agent_cards/email_agent.card.json
 ```
@@ -158,7 +173,7 @@ curl -s http://localhost:8090/messages \
 
 `GET /agents` returns the raw ADS listing for inspection.
 
-### 3. Real local ADS
+### 4. Real local ADS
 
 Make sure `dirctl` is installed (the doctor script will tell you if it
 isn't), start the ADS daemon, publish cards if needed, then point the main
@@ -172,7 +187,7 @@ dirctl daemon start
 # Publish with the planner-local publisher
 cd /path/to/AgenticNetwork
 AGENT_NETWORK_FAKE_ADS=false ADS_BACKEND=cli ADS_SERVER_ADDR=localhost:8888 \
-  python3 -m planner_agent.scripts.publish_agents \
+  planner_agent/.venv/bin/python -m planner_agent.scripts.publish_agents \
   --card planner_agent/configs/agent_cards/email_agent.card.json
 
 # Run main agent against real ADS
@@ -180,7 +195,7 @@ export OPENAI_API_KEY=sk-...
 export AGENT_NETWORK_FAKE_ADS=false
 export ADS_BACKEND=cli
 export ADS_SERVER_ADDR=localhost:8888       # or 10.229.117.37:8888 for the shared one
-python3 -m planner_agent.scripts.run_server
+planner_agent/.venv/bin/python -m planner_agent.scripts.run_server
 ```
 
 The same `/messages` and `/agents` endpoints work; they just hit real ADS

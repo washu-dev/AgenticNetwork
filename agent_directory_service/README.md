@@ -11,7 +11,7 @@ this package. This README is the short runbook; for more detail, see
 Run from the repo root:
 
 ```bash
-cd /home/cspl-yi/Downloads/agentic_network/AgenticNetwork
+cd /path/to/AgenticNetwork
 python3 -m venv agent_directory_service/.venv
 agent_directory_service/.venv/bin/python -m pip install --upgrade pip
 agent_directory_service/.venv/bin/python -m pip install -r agent_directory_service/requirements.txt
@@ -22,7 +22,7 @@ agent_directory_service/.venv/bin/python -m agent_directory_service.scripts.prin
 Conda alternative:
 
 ```bash
-cd /home/cspl-yi/Downloads/agentic_network/AgenticNetwork
+cd /path/to/AgenticNetwork
 conda env create -f agent_directory_service/environment.yml
 conda activate agent-directory-service
 ```
@@ -45,7 +45,7 @@ other agents should talk to:
 Short wrapper for common operations:
 
 ```bash
-cd /home/cspl-yi/Downloads/agentic_network/AgenticNetwork
+cd /path/to/AgenticNetwork
 
 # Start local dirctl daemon plus LAN proxy.
 agent_directory_service/run_ads.sh -start
@@ -73,7 +73,7 @@ list, including `-publish`, `-watch`, `-raw-list`, `-proxy-stop`, and `-delete`.
 Start ADS with the managed LAN launcher:
 
 ```bash
-cd /home/cspl-yi/Downloads/agentic_network/AgenticNetwork
+cd /path/to/AgenticNetwork
 agent_directory_service/.venv/bin/python -m agent_directory_service.scripts.manage_ads_lan \
   --listen-host 10.229.117.37 \
   --listen-port 8888 \
@@ -83,7 +83,7 @@ agent_directory_service/.venv/bin/python -m agent_directory_service.scripts.mana
 Check status:
 
 ```bash
-cd /home/cspl-yi/Downloads/agentic_network/AgenticNetwork
+cd /path/to/AgenticNetwork
 agent_directory_service/.venv/bin/python -m agent_directory_service.scripts.manage_ads_lan \
   --listen-host 10.229.117.37 \
   --listen-port 8888 \
@@ -93,7 +93,7 @@ agent_directory_service/.venv/bin/python -m agent_directory_service.scripts.mana
 Stop the LAN proxy and the local `dirctl` daemon:
 
 ```bash
-cd /home/cspl-yi/Downloads/agentic_network/AgenticNetwork
+cd /path/to/AgenticNetwork
 agent_directory_service/.venv/bin/python -m agent_directory_service.scripts.manage_ads_lan \
   --listen-host 10.229.117.37 \
   --listen-port 8888 \
@@ -115,7 +115,7 @@ dirctl --server-addr 10.229.117.37:8888 routing list --output json
 Human-readable routing list with names, labels, endpoints, and publish times:
 
 ```bash
-cd /home/cspl-yi/Downloads/agentic_network/AgenticNetwork
+cd /path/to/AgenticNetwork
 agent_directory_service/.venv/bin/python -m agent_directory_service.scripts.show_ads_routes \
   --server-addr 10.229.117.37:8888
 ```
@@ -123,7 +123,7 @@ agent_directory_service/.venv/bin/python -m agent_directory_service.scripts.show
 Diagnose stored-but-not-routed records:
 
 ```bash
-cd /home/cspl-yi/Downloads/agentic_network/AgenticNetwork
+cd /path/to/AgenticNetwork
 agent_directory_service/.venv/bin/python -m agent_directory_service.scripts.ads_diagnostics \
   --server-addr 10.229.117.37:8888
 ```
@@ -131,7 +131,7 @@ agent_directory_service/.venv/bin/python -m agent_directory_service.scripts.ads_
 Manual repair path when ADS search shows records but routing is stale:
 
 ```bash
-cd /home/cspl-yi/Downloads/agentic_network/AgenticNetwork
+cd /path/to/AgenticNetwork
 agent_directory_service/.venv/bin/python -m agent_directory_service.scripts.force_route_active_agents \
   --server-addr 10.229.117.37:8888 \
   --restart-daemon-if-stuck \
@@ -143,7 +143,7 @@ repairs missing routed CIDs without restarting the daemon unless explicitly
 requested:
 
 ```bash
-cd /home/cspl-yi/Downloads/agentic_network/AgenticNetwork
+cd /path/to/AgenticNetwork
 agent_directory_service/.venv/bin/python -m agent_directory_service.scripts.watch_ads_routing \
   --server-addr 10.229.117.37:8888
 ```
@@ -153,7 +153,7 @@ agent_directory_service/.venv/bin/python -m agent_directory_service.scripts.watc
 Agents should publish Agent Cards to the shared ADS address:
 
 ```bash
-cd /home/cspl-yi/Downloads/agentic_network/AgenticNetwork
+cd /path/to/AgenticNetwork
 AGENT_NETWORK_FAKE_ADS=false \
 ADS_BACKEND=cli \
 ADS_SERVER_ADDR=10.229.117.37:8888 \
@@ -169,7 +169,7 @@ instead.
 Validate one A2A endpoint without publishing:
 
 ```bash
-cd /home/cspl-yi/Downloads/agentic_network/AgenticNetwork
+cd /path/to/AgenticNetwork
 agent_directory_service/.venv/bin/python -m agent_directory_service.scripts.validate_agent_endpoint \
   --card path/to/agent.card.json \
   --skill email/current_time \
@@ -180,7 +180,7 @@ agent_directory_service/.venv/bin/python -m agent_directory_service.scripts.vali
 Run the agent directory service tests:
 
 ```bash
-cd /home/cspl-yi/Downloads/agentic_network/AgenticNetwork
+cd /path/to/AgenticNetwork
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 agent_directory_service/.venv/bin/python -m pytest agent_directory_service/tests -q
 ```
 
