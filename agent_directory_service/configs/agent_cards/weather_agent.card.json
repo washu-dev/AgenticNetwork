@@ -1,0 +1,36 @@
+{
+  "name": "Weather Agent",
+  "description": "Mock A2A weather agent for the agent directory service PI-agent demo.",
+  "url": "http://127.0.0.1:9101/",
+  "version": "0.1.0",
+  "protocolVersion": "0.3.0",
+  "preferredTransport": "JSONRPC",
+  "provider": {
+    "organization": "Demo Weather Organization",
+    "url": "https://example.invalid/weather-agent"
+  },
+  "capabilities": {
+    "streaming": false,
+    "pushNotifications": false,
+    "stateTransitionHistory": true
+  },
+  "defaultInputModes": ["text/plain", "application/json"],
+  "defaultOutputModes": ["text/plain", "application/json"],
+  "securitySchemes": {},
+  "security": [],
+  "skills": [
+    {
+      "id": "weather/forecast",
+      "name": "Weather Forecast",
+      "description": "Return deterministic mock forecast and planning-risk guidance for a location and time range.",
+      "tags": ["weather/forecast", "weather/current_conditions", "weather/alerts", "weather"],
+      "examples": [
+        "What is the weather tomorrow near Austin?",
+        "Should I plan outdoor field work tomorrow?"
+      ],
+      "inputModes": ["text/plain", "application/json"],
+      "outputModes": ["text/plain", "application/json"],
+      "security": []
+    }
+  ]
+}

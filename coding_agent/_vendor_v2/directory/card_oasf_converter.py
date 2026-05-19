@@ -112,7 +112,7 @@ def agent_card_to_oasf_record(card: AgentCard) -> dict[str, Any]:
     validate_agent_card(card)
     official, custom = _official_and_custom_skills(card)
     provider = card.provider.organization if card.provider else "unknown"
-    record_id = str(uuid5(NAMESPACE_URL, f"v2-agent-network:{card.name}:{card.version}"))
+    record_id = str(uuid5(NAMESPACE_URL, f"agent-directory-service:{card.name}:{card.version}"))
     skill_policies = {skill.id: _skill_policy(skill) for skill in card.skills}
     has_write_skill = any(policy["action_type"] == "write" for policy in skill_policies.values())
 

@@ -126,8 +126,8 @@ From the AgenticNetwork repo, validate the running endpoint:
 
 ```bash
 conda activate email-agent-a2a
-python3 -m v2_agent_network.scripts.validate_agent_endpoint \
-  --card v2_agent_network/configs/agent_cards/email_agent.card.json \
+python3 -m agent_directory_service.scripts.validate_agent_endpoint \
+  --card agent_directory_service/configs/agent_cards/email_agent.card.json \
   --skill email/draft \
   --prompt "Draft an email to Bob with two meeting options." \
   --endpoint http://10.229.117.223:9103/

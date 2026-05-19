@@ -1,6 +1,6 @@
 {
   "name": "Intelligence Agent",
-  "description": "Mock A2A intelligence synthesis agent for v2 multi-agent demos.",
+  "description": "Mock A2A intelligence synthesis agent for agent directory service multi-agent demos.",
   "url": "http://127.0.0.1:9105/",
   "version": "0.1.0",
   "protocolVersion": "0.3.0",

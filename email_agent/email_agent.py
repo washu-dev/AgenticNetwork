@@ -81,10 +81,10 @@ else:
 def _agent_network_root() -> Path | None:
     start = Path(__file__).resolve().parent
     for candidate in [start, *start.parents]:
-        if (candidate / "v2_agent_network").is_dir():
+        if (candidate / "agent_directory_service").is_dir():
             return candidate
         nested = candidate / "AgenticNetwork"
-        if (nested / "v2_agent_network").is_dir():
+        if (nested / "agent_directory_service").is_dir():
             return nested
     return None
 
@@ -96,11 +96,11 @@ def _default_email_a2a_card_path() -> Path:
         return local_card
     root = _agent_network_root()
     if root is not None:
-        return root / "v2_agent_network" / "configs" / "agent_cards" / "email_agent.card.json"
+        return root / "agent_directory_service" / "configs" / "agent_cards" / "email_agent.card.json"
     return (
         script_dir
         / "AgenticNetwork"
-        / "v2_agent_network"
+        / "agent_directory_service"
         / "configs"
         / "agent_cards"
         / "email_agent.card.json"
@@ -4208,7 +4208,7 @@ def _email_agent_card_to_oasf_record(agent_card: A2AAgentCard) -> dict[str, Any]
     return {
         "schema_version": "demo-v2",
         "record_type": "agntcy.oasf.demo.agent_record",
-        "record_id": str(uuid.uuid5(uuid.NAMESPACE_URL, f"v2-agent-network:{name}:{version}")),
+        "record_id": str(uuid.uuid5(uuid.NAMESPACE_URL, f"agent-directory-service:{name}:{version}")),
         "agent_id": agent_id,
         "name": name,
         "organization": organization or "unknown",

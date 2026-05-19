@@ -1315,7 +1315,7 @@ def _agent_card_to_oasf_record(agent_card: A2AAgentCard) -> dict[str, Any]:
     return {
         "schema_version": "demo-v2",
         "record_type": "agntcy.oasf.demo.agent_record",
-        "record_id": str(uuid.uuid5(uuid.NAMESPACE_URL, f"v2-agent-network:{name}:{version}")),
+        "record_id": str(uuid.uuid5(uuid.NAMESPACE_URL, f"agent-directory-service:{name}:{version}")),
         "agent_id": agent_id,
         "name": name,
         "organization": organization,

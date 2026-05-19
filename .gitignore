@@ -8,7 +8,7 @@ __pycache__/
 .env
 .env.local
 .env.*.local
-v2_agent_network/*.log
-v2_agent_network/.runtime/
+agent_directory_service/*.log
+agent_directory_service/.runtime/
 .venv/
 .claude/

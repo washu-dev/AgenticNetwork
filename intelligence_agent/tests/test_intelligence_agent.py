@@ -17,7 +17,7 @@ Run from the AgenticNetwork repo root with the v1 venv::
 
     PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \\
     PYTHONPATH=intelligence_agent \\
-    v2_agent_network/.venv/bin/python -m pytest \\
+    agent_directory_service/.venv/bin/python -m pytest \\
         intelligence_agent/tests -q
 """
 from __future__ import annotations

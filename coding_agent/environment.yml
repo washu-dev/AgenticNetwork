@@ -9,7 +9,7 @@ dependencies:
       # OASF SDK packages are hosted on the buf.build registry.
       - --extra-index-url=https://buf.build/gen/python
 
-      # A2A / AGNTCY network runtime (matches AgenticNetwork/v2_agent_network).
+      # A2A / AGNTCY network runtime (matches AgenticNetwork/agent_directory_service).
       - fastapi>=0.115.0
       - uvicorn[standard]>=0.32.0
       - aiohttp>=3.11.0
@@ -22,7 +22,7 @@ dependencies:
       - agntcy-oasf-sdk-grpc-python
       - agntcy-oasf-sdk-protocolbuffers-python
 
-      # Utilities used by the v2 network scripts and endpoint validator.
+      # Utilities used by the agent directory service scripts and endpoint validator.
       - httpx>=0.25.0
       - pytest>=7.4.0
       - pytest-asyncio>=0.21.0

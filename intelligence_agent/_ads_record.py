@@ -109,7 +109,7 @@ def agent_card_to_ads_record(card: AgentCard) -> dict[str, Any]:
     provider = card.provider.organization if card.provider else "AgenticNetwork"
     provider_url = card.provider.url if card.provider and card.provider.url else ""
     agent_id = card.name.lower().replace(" ", "-")
-    record_id = str(uuid5(NAMESPACE_URL, f"v2-agent-network:{card.name}:{card.version}"))
+    record_id = str(uuid5(NAMESPACE_URL, f"agent-directory-service:{card.name}:{card.version}"))
     name = _ads_record_name(provider_url, agent_id)
     created_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
