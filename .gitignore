@@ -12,3 +12,6 @@ __pycache__/
 agent_directory_service/.runtime/
 .venv/
 .claude/
+
+# macOS Finder metadata
+.DS_Store
