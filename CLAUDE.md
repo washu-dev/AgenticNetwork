@@ -1,0 +1,395 @@
+# CLAUDE.md
+
+Guidance for Claude (and humans) working in the **AgenticNetwork** repo. This
+file explains *how the system fits together and how to run, extend, and operate
+it*. For project direction and working rules see [`AGENTS.md`](AGENTS.md); for
+the component index see [`README.md`](README.md). Each component also has its own
+`README.md` with authoritative install/run steps.
+
+---
+
+## 1. What this is
+
+AgenticNetwork is a demo of an **"Internet of Agents"**: a set of independent,
+LLM-powered services that **discover each other through a shared directory** and
+then **call each other over a standard agent-to-agent protocol** to complete a
+task. There are three kinds of thing in the repo:
+
+- **One orchestrator** — the **planner** (`planner_agent/`). The "brain" you talk
+  to. It has *no domain skills of its own*; it discovers other agents and
+  delegates whole tasks to them. It is deliberately **agent-agnostic**: adding a
+  new agent to the directory makes it usable with **zero planner code changes**.
+- **Specialist agents** — `email_agent/`, `coding_agent/`, `intelligence_agent/`,
+  `geoSpatial_agent/`, `disaster_response_agent/`, `scout_agent/`. Each is its own
+  HTTP service wrapping one capability.
+- **A directory (ADS)** — `agent_directory_service/`. The registry/"phone book"
+  where agents publish a card so the others can look them up by skill.
+
+### The three contracts that hold it together
+
+| Contract | Plain-English role | Implemented with |
+|---|---|---|
+| **Agent Card** (`*.card.json`) | An agent's résumé: name, URL, and a list of skills | local `card_oasf_converter.py` |
+| **ADS** (the directory) | The phone book: publish your card, search by skill | AGNTCY `dir` via the `dirctl` CLI |
+| **A2A** (agent-to-agent) | The phone call: send a task over HTTP/JSON-RPC, get a result | the official `a2a-sdk` |
+
+---
+
+## 2. Architecture
+
+```
+        You (browser / curl)
+              │
+              ▼
+        ┌───────────┐    "who can send email?"    ┌─────────────┐
+        │  PLANNER  │ ──────────────────────────▶ │  ADS / dir  │  (phone book)
+        │  :8090    │ ◀────── card + endpoint ──── │ :8888       │
+        └─────┬─────┘                              └─────────────┘
+              │
+              │ A2A call (HTTP/JSON-RPC): "send this email"
+              ▼
+   ┌──────────┬───────────┬─────────────┬──────────┐
+   │  email   │  coding   │  geospatial │   …      │  specialist agents,
+   │  :9103   │  :9106    │  :9105      │          │  each its own service
+   └──────────┴───────────┴─────────────┴──────────┘
+```
+
+**Request lifecycle (end to end):**
+1. A user message hits the planner's FastAPI server (`main_agent/server.py`,
+   `POST /messages` or `/messages/stream`).
+2. `MainAgentRuntime` (`main_agent/runtime.py`) runs a tool loop. The LLM
+   (`main_agent/llm_client.py`) sees only **5 primitives** defined in
+   `main_agent/tools.py`: `list_agents`, `describe_agent`, `call_agent`,
+   `ask_user`, `final_answer`.
+3. `list_agents`/`describe_agent` query ADS via `DirectoryClient`
+   (`main_agent/directory/`), which shells out to `dirctl` (or uses an in-process
+   fake in `--fake-ads` mode).
+4. `call_agent` resolves the agent, checks policy, and dispatches the task over
+   A2A (`main_agent/a2a/`) to the chosen specialist's HTTP endpoint.
+5. The specialist's `AgentExecutor` runs its own LLM loop / API calls and returns
+   a text summary plus a structured-data artifact.
+6. The planner normalizes the result and the LLM emits `final_answer`; the server
+   serializes the response (with a tool trace) back to the UI/caller.
+
+**ADS has a load-bearing subtlety:** records are both *stored* (content-addressed,
+`dirctl search`) **and** *routed* (a separate routing index, `dirctl routing
+list/search`). A record can be **stored but not routed**, in which case it is
+**invisible to live discovery**. The directory backend deliberately raises
+`DirectoryUnavailable` rather than silently falling back to storage search. The
+whole `agent_directory_service/scripts/` suite exists to detect and repair this.
+
+---
+
+## 3. Components & ports
+
+| Component | Role | Default port | Environment | LLM API surface |
+|---|---|---|---|---|
+| `planner_agent` | Orchestrator + chat UI | **8090** | pip venv (`requirements.txt`) | OpenAI **Responses** |
+| `agent_directory_service` | Directory (ADS) operator tooling | dir at **8888** (routing 8999) | conda `agent-directory-service` | n/a (`dirctl`) |
+| `email_agent` | Gmail/Calendar/Docs/Sheets | **9103** | conda `email-agent-a2a` (shared) | OpenAI **Responses** (gpt-5.2) |
+| `disaster_response_agent` | Emergency response plans | **9104** | conda `email-agent-a2a` (shared) | OpenAI **Responses** (gpt-5) |
+| `geoSpatial_agent` | Photo geolocation + incident class. | **9105** | conda `email-agent-a2a` (shared) | Gemini + OpenAI **Responses** (multimodal) |
+| `coding_agent` | Code writing via mini-swe-agent | **9106** | conda `coding-agent-a2a` | **litellm** (Chat) |
+| `intelligence_agent` | Analyst / situational briefs | **9105** | conda `intelligence-agent-a2a` | **litellm** (Chat) |
+| `scout_agent` | OSINT web research | **9104** | pip venv (`pyproject.toml`) | OpenAI **Chat Completions** |
+
+> **Port collisions if co-hosted:** geospatial and intelligence both default to
+> **9105**; disaster's card and scout's serve mode both default to **9104**.
+> Fine on separate machines; reassign ports if running several on one host.
+
+> **Hardcoded, inconsistent card URLs.** The original demo runs on a LAN with ADS
+> at `10.229.117.37:8888`. Agent card `url`s are hardcoded and **disagree across
+> copies**: the in-repo email/disaster/geospatial cards use `10.229.117.223:910x`,
+> while the intelligence and coding cards use `127.0.0.1`, and the planner/ADS
+> config copies use `10.229.117.181`/`10.229.117.180`. **Rewrite the card URLs for
+> local/laptop runs.**
+
+---
+
+## 4. Running it
+
+LLM inference is the only thing that needs real horsepower, and it's outsourced
+to an API (hosted OpenAI/Gemini today, or self-hosted vLLM — see §7). Everything
+else runs on a laptop. There are three tiers:
+
+### Tier A — Planner only, fake directory (pure laptop, no `dirctl`)
+The planner has an in-process fake directory, so you need only Python + an API key.
+```bash
+cd /path/to/AgenticNetwork
+python3 -m venv planner_agent/.venv
+planner_agent/.venv/bin/python -m pip install -r planner_agent/requirements.txt
+cp planner_agent/.env.example planner_agent/.env.local   # set OPENAI_API_KEY=sk-...
+planner_agent/scripts/start.sh --fake-ads \
+  --card planner_agent/configs/agent_cards/email_agent.card.json \
+  --card planner_agent/configs/agent_cards/weather_agent.card.json
+```
+Open **http://localhost:8090/** for the chat UI. (Agents are "discovered" from the
+`--card` files; they only *execute* if actually running.)
+
+### Tier B — Full local network (laptop, more setup)
+- Install the **`dirctl`** binary (the only non-Python dependency; `brew tap
+  agntcy/dir` or a release binary). `planner_agent/scripts/doctor.sh` checks it.
+- Start the directory daemon + local OCI registry (`localhost:5000`). Scout
+  bundles a `docker-compose.yml` that brings up a directory daemon.
+- Start each agent on its own port, pointing at `localhost:8888`.
+- Provide API keys per agent (OpenAI; `BRAVE_API_KEY` for scout/intelligence;
+  Google OAuth for email).
+
+### Tier C — The lab LAN demo (as shipped)
+Run on the `10.229.117.*` network, or rewrite the card IPs to your host.
+
+### Interfacing with the running system
+- **Chat UI:** `http://localhost:8090/`
+- **HTTP API:** `POST /messages` (JSON), `POST /messages/stream` (SSE),
+  `GET /agents` (raw directory listing), `GET /health`.
+  ```bash
+  curl -s http://localhost:8090/messages -H 'Content-Type: application/json' \
+    -d '{"user_id":"demo","channel":"api","text":"What agents are available?"}' | jq
+  ```
+- **Direct to a specialist** (bypass the planner, for testing):
+  `coding_agent/send_request.py`, `intelligence_agent/send_request.py`, the
+  `scout` CLI (`scout "mission"` / `scout` REPL / `scout serve`), and each
+  agent's local CLI mode (e.g. `disaster_response_agent.py respond "..."`).
+
+---
+
+## 5. Environments (each component is isolated)
+
+**Different agents require different environments — by design.** Each component
+has its own conda env or venv, and `README.md` states: *do not install one
+component's requirements file into another component's virtual environment.* The environments even
+disagree on library versions (ADS pins `a2a-sdk==0.3.2`, the planner uses
+`0.3.26`). This is fine because **agents only ever communicate over A2A (HTTP)** —
+they share no Python imports at runtime, so each can have any dependencies, any
+Python version, even run on a different machine or container.
+
+| Env | Components | How to create |
+|---|---|---|
+| pip venv | `planner_agent` | `python3 -m venv planner_agent/.venv && .../pip install -r planner_agent/requirements.txt` |
+| pip venv (editable) | `scout_agent` | `python3 -m venv .venv && .venv/bin/pip install -e .` (needs Python ≥3.11) |
+| conda `agent-directory-service` | `agent_directory_service` | `conda env create -f agent_directory_service/environment.yml` |
+| conda `email-agent-a2a` (shared) | `email_agent`, `disaster_response_agent`, `geoSpatial_agent` | `conda env create -f disaster_response_agent/environment.yml` (the superset) |
+| conda `coding-agent-a2a` | `coding_agent` | `conda env create -f coding_agent/environment.yml` |
+| conda `intelligence-agent-a2a` | `intelligence_agent` | `conda env create -f intelligence_agent/environment.yml` |
+
+`geoSpatial_agent/` ships **no** `environment.yml` of its own — it reuses the
+shared `email-agent-a2a` env. The `email_agent` and `disaster_response_agent`
+env files share the same name but are **not** identical: the geospatial deps
+(`google-genai`, `geopy`, `Pillow`) live only in
+`disaster_response_agent/environment.yml`, so create the shared env from that
+(superset) file. OASF SDK packages come from the `buf.build` registry
+(`--extra-index-url https://buf.build/gen/python`). Run each agent as its own
+long-running process in its own activated environment.
+
+---
+
+## 6. How to build a new agent
+
+Copy the simplest template (`disaster_response_agent/`) or the cleanest modern
+one (`scout_agent/`). Five steps:
+
+1. **Write an Agent Card** (`my_agent.card.json`): `name`, `url` (where it
+   listens), `version`, and a `skills[]` list — each skill has a slash-namespaced
+   `id` (e.g. `myagent/do_thing`), `description`, and `examples`. Tag
+   side-effecting skills with `write`.
+2. **Implement an executor** — a class extending the `a2a-sdk` `AgentExecutor`
+   with `execute(context, event_queue)`. Read `context.get_user_input()`, do the
+   work, return a text summary + a structured-data `DataPart` artifact (that's the
+   channel the planner reads machine-readable output from).
+3. **Serve it** — wrap the executor in `A2AStarletteApplication` +
+   `DefaultRequestHandler` and run with uvicorn on a port.
+4. **Publish to ADS on startup** — convert the card to an OASF record and `dirctl
+   push` + `dirctl routing publish` it (copy a `publish_*_to_ads` helper from an
+   existing agent). Unpublish on shutdown.
+5. **Done** — the planner discovers it automatically on its next `list_agents`;
+   no planner change needed.
+
+Conventions: slash-namespaced skill ids; return structured output as a `DataPart`;
+if work is slow, advertise `capabilities.streaming: true` and emit progress (the
+coding agent uses a ~25s heartbeat to beat the caller's HTTP read timeout).
+
+---
+
+## 7. LLM configuration & self-hosting (RIS / vLLM)
+
+LLM clients are configured per component (no shared LLM layer). The RIS cluster
+hosts models with **vLLM** (`vllm.entrypoints.openai.api_server`), which exposes
+an **OpenAI-compatible *Chat Completions* API** at `http://<node>:8100/v1/` —
+**not** OpenAI's newer *Responses* API. That distinction drives all migration
+work. Each migration has two parts: **endpoint wiring** (trivial — point the
+client at the vLLM base URL with a dummy key + the served model name) and, for
+the Responses-API agents, an **API rewrite** to Chat Completions.
+
+| Agent | API today | Endpoint wiring | Rewrite? | Difficulty |
+|---|---|---|---|---|
+| `scout_agent` | Chat Completions | env `OPENAI_BASE_URL` (works by accident; code edit optional) | No | 🟢 trivial |
+| `coding_agent` | litellm (Chat) | env `OPENAI_API_BASE` + 1-line edit in `coding_agent.py` runner | No | 🟢 trivial–moderate |
+| `intelligence_agent` | litellm (Chat) | env `OPENAI_API_BASE` only | No | 🟢 trivial |
+| `planner_agent` | **Responses** | env `OPENAI_BASE_URL` (works by accident) | **Yes** (`main_agent/llm_client.py`) | 🟡 moderate–hard |
+| `email_agent` | **Responses** | edit `_openai_client` in `email_agent.py` | **Yes** (4 call sites + 26 tool schemas) | 🟡 moderate |
+| `disaster_response_agent` | **Responses** | edit `OpenAI()` ctor | **Yes** | 🟡 moderate |
+| `geoSpatial_agent` + `attack_bundle` | **Responses + Gemini** | edit client ctors | **Yes** + capability gaps | 🔴 hard |
+
+**Easy wins (no rewrite):**
+- **scout** — `scout/agent.py` is already Chat-Completions-shaped and needs no
+  change. The three `AsyncOpenAI(api_key=...)` constructions in `scout/cli.py`
+  (`_run_one_shot`, `_run_legacy`, the serve flow) pass no `base_url`, but the
+  OpenAI SDK reads `OPENAI_BASE_URL` from the env anyway — so setting
+  `OPENAI_BASE_URL` + a dummy `OPENAI_API_KEY` + `--model <served-name>` works
+  with **no code change** (adding an explicit `base_url=` is the optional, cleaner
+  alternative).
+- **coding / intelligence** — they use `litellm.acompletion`, which honors
+  `OPENAI_API_BASE` / `OPENAI_API_KEY` for `openai/`-prefixed models. Env-only for
+  the planner loops: set `OPENAI_API_BASE`, dummy `OPENAI_API_KEY`, and
+  `CODING_AGENT_PLANNER_MODEL` / `INTEL_AGENT_PLANNER_MODEL=openai/<served-name>`.
+  Coding's inner **mini-swe-agent** runner reads `model_kwargs` from a packaged
+  YAML, so also inject `api_base`/`api_key` there (`_default_minisweagent_runner`
+  in `coding_agent.py`) and set `MSWEA_COST_TRACKING=ignore_errors`.
+
+**Responses → Chat Completions rewrite (planner, email, disaster, geospatial-coordination):** the same shape of change in each:
+- `client.responses.create(...)` → `client.chat.completions.create(...)`.
+- **Replace `previous_response_id` chaining with a locally-maintained message
+  history.** Responses keeps conversation state server-side by id; vLLM is
+  stateless, so accumulate the full `messages` list (system + user +
+  assistant-with-`tool_calls` + `{role:"tool", tool_call_id, content}`) and resend
+  it each step.
+- **Reshape tool schemas** from flat `{type, name, parameters}` (Responses) to
+  nested `{type:"function", function:{name, parameters}}` (Chat). Email has ~26.
+- Rewrite parsers to read `choices[0].message.tool_calls` / `.content` instead of
+  `response.output` / `output_text`.
+- `max_output_tokens` → `max_tokens`; drop Responses-only `reasoning=` and
+  `text={verbosity}` (planner) — the UI "thinking" block then goes empty unless
+  you parse gpt-oss's reasoning channel.
+
+**Hard part — geospatial capability gaps (beyond the API rewrite):**
+1. **Vision:** the geolocation pipeline sends images; a text model like
+   `gpt-oss-20b` can't accept them. Needs a vision-capable served model
+   (Qwen2-VL / Llama-3.2-Vision class) or the image-analysis function is lost.
+2. **Web grounding:** uses OpenAI `web_search_preview` and Gemini `GoogleSearch`,
+   neither of which vLLM provides — lost unless you wire in your own search tool.
+3. The default geo path is **google-genai** (Gemini), a non-OpenAI SDK. There are
+   **two** provider selectors to force onto OpenAI: the attack_bundle geolocation
+   pipeline uses `config.detect_provider` (`attack_bundle/src/config.py`, default
+   model `gemini-3-flash-preview`), while the agent's coordination/scene path uses
+   an inline `startswith(("gpt-","o"))` check in `geospatial_agent.py`. Both must
+   point at `gpt-`/`o` models to bypass Gemini.
+
+**Cross-cutting gotchas:**
+- **Tool calling requires vLLM launch flags** — `--enable-auto-tool-choice
+  --tool-call-parser <parser>` (the RIS example sbatch already sets these). Without
+  them, agents silently stop calling tools.
+- **Model-name matching** — raw OpenAI clients send the model string verbatim, so
+  it must equal vLLM's served name; litellm strips the leading `openai/`. Launch
+  vLLM with `--served-model-name <simple>` and use that name everywhere.
+- **Ephemeral endpoint** — the SLURM job is time-limited (`--time`) and the node
+  hostname changes each run, so `http://<node>:8100` is not stable. For a
+  persistent network, put a stable gateway/reverse-proxy in front, and tunnel
+  (`ssh -L 8100:<node>:8100 ...`) to reach it off-cluster.
+- **Relax dummy-key guards** — several agents hard-require `OPENAI_API_KEY`
+  (planner `config.py` `load_config`, email `_openai_client` + the CLI guard,
+  disaster `_call_model`). Set a non-empty placeholder for vLLM.
+
+RIS docs (vLLM sbatch + inference examples) live in the sibling `ris-tips/llms-on-ris/` directory (outside this repo).
+
+---
+
+## 8. Important realities & caveats
+
+- **Heavy code duplication, not a shared library.** The A2A + directory protocol
+  layer exists in ~5 divergent copies: canonical `agent_directory_service/services/`,
+  near-identical `_vendor_v2/` trees in `coding_agent/` and `intelligence_agent/`
+  (identical to each other except the package `__init__.py` docstring; their
+  import paths, error strings, and log path diverge from the canonical copy),
+  a more-evolved fork in `planner_agent/main_agent/` (adds inline base64 file
+  parts, optional skill, streaming progress, `demo-v3` records), and scout's own
+  independent implementation. Library pins drift (`a2a-sdk` 0.3.2 vs 0.3.26). When
+  fixing protocol bugs, check whether the fix needs replicating across copies.
+- **Scout uses a different directory.** Every other agent uses `dirctl` at
+  `10.229.117.37:8888`; scout uses `agntcy_app_sdk` `AgentDirectory` at
+  `DIRECTORY_ENDPOINT` (default `127.0.0.1:8889`, gRPC). It is unverified whether
+  these are the same logical directory — if not, scout may not be discoverable by
+  the others.
+- **No authentication.** Cards have empty `securitySchemes`/`security` and bind
+  `0.0.0.0`. On a shared network any client can drive Gmail send, calendar/file
+  writes, code execution, and geolocation. Write actions are gated only by the
+  planner's optional `strict` policy mode, not real auth.
+- **`coding_agent` runs mini-swe-agent in YOLO mode** (bash runs without
+  confirmation), contained only by a per-request scratch workspace — run it in a
+  container/VM.
+- **`geoSpatial_agent/attack_bundle/` is an offensive research tool** (DoxBench-
+  style image geolocation/doxxing with privacy-leakage metrics) that doubles as
+  the agent's production location engine. Be aware of its re-identification power.
+- **Stale artifacts to watch:** `scout_agent/scripts/call_scout.py` passes SLIM
+  transport params the current factory rejects (would `TypeError`);
+  `intelligence_agent.card.json` still says "mock deterministic" though the code is
+  a live LLM analyst; `email_agent/notice_list.txt` is empty so `email/group_send`
+  has no recipients; the email agent's self-publish skips the routing poll, so it
+  can land in the stored-but-not-routed state.
+
+---
+
+## 9. Testing & validation
+
+```bash
+# Planner (no network, no ADS, no OpenAI key — uses ScriptedLLMClient + fake ADS)
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 planner_agent/.venv/bin/python -m pytest planner_agent/tests -q
+
+# ADS package tests + import smoke (per AGENTS.md)
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 agent_directory_service/.venv/bin/python -m pytest agent_directory_service/tests -q
+agent_directory_service/.venv/bin/python -m agent_directory_service.scripts.print_versions
+
+# Planner end-to-end self-check (env, dirctl, ADS reachability, server, OpenAI, tests)
+planner_agent/scripts/doctor.sh
+
+# ADS operator commands (wrapper)
+agent_directory_service/run_ads.sh -start | -status | -list | -diag | -repair | -watch | -publish <card>
+
+# Validate an A2A endpoint without publishing
+python -m agent_directory_service.scripts.validate_agent_endpoint \
+  --card <card.json> --skill <skill> --prompt "..." --endpoint http://host:port/
+```
+
+---
+
+## 10. Git, GitHub & OneDrive
+
+- **Remote:** `origin` → `https://github.com/washu-dev/AgenticNetwork.git`,
+  default branch `main`.
+- **Local changes are local until pushed.** Edits in this folder (by you or by
+  Claude) don't reach GitHub — "the collaborative version" — until `git add` +
+  `git commit` + `git push`. Teammates see them after they `git pull`.
+- **Claude does not commit or push unless explicitly asked.** When asked to make
+  changes that should be shared, prefer a **feature branch + Pull Request** over
+  committing to `main`.
+- **OneDrive ≠ version control.** This repo lives in a OneDrive-synced folder.
+  OneDrive backs up files to the cloud but is *not* how the team collaborates
+  (that's GitHub), and syncing the hidden `.git/` directory can corrupt the repo
+  or create conflict-copy files. Keep git operations the source of truth; ideally
+  exclude `.git/` from OneDrive sync.
+- `.DS_Store` files should be git-ignored (macOS noise).
+
+---
+
+## 11. Key file index
+
+| Path | What it is |
+|---|---|
+| `planner_agent/main_agent/runtime.py` | Orchestrator tool loop, ADS/A2A dispatch, policy, dedup |
+| `planner_agent/main_agent/llm_client.py` | OpenAI Responses client (the planner's LLM call) |
+| `planner_agent/main_agent/tools.py` | The 5 tool schemas + system prompt |
+| `planner_agent/main_agent/server.py` | FastAPI surface + chat UI serving |
+| `planner_agent/main_agent/web/index.html` | Single-file chat UI |
+| `planner_agent/scripts/start.sh` / `doctor.sh` | Launcher / self-check |
+| `agent_directory_service/run_ads.sh` | ADS operator dispatcher |
+| `agent_directory_service/services/directory/backends.py` | Real/fake ADS backends (dirctl) |
+| `agent_directory_service/services/directory/card_oasf_converter.py` | Agent Card ↔ OASF record |
+| `agent_directory_service/scripts/` | publish / show / diagnose / repair / watch ADS |
+| `agent_directory_service/configs/ads_daemon_fast_routing.yaml` | Fast-routing daemon config |
+| `<agent>/*.card.json` | Agent Cards (skills, endpoint, capabilities) |
+| `coding_agent/agent_loop.py`, `intelligence_agent/agent_loop.py` | litellm tool loops |
+| `coding_agent/_vendor_v2/`, `intelligence_agent/_vendor_v2/` | Vendored A2A + directory stack |
+| `email_agent/email_agent.py` | Email/Workspace agent (monolith; `ToolCallingEmailAgent`) |
+| `geoSpatial_agent/attack_bundle/src/pipeline_simple.py` | Geolocation engine (vision + grounding) |
+| `scout_agent/scout/` | Scout package (`agent.py` loop, `network/`, `capabilities/`) |
+| `AGENTS.md` | Project direction + working rules + validation |
+```
