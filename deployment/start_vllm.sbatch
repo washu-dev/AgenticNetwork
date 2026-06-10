@@ -3,7 +3,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
 #SBATCH --gres=gpu:h100:1
-#SBATCH -A engr-lab-<piname>
+#SBATCH -A engr-lab-di2
 #SBATCH --time=04:00:00
 #SBATCH --container-image=vllm/vllm-openai:latest
 #SBATCH --container-mounts=/engrfs/project/di2/AgenticNetwork:/workspace
