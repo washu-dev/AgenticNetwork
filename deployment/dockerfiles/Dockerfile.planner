@@ -1,0 +1,34 @@
+# Planner agent (orchestrator + chat UI) — port 8090
+# Build from repo root:
+#   docker build --platform linux/amd64 -f deployment/dockerfiles/Dockerfile.planner \
+#       -t amaankhan25/agenticnetwork-planner:latest .
+FROM ghcr.io/agntcy/dir-ctl:v1.2.0 AS dirctl-src
+
+FROM continuumio/miniconda3:24.9.2-0
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl git build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=dirctl-src /dirctl /usr/local/bin/dirctl
+RUN chmod +x /usr/local/bin/dirctl
+
+WORKDIR /app
+
+RUN conda install -n base -c conda-forge mamba -y --quiet
+
+COPY planner_agent/requirements.txt planner_agent/requirements.txt
+RUN mamba create -n planner-agent python=3.13 pip -y --quiet \
+    && /opt/conda/envs/planner-agent/bin/pip install --quiet \
+        -r /app/planner_agent/requirements.txt
+
+COPY planner_agent/ planner_agent/
+COPY deployment/entrypoints/entrypoint-planner.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENV PATH=/opt/conda/envs/planner-agent/bin:$PATH
+ENV PYTHONPATH=/app
+
+EXPOSE 8090
+
+ENTRYPOINT ["/entrypoint.sh"]
