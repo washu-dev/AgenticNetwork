@@ -70,15 +70,17 @@ def _function(
 ) -> dict[str, Any]:
     return {
         "type": "function",
-        "name": name,
-        "description": description,
-        "parameters": {
-            "type": "object",
-            "additionalProperties": False,
-            "properties": properties,
-            "required": list(properties.keys()) if required is None else required,
+        "function": {
+            "name": name,
+            "description": description,
+            "parameters": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": properties,
+                "required": list(properties.keys()) if required is None else required,
+            },
+            "strict": strict,
         },
-        "strict": strict,
     }
 
 
