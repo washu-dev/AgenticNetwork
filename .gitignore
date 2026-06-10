@@ -13,5 +13,12 @@ agent_directory_service/.runtime/
 .venv/
 .claude/
 
-# macOS Finder metadata
+# Google OAuth credentials and tokens
+deployment/google_credentials/
+
+# Hugging Face token
+.hf_token
+
+# vscode
+.vscode/
 .DS_Store
