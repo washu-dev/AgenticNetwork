@@ -4,7 +4,7 @@
 # Changes from the original:
 #   - listen_address changed from "localhost:8888" to "0.0.0.0:8888" so that
 #     agents inside the container (and external SSH tunnels) can connect.
-#   - All file paths moved to /tmp/ads/ (ephemeral, no persistence needed).
+#   - All file paths moved to /var/lib/ads/ (ephemeral, no persistence needed).
 
 server:
   listen_address: "0.0.0.0:8888"
@@ -13,21 +13,21 @@ server:
   store:
     provider: "oci"
     oci:
-      local_dir: "/tmp/ads/store"
+      local_dir: "/var/lib/ads/store"
       registry_address: "localhost:5000"
       repository_name: "dir"
   verification:
     enabled: true
   routing:
     listen_address: "/ip4/0.0.0.0/tcp/8999"
-    key_path: "/tmp/ads/node.key"
-    datastore_dir: "/tmp/ads/routing"
+    key_path: "/var/lib/ads/node.key"
+    datastore_dir: "/var/lib/ads/routing"
     gossipsub:
       enabled: true
   database:
     type: "sqlite"
     sqlite:
-      path: "/tmp/ads/dir.db"
+      path: "/var/lib/ads/dir.db"
     postgres:
       host: "localhost"
       port: 5432
