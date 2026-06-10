@@ -1,0 +1,75 @@
+# ADS daemon config for single-container deployment.
+# Adapted from agent_directory_service/configs/ads_daemon_fast_routing.yaml.
+#
+# Changes from the original:
+#   - listen_address changed from "localhost:8888" to "0.0.0.0:8888" so that
+#     agents inside the container (and external SSH tunnels) can connect.
+#   - All file paths moved to /tmp/ads/ (ephemeral, no persistence needed).
+
+server:
+  listen_address: "0.0.0.0:8888"
+  oasf_api_validation:
+    schema_url: "https://schema.oasf.outshift.com"
+  store:
+    provider: "oci"
+    oci:
+      local_dir: "/tmp/ads/store"
+      registry_address: "localhost:5000"
+      repository_name: "dir"
+  verification:
+    enabled: true
+  routing:
+    listen_address: "/ip4/0.0.0.0/tcp/8999"
+    key_path: "/tmp/ads/node.key"
+    datastore_dir: "/tmp/ads/routing"
+    gossipsub:
+      enabled: true
+  database:
+    type: "sqlite"
+    sqlite:
+      path: "/tmp/ads/dir.db"
+    postgres:
+      host: "localhost"
+      port: 5432
+      database: "dir"
+      ssl_mode: "disable"
+  publication:
+    scheduler_interval: 5s
+    worker_count: 1
+    worker_timeout: 30m
+  naming:
+    ttl: 168h
+
+reconciler:
+  regsync:
+    enabled: false
+  indexer:
+    enabled: true
+    interval: 5s
+  signature:
+    enabled: true
+    interval: 1m
+    ttl: 168h
+    record_timeout: 30s
+  name:
+    enabled: true
+    interval: 1h
+    ttl: 168h
+    record_timeout: 30s
+
+runtime:
+  enabled: false
+  adapter:
+    type: "docker"
+    docker:
+      host: "unix:///var/run/docker.sock"
+      host_mode: true
+    kubernetes:
+      kubeconfig: "~/.kube/config"
+  resolver:
+    a2a:
+      enabled: true
+    oasf:
+      enabled: true
+  store:
+    type: "sqlite"
