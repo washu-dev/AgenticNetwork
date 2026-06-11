@@ -288,79 +288,81 @@ class PublishedRecord:
 DISASTER_TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "type": "function",
-        "name": "discover_ads_agents",
-        "description": (
-            "Search the real ADS directory for registered agents that may help "
-            "with the disaster response task, such as email, weather, geospatial, "
-            "shelter, transport, or communication agents."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "skill": {
-                    "type": "string",
-                    "description": "Optional skill tag or official OASF skill name. Use empty string to list agents.",
+        "function": {
+            "name": "discover_ads_agents",
+            "description": (
+                "Search the real ADS directory for registered agents that may help "
+                "with the disaster response task, such as email, weather, geospatial, "
+                "shelter, transport, or communication agents."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "skill": {
+                        "type": "string",
+                        "description": "Optional skill tag or official OASF skill name. Use empty string to list agents.",
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "Optional text filter over names, descriptions, organizations, and skill text.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 50,
+                        "description": "Maximum agents to return.",
+                    },
+                    "include_self": {
+                        "type": "boolean",
+                        "description": "Whether to include this Disaster Response Agent in results.",
+                    },
                 },
-                "query": {
-                    "type": "string",
-                    "description": "Optional text filter over names, descriptions, organizations, and skill text.",
-                },
-                "limit": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 50,
-                    "description": "Maximum agents to return.",
-                },
-                "include_self": {
-                    "type": "boolean",
-                    "description": "Whether to include this Disaster Response Agent in results.",
-                },
+                "required": ["skill", "query", "limit", "include_self"],
+                "additionalProperties": False,
             },
-            "required": ["skill", "query", "limit", "include_self"],
-            "additionalProperties": False,
         },
-        "strict": True,
     },
     {
         "type": "function",
-        "name": "send_a2a_request",
-        "description": (
-            "Send a request to another ADS-discovered A2A agent. Use discover_ads_agents "
-            "first, then pass the returned cid, record_id, agent_id, name, or endpoint as agent_ref. "
-            "Do not use this for weapons/offensive harm."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "agent_ref": {
-                    "type": "string",
-                    "description": "Agent reference from ADS discovery: cid, record_id, agent_id, name, or A2A endpoint.",
+        "function": {
+            "name": "send_a2a_request",
+            "description": (
+                "Send a request to another ADS-discovered A2A agent. Use discover_ads_agents "
+                "first, then pass the returned cid, record_id, agent_id, name, or endpoint as agent_ref. "
+                "Do not use this for weapons/offensive harm."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "agent_ref": {
+                        "type": "string",
+                        "description": "Agent reference from ADS discovery: cid, record_id, agent_id, name, or A2A endpoint.",
+                    },
+                    "skill": {
+                        "type": "string",
+                        "description": "Optional advisory target skill tag from the discovered agent card. The remote agent may ignore it.",
+                    },
+                    "message": {
+                        "type": "string",
+                        "description": "Natural-language instruction to send to the remote agent.",
+                    },
+                    "data": {
+                        "type": "object",
+                        "description": "Optional structured JSON payload for the remote agent. Use an empty object unless a fixed schema is provided.",
+                        "properties": {},
+                        "additionalProperties": False,
+                    },
+                    "timeout_seconds": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 600,
+                        "description": "A2A request timeout in seconds.",
+                    },
                 },
-                "skill": {
-                    "type": "string",
-                    "description": "Optional advisory target skill tag from the discovered agent card. The remote agent may ignore it.",
-                },
-                "message": {
-                    "type": "string",
-                    "description": "Natural-language instruction to send to the remote agent.",
-                },
-                "data": {
-                    "type": "object",
-                    "description": "Optional structured JSON payload for the remote agent. Use an empty object unless a fixed schema is provided.",
-                    "properties": {},
-                    "additionalProperties": False,
-                },
-                "timeout_seconds": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 600,
-                    "description": "A2A request timeout in seconds.",
-                },
+                "required": ["agent_ref", "message", "data", "timeout_seconds"],
+                "additionalProperties": False,
             },
-            "required": ["agent_ref", "message", "data", "timeout_seconds"],
-            "additionalProperties": False,
         },
-        "strict": False,
     },
 ]
 
@@ -371,7 +373,7 @@ def _disaster_tool_schemas(enable_remote_agent_tools: bool = False) -> list[dict
     return [
         schema
         for schema in DISASTER_TOOL_SCHEMAS
-        if str(schema.get("name") or "") not in REMOTE_AGENT_TOOL_NAMES
+        if str((schema.get("function") or {}).get("name") or "") not in REMOTE_AGENT_TOOL_NAMES
     ]
 
 
@@ -434,20 +436,13 @@ def _disaster_system_prompt(enable_remote_agent_tools: bool = False) -> str:
 
 
 def _response_text(response: Any) -> str:
-    output_text = getattr(response, "output_text", None)
-    if output_text:
-        return str(output_text)
-
-    parts: list[str] = []
-    for item in getattr(response, "output", []) or []:
-        if _object_get(item, "type") != "message":
-            continue
-        for content in _object_get(item, "content", []) or []:
-            if _object_get(content, "type") in {"output_text", "text"}:
-                text = _object_get(content, "text", "")
-                if text:
-                    parts.append(str(text))
-    return "\n".join(parts).strip()
+    try:
+        content = response.choices[0].message.content
+        if content:
+            return str(content).strip()
+    except (AttributeError, IndexError):
+        pass
+    return ""
 
 
 def _object_get(item: Any, key: str, default: Any = None) -> Any:
@@ -457,11 +452,11 @@ def _object_get(item: Any, key: str, default: Any = None) -> Any:
 
 
 def _extract_function_calls(response: Any) -> list[Any]:
-    return [
-        item
-        for item in (getattr(response, "output", []) or [])
-        if _object_get(item, "type") == "function_call"
-    ]
+    try:
+        tool_calls = response.choices[0].message.tool_calls
+        return tool_calls if tool_calls else []
+    except (AttributeError, IndexError):
+        return []
 
 
 def _extract_json_object(raw_text: str) -> dict[str, Any]:
@@ -591,34 +586,42 @@ class DisasterResponseAgent:
             raise RuntimeError("The openai package is required for disaster response AI mode.") from exc
 
         _disaster_status("Model request started", model=self.model, payload=payload)
-        client = OpenAI()
-        request_kwargs: dict[str, Any] = {
-            "model": self.model,
-            "input": [
-                {
-                    "role": "system",
-                    "content": _disaster_system_prompt(self.enable_remote_agent_tools),
-                },
-                {
-                    "role": "user",
-                    "content": json.dumps(payload, indent=2),
-                },
-            ],
-        }
+        client = OpenAI(
+            base_url=os.getenv("OPENAI_BASE_URL"),
+            api_key=os.getenv("OPENAI_API_KEY", "dummy"),
+        )
+
+        messages: list[dict[str, Any]] = [
+            {
+                "role": "system",
+                "content": _disaster_system_prompt(self.enable_remote_agent_tools),
+            },
+            {
+                "role": "user",
+                "content": json.dumps(payload, indent=2),
+            },
+        ]
+
+        request_kwargs: dict[str, Any] = {"model": self.model, "messages": messages}
         if self.tool_schemas:
             request_kwargs["tools"] = self.tool_schemas
             request_kwargs["parallel_tool_calls"] = False
-        response = client.responses.create(**request_kwargs)
+
+        response = client.chat.completions.create(**request_kwargs)
         pending_actions: list[dict[str, Any]] = []
+
         for step_index in range(4):
             tool_calls = _extract_function_calls(response)
             if not tool_calls:
                 break
-            tool_outputs = []
+
+            # Append assistant message with tool_calls to history
+            messages.append(response.choices[0].message)
+
             for call in tool_calls:
-                name = _object_get(call, "name", "")
-                call_id = _object_get(call, "call_id", "")
-                raw_arguments = _object_get(call, "arguments", "{}")
+                name = call.function.name
+                call_id = call.id
+                raw_arguments = call.function.arguments or "{}"
                 token_usage = _record_tool_call_token_usage(
                     model=self.model,
                     response=response,
@@ -628,7 +631,7 @@ class DisasterResponseAgent:
                     tool_call_count=len(tool_calls),
                 )
                 try:
-                    arguments = json.loads(raw_arguments or "{}")
+                    arguments = json.loads(raw_arguments)
                     _disaster_status(
                         "Agent tool call received",
                         tool=name,
@@ -655,22 +658,17 @@ class DisasterResponseAgent:
                         error=result["error"],
                     )
                 pending_actions.extend(_pending_actions_from_tool_result(result, tool_name=name))
-                tool_outputs.append(
+                messages.append(
                     {
-                        "type": "function_call_output",
-                        "call_id": call_id,
-                        "output": json.dumps(result, default=str),
+                        "role": "tool",
+                        "tool_call_id": call_id,
+                        "content": json.dumps(result, default=str),
                     }
                 )
-            follow_up_kwargs: dict[str, Any] = {
-                "model": self.model,
-                "input": tool_outputs,
-                "previous_response_id": _object_get(response, "id"),
-            }
-            if self.tool_schemas:
-                follow_up_kwargs["tools"] = self.tool_schemas
-                follow_up_kwargs["parallel_tool_calls"] = False
-            response = client.responses.create(**follow_up_kwargs)
+
+            request_kwargs["messages"] = messages
+            response = client.chat.completions.create(**request_kwargs)
+
         _disaster_status(
             "Model request completed",
             model=self.model,
