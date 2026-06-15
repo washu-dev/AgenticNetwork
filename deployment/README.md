@@ -45,6 +45,7 @@ reachable before publishing their cards and starting their A2A servers.
 | `ads_daemon.yaml` | dirctl daemon config (listen address, data paths) |
 | `google_credentials/` | OAuth credentials for the Email agent |
 | `HANDOVER.md` | Known issues and next steps |
+| `DOWNSTREAM_CONSIDERATIONS.md` | Forward-looking architecture & scaling decisions (deferred-by-design) |
 
 ---
 

@@ -84,7 +84,7 @@ whole `agent_directory_service/scripts/` suite exists to detect and repair this.
 
 | Component | Role | Default port | Environment | LLM API surface |
 |---|---|---|---|---|
-| `planner_agent` | Orchestrator + chat UI | **8090** | pip venv (`requirements.txt`) | OpenAI **Responses** |
+| `planner_agent` | Orchestrator + chat UI | **8090** | pip venv (`requirements.txt`) | OpenAI **Chat Completions** (vLLM-ready; migrated 2026-06) |
 | `agent_directory_service` | Directory (ADS) operator tooling | dir at **8888** (routing 8999) | conda `agent-directory-service` | n/a (`dirctl`) |
 | `email_agent` | Gmail/Calendar/Docs/Sheets | **9103** | conda `email-agent-a2a` (shared) | OpenAI **Responses** (gpt-5.2) |
 | `disaster_response_agent` | Emergency response plans | **9104** | conda `email-agent-a2a` (shared) | OpenAI **Responses** (gpt-5) |
@@ -110,7 +110,7 @@ whole `agent_directory_service/scripts/` suite exists to detect and repair this.
 
 LLM inference is the only thing that needs real horsepower, and it's outsourced
 to an API (hosted OpenAI/Gemini today, or self-hosted vLLM — see §7). Everything
-else runs on a laptop. There are three tiers:
+else runs on a laptop (Tiers A–C); Tier D is the containerized cluster deploy. There are four tiers:
 
 ### Tier A — Planner only, fake directory (pure laptop, no `dirctl`)
 The planner has an in-process fake directory, so you need only Python + an API key.
@@ -137,6 +137,18 @@ Open **http://localhost:8090/** for the chat UI. (Agents are "discovered" from t
 
 ### Tier C — The lab LAN demo (as shipped)
 Run on the `10.229.117.*` network, or rewrite the card IPs to your host.
+
+### Tier D — ENGR cluster, containerized (as deployed)
+`deployment/` runs the whole system on the WashU **Engineering (ENGR)** cluster via
+Slurm + Pyxis/enroot. As of 2026-06 it is a **multi-container** setup: one Docker image
+per service (`deployment/dockerfiles/Dockerfile.<agent>`, built/pushed by
+`deployment/build_and_push.sh` to `amaankhan25/agenticnetwork-<agent>`), launched together
+as parallel `srun --overlap` steps in `submit.sbatch` on one CPU node, plus a separate GPU
+job (`start_vllm.sbatch`) serving `gpt-oss-20b` via vLLM. ADS starts first; each agent's
+`entrypoints/entrypoint-<agent>.sh` waits up to 60 s for it, then `exec`s the agent with an
+absolute conda path (`/opt/conda/envs/<env>/bin/python`). The planner reaches vLLM through
+`OPENAI_BASE_URL`. Full runbook: `deployment/README.md`. (The older single-container
+`deployment/Dockerfile` + `entrypoint.sh` + `supervisord.conf` are superseded leftovers.)
 
 ### Interfacing with the running system
 - **Chat UI:** `http://localhost:8090/`
@@ -220,12 +232,19 @@ work. Each migration has two parts: **endpoint wiring** (trivial — point the
 client at the vLLM base URL with a dummy key + the served model name) and, for
 the Responses-API agents, an **API rewrite** to Chat Completions.
 
+**Update (2026-06):** the **planner is now migrated to Chat Completions**
+(`main_agent/llm_client.py`, commit `c4d8048` "added planner vllm support") and a
+containerized ENGR deployment (`deployment/`, §4 Tier D) wires every agent to vLLM via
+`OPENAI_BASE_URL`. The only agents still on the OpenAI **Responses** API are **email,
+disaster, and geospatial** — so the planner web UI (:8090) now runs against self-hosted
+gpt-oss-20b without a rewrite.
+
 | Agent | API today | Endpoint wiring | Rewrite? | Difficulty |
 |---|---|---|---|---|
 | `scout_agent` | Chat Completions | env `OPENAI_BASE_URL` (works by accident; code edit optional) | No | 🟢 trivial |
 | `coding_agent` | litellm (Chat) | env `OPENAI_API_BASE` + 1-line edit in `coding_agent.py` runner | No | 🟢 trivial–moderate |
 | `intelligence_agent` | litellm (Chat) | env `OPENAI_API_BASE` only | No | 🟢 trivial |
-| `planner_agent` | **Responses** | env `OPENAI_BASE_URL` (works by accident) | **Yes** (`main_agent/llm_client.py`) | 🟡 moderate–hard |
+| `planner_agent` | **Chat Completions** ✅ | env `OPENAI_BASE_URL` | **Done** — migrated 2026-06 (`main_agent/llm_client.py`) | 🟢 complete |
 | `email_agent` | **Responses** | edit `_openai_client` in `email_agent.py` | **Yes** (4 call sites + 26 tool schemas) | 🟡 moderate |
 | `disaster_response_agent` | **Responses** | edit `OpenAI()` ctor | **Yes** | 🟡 moderate |
 | `geoSpatial_agent` + `attack_bundle` | **Responses + Gemini** | edit client ctors | **Yes** + capability gaps | 🔴 hard |
@@ -246,7 +265,7 @@ the Responses-API agents, an **API rewrite** to Chat Completions.
   YAML, so also inject `api_base`/`api_key` there (`_default_minisweagent_runner`
   in `coding_agent.py`) and set `MSWEA_COST_TRACKING=ignore_errors`.
 
-**Responses → Chat Completions rewrite (planner, email, disaster, geospatial-coordination):** the same shape of change in each:
+**Responses → Chat Completions rewrite (email, disaster, geospatial-coordination — the planner is already done, use it as the reference):** the same shape of change in each:
 - `client.responses.create(...)` → `client.chat.completions.create(...)`.
 - **Replace `previous_response_id` chaining with a locally-maintained message
   history.** Responses keeps conversation state server-side by id; vLLM is
@@ -375,7 +394,7 @@ python -m agent_directory_service.scripts.validate_agent_endpoint \
 | Path | What it is |
 |---|---|
 | `planner_agent/main_agent/runtime.py` | Orchestrator tool loop, ADS/A2A dispatch, policy, dedup |
-| `planner_agent/main_agent/llm_client.py` | OpenAI Responses client (the planner's LLM call) |
+| `planner_agent/main_agent/llm_client.py` | OpenAI **Chat Completions** client (the planner's LLM call; vLLM-compatible, migrated from Responses 2026-06) |
 | `planner_agent/main_agent/tools.py` | The 5 tool schemas + system prompt |
 | `planner_agent/main_agent/server.py` | FastAPI surface + chat UI serving |
 | `planner_agent/main_agent/web/index.html` | Single-file chat UI |
@@ -391,5 +410,6 @@ python -m agent_directory_service.scripts.validate_agent_endpoint \
 | `email_agent/email_agent.py` | Email/Workspace agent (monolith; `ToolCallingEmailAgent`) |
 | `geoSpatial_agent/attack_bundle/src/pipeline_simple.py` | Geolocation engine (vision + grounding) |
 | `scout_agent/scout/` | Scout package (`agent.py` loop, `network/`, `capabilities/`) |
+| `deployment/` | ENGR-cluster containerized deploy (§4 Tier D): per-agent `dockerfiles/` + `entrypoints/`, `submit.sbatch` (parallel `srun --overlap` containers), `start_vllm.sbatch`, `build_and_push.sh`, `README.md` |
 | `AGENTS.md` | Project direction + working rules + validation |
 ```
