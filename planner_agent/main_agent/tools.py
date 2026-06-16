@@ -43,7 +43,6 @@ def tool_schemas() -> list[dict[str, Any]]:
                     "description": "Optional advisory skill hint from ADS; not required and not authoritative.",
                 },
             },
-            strict=False,
             required=["agent_id", "task_input"],
         ),
         _function(
@@ -65,7 +64,6 @@ def _function(
     description: str,
     properties: dict[str, Any],
     *,
-    strict: bool = True,
     required: list[str] | None = None,
 ) -> dict[str, Any]:
     return {
@@ -75,11 +73,9 @@ def _function(
             "description": description,
             "parameters": {
                 "type": "object",
-                "additionalProperties": False,
                 "properties": properties,
                 "required": list(properties.keys()) if required is None else required,
             },
-            "strict": strict,
         },
     }
 

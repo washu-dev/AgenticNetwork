@@ -30,3 +30,9 @@ deployment/google_credentials/
 .triton/
 .humming/
 hf_cache/
+
+# ron_dep — personal copy; never commit its secrets
+ron_dep/.env
+ron_dep/**/.env
+ron_dep/.hf_token
+ron_dep/google_credentials/

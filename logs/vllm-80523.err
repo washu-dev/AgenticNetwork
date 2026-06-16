@@ -26,3 +26,4 @@ pyxis: imported docker image: vllm/vllm-openai:latest
 (APIServer pid=2419066) INFO:     Started server process [2419066]
 (APIServer pid=2419066) INFO:     Waiting for application startup.
 (APIServer pid=2419066) INFO:     Application startup complete.
+[2026-06-16T16:31:58.846] error: *** JOB 80523 ON h100-2405 CANCELLED AT 2026-06-16T16:31:58 DUE to SIGNAL Terminated ***

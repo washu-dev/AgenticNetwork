@@ -182,3 +182,6 @@ INFO:     Uvicorn running on http://0.0.0.0:9104 (Press CTRL+C to quit)
 [scout] published to directory; cid=baeareifzljq4nimas5rriahe467biccxcahzyztbxo3hko65brex4m2fky
 [scout] serving A2A as 'Scout' (bind=http://0.0.0.0:9104/, advertised=http://127.0.0.1:9104/)
 [scout] no-repl mode; press Ctrl-C to exit
+srun: Job step aborted: Waiting up to 32 seconds for job step to finish.
+[2026-06-16T16:31:54.062] error: *** STEP 80542.2 ON amd128-2201 CANCELLED AT 2026-06-16T16:31:54 DUE to SIGNAL Terminated ***
+[scout] shutting down...

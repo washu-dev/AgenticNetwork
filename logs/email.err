@@ -122,3 +122,5 @@ INFO:     Started server process [3754092]
 INFO:     Waiting for application startup.
 INFO:     Application startup complete.
 INFO:     Uvicorn running on http://0.0.0.0:9103 (Press CTRL+C to quit)
+srun: Job step aborted: Waiting up to 32 seconds for job step to finish.
+[2026-06-16T16:31:54.063] error: *** STEP 80542.6 ON amd128-2201 CANCELLED AT 2026-06-16T16:31:54 DUE to SIGNAL Terminated ***

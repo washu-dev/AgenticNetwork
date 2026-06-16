@@ -90,7 +90,7 @@ class OpenAIToolLoopClient:
             "model": self.config.llm_model,
             "messages": state.messages,
             "tools": _cached_tool_schemas(),
-            "tool_choice": "auto",
+            "tool_choice": "required",
             "max_tokens": self.config.max_output_tokens,
         }
 
