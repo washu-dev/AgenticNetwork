@@ -1,0 +1,97 @@
+pyxis: importing docker image: amaankhan25/agenticnetwork-coding:latest
+pyxis: imported docker image: amaankhan25/agenticnetwork-coding:latest
+2026-06-10T15:30:49-0500 INFO    coding_agent | published to ADS: server=localhost:8888 cid=baeareiaf3f5xe32rbv42jbxzdtig6fkfcuq6gnpehcwkeaheaplexnuxau
+2026-06-10T15:30:49-0500 INFO    coding_agent | serving A2A: bind=http://0.0.0.0:9106/ card_url=http://127.0.0.1:9106/ workspace_root=/tmp
+2026-06-10T15:30:49-0500 WARNING coding_agent | YOLO mode: bash commands run without confirmation. Run inside a sandbox.
+INFO:     Started server process [1099169]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:9106 (Press CTRL+C to quit)
+srun: Job step aborted: Waiting up to 32 seconds for job step to finish.
+[2026-06-10T15:47:52.473] error: *** STEP 79019.6 ON amd128-2204 CANCELLED AT 2026-06-10T15:47:52 DUE to SIGNAL Terminated ***
+pyxis: importing docker image: amaankhan25/agenticnetwork-coding:latest
+pyxis: imported docker image: amaankhan25/agenticnetwork-coding:latest
+2026-06-10T16:52:13-0500 INFO    coding_agent | published to ADS: server=localhost:8888 cid=baeareigo4bwxe7o3bgamiyjhb2quv2htru3lto2gjgxghfytqhus5jrzfu
+2026-06-10T16:52:13-0500 INFO    coding_agent | serving A2A: bind=http://0.0.0.0:9106/ card_url=http://127.0.0.1:9106/ workspace_root=/tmp
+2026-06-10T16:52:13-0500 WARNING coding_agent | YOLO mode: bash commands run without confirmation. Run inside a sandbox.
+INFO:     Started server process [1135927]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:9106 (Press CTRL+C to quit)
+srun: Job step aborted: Waiting up to 32 seconds for job step to finish.
+[2026-06-10T16:53:08.977] error: *** STEP 79029.1 ON amd128-2204 CANCELLED AT 2026-06-10T16:53:08 DUE to SIGNAL Terminated ***
+pyxis: importing docker image: amaankhan25/agenticnetwork-coding:latest
+pyxis: imported docker image: amaankhan25/agenticnetwork-coding:latest
+2026-06-10T17:01:04-0500 INFO    coding_agent | published to ADS: server=localhost:8888 cid=baeareidwdtcr3jgdf6hy2xsvapgyko7wlzo3mk6a7yh5ob3kx5yqkwxhra
+2026-06-10T17:01:04-0500 INFO    coding_agent | serving A2A: bind=http://0.0.0.0:9106/ card_url=http://127.0.0.1:9106/ workspace_root=/tmp
+2026-06-10T17:01:04-0500 WARNING coding_agent | YOLO mode: bash commands run without confirmation. Run inside a sandbox.
+INFO:     Started server process [1145054]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:9106 (Press CTRL+C to quit)
+srun: Job step aborted: Waiting up to 32 seconds for job step to finish.
+[2026-06-10T17:10:58.984] error: *** STEP 79036.2 ON amd128-2204 CANCELLED AT 2026-06-10T17:10:58 DUE to SIGNAL Terminated ***
+pyxis: importing docker image: amaankhan25/agenticnetwork-coding:latest
+pyxis: imported docker image: amaankhan25/agenticnetwork-coding:latest
+2026-06-11T10:48:42-0500 INFO    coding_agent | published to ADS: server=localhost:8888 cid=baeareifwts7cjmpbf3wpuagqaxiuu2vnvn3ntzzkkr44xr32q7s3jgt6b4
+2026-06-11T10:48:42-0500 INFO    coding_agent | serving A2A: bind=http://0.0.0.0:9106/ card_url=http://127.0.0.1:9106/ workspace_root=/tmp
+2026-06-11T10:48:42-0500 WARNING coding_agent | YOLO mode: bash commands run without confirmation. Run inside a sandbox.
+INFO:     Started server process [3187695]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:9106 (Press CTRL+C to quit)
+srun: Job step aborted: Waiting up to 32 seconds for job step to finish.
+[2026-06-11T10:52:52.379] error: *** STEP 79193.6 ON amd128-2201 CANCELLED AT 2026-06-11T10:52:52 DUE to SIGNAL Terminated ***
+pyxis: importing docker image: amaankhan25/agenticnetwork-coding:latest
+pyxis: imported docker image: amaankhan25/agenticnetwork-coding:latest
+2026-06-11T11:04:59-0500 INFO    coding_agent | published to ADS: server=localhost:8888 cid=baeareiafluwt53hu5tp6u5xnjbftckfn4zbyjr3s7q5qz7ybtrnbhs2i4q
+2026-06-11T11:04:59-0500 INFO    coding_agent | serving A2A: bind=http://0.0.0.0:9106/ card_url=http://127.0.0.1:9106/ workspace_root=/tmp
+2026-06-11T11:04:59-0500 WARNING coding_agent | YOLO mode: bash commands run without confirmation. Run inside a sandbox.
+INFO:     Started server process [3195387]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:9106 (Press CTRL+C to quit)
+srun: Job step aborted: Waiting up to 32 seconds for job step to finish.
+[2026-06-11T11:27:11.773] error: *** STEP 79199.4 ON amd128-2201 CANCELLED AT 2026-06-11T11:27:11 DUE to SIGNAL Terminated ***
+pyxis: importing docker image: amaankhan25/agenticnetwork-coding:latest
+pyxis: imported docker image: amaankhan25/agenticnetwork-coding:latest
+2026-06-11T15:21:39-0500 INFO    coding_agent | published to ADS: server=localhost:8888 cid=baeareig4zu7uc7jy5ovifyit4s6zu5xlhpxnj3hye4fij7u63fmtn2cnju
+2026-06-11T15:21:39-0500 INFO    coding_agent | serving A2A: bind=http://0.0.0.0:9106/ card_url=http://127.0.0.1:9106/ workspace_root=/tmp
+2026-06-11T15:21:39-0500 WARNING coding_agent | YOLO mode: bash commands run without confirmation. Run inside a sandbox.
+INFO:     Started server process [1385573]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:9106 (Press CTRL+C to quit)
+srun: Job step aborted: Waiting up to 32 seconds for job step to finish.
+[2026-06-11T15:28:31.479] error: *** STEP 79281.5 ON amd128-2204 CANCELLED AT 2026-06-11T15:28:31 DUE to SIGNAL Terminated ***
+pyxis: importing docker image: amaankhan25/agenticnetwork-coding:latest
+pyxis: imported docker image: amaankhan25/agenticnetwork-coding:latest
+2026-06-11T17:09:05-0500 INFO    coding_agent | published to ADS: server=localhost:8888 cid=baeareifyoolcrdyhr7fbi6f3fr4v45fyc7i6ozzs2yl7b4c7a3qlrbuflq
+2026-06-11T17:09:05-0500 INFO    coding_agent | serving A2A: bind=http://0.0.0.0:9106/ card_url=http://127.0.0.1:9106/ workspace_root=/tmp
+2026-06-11T17:09:05-0500 WARNING coding_agent | YOLO mode: bash commands run without confirmation. Run inside a sandbox.
+INFO:     Started server process [1409924]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:9106 (Press CTRL+C to quit)
+srun: Job step aborted: Waiting up to 32 seconds for job step to finish.
+[2026-06-11T17:34:19.978] error: *** STEP 79298.3 ON amd128-2204 CANCELLED AT 2026-06-11T17:34:19 DUE to SIGNAL Terminated ***
+pyxis: importing docker image: amaankhan25/agenticnetwork-coding:latest
+pyxis: imported docker image: amaankhan25/agenticnetwork-coding:latest
+2026-06-16T12:18:50-0500 INFO    coding_agent | published to ADS: server=localhost:8888 cid=baeareifkys453j5oqkkxcfvqy3ov7ym7btdhsx3opngwy3kk3xzc42ajta
+2026-06-16T12:18:50-0500 INFO    coding_agent | serving A2A: bind=http://0.0.0.0:9106/ card_url=http://127.0.0.1:9106/ workspace_root=/tmp
+2026-06-16T12:18:50-0500 WARNING coding_agent | YOLO mode: bash commands run without confirmation. Run inside a sandbox.
+INFO:     Started server process [3693064]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:9106 (Press CTRL+C to quit)
+srun: Job step aborted: Waiting up to 32 seconds for job step to finish.
+[2026-06-16T12:50:48.854] error: *** STEP 80374.1 ON amd128-2201 CANCELLED AT 2026-06-16T12:50:48 DUE to SIGNAL Terminated ***
+pyxis: importing docker image: amaankhan25/agenticnetwork-coding:latest
+pyxis: imported docker image: amaankhan25/agenticnetwork-coding:latest
+2026-06-16T16:22:44-0500 INFO    coding_agent | published to ADS: server=localhost:8888 cid=baeareicerf4unawildfdld24qxuq5qqaznxxnpjkbjgl6ftqb7t3p74j7e
+2026-06-16T16:22:44-0500 INFO    coding_agent | serving A2A: bind=http://0.0.0.0:9106/ card_url=http://127.0.0.1:9106/ workspace_root=/tmp
+2026-06-16T16:22:44-0500 WARNING coding_agent | YOLO mode: bash commands run without confirmation. Run inside a sandbox.
+INFO:     Started server process [3754099]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:9106 (Press CTRL+C to quit)

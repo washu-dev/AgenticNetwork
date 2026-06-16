@@ -1,0 +1,103 @@
+pyxis: importing docker image: vllm/vllm-openai:latest
+pyxis: imported docker image: vllm/vllm-openai:latest
+(APIServer pid=100553) Traceback (most recent call last):
+(APIServer pid=100553)   File "/usr/local/lib/python3.12/dist-packages/huggingface_hub/utils/_http.py", line 761, in hf_raise_for_status
+(APIServer pid=100553)     response.raise_for_status()
+(APIServer pid=100553)   File "/usr/local/lib/python3.12/dist-packages/httpx/_models.py", line 829, in raise_for_status
+(APIServer pid=100553)     raise HTTPStatusError(message, request=request, response=self)
+(APIServer pid=100553) httpx.HTTPStatusError: Client error '404 Not Found' for url 'https://huggingface.co/google/gemma-4-27b-it/resolve/main/config.json'
+(APIServer pid=100553) For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/404
+(APIServer pid=100553) 
+(APIServer pid=100553) The above exception was the direct cause of the following exception:
+(APIServer pid=100553) 
+(APIServer pid=100553) Traceback (most recent call last):
+(APIServer pid=100553)   File "/usr/local/lib/python3.12/dist-packages/transformers/utils/hub.py", line 437, in cached_files
+(APIServer pid=100553)     hf_hub_download(
+(APIServer pid=100553)   File "/usr/local/lib/python3.12/dist-packages/huggingface_hub/utils/_validators.py", line 88, in _inner_fn
+(APIServer pid=100553)     return fn(*args, **kwargs)
+(APIServer pid=100553)            ^^^^^^^^^^^^^^^^^^^
+(APIServer pid=100553)   File "/usr/local/lib/python3.12/dist-packages/huggingface_hub/file_download.py", line 1015, in hf_hub_download
+(APIServer pid=100553)     return _hf_hub_download_to_cache_dir(
+(APIServer pid=100553)            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=100553)   File "/usr/local/lib/python3.12/dist-packages/huggingface_hub/file_download.py", line 1166, in _hf_hub_download_to_cache_dir
+(APIServer pid=100553)     _raise_on_head_call_error(head_call_error, force_download, local_files_only)
+(APIServer pid=100553)   File "/usr/local/lib/python3.12/dist-packages/huggingface_hub/file_download.py", line 1804, in _raise_on_head_call_error
+(APIServer pid=100553)     raise head_call_error
+(APIServer pid=100553)   File "/usr/local/lib/python3.12/dist-packages/huggingface_hub/file_download.py", line 1690, in _get_metadata_or_catch_error
+(APIServer pid=100553)     metadata = get_hf_file_metadata(
+(APIServer pid=100553)                ^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=100553)   File "/usr/local/lib/python3.12/dist-packages/huggingface_hub/utils/_validators.py", line 88, in _inner_fn
+(APIServer pid=100553)     return fn(*args, **kwargs)
+(APIServer pid=100553)            ^^^^^^^^^^^^^^^^^^^
+(APIServer pid=100553)   File "/usr/local/lib/python3.12/dist-packages/huggingface_hub/file_download.py", line 1612, in get_hf_file_metadata
+(APIServer pid=100553)     response = _httpx_follow_relative_redirects_with_backoff(
+(APIServer pid=100553)                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=100553)   File "/usr/local/lib/python3.12/dist-packages/huggingface_hub/utils/_http.py", line 692, in _httpx_follow_relative_redirects_with_backoff
+(APIServer pid=100553)     hf_raise_for_status(response)
+(APIServer pid=100553)   File "/usr/local/lib/python3.12/dist-packages/huggingface_hub/utils/_http.py", line 835, in hf_raise_for_status
+(APIServer pid=100553)     raise _format(RepositoryNotFoundError, message, response, repo_type=repo_type, repo_id=repo_id) from e
+(APIServer pid=100553) huggingface_hub.errors.RepositoryNotFoundError: 404 Client Error. (Request ID: Root=1-6a31998d-0ac64f561a1329a42a0cf39d;df941499-a98f-408a-b212-90f683d3aea5)
+(APIServer pid=100553) 
+(APIServer pid=100553) Repository Not Found for url: https://huggingface.co/google/gemma-4-27b-it/resolve/main/config.json.
+(APIServer pid=100553) Please make sure you specified the correct `repo_id` and `repo_type`.
+(APIServer pid=100553) If you are trying to access a private or gated repo, make sure you are authenticated and your token has the required permissions.
+(APIServer pid=100553) For more details, see https://huggingface.co/docs/huggingface_hub/authentication
+(APIServer pid=100553) 
+(APIServer pid=100553) The above exception was the direct cause of the following exception:
+(APIServer pid=100553) 
+(APIServer pid=100553) Traceback (most recent call last):
+(APIServer pid=100553)   File "/usr/local/bin/vllm", line 10, in <module>
+(APIServer pid=100553)     sys.exit(main())
+(APIServer pid=100553)              ^^^^^^
+(APIServer pid=100553)   File "/usr/local/lib/python3.12/dist-packages/vllm/entrypoints/cli/main.py", line 95, in main
+(APIServer pid=100553)     args.dispatch_function(args)
+(APIServer pid=100553)   File "/usr/local/lib/python3.12/dist-packages/vllm/entrypoints/cli/serve.py", line 148, in cmd
+(APIServer pid=100553)     uvloop.run(run_server(args))
+(APIServer pid=100553)   File "/usr/local/lib/python3.12/dist-packages/uvloop/__init__.py", line 96, in run
+(APIServer pid=100553)     return __asyncio.run(
+(APIServer pid=100553)            ^^^^^^^^^^^^^^
+(APIServer pid=100553)   File "/usr/lib/python3.12/asyncio/runners.py", line 195, in run
+(APIServer pid=100553)     return runner.run(main)
+(APIServer pid=100553)            ^^^^^^^^^^^^^^^^
+(APIServer pid=100553)   File "/usr/lib/python3.12/asyncio/runners.py", line 118, in run
+(APIServer pid=100553)     return self._loop.run_until_complete(task)
+(APIServer pid=100553)            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=100553)   File "uvloop/loop.pyx", line 1518, in uvloop.loop.Loop.run_until_complete
+(APIServer pid=100553)   File "/usr/local/lib/python3.12/dist-packages/uvloop/__init__.py", line 48, in wrapper
+(APIServer pid=100553)     return await main
+(APIServer pid=100553)            ^^^^^^^^^^
+(APIServer pid=100553)   File "/usr/local/lib/python3.12/dist-packages/vllm/entrypoints/openai/api_server.py", line 665, in run_server
+(APIServer pid=100553)     await run_server_worker(listen_address, sock, args, **uvicorn_kwargs)
+(APIServer pid=100553)   File "/usr/local/lib/python3.12/dist-packages/vllm/entrypoints/openai/api_server.py", line 679, in run_server_worker
+(APIServer pid=100553)     async with build_async_engine_client(
+(APIServer pid=100553)                ^^^^^^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=100553)   File "/usr/lib/python3.12/contextlib.py", line 210, in __aenter__
+(APIServer pid=100553)     return await anext(self.gen)
+(APIServer pid=100553)            ^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=100553)   File "/usr/local/lib/python3.12/dist-packages/vllm/entrypoints/openai/api_server.py", line 99, in build_async_engine_client
+(APIServer pid=100553)     async with build_async_engine_client_from_engine_args(
+(APIServer pid=100553)                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=100553)   File "/usr/lib/python3.12/contextlib.py", line 210, in __aenter__
+(APIServer pid=100553)     return await anext(self.gen)
+(APIServer pid=100553)            ^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=100553)   File "/usr/local/lib/python3.12/dist-packages/vllm/entrypoints/openai/api_server.py", line 123, in build_async_engine_client_from_engine_args
+(APIServer pid=100553)     vllm_config = engine_args.create_engine_config(usage_context=usage_context)
+(APIServer pid=100553)                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=100553)   File "/usr/local/lib/python3.12/dist-packages/vllm/engine/arg_utils.py", line 1725, in create_engine_config
+(APIServer pid=100553)     maybe_override_with_speculators(
+(APIServer pid=100553)   File "/usr/local/lib/python3.12/dist-packages/vllm/transformers_utils/config.py", line 660, in maybe_override_with_speculators
+(APIServer pid=100553)     config_dict, _ = PretrainedConfig.get_config_dict(
+(APIServer pid=100553)                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=100553)   File "/usr/local/lib/python3.12/dist-packages/transformers/configuration_utils.py", line 687, in get_config_dict
+(APIServer pid=100553)     config_dict, kwargs = cls._get_config_dict(pretrained_model_name_or_path, **kwargs)
+(APIServer pid=100553)                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=100553)   File "/usr/local/lib/python3.12/dist-packages/transformers/configuration_utils.py", line 742, in _get_config_dict
+(APIServer pid=100553)     resolved_config_file = cached_file(
+(APIServer pid=100553)                            ^^^^^^^^^^^^
+(APIServer pid=100553)   File "/usr/local/lib/python3.12/dist-packages/transformers/utils/hub.py", line 293, in cached_file
+(APIServer pid=100553)     file = cached_files(path_or_repo_id=path_or_repo_id, filenames=[filename], **kwargs)
+(APIServer pid=100553)            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=100553)   File "/usr/local/lib/python3.12/dist-packages/transformers/utils/hub.py", line 469, in cached_files
+(APIServer pid=100553)     raise OSError(
+(APIServer pid=100553) OSError: google/gemma-4-27b-it is not a local folder and is not a valid model identifier listed on 'https://huggingface.co/models'
+(APIServer pid=100553) If this is a private repository, make sure to pass a token having permission to this repo either by logging in with `hf auth login` or by passing `token=<your_token>`

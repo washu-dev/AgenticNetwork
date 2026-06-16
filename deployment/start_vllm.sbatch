@@ -15,7 +15,7 @@ unset CC CXX CUDAHOSTCXX
 if command -v gcc >/dev/null 2>&1; then export CC="$(command -v gcc)"; fi
 if command -v g++ >/dev/null 2>&1; then export CXX="$(command -v g++)"; fi
 
-export MODEL=openai/gpt-oss-20b
+export MODEL=openai/gpt-oss-120b
 export NUM_GPUS=1
 export HF_HUB_CACHE=/workspace/hf_cache
 export HOME=/workspace
@@ -32,6 +32,7 @@ echo " OpenAI-compatible endpoint: http://$(hostname):${CHAT_PORT}/v1/"
 echo "======================================================"
 
 vllm serve "$MODEL" \
+  --served-model-name openai/gpt-oss-120b \
   --reasoning-parser openai_gptoss \
   --tool-call-parser openai \
   --enable-auto-tool-choice \
@@ -39,7 +40,6 @@ vllm serve "$MODEL" \
   --port "$CHAT_PORT" \
   --tensor-parallel-size "$NUM_GPUS" \
   --gpu-memory-utilization 0.85 \
-  --max-model-len 131072 \
+  --max-model-len 32768 \
   --max-num-batched-tokens 10240 \
   --max-num-seqs 128 \
-  --no-enable-prefix-caching

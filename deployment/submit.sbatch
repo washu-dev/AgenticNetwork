@@ -20,7 +20,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=64G
-#SBATCH --time=04:00:00
+#SBATCH --time=24:00:00
 #SBATCH -A engr-lab-di2
 #SBATCH --output=/engrfs/project/di2/AgenticNetwork/logs/agenticnetwork-%j.log
 #SBATCH --error=/engrfs/project/di2/AgenticNetwork/logs/agenticnetwork-%j.err

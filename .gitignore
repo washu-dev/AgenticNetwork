@@ -22,3 +22,11 @@ deployment/google_credentials/
 # vscode
 .vscode/
 .DS_Store
+
+# vLLM / HF / CUDA runtime caches (created because HOME=/workspace points at the repo)
+.nv/
+.cache/
+.config/
+.triton/
+.humming/
+hf_cache/

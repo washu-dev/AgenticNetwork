@@ -1,0 +1,280 @@
+pyxis: importing docker image: amaankhan25/agenticnetwork-intelligence:latest
+pyxis: imported docker image: amaankhan25/agenticnetwork-intelligence:latest
+2026-06-10T15:30:46-0500 INFO    intelligence_agent | published to ADS: server=localhost:8888 cid=baeareid5r7mccphdvqiclxsojefqggmpju6bugguovrci6xf767hlw74c4
+2026-06-10T15:30:46-0500 INFO    intelligence_agent | serving A2A: bind=http://0.0.0.0:9105/ card_url=http://127.0.0.1:9105/ brave=configured
+INFO:     Started server process [1099182]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:9105 (Press CTRL+C to quit)
+srun: Job step aborted: Waiting up to 32 seconds for job step to finish.
+[2026-06-10T15:47:52.471] error: *** STEP 79019.2 ON amd128-2204 CANCELLED AT 2026-06-10T15:47:52 DUE to SIGNAL Terminated ***
+pyxis: importing docker image: amaankhan25/agenticnetwork-intelligence:latest
+pyxis: imported docker image: amaankhan25/agenticnetwork-intelligence:latest
+2026-06-10T16:52:10-0500 INFO    intelligence_agent | published to ADS: server=localhost:8888 cid=baeareieuaytpxkyd5um3nkvwt2rfqtswh7nv6ly3kcjjlohskyoufozsmu
+2026-06-10T16:52:10-0500 INFO    intelligence_agent | serving A2A: bind=http://0.0.0.0:9105/ card_url=http://127.0.0.1:9105/ brave=configured
+INFO:     Started server process [1135930]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:9105 (Press CTRL+C to quit)
+srun: Job step aborted: Waiting up to 32 seconds for job step to finish.
+[2026-06-10T16:53:08.978] error: *** STEP 79029.6 ON amd128-2204 CANCELLED AT 2026-06-10T16:53:08 DUE to SIGNAL Terminated ***
+pyxis: importing docker image: amaankhan25/agenticnetwork-intelligence:latest
+pyxis: imported docker image: amaankhan25/agenticnetwork-intelligence:latest
+2026-06-10T17:01:03-0500 INFO    intelligence_agent | published to ADS: server=localhost:8888 cid=baeareibvfqczun2rtlglsvqllxkokawkstjq2ptabkrxf4ob5rmlwgbfoi
+2026-06-10T17:01:03-0500 INFO    intelligence_agent | serving A2A: bind=http://0.0.0.0:9105/ card_url=http://127.0.0.1:9105/ brave=configured
+INFO:     Started server process [1145049]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:9105 (Press CTRL+C to quit)
+srun: Job step aborted: Waiting up to 32 seconds for job step to finish.
+[2026-06-10T17:10:58.985] error: *** STEP 79036.6 ON amd128-2204 CANCELLED AT 2026-06-10T17:10:58 DUE to SIGNAL Terminated ***
+pyxis: importing docker image: amaankhan25/agenticnetwork-intelligence:latest
+pyxis: imported docker image: amaankhan25/agenticnetwork-intelligence:latest
+2026-06-11T10:48:38-0500 INFO    intelligence_agent | published to ADS: server=localhost:8888 cid=baeareieurizvj2zgzp23bcywkitnkx7c5tyzsaeh4263fmnd44gp6yur4i
+2026-06-11T10:48:38-0500 INFO    intelligence_agent | serving A2A: bind=http://0.0.0.0:9105/ card_url=http://127.0.0.1:9105/ brave=configured
+INFO:     Started server process [3187687]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:9105 (Press CTRL+C to quit)
+2026-06-11T10:49:57-0500 INFO    intelligence_agent | request received: task_id=f6b845fd-5463-4704-a75e-d1b56b8a3d54 context_id=ad16b610-a9c3-48ae-9cc8-d069deecaad0 prompt='Give me a situation summary about flooding in urban areas.'
+2026-06-11T10:49:59-0500 INFO    intelligence_agent.agent_loop | agent_loop step=1 messages=2 tools_used=0
+2026-06-11T10:49:59-0500 INFO    a2a.server.tasks.task_manager | Task not found or task_id not set. Creating new task for event (task_id: f6b845fd-5463-4704-a75e-d1b56b8a3d54, context_id: ad16b610-a9c3-48ae-9cc8-d069deecaad0).
+[92m10:49:59 - LiteLLM:INFO[0m: utils.py:4083 - 
+LiteLLM completion() model= gpt-oss-20b; provider = openai
+2026-06-11T10:49:59-0500 INFO    LiteLLM | 
+LiteLLM completion() model= gpt-oss-20b; provider = openai
+2026-06-11T10:50:00-0500 ERROR   intelligence_agent | agent loop crashed: task_id=f6b845fd-5463-4704-a75e-d1b56b8a3d54 elapsed=2.69s
+Traceback (most recent call last):
+  File "/opt/conda/envs/intelligence-agent-a2a/lib/python3.12/site-packages/litellm/llms/openai/openai.py", line 930, in acompletion
+    headers, response = await self.make_openai_chat_completion_request(
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/conda/envs/intelligence-agent-a2a/lib/python3.12/site-packages/litellm/litellm_core_utils/logging_utils.py", line 297, in async_wrapper
+    result = await func(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/conda/envs/intelligence-agent-a2a/lib/python3.12/site-packages/litellm/llms/openai/openai.py", line 461, in make_openai_chat_completion_request
+    raise e
+  File "/opt/conda/envs/intelligence-agent-a2a/lib/python3.12/site-packages/litellm/llms/openai/openai.py", line 438, in make_openai_chat_completion_request
+    await openai_aclient.chat.completions.with_raw_response.create(
+  File "/opt/conda/envs/intelligence-agent-a2a/lib/python3.12/site-packages/openai/_legacy_response.py", line 384, in wrapped
+    return cast(LegacyAPIResponse[R], await func(*args, **kwargs))
+                                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/conda/envs/intelligence-agent-a2a/lib/python3.12/site-packages/openai/resources/chat/completions/completions.py", line 2814, in create
+    return await self._post(
+           ^^^^^^^^^^^^^^^^^
+  File "/opt/conda/envs/intelligence-agent-a2a/lib/python3.12/site-packages/openai/_base_client.py", line 1931, in post
+    return await self.request(cast_to, opts, stream=stream, stream_cls=stream_cls)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/conda/envs/intelligence-agent-a2a/lib/python3.12/site-packages/openai/_base_client.py", line 1716, in request
+    raise self._make_status_error_from_response(err.response) from None
+openai.NotFoundError: Error code: 404 - {'error': {'message': 'The model `gpt-oss-20b` does not exist.', 'type': 'NotFoundError', 'param': 'model', 'code': 404}}
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/opt/conda/envs/intelligence-agent-a2a/lib/python3.12/site-packages/litellm/main.py", line 637, in acompletion
+    response = await init_response
+               ^^^^^^^^^^^^^^^^^^^
+  File "/opt/conda/envs/intelligence-agent-a2a/lib/python3.12/site-packages/litellm/llms/openai/openai.py", line 990, in acompletion
+    raise OpenAIError(
+litellm.llms.openai.common_utils.OpenAIError: Error code: 404 - {'error': {'message': 'The model `gpt-oss-20b` does not exist.', 'type': 'NotFoundError', 'param': 'model', 'code': 404}}
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/app/intelligence_agent/intelligence_agent.py", line 198, in execute
+    trace: AgentTrace = await run_agent_loop(
+                        ^^^^^^^^^^^^^^^^^^^^^
+  File "/app/intelligence_agent/agent_loop.py", line 379, in run_agent_loop
+    response = await completion_fn(
+               ^^^^^^^^^^^^^^^^^^^^
+  File "/opt/conda/envs/intelligence-agent-a2a/lib/python3.12/site-packages/litellm/utils.py", line 2100, in wrapper_async
+    raise e
+  File "/opt/conda/envs/intelligence-agent-a2a/lib/python3.12/site-packages/litellm/utils.py", line 1899, in wrapper_async
+    result = await original_function(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/conda/envs/intelligence-agent-a2a/lib/python3.12/site-packages/litellm/main.py", line 656, in acompletion
+    raise exception_type(
+          ^^^^^^^^^^^^^^^
+  File "/opt/conda/envs/intelligence-agent-a2a/lib/python3.12/site-packages/litellm/litellm_core_utils/exception_mapping_utils.py", line 2466, in exception_type
+    raise e
+  File "/opt/conda/envs/intelligence-agent-a2a/lib/python3.12/site-packages/litellm/litellm_core_utils/exception_mapping_utils.py", line 561, in exception_type
+    raise NotFoundError(
+litellm.exceptions.NotFoundError: litellm.NotFoundError: NotFoundError: OpenAIException - The model `gpt-oss-20b` does not exist.
+srun: Job step aborted: Waiting up to 32 seconds for job step to finish.
+[2026-06-11T10:52:52.379] error: *** STEP 79193.3 ON amd128-2201 CANCELLED AT 2026-06-11T10:52:52 DUE to SIGNAL Terminated ***
+pyxis: importing docker image: amaankhan25/agenticnetwork-intelligence:latest
+pyxis: imported docker image: amaankhan25/agenticnetwork-intelligence:latest
+2026-06-11T11:04:56-0500 INFO    intelligence_agent | published to ADS: server=localhost:8888 cid=baeareicibqs5cboymbtiininzvcmxp4d4l4ereqasvyz42mvs3bvdrjyaa
+2026-06-11T11:04:56-0500 INFO    intelligence_agent | serving A2A: bind=http://0.0.0.0:9105/ card_url=http://127.0.0.1:9105/ brave=configured
+INFO:     Started server process [3195395]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:9105 (Press CTRL+C to quit)
+srun: Job step aborted: Waiting up to 32 seconds for job step to finish.
+[2026-06-11T11:27:11.773] error: *** STEP 79199.6 ON amd128-2201 CANCELLED AT 2026-06-11T11:27:11 DUE to SIGNAL Terminated ***
+pyxis: importing docker image: amaankhan25/agenticnetwork-intelligence:latest
+pyxis: imported docker image: amaankhan25/agenticnetwork-intelligence:latest
+2026-06-11T15:21:36-0500 INFO    intelligence_agent | published to ADS: server=localhost:8888 cid=baeareidhxikjgufw2jsjsktxf45kd3pbu5eeuzetyaqvcm4a3zx5i53dw4
+2026-06-11T15:21:36-0500 INFO    intelligence_agent | serving A2A: bind=http://0.0.0.0:9105/ card_url=http://127.0.0.1:9105/ brave=configured
+INFO:     Started server process [1385531]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:9105 (Press CTRL+C to quit)
+2026-06-11T15:24:29-0500 INFO    intelligence_agent | request received: task_id=52c11b85-215e-47b7-84fa-956ef15d3e07 context_id=0e6cc404-4b17-41df-b15a-1e5579d82613 prompt='Create a disaster response plan for a tornado hitting a university campus.'
+2026-06-11T15:24:32-0500 INFO    intelligence_agent.agent_loop | agent_loop step=1 messages=2 tools_used=0
+2026-06-11T15:24:32-0500 INFO    a2a.server.tasks.task_manager | Task not found or task_id not set. Creating new task for event (task_id: 52c11b85-215e-47b7-84fa-956ef15d3e07, context_id: 0e6cc404-4b17-41df-b15a-1e5579d82613).
+[92m15:24:32 - LiteLLM:INFO[0m: utils.py:4083 - 
+LiteLLM completion() model= gpt-oss-20b; provider = openai
+2026-06-11T15:24:32-0500 INFO    LiteLLM | 
+LiteLLM completion() model= gpt-oss-20b; provider = openai
+2026-06-11T15:24:32-0500 ERROR   intelligence_agent | agent loop crashed: task_id=52c11b85-215e-47b7-84fa-956ef15d3e07 elapsed=2.41s
+Traceback (most recent call last):
+  File "/opt/conda/envs/intelligence-agent-a2a/lib/python3.12/site-packages/litellm/llms/openai/openai.py", line 930, in acompletion
+    headers, response = await self.make_openai_chat_completion_request(
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/conda/envs/intelligence-agent-a2a/lib/python3.12/site-packages/litellm/litellm_core_utils/logging_utils.py", line 297, in async_wrapper
+    result = await func(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/conda/envs/intelligence-agent-a2a/lib/python3.12/site-packages/litellm/llms/openai/openai.py", line 461, in make_openai_chat_completion_request
+    raise e
+  File "/opt/conda/envs/intelligence-agent-a2a/lib/python3.12/site-packages/litellm/llms/openai/openai.py", line 438, in make_openai_chat_completion_request
+    await openai_aclient.chat.completions.with_raw_response.create(
+  File "/opt/conda/envs/intelligence-agent-a2a/lib/python3.12/site-packages/openai/_legacy_response.py", line 384, in wrapped
+    return cast(LegacyAPIResponse[R], await func(*args, **kwargs))
+                                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/conda/envs/intelligence-agent-a2a/lib/python3.12/site-packages/openai/resources/chat/completions/completions.py", line 2814, in create
+    return await self._post(
+           ^^^^^^^^^^^^^^^^^
+  File "/opt/conda/envs/intelligence-agent-a2a/lib/python3.12/site-packages/openai/_base_client.py", line 1931, in post
+    return await self.request(cast_to, opts, stream=stream, stream_cls=stream_cls)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/conda/envs/intelligence-agent-a2a/lib/python3.12/site-packages/openai/_base_client.py", line 1716, in request
+    raise self._make_status_error_from_response(err.response) from None
+openai.NotFoundError: Error code: 404 - {'error': {'message': 'The model `gpt-oss-20b` does not exist.', 'type': 'NotFoundError', 'param': 'model', 'code': 404}}
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/opt/conda/envs/intelligence-agent-a2a/lib/python3.12/site-packages/litellm/main.py", line 637, in acompletion
+    response = await init_response
+               ^^^^^^^^^^^^^^^^^^^
+  File "/opt/conda/envs/intelligence-agent-a2a/lib/python3.12/site-packages/litellm/llms/openai/openai.py", line 990, in acompletion
+    raise OpenAIError(
+litellm.llms.openai.common_utils.OpenAIError: Error code: 404 - {'error': {'message': 'The model `gpt-oss-20b` does not exist.', 'type': 'NotFoundError', 'param': 'model', 'code': 404}}
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/app/intelligence_agent/intelligence_agent.py", line 198, in execute
+    trace: AgentTrace = await run_agent_loop(
+                        ^^^^^^^^^^^^^^^^^^^^^
+  File "/app/intelligence_agent/agent_loop.py", line 379, in run_agent_loop
+    response = await completion_fn(
+               ^^^^^^^^^^^^^^^^^^^^
+  File "/opt/conda/envs/intelligence-agent-a2a/lib/python3.12/site-packages/litellm/utils.py", line 2100, in wrapper_async
+    raise e
+  File "/opt/conda/envs/intelligence-agent-a2a/lib/python3.12/site-packages/litellm/utils.py", line 1899, in wrapper_async
+    result = await original_function(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/conda/envs/intelligence-agent-a2a/lib/python3.12/site-packages/litellm/main.py", line 656, in acompletion
+    raise exception_type(
+          ^^^^^^^^^^^^^^^
+  File "/opt/conda/envs/intelligence-agent-a2a/lib/python3.12/site-packages/litellm/litellm_core_utils/exception_mapping_utils.py", line 2466, in exception_type
+    raise e
+  File "/opt/conda/envs/intelligence-agent-a2a/lib/python3.12/site-packages/litellm/litellm_core_utils/exception_mapping_utils.py", line 561, in exception_type
+    raise NotFoundError(
+litellm.exceptions.NotFoundError: litellm.NotFoundError: NotFoundError: OpenAIException - The model `gpt-oss-20b` does not exist.
+2026-06-11T15:26:10-0500 INFO    intelligence_agent | request received: task_id=4dd41aee-d840-4c1a-859f-21cbfaff9b95 context_id=0e6cc404-4b17-41df-b15a-1e5579d82613 prompt='Create a disaster response plan for a tornado hitting a university campus.'
+2026-06-11T15:26:10-0500 INFO    intelligence_agent.agent_loop | agent_loop step=1 messages=2 tools_used=0
+2026-06-11T15:26:10-0500 INFO    a2a.server.tasks.task_manager | Task not found or task_id not set. Creating new task for event (task_id: 4dd41aee-d840-4c1a-859f-21cbfaff9b95, context_id: 0e6cc404-4b17-41df-b15a-1e5579d82613).
+[92m15:26:10 - LiteLLM:INFO[0m: utils.py:4083 - 
+LiteLLM completion() model= gpt-oss-20b; provider = openai
+2026-06-11T15:26:10-0500 INFO    LiteLLM | 
+LiteLLM completion() model= gpt-oss-20b; provider = openai
+2026-06-11T15:26:10-0500 ERROR   intelligence_agent | agent loop crashed: task_id=4dd41aee-d840-4c1a-859f-21cbfaff9b95 elapsed=0.02s
+Traceback (most recent call last):
+  File "/opt/conda/envs/intelligence-agent-a2a/lib/python3.12/site-packages/litellm/llms/openai/openai.py", line 930, in acompletion
+    headers, response = await self.make_openai_chat_completion_request(
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/conda/envs/intelligence-agent-a2a/lib/python3.12/site-packages/litellm/litellm_core_utils/logging_utils.py", line 297, in async_wrapper
+    result = await func(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/conda/envs/intelligence-agent-a2a/lib/python3.12/site-packages/litellm/llms/openai/openai.py", line 461, in make_openai_chat_completion_request
+    raise e
+  File "/opt/conda/envs/intelligence-agent-a2a/lib/python3.12/site-packages/litellm/llms/openai/openai.py", line 438, in make_openai_chat_completion_request
+    await openai_aclient.chat.completions.with_raw_response.create(
+  File "/opt/conda/envs/intelligence-agent-a2a/lib/python3.12/site-packages/openai/_legacy_response.py", line 384, in wrapped
+    return cast(LegacyAPIResponse[R], await func(*args, **kwargs))
+                                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/conda/envs/intelligence-agent-a2a/lib/python3.12/site-packages/openai/resources/chat/completions/completions.py", line 2814, in create
+    return await self._post(
+           ^^^^^^^^^^^^^^^^^
+  File "/opt/conda/envs/intelligence-agent-a2a/lib/python3.12/site-packages/openai/_base_client.py", line 1931, in post
+    return await self.request(cast_to, opts, stream=stream, stream_cls=stream_cls)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/conda/envs/intelligence-agent-a2a/lib/python3.12/site-packages/openai/_base_client.py", line 1716, in request
+    raise self._make_status_error_from_response(err.response) from None
+openai.NotFoundError: Error code: 404 - {'error': {'message': 'The model `gpt-oss-20b` does not exist.', 'type': 'NotFoundError', 'param': 'model', 'code': 404}}
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/opt/conda/envs/intelligence-agent-a2a/lib/python3.12/site-packages/litellm/main.py", line 637, in acompletion
+    response = await init_response
+               ^^^^^^^^^^^^^^^^^^^
+  File "/opt/conda/envs/intelligence-agent-a2a/lib/python3.12/site-packages/litellm/llms/openai/openai.py", line 990, in acompletion
+    raise OpenAIError(
+litellm.llms.openai.common_utils.OpenAIError: Error code: 404 - {'error': {'message': 'The model `gpt-oss-20b` does not exist.', 'type': 'NotFoundError', 'param': 'model', 'code': 404}}
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/app/intelligence_agent/intelligence_agent.py", line 198, in execute
+    trace: AgentTrace = await run_agent_loop(
+                        ^^^^^^^^^^^^^^^^^^^^^
+  File "/app/intelligence_agent/agent_loop.py", line 379, in run_agent_loop
+    response = await completion_fn(
+               ^^^^^^^^^^^^^^^^^^^^
+  File "/opt/conda/envs/intelligence-agent-a2a/lib/python3.12/site-packages/litellm/utils.py", line 2100, in wrapper_async
+    raise e
+  File "/opt/conda/envs/intelligence-agent-a2a/lib/python3.12/site-packages/litellm/utils.py", line 1899, in wrapper_async
+    result = await original_function(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/conda/envs/intelligence-agent-a2a/lib/python3.12/site-packages/litellm/main.py", line 656, in acompletion
+    raise exception_type(
+          ^^^^^^^^^^^^^^^
+  File "/opt/conda/envs/intelligence-agent-a2a/lib/python3.12/site-packages/litellm/litellm_core_utils/exception_mapping_utils.py", line 2466, in exception_type
+    raise e
+  File "/opt/conda/envs/intelligence-agent-a2a/lib/python3.12/site-packages/litellm/litellm_core_utils/exception_mapping_utils.py", line 561, in exception_type
+    raise NotFoundError(
+litellm.exceptions.NotFoundError: litellm.NotFoundError: NotFoundError: OpenAIException - The model `gpt-oss-20b` does not exist.
+srun: Job step aborted: Waiting up to 32 seconds for job step to finish.
+[2026-06-11T15:28:31.479] error: *** STEP 79281.6 ON amd128-2204 CANCELLED AT 2026-06-11T15:28:31 DUE to SIGNAL Terminated ***
+pyxis: importing docker image: amaankhan25/agenticnetwork-intelligence:latest
+pyxis: imported docker image: amaankhan25/agenticnetwork-intelligence:latest
+2026-06-11T17:09:02-0500 INFO    intelligence_agent | published to ADS: server=localhost:8888 cid=baeareid6vkwrid3v2jfjgcjvo5hq3q55fd2bzdmfdvs3usqhpjfvbm6oou
+2026-06-11T17:09:02-0500 INFO    intelligence_agent | serving A2A: bind=http://0.0.0.0:9105/ card_url=http://127.0.0.1:9105/ brave=configured
+INFO:     Started server process [1409916]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:9105 (Press CTRL+C to quit)
+srun: Job step aborted: Waiting up to 32 seconds for job step to finish.
+[2026-06-11T17:34:19.980] error: *** STEP 79298.2 ON amd128-2204 CANCELLED AT 2026-06-11T17:34:19 DUE to SIGNAL Terminated ***
+pyxis: importing docker image: amaankhan25/agenticnetwork-intelligence:latest
+pyxis: imported docker image: amaankhan25/agenticnetwork-intelligence:latest
+2026-06-16T12:18:48-0500 INFO    intelligence_agent | published to ADS: server=localhost:8888 cid=baeareibwc6fwudwzkatepqciexebe43k3nlvt4c7wshtr7xntekczbhqri
+2026-06-16T12:18:48-0500 INFO    intelligence_agent | serving A2A: bind=http://0.0.0.0:9105/ card_url=http://127.0.0.1:9105/ brave=configured
+INFO:     Started server process [3693086]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:9105 (Press CTRL+C to quit)
+srun: Job step aborted: Waiting up to 32 seconds for job step to finish.
+[2026-06-16T12:50:48.855] error: *** STEP 80374.7 ON amd128-2201 CANCELLED AT 2026-06-16T12:50:48 DUE to SIGNAL Terminated ***
+pyxis: importing docker image: amaankhan25/agenticnetwork-intelligence:latest
+pyxis: imported docker image: amaankhan25/agenticnetwork-intelligence:latest
+2026-06-16T16:22:43-0500 INFO    intelligence_agent | published to ADS: server=localhost:8888 cid=baeareidag6cjinsutr6enn7letvcf4nm2mqtkdnlcha4rbvq6bydtuexfy
+2026-06-16T16:22:43-0500 INFO    intelligence_agent | serving A2A: bind=http://0.0.0.0:9105/ card_url=http://127.0.0.1:9105/ brave=configured
+INFO:     Started server process [3754096]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:9105 (Press CTRL+C to quit)
