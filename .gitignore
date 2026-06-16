@@ -31,8 +31,12 @@ deployment/google_credentials/
 .humming/
 hf_cache/
 
-# ron_dep — personal copy; never commit its secrets
-ron_dep/.env
-ron_dep/**/.env
-ron_dep/.hf_token
-ron_dep/google_credentials/
+# ra_dep — personal copy; never commit its secrets
+ra_dep/.env
+ra_dep/**/.env
+ra_dep/.hf_token
+ra_dep/google_credentials/
+
+*.err
+logs/
+ra-logs/

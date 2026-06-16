@@ -34,6 +34,7 @@ echo "======================================================"
 vllm serve "$MODEL" \
   --served-model-name openai/gpt-oss-120b \
   --reasoning-parser openai_gptoss \
+  --tool-call-parser openai \
   --enable-auto-tool-choice \
   --host 0.0.0.0 \
   --port "$CHAT_PORT" \

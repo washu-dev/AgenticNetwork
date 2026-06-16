@@ -1,3 +1,0 @@
-pyxis: importing docker image: vllm/vllm-openai:latest
-[2026-06-10T16:55:17.047] error: *** JOB 79033 ON h100-2405 CANCELLED AT 2026-06-10T16:55:17 DUE to SIGNAL Terminated ***
-[2026-06-10T16:55:46.754] error: pyxis: child 1966850 failed with error code: 1
