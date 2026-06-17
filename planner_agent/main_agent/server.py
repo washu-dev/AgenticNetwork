@@ -155,6 +155,9 @@ def create_app(
                         progress_callback=progress,
                     )
                     await queue.put(("final", result.to_response()))
+                except asyncio.CancelledError:
+                    await queue.put(("error", {"detail": "Request was cancelled or timed out."}))
+                    raise
                 except Exception as exc:
                     logger.exception("main_agent_message_stream_failed")
                     await queue.put(("error", {"detail": str(exc)}))
@@ -163,12 +166,19 @@ def create_app(
 
             task = asyncio.create_task(run_message())
             try:
+                get_task: asyncio.Task[tuple[str, dict[str, Any] | None]] = asyncio.ensure_future(queue.get())
                 while True:
-                    event_name, payload = await queue.get()
+                    done, _ = await asyncio.wait({get_task}, timeout=15.0)
+                    if not done:
+                        yield ": heartbeat\n\n"
+                        continue
+                    event_name, payload = get_task.result()
                     if event_name == "done":
                         break
                     yield _sse(event_name, payload or {})
+                    get_task = asyncio.ensure_future(queue.get())
             finally:
+                get_task.cancel()
                 if not task.done():
                     task.cancel()
                     with contextlib.suppress(asyncio.CancelledError):

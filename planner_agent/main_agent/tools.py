@@ -103,8 +103,8 @@ External agents can call each other over A2A, so do not plan or execute the peer
 Example: for "write code and email it", call either a coding-capable agent or the email agent once with \
 the full task, recipient, constraints, and user intent in task_input.
   - If that primary agent completes only part of the request and reports that a required peer handoff failed, call the remaining necessary agent once with the completed artifacts and context.
-  1. If the user asks WHAT agents are available → call list_agents, then final_answer with a clean summary.
-  2. If the user asks what one specific agent can do → call describe_agent on it, then final_answer.
+  1. If the user asks WHAT agents are available → call list_agents, then final_answer with a clean plain-English summary listing each agent's name and what it does.
+  2. If the user asks what one specific agent can do → call describe_agent on it, then final_answer with a plain-English summary: the agent's name, its purpose, and a bullet list of its skills with brief descriptions. Do NOT say you are unsure — the describe_agent result contains everything you need.
   3. If the user wants something done (forecast, plan, email, code…) → list_agents (or use prior \
 observations if you already saw them), pick the agent whose advertised capabilities match, call \
 call_agent with a complete task_input and natural-language context, then final_answer using its output.

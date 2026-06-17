@@ -262,11 +262,25 @@ class MainAgentRuntime:
         if name == "final_answer":
             text = str(args.get("text") or "").strip()
             if not text:
-                # Salvage: if the LLM ran out of output tokens (common on reasoning
-                # models with large tool observations) it may emit final_answer({}).
-                # Fall back to the last call_agent text so the user still sees
-                # the agent's actual output instead of "(empty)".
                 text = _salvage_final_text(state, structured_outputs)
+            if _is_confused_response(text) and state.step < self.config.max_steps - 1:
+                # Model said "I'm not sure" or similar — inject as an observation
+                # and loop back so it tries again with an explicit nudge.
+                nudge_obs = {
+                    "tool": "final_answer",
+                    "status": "rejected",
+                    "content": {
+                        "reason": (
+                            "Your final_answer text was not helpful. "
+                            "Look at the tool observations already in your context and write "
+                            "a complete, informative answer based on what you found."
+                        )
+                    },
+                }
+                await _record_trace(tool_trace, nudge_obs, progress_callback)
+                state.observations.append(nudge_obs)
+                state.messages.append({"role": "tool", "tool_call_id": tool_call.call_id or "nudge", "content": nudge_obs["content"]["reason"]})
+                return None
             await _record_trace(
                 tool_trace,
                 _with_token_usage({"tool": name, "status": "ok", "args": args}, tool_call),
@@ -1278,6 +1292,19 @@ def _salvage_final_text(state: TurnState, structured_outputs: dict[str, Any]) ->
                 if isinstance(cand, str) and cand.strip():
                     return cand.strip()
     return "(no answer produced)"
+
+
+_CONFUSED_PHRASES = (
+    "i'm not sure how to answer that",
+    "i am not sure how to answer that",
+    "i don't know how to answer that",
+    "i do not know how to answer that",
+)
+
+
+def _is_confused_response(text: str) -> bool:
+    lowered = text.lower().strip()
+    return any(lowered.startswith(phrase) or lowered == phrase for phrase in _CONFUSED_PHRASES)
 
 
 _EMAIL_RE = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.IGNORECASE)
