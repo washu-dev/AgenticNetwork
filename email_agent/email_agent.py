@@ -107,9 +107,9 @@ def _default_email_a2a_card_path() -> Path:
     )
 
 
-DEFAULT_EMAIL = "emailagent.cspl@gmail.com"
+DEFAULT_EMAIL = "agenticweb12@gmail.com"
 DEFAULT_TIMEZONE = "America/Chicago"
-DEFAULT_MODEL = "gpt-5.2"
+DEFAULT_MODEL = "openai/gpt-oss-120b"
 GOOGLE_WORKSPACE_SCOPES = [
     "https://www.googleapis.com/auth/calendar",
     "https://www.googleapis.com/auth/gmail.modify",
@@ -129,7 +129,7 @@ DEFAULT_AGENT_STATUS_FILE = ".agent_status.json"
 DEFAULT_TOOL_TOKEN_USAGE_LOG = Path(__file__).resolve().parent / "tool_token_usage.jsonl"
 DEFAULT_NOTICE_LIST_FILE = "notice_list.txt"
 DEFAULT_VISIBLE_FILES_DIR = "visible_files"
-DEFAULT_ADS_SERVER_ADDR = "10.229.117.37:8888"
+DEFAULT_ADS_SERVER_ADDR = "localhost:8888"
 DEFAULT_ADS_BACKEND = "cli"
 DEFAULT_EMAIL_A2A_CARD = _default_email_a2a_card_path()
 DEFAULT_REMOTE_A2A_TIMEOUT_SECONDS = 180
@@ -2580,13 +2580,21 @@ AGENT_TOOL_SCHEMAS: list[dict[str, Any]] = [
 
 
 def _agent_tool_schemas(enable_remote_agent_tools: bool = False) -> list[dict[str, Any]]:
-    if enable_remote_agent_tools:
-        return list(AGENT_TOOL_SCHEMAS)
-    return [
+    schemas = AGENT_TOOL_SCHEMAS if enable_remote_agent_tools else [
         schema
         for schema in AGENT_TOOL_SCHEMAS
         if str(schema.get("name") or "") not in REMOTE_AGENT_TOOL_NAMES
     ]
+    # Convert from Responses API format {"type":"function","name":...} to
+    # Chat Completions format {"type":"function","function":{"name":...}}
+    result = []
+    for schema in schemas:
+        if "function" in schema:
+            result.append(schema)
+        else:
+            inner = {k: v for k, v in schema.items() if k != "type"}
+            result.append({"type": "function", "function": inner})
+    return result
 
 
 class AgentStatusReporter:
@@ -2654,8 +2662,8 @@ class ToolCallingEmailAgent:
                 model=self.model,
             )
             client = self._openai_client()
-            response = self._start_response(client, user_request)
-            text, _ = self._finish_response(client, response, user_request=user_request)
+            messages, response = self._start_response(client, user_request)
+            text, _ = self._finish_response(client, messages, response, user_request=user_request)
             self.status.update("finished", "Agent finished", response_preview=_preview_text(text))
             return text
         except Exception as exc:
@@ -2672,8 +2680,8 @@ class ToolCallingEmailAgent:
                 model=self.model,
             )
             client = self._openai_client()
-            response = self._start_response(client, user_request)
-            text, _ = self._finish_response(client, response, user_request=user_request, tool_trace=trace)
+            messages, response = self._start_response(client, user_request)
+            text, _ = self._finish_response(client, messages, response, user_request=user_request, tool_trace=trace)
             self.status.update("finished", "Agent finished", response_preview=_preview_text(text))
             return EmailAgentRunResult(text=text, tool_calls=trace)
         except Exception as exc:
@@ -2689,11 +2697,11 @@ class ToolCallingEmailAgent:
                 model=self.model,
             )
             client = self._openai_client()
-            response = self._start_response(client, user_request)
+            messages, response = self._start_response(client, user_request)
             latest_user_request = user_request
 
             while True:
-                text, response = self._finish_response(client, response, user_request=user_request)
+                text, response = self._finish_response(client, messages, response, user_request=user_request)
                 print(text)
 
                 if not sys.stdin.isatty():
@@ -2721,13 +2729,13 @@ class ToolCallingEmailAgent:
                     request_preview=_preview_text(next_request),
                 )
                 latest_user_request = next_request
-                response = client.responses.create(
+                messages.append({"role": "user", "content": next_request})
+                response = client.chat.completions.create(
                     model=self.model,
-                    input=[{"role": "user", "content": next_request}],
+                    messages=messages,
                     tools=self.tool_schemas,
-                    previous_response_id=_object_get(response, "id"),
-                    parallel_tool_calls=False,
                 )
+                messages.append(_cc_message_to_dict(response.choices[0].message))
         except Exception as exc:
             self.status.update("error", f"{type(exc).__name__}: {exc}")
             raise
@@ -2743,21 +2751,24 @@ class ToolCallingEmailAgent:
 
         return OpenAI()
 
-    def _start_response(self, client: Any, user_request: str) -> Any:
+    def _start_response(self, client: Any, user_request: str) -> tuple[list[dict[str, Any]], Any]:
         self.status.update("reasoning", "Calling model", model=self.model)
-        return client.responses.create(
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": self._system_prompt()},
+            {"role": "user", "content": user_request},
+        ]
+        response = client.chat.completions.create(
             model=self.model,
-            input=[
-                {"role": "system", "content": self._system_prompt()},
-                {"role": "user", "content": user_request},
-            ],
+            messages=messages,
             tools=self.tool_schemas,
-            parallel_tool_calls=False,
         )
+        messages.append(_cc_message_to_dict(response.choices[0].message))
+        return messages, response
 
     def _finish_response(
         self,
         client: Any,
+        messages: list[dict[str, Any]],
         response: Any,
         *,
         user_request: str = "",
@@ -2769,11 +2780,10 @@ class ToolCallingEmailAgent:
             if not tool_calls:
                 return _append_pending_actions_to_text(_response_text(response), pending_actions), response
 
-            tool_outputs = []
             for call in tool_calls:
-                name = _object_get(call, "name", "")
-                call_id = _object_get(call, "call_id", "")
-                raw_arguments = _object_get(call, "arguments", "{}")
+                name = call.function.name
+                call_id = call.id
+                raw_arguments = call.function.arguments
                 token_usage = _record_tool_call_token_usage(
                     model=self.model,
                     response=response,
@@ -2784,7 +2794,7 @@ class ToolCallingEmailAgent:
                 )
                 arguments: dict[str, Any] = {}
                 try:
-                    arguments = json.loads(raw_arguments or "{}")
+                    arguments = json.loads(raw_arguments or "{}") if isinstance(raw_arguments, str) else dict(raw_arguments or {})
                     _email_status(
                         "Agent tool call received",
                         tool=name,
@@ -2843,22 +2853,19 @@ class ToolCallingEmailAgent:
                     )
                 pending_actions.extend(_pending_actions_from_tool_result(result, tool_name=name))
 
-                tool_outputs.append(
-                    {
-                        "type": "function_call_output",
-                        "call_id": call_id,
-                        "output": json.dumps(result, default=str),
-                    }
-                )
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": call_id,
+                    "content": json.dumps(result, default=str),
+                })
 
             self.status.update("reasoning", "Calling model with tool results", model=self.model)
-            response = client.responses.create(
+            response = client.chat.completions.create(
                 model=self.model,
-                input=tool_outputs,
+                messages=messages,
                 tools=self.tool_schemas,
-                previous_response_id=_object_get(response, "id"),
-                parallel_tool_calls=False,
             )
+            messages.append(_cc_message_to_dict(response.choices[0].message))
 
         return (
             "I stopped after the maximum number of tool steps. "
@@ -2878,9 +2885,9 @@ class ToolCallingEmailAgent:
             "Asking model whether user follow-up is needed",
             model=self.model,
         )
-        response = client.responses.create(
+        response = client.chat.completions.create(
             model=self.model,
-            input=[
+            messages=[
                 {
                     "role": "system",
                     "content": (
@@ -5705,28 +5712,43 @@ def _object_get(item: Any, key: str, default: Any = None) -> Any:
 
 
 def _extract_function_calls(response: Any) -> list[Any]:
-    return [
-        item
-        for item in (_object_get(response, "output", []) or [])
-        if _object_get(item, "type") == "function_call"
-    ]
+    """Extract tool calls from a Chat Completions response."""
+    try:
+        tool_calls = response.choices[0].message.tool_calls
+        return list(tool_calls) if tool_calls else []
+    except (AttributeError, IndexError):
+        return []
 
 
 def _response_text(response: Any) -> str:
-    output_text = _object_get(response, "output_text")
-    if output_text:
-        return str(output_text)
+    """Extract text content from a Chat Completions response."""
+    try:
+        content = response.choices[0].message.content
+        return str(content).strip() if content else "(No final response.)"
+    except (AttributeError, IndexError):
+        return "(No final response.)"
 
-    parts: list[str] = []
-    for item in (_object_get(response, "output", []) or []):
-        if _object_get(item, "type") != "message":
-            continue
-        for content in (_object_get(item, "content", []) or []):
-            if _object_get(content, "type") in {"output_text", "text"}:
-                text = _object_get(content, "text", "")
-                if text:
-                    parts.append(str(text))
-    return "\n".join(parts).strip() or "(No final response.)"
+
+def _cc_message_to_dict(message: Any) -> dict[str, Any]:
+    """Convert a Chat Completions message object to a plain dict for history."""
+    msg: dict[str, Any] = {"role": "assistant"}
+    content = getattr(message, "content", None)
+    if content:
+        msg["content"] = content
+    tool_calls = getattr(message, "tool_calls", None)
+    if tool_calls:
+        msg["tool_calls"] = [
+            {
+                "id": tc.id,
+                "type": "function",
+                "function": {
+                    "name": tc.function.name,
+                    "arguments": tc.function.arguments,
+                },
+            }
+            for tc in tool_calls
+        ]
+    return msg
 
 
 def _preview_text(value: Any, limit: int = 160) -> str:
