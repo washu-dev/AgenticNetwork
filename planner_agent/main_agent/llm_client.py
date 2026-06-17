@@ -94,13 +94,25 @@ class OpenAIToolLoopClient:
             "max_tokens": self.config.max_output_tokens,
         }
 
-        try:
-            response = await client.chat.completions.create(**kwargs)
-        except Exception as exc:
-            logger.exception("main_agent_openai_failed model=%s", self.config.llm_model)
-            raise RuntimeError(f"OpenAI request failed: {type(exc).__name__}: {exc}") from exc
+        for attempt in range(3):
+            try:
+                response = await client.chat.completions.create(**kwargs)
+            except Exception as exc:
+                logger.exception("main_agent_openai_failed model=%s", self.config.llm_model)
+                raise RuntimeError(f"OpenAI request failed: {type(exc).__name__}: {exc}") from exc
 
-        message = response.choices[0].message
+            message = response.choices[0].message
+            finish_reason = getattr(response.choices[0], "finish_reason", None)
+            has_tool_calls = bool(getattr(message, "tool_calls", None))
+            if finish_reason == "stop" and not has_tool_calls and attempt < 2:
+                logger.warning(
+                    "main_agent_stop_no_tool_call_retrying context_id=%s attempt=%d",
+                    state.context_id,
+                    attempt,
+                )
+                continue
+            break
+
         # Append the assistant turn to history so the next step has full context.
         state.messages.append(_message_to_dict(message))
 
@@ -137,7 +149,10 @@ def _initial_payload(state: TurnState) -> dict[str, Any]:
             "actual image bytes to that geospatial A2A call. "
             "For compound requests, choose one primary related agent and send the whole task; "
             "external agents coordinate peer A2A calls when needed. "
-            "Use final_answer only after the user request has been answered or delegated."
+            "Use final_answer only after the user request has been answered or delegated. "
+            "When calling final_answer, always write a complete helpful response in the text argument — "
+            "never say 'I am not sure' or leave it blank. If you just received a describe_agent or "
+            "list_agents observation, summarize it in plain English as your final_answer text."
         ),
     }
 
