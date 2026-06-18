@@ -82,8 +82,11 @@ same connection string shape. DB is source of truth; ADS is rebuilt from it on e
   - Python `DEFAULT_AGENT_URL` / `DEFAULT_ADS_SERVER_ADDR` constants → `localhost`
   - All entrypoints → pass `--advertise-url http://localhost:{port}/` at startup
   - Added `--advertise-url` + `--directory-server` support to coding and intelligence agents (were missing both)
-- [ ] Centralize per-agent ADS publish logic (currently duplicated across 5+ agents) into a
-  shared utility — registration service will own this going forward
+- [x] Centralize per-agent ADS publish logic into `ads_utils/` shared package ✓
+  - `ads_utils/publisher.py` — `DirectoryPublisher` (push + routing publish + poll)
+  - `ads_utils/converter.py` — `agent_card_to_ads_record` with real OASF taxonomy IDs
+  - All 5 agents (coding, intelligence, disaster, geospatial, email) migrated
+  - OASF skill taxonomy sourced from agntcy/oasf GitHub schema repo
 
 ### 2. Registration Service — Core
 
