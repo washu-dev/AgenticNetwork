@@ -1,7 +1,7 @@
 {
   "name": "Coding Agent",
   "description": "External mini-swe-agent-backed A2A Coding Agent for repository inspection, bug fixes, code generation, tests, reviews, and documentation.",
-  "url": "http://10.229.117.181:9106/",
+  "url": "http://AGENT_HOST:9106/",
   "version": "0.2.0",
   "protocolVersion": "0.3.0",
   "preferredTransport": "JSONRPC",

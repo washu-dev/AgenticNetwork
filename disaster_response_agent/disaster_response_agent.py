@@ -55,9 +55,9 @@ else:
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 9104
 DEFAULT_MODEL = "gpt-5"
-DEFAULT_ADS_SERVER_ADDR = "10.229.117.37:8888"
+DEFAULT_ADS_SERVER_ADDR = "localhost:8888"
 DEFAULT_ADS_BACKEND = "cli"
-DEFAULT_AGENT_URL = "http://10.229.117.223:9104/"
+DEFAULT_AGENT_URL = "http://AGENT_HOST:9104/"
 DEFAULT_CARD_PATH = Path(__file__).resolve().parent / "disaster_response_agent.card.json"
 DEFAULT_REMOTE_A2A_TIMEOUT_SECONDS = 180
 DEFAULT_TOOL_TOKEN_USAGE_LOG = Path(__file__).resolve().parent / "tool_token_usage.jsonl"

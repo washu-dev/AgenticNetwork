@@ -1,7 +1,7 @@
 {
   "name": "Disaster Response Agent",
   "description": "AI-powered A2A disaster response planning agent that turns situation descriptions such as tornado, flood, wildfire, war, explosion, chemical hazard, or armed threat into detailed immediate-action guidance, shelter and evacuation steps, supplies, communications, and safety checklists.",
-  "url": "http://10.229.117.223:9104/",
+  "url": "http://AGENT_HOST:9104/",
   "version": "0.3.2",
   "protocolVersion": "0.3.0",
   "preferredTransport": "JSONRPC",

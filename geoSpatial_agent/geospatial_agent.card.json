@@ -1,7 +1,7 @@
 {
   "name": "GeoSpatial Agent",
   "description": "A2A image geospatial analysis agent that infers likely photo location using the existing DeepSearch-Geo Gemini-default pipeline and describes visible public-safety incidents such as flood, tornado damage, fire, armed threat, or infrastructure damage.",
-  "url": "http://10.229.117.223:9105/",
+  "url": "http://AGENT_HOST:9105/",
   "version": "0.1.0",
   "protocolVersion": "0.3.0",
   "preferredTransport": "JSONRPC",
