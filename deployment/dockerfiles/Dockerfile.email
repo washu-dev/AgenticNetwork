@@ -21,6 +21,7 @@ COPY email_agent/environment.yml email_agent/environment.yml
 RUN mamba env create -f email_agent/environment.yml --quiet
 
 COPY email_agent/ email_agent/
+COPY ads_utils/ ads_utils/
 # TODO: Google credentials should be mounted at runtime, not baked into the image.
 COPY deployment/google_credentials/ deployment/google_credentials/
 COPY deployment/entrypoints/entrypoint-email.sh /entrypoint.sh

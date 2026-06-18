@@ -21,6 +21,7 @@ COPY coding_agent/environment.yml coding_agent/environment.yml
 RUN mamba env create -f coding_agent/environment.yml --quiet
 
 COPY coding_agent/ coding_agent/
+COPY ads_utils/ ads_utils/
 COPY deployment/entrypoints/entrypoint-coding.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 

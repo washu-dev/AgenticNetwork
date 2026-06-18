@@ -21,6 +21,7 @@ COPY intelligence_agent/environment.yml intelligence_agent/environment.yml
 RUN mamba env create -f intelligence_agent/environment.yml --quiet
 
 COPY intelligence_agent/ intelligence_agent/
+COPY ads_utils/ ads_utils/
 COPY deployment/entrypoints/entrypoint-intelligence.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 

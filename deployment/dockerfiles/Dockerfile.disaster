@@ -23,6 +23,7 @@ COPY disaster_response_agent/environment.yml disaster_response_agent/environment
 RUN mamba env create -f disaster_response_agent/environment.yml --quiet
 
 COPY disaster_response_agent/ disaster_response_agent/
+COPY ads_utils/ ads_utils/
 COPY deployment/entrypoints/entrypoint-disaster.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 

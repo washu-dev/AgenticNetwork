@@ -28,6 +28,7 @@ RUN mamba create -n geospatial-agent python=3.12 pip -y --quiet \
         "agntcy-oasf-sdk-protocolbuffers-python"
 
 COPY geoSpatial_agent/ geoSpatial_agent/
+COPY ads_utils/ ads_utils/
 COPY deployment/entrypoints/entrypoint-geospatial.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
