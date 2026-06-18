@@ -1382,40 +1382,24 @@ def publish_geospatial_a2a_agent_card_to_ads(
     ads_url: str | None = None,
     ads_backend: str | None = DEFAULT_ADS_BACKEND,
 ) -> PublishedRecord:
+    from ads_utils.publisher import DirectoryPublisher, DirectoryUnavailable
+
     _geo_status(
         "Publishing GeoSpatial Agent card to ADS",
         ads_url=ads_url or "env",
-        ads_backend=ads_backend or "env",
         agent_url=getattr(agent_card, "url", ""),
     )
-    backend = (ads_backend or os.getenv("ADS_BACKEND") or DEFAULT_ADS_BACKEND).lower()
-    if backend != "cli":
-        raise RuntimeError(
-            "Standalone GeoSpatial Agent ADS publication supports ADS_BACKEND=cli only. "
-            "Use --ads-backend cli or set ADS_BACKEND=cli."
-        )
-    ads_record = _agent_card_to_ads_record(agent_card)
-    internal_record = _agent_card_to_oasf_record(agent_card)
-    with tempfile.NamedTemporaryFile("w", suffix=".json", encoding="utf-8", delete=False) as fh:
-        json.dump(ads_record, fh, indent=2, sort_keys=True)
-        temp_path = Path(fh.name)
     try:
-        _geo_status("Pushing GeoSpatial Agent ADS record", record_file=str(temp_path))
-        push = _run_dirctl(["push", str(temp_path), "--output", "raw"], ads_url=ads_url)
-        cid = push.stdout.strip()
-        if not cid:
-            raise RuntimeError("dirctl push did not return a CID.")
-        _geo_status("Publishing GeoSpatial Agent ADS routing entry", cid=cid)
-        _run_dirctl(["routing", "publish", cid], ads_url=ads_url)
-    finally:
-        temp_path.unlink(missing_ok=True)
+        result = DirectoryPublisher(server_addr=ads_url).publish(agent_card)
+    except DirectoryUnavailable as exc:
+        raise RuntimeError(str(exc)) from exc
     published = PublishedRecord(
-        record_id=internal_record["record_id"],
-        agent_id=internal_record["agent_id"],
+        record_id=result.record_id,
+        agent_id=result.agent_id,
         backend="real",
-        backend_ref=cid,
+        backend_ref=result.backend_ref,
     )
-    _geo_status("GeoSpatial Agent card published to ADS", backend=published.backend, record=cid)
+    _geo_status("GeoSpatial Agent card published to ADS", backend=published.backend, record=result.backend_ref)
     return published
 
 
@@ -1431,9 +1415,11 @@ def unpublish_geospatial_a2a_agent_card_from_ads(
         _geo_status("Skipping ADS unpublish", reason="missing published CID")
         return False
 
+    from ads_utils.publisher import DirectoryPublisher
+
     _geo_status("Unpublishing GeoSpatial Agent from ADS", cid=cid)
     try:
-        _run_dirctl(["routing", "unpublish", cid], ads_url=ads_url)
+        DirectoryPublisher(server_addr=ads_url).unpublish(cid)
     except Exception as exc:
         _geo_status("Failed to unpublish GeoSpatial Agent from ADS", cid=cid, error=str(exc))
         return False

@@ -1064,30 +1064,18 @@ def publish_disaster_a2a_agent_card_to_ads(
     ads_url: str | None = None,
     ads_backend: str | None = DEFAULT_ADS_BACKEND,
 ) -> PublishedRecord:
-    backend = (ads_backend or os.getenv("ADS_BACKEND") or DEFAULT_ADS_BACKEND).lower()
-    if backend != "cli":
-        raise RuntimeError("Standalone ADS publication supports ADS_BACKEND=cli only.")
+    from ads_utils.publisher import DirectoryPublisher, DirectoryUnavailable
 
-    ads_record = _agent_card_to_ads_record(agent_card)
-    internal_record = _agent_card_to_oasf_record(agent_card)
-    with tempfile.NamedTemporaryFile("w", suffix=".json", encoding="utf-8", delete=False) as fh:
-        json.dump(ads_record, fh, indent=2, sort_keys=True)
-        temp_path = Path(fh.name)
+    _disaster_status("Pushing Disaster Response Agent card to ADS", ads_url=ads_url or "env")
     try:
-        _disaster_status("Pushing Disaster Response Agent ADS record", record_file=str(temp_path))
-        push = _run_dirctl(["push", str(temp_path), "--output", "raw"], ads_url=ads_url)
-        cid = push.stdout.strip()
-        if not cid:
-            raise RuntimeError("dirctl push did not return a CID.")
-        _disaster_status("Publishing Disaster Response Agent ADS routing entry", cid=cid)
-        _run_dirctl(["routing", "publish", cid], ads_url=ads_url)
-    finally:
-        temp_path.unlink(missing_ok=True)
+        result = DirectoryPublisher(server_addr=ads_url).publish(agent_card)
+    except DirectoryUnavailable as exc:
+        raise RuntimeError(str(exc)) from exc
     return PublishedRecord(
-        record_id=internal_record["record_id"],
-        agent_id=internal_record["agent_id"],
+        record_id=result.record_id,
+        agent_id=result.agent_id,
         backend="real",
-        backend_ref=cid,
+        backend_ref=result.backend_ref,
     )
 
 
@@ -1123,15 +1111,13 @@ def unpublish_disaster_a2a_agent_card_from_ads(
         _disaster_status("Skipping ADS unpublish", reason="missing published CID")
         return False
 
+    from ads_utils.publisher import DirectoryPublisher
+
     _disaster_status("Unpublishing Disaster Response Agent from ADS", cid=cid)
     try:
-        _run_dirctl(["routing", "unpublish", cid], ads_url=ads_url)
+        DirectoryPublisher(server_addr=ads_url).unpublish(cid)
     except Exception as exc:
-        _disaster_status(
-            "Failed to unpublish Disaster Response Agent from ADS",
-            cid=cid,
-            error=str(exc),
-        )
+        _disaster_status("Failed to unpublish Disaster Response Agent from ADS", cid=cid, error=str(exc))
         return False
 
     _disaster_status("Disaster Response Agent unpublished from ADS", cid=cid)

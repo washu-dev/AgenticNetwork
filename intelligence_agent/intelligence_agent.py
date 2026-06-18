@@ -48,6 +48,8 @@ from typing import TYPE_CHECKING, Any, Sequence
 
 import httpx
 
+from ads_utils.publisher import DirectoryPublisher, DirectoryUnavailable
+
 _THIS_DIR = Path(__file__).resolve().parent
 if str(_THIS_DIR) not in sys.path:
     sys.path.insert(0, str(_THIS_DIR))
@@ -1202,7 +1204,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "published to ADS: server=%s cid=%s",
                     args.directory_server, published_cid,
                 )
-            except _DirctlError as exc:
+            except DirectoryUnavailable as exc:
                 logger.error("failed to publish to ADS: %s", exc)
                 return 3
 
@@ -1230,7 +1232,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         "unpublished from ADS: server=%s cid=%s",
                         args.directory_server, published_cid,
                     )
-                except _DirctlError as exc:
+                except DirectoryUnavailable as exc:
                     logger.error(
                         "failed to unpublish cid=%s: %s", published_cid, exc,
                     )
@@ -1242,35 +1244,17 @@ def main(argv: Sequence[str] | None = None) -> int:
 def _publish_self_to_ads(
     card_path: Path, server_addr: str, *, advertise_url: str | None = None, dirctl_path: str = "dirctl"
 ) -> str:
-    from _ads_record import agent_card_to_ads_record, load_agent_card
-
+    from ads_utils.converter import load_agent_card
     card = load_agent_card(card_path)
-    if advertise_url:
-        card = card.model_copy(update={"url": advertise_url.rstrip("/") + "/"})
-    record = agent_card_to_ads_record(card)
-    fh = tempfile.NamedTemporaryFile(
-        mode="w", encoding="utf-8", suffix=".record.json", delete=False
-    )
-    record_path = Path(fh.name)
-    try:
-        json.dump(record, fh, indent=2)
-        fh.close()
-        directory = _DirctlDirectory(server_addr=server_addr, dirctl_path=dirctl_path)
-        cid = directory.push(record_path)
-        directory.publish(cid)
-        return cid
-    finally:
-        try:
-            record_path.unlink()
-        except FileNotFoundError:
-            pass
+    pub = DirectoryPublisher(server_addr=server_addr, dirctl_path=dirctl_path)
+    record = pub.publish(card, advertise_url=advertise_url)
+    return record.backend_ref
 
 
 def _unpublish_self_from_ads(
     server_addr: str, cid: str, *, dirctl_path: str = "dirctl"
 ) -> None:
-    directory = _DirctlDirectory(server_addr=server_addr, dirctl_path=dirctl_path)
-    directory.unpublish(cid)
+    DirectoryPublisher(server_addr=server_addr, dirctl_path=dirctl_path).unpublish(cid)
 
 
 def _cli_run_once(args: argparse.Namespace) -> int:
