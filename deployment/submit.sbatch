@@ -66,6 +66,13 @@ done
 
 # ── Agent containers (all start in parallel after ADS is up) ─────────────────
 srun --ntasks=1 --overlap \
+     --container-image=amaankhan25/agenticnetwork-registration:latest \
+     --container-mounts="$MOUNTS,/engrfs/project/di2/postgres_data:/var/lib/postgresql/data" \
+     --container-writable \
+     /entrypoint.sh \
+     >> "$LOGS/registration.log" 2>> "$LOGS/registration.err" &
+
+srun --ntasks=1 --overlap \
      --container-image=amaankhan25/agenticnetwork-planner:latest \
      --container-mounts="$MOUNTS" \
      --container-writable \
