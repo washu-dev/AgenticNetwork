@@ -21,4 +21,5 @@ done
 cd /app/email_agent
 exec /opt/conda/envs/email-agent-a2a/bin/python email_agent.py serve-a2a \
     --host "${EMAIL_AGENT_A2A_HOST:-0.0.0.0}" \
-    --port "${EMAIL_AGENT_A2A_PORT:-9103}"
+    --port "${EMAIL_AGENT_A2A_PORT:-9103}" \
+    --advertise-url "http://localhost:${EMAIL_AGENT_A2A_PORT:-9103}/"

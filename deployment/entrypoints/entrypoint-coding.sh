@@ -21,4 +21,6 @@ done
 cd /app/coding_agent
 exec /opt/conda/envs/coding-agent-a2a/bin/python coding_agent.py serve-a2a \
     --host "${CODING_AGENT_A2A_HOST:-0.0.0.0}" \
-    --port "${CODING_AGENT_A2A_PORT:-9106}"
+    --port "${CODING_AGENT_A2A_PORT:-9106}" \
+    --advertise-url "http://localhost:${CODING_AGENT_A2A_PORT:-9106}/" \
+    --directory-server "${ADS_ADDR}"

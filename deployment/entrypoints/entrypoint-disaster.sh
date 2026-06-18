@@ -21,4 +21,5 @@ done
 cd /app/disaster_response_agent
 exec /opt/conda/envs/email-agent-a2a/bin/python disaster_response_agent.py serve-a2a \
     --host "${DISASTER_AGENT_A2A_HOST:-0.0.0.0}" \
-    --port "${DISASTER_AGENT_A2A_PORT:-19107}"
+    --port "${DISASTER_AGENT_A2A_PORT:-19107}" \
+    --advertise-url "http://localhost:${DISASTER_AGENT_A2A_PORT:-19107}/"

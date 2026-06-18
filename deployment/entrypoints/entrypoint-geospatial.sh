@@ -21,4 +21,5 @@ done
 cd /app/geoSpatial_agent
 exec /opt/conda/envs/geospatial-agent/bin/python geospatial_agent.py serve-a2a \
     --host "${GEOSPATIAL_AGENT_A2A_HOST:-0.0.0.0}" \
-    --port "${GEOSPATIAL_AGENT_A2A_PORT:-19108}"
+    --port "${GEOSPATIAL_AGENT_A2A_PORT:-19108}" \
+    --advertise-url "http://localhost:${GEOSPATIAL_AGENT_A2A_PORT:-19108}/"

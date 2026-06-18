@@ -21,4 +21,6 @@ done
 cd /app/intelligence_agent
 exec /opt/conda/envs/intelligence-agent-a2a/bin/python intelligence_agent.py serve-a2a \
     --host "${INTEL_AGENT_A2A_HOST:-0.0.0.0}" \
-    --port "${INTEL_AGENT_A2A_PORT:-9105}"
+    --port "${INTEL_AGENT_A2A_PORT:-9105}" \
+    --advertise-url "http://localhost:${INTEL_AGENT_A2A_PORT:-9105}/" \
+    --directory-server "${ADS_ADDR}"

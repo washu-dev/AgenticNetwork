@@ -2007,7 +2007,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--directory-server",
         default=os.getenv("CODING_AGENT_DIRECTORY_URL") or os.getenv("ADS_URL"),
         help=(
-            "ADS server address for `dirctl` (e.g. 10.229.117.37:8888). When "
+            "ADS server address for `dirctl` (e.g. localhost:8888). When "
             "set, the coding agent self-publishes on startup and unpublishes "
             "on exit, and outbound `delivery` requests use this directory for "
             "discovery. Defaults to CODING_AGENT_DIRECTORY_URL or ADS_URL."
@@ -2017,6 +2017,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--dirctl-path",
         default="dirctl",
         help="Path to the dirctl binary. Default: search PATH.",
+    )
+    a2a_parser.add_argument(
+        "--advertise-url",
+        default=os.getenv("CODING_AGENT_A2A_URL"),
+        help=(
+            "Public URL this agent advertises in ADS (e.g. http://localhost:9106/). "
+            "Overrides the url field in the agent card. Defaults to CODING_AGENT_A2A_URL."
+        ),
     )
     a2a_parser.add_argument(
         "--no-publish",
@@ -2138,6 +2146,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 published_cid = _publish_self_to_ads(
                     args.card,
                     args.directory_server,
+                    advertise_url=args.advertise_url,
                     dirctl_path=args.dirctl_path,
                 )
                 logger.info(
@@ -2184,7 +2193,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _publish_self_to_ads(
-    card_path: Path, server_addr: str, *, dirctl_path: str = "dirctl"
+    card_path: Path, server_addr: str, *, advertise_url: str | None = None, dirctl_path: str = "dirctl"
 ) -> str:
     """Convert this agent's card to an ADS record, push it, and announce it.
 
@@ -2195,6 +2204,8 @@ def _publish_self_to_ads(
     from _ads_record import agent_card_to_ads_record, load_agent_card
 
     card = load_agent_card(card_path)
+    if advertise_url:
+        card = card.model_copy(update={"url": advertise_url.rstrip("/") + "/"})
     record = agent_card_to_ads_record(card)
     fh = tempfile.NamedTemporaryFile(
         mode="w", encoding="utf-8", suffix=".record.json", delete=False
