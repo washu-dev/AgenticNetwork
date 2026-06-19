@@ -19,9 +19,10 @@ deployment/google_credentials/
 # Hugging Face token
 .hf_token
 
-# vscode
+# ides
 .vscode/
 .DS_Store
+.idea/
 
 # vLLM / HF / CUDA runtime caches (created because HOME=/workspace points at the repo)
 .nv/
