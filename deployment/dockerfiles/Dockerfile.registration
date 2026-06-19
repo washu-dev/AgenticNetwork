@@ -1,0 +1,31 @@
+# Registration service — port 8091, spawns agent subprocesses on 19200-19299
+# Build from repo root:
+#   docker build --platform linux/amd64 -f deployment/dockerfiles/Dockerfile.registration \
+#       -t amaankhan25/agenticnetwork-registration:latest .
+FROM ghcr.io/agntcy/dir-ctl:v1.2.0 AS dirctl-src
+
+FROM python:3.11-slim-bookworm
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        postgresql-15 \
+        curl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=dirctl-src /dirctl /usr/local/bin/dirctl
+RUN chmod +x /usr/local/bin/dirctl
+
+WORKDIR /app
+
+COPY registration_service/requirements.txt registration_service/requirements.txt
+RUN pip install --no-cache-dir -r registration_service/requirements.txt
+
+COPY registration_service/ registration_service/
+COPY ads_utils/ ads_utils/
+COPY deployment/entrypoints/entrypoint-registration.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENV PYTHONPATH=/app
+
+EXPOSE 8091
+
+ENTRYPOINT ["/entrypoint.sh"]

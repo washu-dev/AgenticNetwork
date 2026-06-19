@@ -12,7 +12,7 @@ REGISTRY=amaankhan25
 TAG=latest
 PLATFORM=linux/amd64
 
-AGENTS=(ads planner scout email coding intelligence disaster geospatial)
+AGENTS=(ads planner scout email coding intelligence disaster geospatial registration)
 
 # If an agent name is passed as an argument, build only that one.
 if [ $# -gt 0 ]; then
