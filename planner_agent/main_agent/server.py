@@ -11,8 +11,9 @@ from pathlib import Path
 from typing import Any, Sequence
 from uuid import uuid4
 
+import httpx
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from planner_agent.main_agent.a2a.client import A2AClient
@@ -90,6 +91,22 @@ def create_app(
     @app.get("/health")
     async def health() -> dict[str, str]:
         return {"status": "ok", "fake_ads": str(cfg.fake_ads), "model": cfg.llm_model}
+
+    _reg_base = os.getenv("REGISTRATION_SERVICE_URL", "http://localhost:8091")
+    _reg_client = httpx.AsyncClient(base_url=_reg_base, timeout=30.0)
+
+    @app.api_route("/register/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+    async def proxy_registration(path: str, request: Request) -> Response:
+        url = f"/{path}"
+        body = await request.body()
+        headers = {k: v for k, v in request.headers.items()
+                   if k.lower() not in ("host", "content-length")}
+        resp = await _reg_client.request(
+            request.method, url,
+            content=body, headers=headers, params=request.query_params,
+        )
+        return Response(content=resp.content, status_code=resp.status_code,
+                        headers=dict(resp.headers))
 
     @app.get("/", response_class=HTMLResponse)
     async def chat_ui() -> HTMLResponse:
