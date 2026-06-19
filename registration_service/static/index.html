@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AgenticNetwork — Agent Registration</title>
+  <style>
+    :root {
+      --bg: #f4f6f9;
+      --surface: #ffffff;
+      --border: #dde1e7;
+      --text: #1a1d23;
+      --muted: #6b7280;
+      --primary: #2563eb;
+      --primary-hover: #1d4ed8;
+      --danger: #dc2626;
+      --radius: 7px;
+      --shadow: 0 1px 4px rgba(0,0,0,.07);
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #111318; --surface: #1e2128; --border: #333844;
+        --text: #e2e5ec; --muted: #8b92a0;
+      }
+      .skill-item:hover { background: #252c3a; }
+      .skill-badge { background: #1a2540; color: #7aabff; }
+      .skill-badge button { color: #7aabff; }
+      tr:hover td { background: #242830; }
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); font-size: 14px; line-height: 1.5; }
+
+    /* ── Header ── */
+    header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 14px 24px; display: flex; align-items: center; gap: 10px; }
+    header h1 { font-size: 1rem; font-weight: 700; letter-spacing: -.01em; }
+    header span { color: var(--muted); font-size: .85rem; }
+
+    /* ── Tabs ── */
+    .tabs { background: var(--surface); border-bottom: 1px solid var(--border); padding: 0 24px; display: flex; }
+    .tab-btn { padding: 11px 18px; border: none; background: none; cursor: pointer; font-size: .875rem; color: var(--muted); border-bottom: 2px solid transparent; margin-bottom: -1px; transition: color .15s; }
+    .tab-btn.active { color: var(--primary); border-bottom-color: var(--primary); font-weight: 600; }
+    .tab-btn:hover:not(.active) { color: var(--text); }
+
+    /* ── Layout ── */
+    .content { max-width: 820px; margin: 28px auto; padding: 0 20px; }
+    .panel { display: none; }
+    .panel.active { display: block; }
+
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 24px; box-shadow: var(--shadow); }
+    .section-title { font-size: .95rem; font-weight: 700; margin-bottom: 18px; }
+
+    /* ── Form ── */
+    .form-group { margin-bottom: 16px; }
+    .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+    label.field-label { display: block; font-weight: 600; margin-bottom: 5px; font-size: .8125rem; }
+    .hint { font-weight: 400; color: var(--muted); }
+    input[type=text], input[type=url], textarea {
+      width: 100%; padding: 7px 10px; border: 1px solid var(--border);
+      border-radius: var(--radius); font-size: .875rem; font-family: inherit;
+      background: var(--surface); color: var(--text); transition: border-color .15s, box-shadow .15s;
+    }
+    input:focus, textarea:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(37,99,235,.12); }
+    textarea { resize: vertical; min-height: 90px; }
+    input[readonly] { background: var(--bg); color: var(--muted); cursor: default; }
+
+    /* ── Radio group ── */
+    .radio-group { display: flex; gap: 20px; }
+    .radio-label { display: flex; align-items: center; gap: 7px; cursor: pointer; font-size: .875rem; }
+    .radio-label input { accent-color: var(--primary); width: 15px; height: 15px; cursor: pointer; }
+
+    /* ── Divider ── */
+    hr { border: none; border-top: 1px solid var(--border); margin: 20px 0; }
+
+    /* ── OASF skill picker ── */
+    .skill-picker { border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+    .skill-picker-search { padding: 8px; border-bottom: 1px solid var(--border); background: var(--bg); }
+    .skill-picker-search input { background: var(--surface); }
+    .skill-list { max-height: 210px; overflow-y: auto; padding: 4px 0; }
+    .skill-group-header { padding: 8px 12px 3px; font-size: .7rem; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+    .skill-item { display: flex; align-items: center; gap: 8px; padding: 5px 12px; cursor: pointer; }
+    .skill-item:hover { background: #f0f4ff; }
+    .skill-item input[type=checkbox] { width: auto; flex-shrink: 0; accent-color: var(--primary); cursor: pointer; }
+    .skill-item span { font-size: .8375rem; }
+    .selected-skills { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; min-height: 20px; }
+    .skill-badge { background: #eff6ff; color: #1d4ed8; border-radius: 20px; padding: 2px 10px 2px 10px; font-size: .775rem; font-weight: 500; display: flex; align-items: center; gap: 3px; }
+    .skill-badge button { background: none; border: none; cursor: pointer; color: inherit; font-size: 15px; line-height: 1; padding: 0 0 1px 2px; opacity: .7; }
+    .skill-badge button:hover { opacity: 1; }
+
+    /* ── Buttons ── */
+    .btn { padding: 8px 18px; border-radius: var(--radius); border: 1px solid transparent; cursor: pointer; font-size: .875rem; font-weight: 600; transition: background .15s, opacity .15s; }
+    .btn-primary { background: var(--primary); color: #fff; border-color: var(--primary); }
+    .btn-primary:hover:not(:disabled) { background: var(--primary-hover); border-color: var(--primary-hover); }
+    .btn-primary:disabled { opacity: .55; cursor: not-allowed; }
+    .btn-sm { padding: 4px 11px; font-size: .8rem; font-weight: 500; }
+    .btn-outline { background: transparent; color: var(--muted); border-color: var(--border); }
+    .btn-outline:hover { color: var(--text); border-color: var(--muted); }
+    .btn-danger { background: transparent; color: var(--danger); border-color: var(--danger); }
+    .btn-danger:hover { background: var(--danger); color: #fff; }
+
+    /* ── Alerts ── */
+    .alert { padding: 10px 14px; border-radius: var(--radius); margin-bottom: 16px; font-size: .875rem; border: 1px solid transparent; }
+    .alert-success { background: #f0fdf4; color: #166534; border-color: #bbf7d0; }
+    .alert-error   { background: #fef2f2; color: #991b1b; border-color: #fecaca; }
+
+    /* ── Agent table ── */
+    .table-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+    .agent-table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; }
+    th { text-align: left; padding: 8px 12px; font-size: .72rem; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); border-bottom: 2px solid var(--border); white-space: nowrap; }
+    td { padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: middle; font-size: .8375rem; }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: #f8faff; }
+
+    .badge { display: inline-block; padding: 2px 9px; border-radius: 20px; font-size: .72rem; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; }
+    .badge-live       { background: #dcfce7; color: #166534; }
+    .badge-registered { background: #fef9c3; color: #854d0e; }
+    .badge-failed     { background: #fee2e2; color: #991b1b; }
+    .badge-stopped    { background: #f3f4f6; color: #4b5563; }
+
+    .actions { display: flex; gap: 6px; }
+    .empty-state { text-align: center; color: var(--muted); padding: 52px 0; font-size: .9rem; }
+    .refresh-note { font-size: .75rem; color: var(--muted); margin-top: 10px; text-align: right; }
+    .endpoint-link { color: var(--primary); text-decoration: none; font-size: .8rem; }
+    .endpoint-link:hover { text-decoration: underline; }
+    .agent-name { font-weight: 600; }
+    .agent-desc { color: var(--muted); font-size: .78rem; margin-top: 1px; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>AgenticNetwork</h1>
+  <span>Agent Registration</span>
+</header>
+
+<div class="tabs">
+  <button class="tab-btn active" onclick="switchTab('register')">Register Agent</button>
+  <button class="tab-btn" onclick="switchTab('agents')">Active Agents</button>
+</div>
+
+<div class="content">
+
+  <!-- ── Register panel ───────────────────────────────────────────────────── -->
+  <div id="panel-register" class="panel active">
+    <div class="card">
+      <p class="section-title">Register a new agent</p>
+      <div id="reg-alert" style="display:none"></div>
+
+      <div class="form-group">
+        <label class="field-label">Handler type</label>
+        <div class="radio-group">
+          <label class="radio-label">
+            <input type="radio" name="handler_type" value="llm" checked onchange="onHandlerChange()">
+            LLM Agent <span class="hint" style="margin-left:4px">— powered by a system prompt on vLLM</span>
+          </label>
+          <label class="radio-label">
+            <input type="radio" name="handler_type" value="api_proxy" onchange="onHandlerChange()">
+            API Proxy <span class="hint" style="margin-left:4px">— forwards calls to your existing service</span>
+          </label>
+        </div>
+      </div>
+
+      <div class="form-row">
+        <div>
+          <label class="field-label" for="inp-name">Name</label>
+          <input type="text" id="inp-name" placeholder="e.g. Literature Review Agent" maxlength="128">
+        </div>
+        <div>
+          <label class="field-label" for="inp-model" id="label-model">Model</label>
+          <input type="text" id="inp-model" value="openai/gpt-oss-120b">
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label class="field-label" for="inp-description">Description</label>
+        <textarea id="inp-description" rows="2" placeholder="What does this agent do? The planner uses this to decide when to call it."></textarea>
+      </div>
+
+      <hr>
+
+      <!-- LLM fields -->
+      <div id="llm-fields">
+        <div class="form-group">
+          <label class="field-label" for="inp-system-prompt">System prompt</label>
+          <textarea id="inp-system-prompt" rows="5" placeholder="You are a specialist in… Describe the agent's role, tone, and any rules it must follow."></textarea>
+        </div>
+      </div>
+
+      <!-- API proxy fields -->
+      <div id="proxy-fields" style="display:none">
+        <div class="form-group">
+          <label class="field-label" for="inp-upstream-url">Upstream URL <span class="hint">— your agent's A2A HTTP endpoint</span></label>
+          <input type="url" id="inp-upstream-url" placeholder="http://host:port/">
+        </div>
+        <div class="form-group">
+          <label class="field-label" for="inp-auth-header">Authorization header <span class="hint">— optional</span></label>
+          <input type="text" id="inp-auth-header" placeholder="Bearer sk-…">
+        </div>
+      </div>
+
+      <hr>
+
+      <div class="form-group">
+        <label class="field-label">OASF Skills <span class="hint">— select at least one skill that describes this agent's capabilities</span></label>
+        <div class="skill-picker">
+          <div class="skill-picker-search">
+            <input type="text" id="skill-search" placeholder="Search skills…" oninput="filterSkills(this.value)">
+          </div>
+          <div class="skill-list" id="skill-list">
+            <div style="padding:12px;color:var(--muted)">Loading skills…</div>
+          </div>
+        </div>
+        <div class="selected-skills" id="selected-skills"></div>
+      </div>
+
+      <button class="btn btn-primary" id="reg-btn" onclick="submitRegistration()">Register Agent</button>
+    </div>
+  </div>
+
+  <!-- ── Agents panel ─────────────────────────────────────────────────────── -->
+  <div id="panel-agents" class="panel">
+    <div class="card">
+      <div class="table-header">
+        <p class="section-title" style="margin:0">Registered agents</p>
+        <button class="btn btn-sm btn-outline" onclick="loadAgents()">Refresh</button>
+      </div>
+      <div id="agent-table-area">
+        <div class="empty-state">Loading…</div>
+      </div>
+      <p class="refresh-note">Auto-refreshes every 10 s.</p>
+    </div>
+  </div>
+
+</div><!-- /content -->
+
+<script>
+// ── State ─────────────────────────────────────────────────────────────────────
+let allSkills = [];
+const selectedSkills = new Map(); // name → {name, id}
+let refreshTimer = null;
+
+// ── Tab switching ─────────────────────────────────────────────────────────────
+function switchTab(tab) {
+  document.querySelectorAll('.tab-btn').forEach((btn, i) =>
+    btn.classList.toggle('active', ['register', 'agents'][i] === tab));
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  document.getElementById('panel-' + tab).classList.add('active');
+
+  clearInterval(refreshTimer);
+  refreshTimer = null;
+  if (tab === 'agents') {
+    loadAgents();
+    refreshTimer = setInterval(loadAgents, 10_000);
+  }
+}
+
+// ── Handler type toggle ───────────────────────────────────────────────────────
+function onHandlerChange() {
+  const isLLM = document.querySelector('input[name=handler_type]:checked').value === 'llm';
+  document.getElementById('llm-fields').style.display = isLLM ? '' : 'none';
+  document.getElementById('proxy-fields').style.display = isLLM ? 'none' : '';
+  document.getElementById('label-model').textContent = isLLM ? 'Model' : 'Model';
+  document.getElementById('inp-model').style.display = isLLM ? '' : 'none';
+  document.getElementById('label-model').style.display = isLLM ? '' : 'none';
+}
+
+// ── OASF skills ───────────────────────────────────────────────────────────────
+async function loadSkills() {
+  try {
+    const res = await fetch(`${API_PREFIX}/oasf-skills`);
+    allSkills = await res.json();
+    renderSkillList(allSkills);
+  } catch {
+    document.getElementById('skill-list').innerHTML =
+      '<div style="padding:12px;color:var(--danger)">Failed to load skills. Is the service running?</div>';
+  }
+}
+
+function groupSkills(skills) {
+  const g = {};
+  for (const s of skills) {
+    const top = s.name.split('/')[0];
+    (g[top] = g[top] || []).push(s);
+  }
+  return g;
+}
+
+const titleCase = s => s.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+const leafLabel = name => titleCase(name.split('/').pop());
+
+function renderSkillList(skills) {
+  const groups = groupSkills(skills);
+  const html = Object.entries(groups).map(([group, items]) => `
+    <div class="skill-group-header">${titleCase(group)}</div>
+    ${items.map(s => `
+      <label class="skill-item">
+        <input type="checkbox" value="${esc(s.name)}"
+          ${selectedSkills.has(s.name) ? 'checked' : ''}
+          onchange="toggleSkill('${s.name}', ${s.id ?? 'null'}, this.checked)">
+        <span title="${esc(s.name)}">${leafLabel(s.name)}</span>
+      </label>`).join('')}
+  `).join('');
+  document.getElementById('skill-list').innerHTML =
+    html || '<div style="padding:12px;color:var(--muted)">No skills match.</div>';
+}
+
+function filterSkills(q) {
+  const lower = q.trim().toLowerCase();
+  renderSkillList(lower ? allSkills.filter(s => s.name.includes(lower)) : allSkills);
+}
+
+function toggleSkill(name, id, checked) {
+  if (checked) selectedSkills.set(name, { name, id });
+  else selectedSkills.delete(name);
+  renderBadges();
+}
+
+function removeSkill(name) {
+  selectedSkills.delete(name);
+  renderBadges();
+  const cb = document.querySelector(`input[type=checkbox][value="${CSS.escape(name)}"]`);
+  if (cb) cb.checked = false;
+}
+
+function renderBadges() {
+  document.getElementById('selected-skills').innerHTML =
+    [...selectedSkills.keys()].map(name => `
+      <span class="skill-badge">
+        ${leafLabel(name)}
+        <button type="button" onclick="removeSkill('${name}')" title="Remove">×</button>
+      </span>`).join('');
+}
+
+// ── Registration ──────────────────────────────────────────────────────────────
+async function submitRegistration() {
+  hideAlert();
+  const handler_type = document.querySelector('input[name=handler_type]:checked').value;
+  const name        = document.getElementById('inp-name').value.trim();
+  const description = document.getElementById('inp-description').value.trim();
+
+  if (!name)        return showAlert('error', 'Name is required.');
+  if (!description) return showAlert('error', 'Description is required.');
+  if (!selectedSkills.size) return showAlert('error', 'Select at least one OASF skill.');
+
+  let config;
+  if (handler_type === 'llm') {
+    const system_prompt = document.getElementById('inp-system-prompt').value.trim();
+    const model         = document.getElementById('inp-model').value.trim() || 'openai/gpt-oss-120b';
+    if (!system_prompt) return showAlert('error', 'System prompt is required for LLM agents.');
+    config = { system_prompt, model };
+  } else {
+    const upstream_url = document.getElementById('inp-upstream-url').value.trim();
+    const auth_header  = document.getElementById('inp-auth-header').value.trim();
+    if (!upstream_url) return showAlert('error', 'Upstream URL is required for API proxy agents.');
+    config = { upstream_url, ...(auth_header ? { auth_header } : {}) };
+  }
+
+  const payload = {
+    name, description, handler_type,
+    oasf_skills: [...selectedSkills.values()],
+    config,
+  };
+
+  const btn = document.getElementById('reg-btn');
+  btn.disabled = true;
+  btn.textContent = 'Registering…';
+
+  try {
+    const res = await fetch(`${API_PREFIX}/agents`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(body.detail || `HTTP ${res.status}`);
+    }
+    const agent = await res.json();
+    showAlert('success',
+      `"${agent.name}" registered! Status: ${agent.status}. Port: ${agent.port}.`);
+    resetForm();
+  } catch (e) {
+    showAlert('error', String(e.message || e));
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Register Agent';
+  }
+}
+
+function resetForm() {
+  ['inp-name','inp-description','inp-system-prompt',
+   'inp-upstream-url','inp-auth-header','skill-search'].forEach(id => {
+    document.getElementById(id).value = '';
+  });
+  document.getElementById('inp-model').value = 'openai/gpt-oss-120b';
+  selectedSkills.clear();
+  renderBadges();
+  renderSkillList(allSkills);
+}
+
+// ── Agent list ────────────────────────────────────────────────────────────────
+async function loadAgents() {
+  try {
+    const agents = await fetch(`${API_PREFIX}/agents`).then(r => r.json());
+    renderAgentTable(agents);
+  } catch (e) {
+    document.getElementById('agent-table-area').innerHTML =
+      `<div class="empty-state" style="color:var(--danger)">Failed to load agents: ${esc(String(e))}</div>`;
+  }
+}
+
+function renderAgentTable(agents) {
+  const area = document.getElementById('agent-table-area');
+  if (!agents.length) {
+    area.innerHTML = '<div class="empty-state">No agents registered yet.</div>';
+    return;
+  }
+  const rows = agents.map(a => `
+    <tr>
+      <td>
+        <div class="agent-name">${esc(a.name)}</div>
+        <div class="agent-desc">${esc(a.description.length > 80 ? a.description.slice(0,80)+'…' : a.description)}</div>
+      </td>
+      <td>${esc(a.handler_type)}</td>
+      <td><span class="badge badge-${esc(a.status)}">${esc(a.status)}</span></td>
+      <td>${a.port ?? '—'}</td>
+      <td>${a.endpoint_url
+        ? `<a class="endpoint-link" href="${esc(a.endpoint_url)}" target="_blank">${esc(a.endpoint_url)}</a>`
+        : '—'}</td>
+      <td style="white-space:nowrap">${new Date(a.created_at).toLocaleString()}</td>
+      <td>
+        <div class="actions">
+          <button class="btn btn-sm btn-outline" onclick="restartAgent('${esc(a.id)}')">Restart</button>
+          <button class="btn btn-sm btn-danger" onclick="deleteAgent('${esc(a.id)}', '${esc(a.name)}')">Delete</button>
+        </div>
+      </td>
+    </tr>`).join('');
+
+  area.innerHTML = `
+    <div class="agent-table-wrap">
+      <table>
+        <thead><tr>
+          <th>Name</th><th>Type</th><th>Status</th>
+          <th>Port</th><th>Endpoint</th><th>Registered</th><th>Actions</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+}
+
+async function restartAgent(id) {
+  if (!confirm('Restart this agent?')) return;
+  try {
+    const res = await fetch(`${API_PREFIX}/agents/${id}/restart`, { method: 'POST' });
+    if (!res.ok) throw new Error((await res.json().catch(()=>({detail:res.statusText}))).detail);
+    loadAgents();
+  } catch (e) { alert('Restart failed: ' + e.message); }
+}
+
+async function deleteAgent(id, name) {
+  if (!confirm(`Delete "${name}"?\n\nThis stops the agent and removes it from ADS.`)) return;
+  try {
+    const res = await fetch(`${API_PREFIX}/agents/${id}`, { method: 'DELETE' });
+    if (!res.ok && res.status !== 204) throw new Error(res.statusText);
+    loadAgents();
+  } catch (e) { alert('Delete failed: ' + e.message); }
+}
+
+// ── Alerts ────────────────────────────────────────────────────────────────────
+function showAlert(type, msg) {
+  const el = document.getElementById('reg-alert');
+  el.className = `alert alert-${type}`;
+  el.textContent = msg;
+  el.style.display = '';
+  el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+function hideAlert() {
+  document.getElementById('reg-alert').style.display = 'none';
+}
+
+// ── Util ──────────────────────────────────────────────────────────────────────
+function esc(s) {
+  return String(s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ── Boot ──────────────────────────────────────────────────────────────────────
+// When served via the planner proxy at /register/, API calls must be absolute.
+// When served directly from the registration service, window.location.pathname
+// is '/', so this resolves to '' and relative paths work as-is.
+const API_PREFIX = window.location.pathname.replace(/\/$/, '').endsWith('/register')
+  ? '/register'
+  : '';
+
+loadSkills();
+</script>
+</body>
+</html>

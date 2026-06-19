@@ -1,0 +1,68 @@
+"""Agent runner — entry point for spawned agent subprocesses.
+
+Reads AGENT_CONFIG_JSON from the environment, dispatches to the right handler.
+This script is exec'd by SubprocessBackend.spawn() for each registered agent.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import sys
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
+logger = logging.getLogger(__name__)
+
+
+def main() -> None:
+    raw = os.getenv("AGENT_CONFIG_JSON")
+    if not raw:
+        logger.error("runner_missing_config AGENT_CONFIG_JSON not set")
+        sys.exit(1)
+
+    try:
+        cfg = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        logger.error("runner_invalid_json error=%s", exc)
+        sys.exit(1)
+
+    agent_id: str = cfg["agent_id"]
+    handler_type: str = cfg["handler_type"]
+    port: int = int(cfg["port"])
+    config: dict = cfg["config"]
+
+    logger.info("runner_start agent_id=%s handler_type=%s port=%d", agent_id, handler_type, port)
+
+    if handler_type == "llm":
+        from registration_service.handlers.llm_handler import run
+
+        run(
+            agent_id=agent_id,
+            name=config.get("name", agent_id),
+            description=config.get("description", ""),
+            system_prompt=config["system_prompt"],
+            model=config.get("model", "openai/gpt-oss-120b"),
+            port=port,
+        )
+    elif handler_type == "api_proxy":
+        from registration_service.handlers.api_proxy_handler import run
+
+        run(
+            agent_id=agent_id,
+            name=config.get("name", agent_id),
+            description=config.get("description", ""),
+            upstream_url=config["upstream_url"],
+            auth_header=config.get("auth_header"),
+            port=port,
+        )
+    else:
+        logger.error("runner_unknown_handler_type handler_type=%s", handler_type)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
