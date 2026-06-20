@@ -79,7 +79,7 @@ fi
 
 # ---- 3. ADS reachability ----
 section "4) ADS routing reachability"
-ADS_ADDR="${ADS_SERVER_ADDR:-10.229.117.37:8888}"
+ADS_ADDR="${ADS_SERVER_ADDR:-localhost:8888}"
 if [[ "${AGENT_NETWORK_FAKE_ADS:-false}" == "true" ]]; then
   warn "fake_ads mode — skipping real ADS check"
 elif [[ -x "$DIRCTL" ]] || command -v dirctl >/dev/null 2>&1; then
@@ -147,6 +147,6 @@ fi
 # ---- summary ----
 echo ""
 echo -e "${BOLD}Summary${RESET}"
-echo "  Server URL:  http://localhost:$PORT/  (use VS Code port forward, or http://10.229.117.188:$PORT/)"
+echo "  Server URL:  http://localhost:$PORT/"
 echo "  Logs:        tail -f /tmp/planner_agent_server.log"
 echo "  Handover doc: cat $PLANNER_DIR/HANDOVER.md"
