@@ -14,9 +14,6 @@ from agent_directory_service.services.directory.card_oasf_converter import (
 from agent_directory_service.services.directory.client import DirectoryClient, DirectoryUnavailable
 
 
-DEFAULT_CARD_DIR = Path(__file__).parents[1] / "configs" / "agent_cards"
-
-
 @dataclass(frozen=True)
 class PublishRow:
     agent_id: str
@@ -29,10 +26,10 @@ class PublishRow:
     backend: str
 
 
-def card_paths(card_dir: Path = DEFAULT_CARD_DIR, cards: Sequence[Path] | None = None) -> list[Path]:
-    if cards:
-        return [Path(card) for card in cards]
-    return sorted(card_dir.glob("*.card.json"))
+def card_paths(cards: Sequence[Path] | None = None) -> list[Path]:
+    if not cards:
+        raise ValueError("At least one --card path is required.")
+    return [Path(card) for card in cards]
 
 
 def build_rows(paths: Sequence[Path], *, dry_run: bool) -> list[tuple[PublishRow, dict]]:
@@ -115,18 +112,13 @@ def render_table(rows: Sequence[PublishRow]) -> str:
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Publish Agent Directory Service Agent Cards to fake or real ADS.")
-    parser.add_argument(
-        "--card-dir",
-        type=Path,
-        default=DEFAULT_CARD_DIR,
-        help="Directory containing *.card.json files.",
-    )
+    parser = argparse.ArgumentParser(description="Publish Agent Cards to ADS.")
     parser.add_argument(
         "--card",
         type=Path,
         action="append",
-        help="Specific Agent Card file to publish. May be provided multiple times.",
+        required=True,
+        help="Agent Card file to publish. May be provided multiple times.",
     )
     parser.add_argument("--dry-run", action="store_true", help="Validate and print without publishing.")
     return parser.parse_args(argv)
@@ -134,7 +126,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
-    paths = card_paths(args.card_dir, args.card)
+    paths = card_paths(args.card)
     rows_and_records = build_rows(paths, dry_run=args.dry_run)
     if args.dry_run:
         print(render_table([row for row, _ in rows_and_records]))
