@@ -97,12 +97,10 @@ whole `agent_directory_service/scripts/` suite exists to detect and repair this.
 > **9105**; disaster's card and scout's serve mode both default to **9104**.
 > Fine on separate machines; reassign ports if running several on one host.
 
-> **Hardcoded, inconsistent card URLs.** The original demo runs on a LAN with ADS
-> at `10.229.117.37:8888`. Agent card `url`s are hardcoded and **disagree across
-> copies**: the in-repo email/disaster/geospatial cards use `10.229.117.223:910x`,
-> while the intelligence and coding cards use `127.0.0.1`, and the planner/ADS
-> config copies use `10.229.117.181`/`10.229.117.180`. **Rewrite the card URLs for
-> local/laptop runs.**
+> **Card URLs use `AGENT_HOST` placeholder or `127.0.0.1`.** The email, disaster,
+> and geospatial cards use `http://AGENT_HOST:<port>/`; intelligence and coding use
+> `127.0.0.1`. In the cluster, `AGENT_HOST` is resolved by the entrypoint. For
+> local runs, use `--advertise-url` to override the published URL.
 
 ---
 
@@ -120,8 +118,8 @@ python3 -m venv planner_agent/.venv
 planner_agent/.venv/bin/python -m pip install -r planner_agent/requirements.txt
 cp planner_agent/.env.example planner_agent/.env.local   # set OPENAI_API_KEY=sk-...
 planner_agent/scripts/start.sh --fake-ads \
-  --card planner_agent/configs/agent_cards/email_agent.card.json \
-  --card planner_agent/configs/agent_cards/weather_agent.card.json
+  --card email_agent/email_agent.card.json \
+  --card coding_agent/coding_agent.card.json
 ```
 Open **http://localhost:8090/** for the chat UI. (Agents are "discovered" from the
 `--card` files; they only *execute* if actually running.)
@@ -135,8 +133,9 @@ Open **http://localhost:8090/** for the chat UI. (Agents are "discovered" from t
 - Provide API keys per agent (OpenAI; `BRAVE_API_KEY` for scout/intelligence;
   Google OAuth for email).
 
-### Tier C — The lab LAN demo (as shipped)
-Run on the `10.229.117.*` network, or rewrite the card IPs to your host.
+### Tier C — ~~The lab LAN demo~~ (retired)
+The original LAN demo on `10.229.117.*` is superseded by Tier D. Use Tier B for
+full local testing or Tier D for cluster deployment.
 
 ### Tier D — ENGR cluster, containerized (as deployed)
 `deployment/` runs the whole system on the WashU **Engineering (ENGR)** cluster via
