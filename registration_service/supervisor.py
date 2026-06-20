@@ -211,8 +211,19 @@ _supervisor: Supervisor | None = None
 def get_supervisor() -> Supervisor:
     global _supervisor
     if _supervisor is None:
-        _supervisor = Supervisor()
+        import os
+        if os.getenv("FAKE_DB"):
+            from registration_service.fake_supervisor import FakeSupervisor
+            _supervisor = FakeSupervisor()  # type: ignore[assignment]
+        else:
+            _supervisor = Supervisor()
     return _supervisor
+
+
+def set_supervisor(sup: Any) -> None:
+    """Override the supervisor singleton — used in tests."""
+    global _supervisor
+    _supervisor = sup
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────

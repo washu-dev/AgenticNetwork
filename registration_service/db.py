@@ -73,12 +73,20 @@ async def get_pool() -> asyncpg.Pool:
     global _pool
     if _pool is None:
         raise RuntimeError("Database pool not initialised — call init_db() first")
-    return _pool
+    return _pool  # type: ignore[return-value]
 
 
 async def init_db() -> None:
     """Create connection pool and run schema migrations."""
     global _pool
+
+    if os.getenv("FAKE_DB"):
+        from registration_service.fake_db import get_fake_pool, init_fake_db
+        await init_fake_db()
+        _pool = get_fake_pool()  # type: ignore[assignment]
+        logger.info("db_init mode=fake")
+        return
+
     dsn = _dsn()
     _pool = await asyncpg.create_pool(dsn, min_size=2, max_size=10)
     async with _pool.acquire() as conn:
@@ -96,6 +104,12 @@ async def init_db() -> None:
 
 async def close_db() -> None:
     global _pool
-    if _pool:
-        await _pool.close()
+    if _pool is None:
+        return
+    if os.getenv("FAKE_DB"):
+        from registration_service.fake_db import close_fake_db
+        await close_fake_db()
         _pool = None
+        return
+    await _pool.close()
+    _pool = None
