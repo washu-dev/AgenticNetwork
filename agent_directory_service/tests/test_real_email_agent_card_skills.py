@@ -10,7 +10,7 @@ from agent_directory_service.services.directory.card_oasf_converter import (
 )
 
 
-EMAIL_CARD = Path("agent_directory_service/configs/agent_cards/email_agent.card.json")
+EMAIL_CARD = Path("email_agent/email_agent.card.json")
 READ_ONLY_SKILLS = {
     "email/search",
     "email/read",
@@ -45,7 +45,7 @@ def test_live_email_agent_card_validates_and_exposes_expected_skills() -> None:
     skill_ids = {skill.id for skill in card.skills}
     assert card.name == "Email Agent"
     assert card.provider.organization == "CSPL Email Agent"
-    assert card.url == "http://10.229.117.223:9103/"
+    assert card.url == "http://AGENT_HOST:9103/"
     assert READ_ONLY_SKILLS <= skill_ids
     assert WRITE_SKILLS <= skill_ids
 
@@ -67,5 +67,5 @@ def test_live_email_oasf_conversion_preserves_all_custom_skill_tags() -> None:
         assert skill_policies[skill]["confirmation_required"] is False
 
     discovered = oasf_record_to_discovered_agent(record)
-    assert discovered.endpoint == "http://10.229.117.223:9103/"
+    assert discovered.endpoint == "http://AGENT_HOST:9103/"
     assert discovered.organization == "CSPL Email Agent"

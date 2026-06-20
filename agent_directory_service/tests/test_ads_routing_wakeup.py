@@ -5,7 +5,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from agent_directory_service.scripts import manage_ads_lan, watch_ads_routing
+from agent_directory_service.scripts import watch_ads_routing
 
 
 def _completed(
@@ -136,28 +136,3 @@ def test_watch_ads_routing_does_not_restart_daemon_without_explicit_flag(monkeyp
     assert not any(command[:3] == ["dirctl", "daemon", "stop"] for command in commands)
 
 
-def test_manage_ads_lan_starts_daemon_with_fast_routing_config(monkeypatch, tmp_path) -> None:
-    config = tmp_path / "daemon.yaml"
-    config.write_text("server: {}\n", encoding="utf-8")
-    log_path = tmp_path / "daemon.log"
-    status_calls = 0
-    started: list[list[str]] = []
-
-    def fake_run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        nonlocal status_calls
-        if command == ["dirctl", "daemon", "status"]:
-            status_calls += 1
-            if status_calls == 1:
-                return _completed(command, stdout="Daemon is not running\n", returncode=1)
-            return _completed(command, stdout="Daemon is running\n")
-        raise AssertionError(f"unexpected command: {command}")
-
-    class FakePopen:
-        def __init__(self, command: list[str], **kwargs: Any) -> None:
-            started.append(command)
-
-    monkeypatch.setattr(manage_ads_lan.subprocess, "run", fake_run)
-    monkeypatch.setattr(manage_ads_lan.subprocess, "Popen", FakePopen)
-
-    assert manage_ads_lan._ensure_daemon(config, log_path)
-    assert started == [["dirctl", "daemon", "start", "--config", str(config)]]

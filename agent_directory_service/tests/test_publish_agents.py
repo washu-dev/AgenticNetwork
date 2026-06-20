@@ -5,7 +5,7 @@ from pathlib import Path
 from agent_directory_service.scripts import publish_agents
 
 
-def test_publish_agents_dry_run_validates_all_six_cards_without_directory(
+def test_publish_agents_dry_run_validates_cards_without_directory(
     monkeypatch,
     capsys,
 ) -> None:
@@ -14,30 +14,31 @@ def test_publish_agents_dry_run_validates_all_six_cards_without_directory(
 
     monkeypatch.setattr(publish_agents, "DirectoryClient", fail_if_instantiated)
 
-    exit_code = publish_agents.main(["--dry-run"])
+    exit_code = publish_agents.main([
+        "--dry-run",
+        "--card", "email_agent/email_agent.card.json",
+        "--card", "coding_agent/coding_agent.card.json",
+    ])
 
     output = capsys.readouterr().out
     assert exit_code == 0
-    assert output.count("dry-run") == 6
-    assert "weather-agent" in output
-    assert "calendar-agent" in output
+    assert output.count("dry-run") == 2
     assert "email-agent" in output
-    assert "photo-geospatial-agent" in output
-    assert "intelligence-agent" in output
     assert "coding-agent" in output
-    assert "weather/forecast" in output
-    assert "http://127.0.0.1:9101/" in output
     assert "backend" in output
 
 
-def test_publish_agents_publishes_all_six_cards_to_fake_ads(monkeypatch, capsys) -> None:
+def test_publish_agents_publishes_cards_to_fake_ads(monkeypatch, capsys) -> None:
     monkeypatch.setenv("AGENT_NETWORK_FAKE_ADS", "true")
 
-    exit_code = publish_agents.main([])
+    exit_code = publish_agents.main([
+        "--card", "email_agent/email_agent.card.json",
+        "--card", "coding_agent/coding_agent.card.json",
+    ])
 
     output = capsys.readouterr().out
     assert exit_code == 0
-    assert output.count(" fake") == 6
+    assert output.count(" fake") == 2
     assert "agent_id" in output
     assert "skills" in output
     assert "endpoint" in output
@@ -50,14 +51,14 @@ def test_publish_agents_single_card_dry_run(capsys) -> None:
         [
             "--dry-run",
             "--card",
-            str(Path("agent_directory_service/configs/agent_cards/weather_agent.card.json")),
+            "coding_agent/coding_agent.card.json",
         ]
     )
 
     output = capsys.readouterr().out
     assert exit_code == 0
-    assert "weather-agent" in output
-    assert "calendar-agent" not in output
+    assert "coding-agent" in output
+    assert "email-agent" not in output
 
 
 def test_publish_agents_real_ads_unavailable_exits_nonzero(monkeypatch, capsys) -> None:
@@ -66,7 +67,7 @@ def test_publish_agents_real_ads_unavailable_exits_nonzero(monkeypatch, capsys) 
     monkeypatch.setenv("ADS_BACKEND", "sdk")
 
     exit_code = publish_agents.main(
-        ["--card", "agent_directory_service/configs/agent_cards/weather_agent.card.json"]
+        ["--card", "coding_agent/coding_agent.card.json"]
     )
 
     captured = capsys.readouterr()

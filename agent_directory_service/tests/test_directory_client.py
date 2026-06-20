@@ -9,7 +9,7 @@ from agent_directory_service.services.directory.backends import RealADSDirectory
 from agent_directory_service.services.directory.client import DirectoryClient, DirectoryUnavailable
 
 
-WEATHER_CARD = "agent_directory_service/configs/agent_cards/weather_agent.card.json"
+WEATHER_CARD = "coding_agent/coding_agent.card.json"
 
 
 def test_fake_backend_publish_search_resolve_still_works() -> None:

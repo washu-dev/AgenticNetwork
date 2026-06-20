@@ -971,7 +971,7 @@ def test_dirctl_directory_search_filters_by_a2a_label_and_skill_tag(monkeypatch)
             "name": "https://example.invalid/cspl-email-agent",
             "description": "Gmail A2A agent.",
             "annotations": {
-                "a2a.url": "http://10.229.117.223:9103/",
+                "a2a.url": "http://AGENT_HOST:9103/",
                 "agentic_network.agent_id": "email-agent",
                 "agentic_network.display_name": "Email Agent",
                 "agentic_network.organization": "CSPL Email Agent",
@@ -1000,22 +1000,22 @@ def test_dirctl_directory_search_filters_by_a2a_label_and_skill_tag(monkeypatch)
     )
 
     directory = coding_agent._DirctlDirectory(
-        server_addr="10.229.117.37:8888",
+        server_addr="localhost:8888",
         dirctl_path="/usr/local/bin/dirctl",
     )
     matches = directory.search_agents(skill="email/send")
 
     assert [a.agent_id for a in matches] == ["email-agent"]
-    assert matches[0].endpoint == "http://10.229.117.223:9103/"
+    assert matches[0].endpoint == "http://AGENT_HOST:9103/"
     assert matches[0].source_record_id == "cid-email"
 
     # Verified argv: routing list once, then pull each A2A candidate.
     assert calls[0] == [
-        "/usr/local/bin/dirctl", "--server-addr", "10.229.117.37:8888",
+        "/usr/local/bin/dirctl", "--server-addr", "localhost:8888",
         "routing", "list", "--output", "json",
     ]
     assert calls[1][:5] == [
-        "/usr/local/bin/dirctl", "--server-addr", "10.229.117.37:8888",
+        "/usr/local/bin/dirctl", "--server-addr", "localhost:8888",
         "pull", "cid-email",
     ]
     assert calls[2][4] == "cid-other-a2a"
@@ -1141,10 +1141,10 @@ def test_build_directory_client_picks_dirctl_when_url_set(monkeypatch) -> None:
     monkeypatch.delenv("CODING_AGENT_DIRECTORY_URL", raising=False)
     monkeypatch.delenv("ADS_URL", raising=False)
     client = coding_agent._build_directory_client(
-        {"directory_url": "10.229.117.37:8888"}
+        {"directory_url": "localhost:8888"}
     )
     assert isinstance(client, coding_agent._DirctlDirectory)
-    assert client.server_addr == "10.229.117.37:8888"
+    assert client.server_addr == "localhost:8888"
 
 
 def test_build_directory_client_picks_fake_when_requested(monkeypatch) -> None:

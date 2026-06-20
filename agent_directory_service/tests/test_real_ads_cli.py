@@ -27,9 +27,9 @@ from agent_directory_service.services.directory.card_oasf_converter import (
 from agent_directory_service.services.directory.client import DirectoryClient
 
 
-EMAIL_CARD = Path("agent_directory_service/configs/agent_cards/email_agent.card.json")
-WEATHER_CARD = Path("agent_directory_service/configs/agent_cards/weather_agent.card.json")
-CODING_CARD = Path("agent_directory_service/configs/agent_cards/coding_agent.card.json")
+EMAIL_CARD = Path("email_agent/email_agent.card.json")
+DISASTER_CARD = Path("disaster_response_agent/disaster_response_agent.card.json")
+CODING_CARD = Path("coding_agent/coding_agent.card.json")
 
 
 class FakeDirctlRunner:
@@ -198,7 +198,7 @@ def test_real_ads_cli_search_by_custom_skill_pulls_and_post_filters_record() -> 
     agents = backend.search_agents(skill="email/current_time")
 
     assert agents[0].agent_id == "email-agent"
-    assert agents[0].endpoint == "http://10.229.117.223:9103/"
+    assert agents[0].endpoint == "http://AGENT_HOST:9103/"
     assert any(
         command[3:6] == ["routing", "search", "--skill"]
         and command[6] == "email/current_time"
@@ -299,7 +299,7 @@ def test_real_ads_cli_search_custom_skill_falls_back_to_routed_index_post_filter
     agents = backend.search_agents(skill="disaster/response_plan")
 
     assert agents[0].agent_id == "disaster-response-agent"
-    assert agents[0].endpoint == "http://10.229.117.223:9104/"
+    assert agents[0].endpoint == "http://AGENT_HOST:9104/"
     assert any(
         command[3:6] == ["routing", "search", "--skill"]
         and command[6] == "disaster/response_plan"
@@ -377,7 +377,7 @@ def test_real_ads_cli_missing_daemon_raises_start_hint() -> None:
 
 def test_fake_ads_and_real_ads_records_do_not_mix() -> None:
     fake_directory = DirectoryClient(fake_ads=True)
-    fake_directory.publish_agent_card(load_agent_card(WEATHER_CARD))
+    fake_directory.publish_agent_card(load_agent_card(DISASTER_CARD))
     real_backend = RealADSDirectoryBackend(
         ads_url="localhost:8888",
         backend="cli",
@@ -560,7 +560,7 @@ def test_real_ads_publish_search_resolve_email_card_manual_integration() -> None
 
     assert published.backend == "real"
     assert published.backend_ref
-    assert agents[0].endpoint == "http://10.229.117.223:9103/"
+    assert agents[0].endpoint == "http://AGENT_HOST:9103/"
     assert resolved.agent_id == "email-agent"
 
 
@@ -583,7 +583,7 @@ def _disaster_card() -> AgentCard:
     return AgentCard(
         name="Disaster Response Agent",
         description="A2A disaster response planning agent.",
-        url="http://10.229.117.223:9104/",
+        url="http://AGENT_HOST:9104/",
         provider=AgentProvider(
             organization="CSPL Disaster Response Agent",
             url="https://example.invalid/cspl-disaster-response-agent",

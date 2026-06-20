@@ -17,7 +17,7 @@ from agent_directory_service.services.directory.card_oasf_converter import (
 from agent_directory_service.services.directory.client import DirectoryClient, DirectoryUnavailable
 
 
-WEATHER_CARD = "agent_directory_service/configs/agent_cards/weather_agent.card.json"
+WEATHER_CARD = "coding_agent/coding_agent.card.json"
 
 
 def test_internal_a2a_model_validation_and_card_resolution() -> None:

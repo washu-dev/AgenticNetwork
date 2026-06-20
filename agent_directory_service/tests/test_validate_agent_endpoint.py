@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from agent_directory_service.scripts import validate_agent_endpoint
 
 
-WEATHER_CARD = Path("agent_directory_service/configs/agent_cards/weather_agent.card.json")
+WEATHER_CARD = Path("coding_agent/coding_agent.card.json")
 
 
 async def _fake_send_external_task(*, card, request, timeout):
