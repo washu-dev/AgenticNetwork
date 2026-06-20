@@ -87,7 +87,7 @@ python3 email_agent.py serve-a2a --enable-remote-agent-tools --host 0.0.0.0 --po
 Set the ADS server address:
 
 ```bash
-python3 email_agent.py serve-a2a --enable-remote-agent-tools --ads-url 10.229.117.37:8888
+python3 email_agent.py serve-a2a --enable-remote-agent-tools --ads-url localhost:8888
 ```
 
 Start without publishing to ADS, useful when ADS is offline:
@@ -96,13 +96,7 @@ Start without publishing to ADS, useful when ADS is offline:
 python3 email_agent.py serve-a2a --enable-remote-agent-tools --no-publish-ads
 ```
 
-The Agent Card should point to the reachable host and port, for example:
-
-```text
-http://10.229.117.223:9103/
-```
-
-Use `--advertise-url` when the externally reachable URL differs from the card.
+Use `--advertise-url` when the externally reachable URL differs from the bind address (e.g. behind a reverse proxy or in a container).
 
 ## Model
 
@@ -127,10 +121,10 @@ From the AgenticNetwork repo, validate the running endpoint:
 ```bash
 conda activate email-agent-a2a
 python3 -m agent_directory_service.scripts.validate_agent_endpoint \
-  --card agent_directory_service/configs/agent_cards/email_agent.card.json \
+  --card email_agent/email_agent.card.json \
   --skill email/draft \
   --prompt "Draft an email to Bob with two meeting options." \
-  --endpoint http://10.229.117.223:9103/
+  --endpoint http://localhost:9103/
 ```
 
 Write actions such as `email/send`, `email/calendar/create_event`, and Google Docs/Sheets mutations require confirmation metadata in the A2A request.

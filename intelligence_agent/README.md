@@ -55,8 +55,7 @@ an analyst, not an operator.
 
 In production the recon peer is the **Multi-Spider Command Center Planner**
 (external A2A agent owning the spider-robot fleet's mission graph,
-conversation memory, and per-task summarisation). Default endpoint
-`http://10.229.117.188:9100/`. It advertises custom skill tags namespaced
+conversation memory, and per-task summarisation). Default endpoint configurable via `--directory-server` or `INTEL_AGENT_DIRECTORY_URL`. It advertises custom skill tags namespaced
 `multi_spider/*`:
 
 | User question | `skill_query` the LLM should pick |
@@ -117,7 +116,7 @@ Configure:
 export INTEL_AGENT_MODEL=openai/gpt-5-mini             # litellm model id
 export OPENAI_API_KEY=sk-...
 export BRAVE_API_KEY=BSA...                            # optional; enables web_search
-export INTEL_AGENT_DIRECTORY_URL=10.229.117.37:8888    # ADS server
+export INTEL_AGENT_DIRECTORY_URL=localhost:8888         # ADS server
 ```
 
 ## Run

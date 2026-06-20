@@ -77,7 +77,6 @@ planner_agent/
 │   ├── runtime.py          # tool loop, ADS, A2A, memory, policy, dedup
 │   ├── server.py           # FastAPI: /messages /confirmations /agents /health /
 │   └── web/index.html      # chat UI (sidebar + tool-trace + reasoning blocks)
-├── configs/agent_cards/    # planner-local Agent Card fixtures for fake ADS/tests
 ├── scripts/
 │   ├── start.sh            # auto-loads .env.local, starts uvicorn
 │   ├── doctor.sh           # one-shot self-check (env, dirctl, ADS, server, OpenAI, tests)
@@ -92,8 +91,6 @@ Standalone planner infrastructure:
 - `main_agent/directory/` — `DirectoryClient` (fake ADS + real ADS via `dirctl`)
 - `main_agent/a2a/` — `A2AClient`, SDK adapters, and HTTP streaming transport
 - `main_agent/state/store.py` — in-memory state store
-- `configs/agent_cards/*.card.json` — sample Agent Cards
-- `scripts/publish_agents.py` — planner-local publisher for cards in `configs/agent_cards/`
 
 ## Running
 
@@ -143,8 +140,8 @@ that auto-loads it:
 
 ```bash
 planner_agent/scripts/start.sh --fake-ads \
-  --card planner_agent/configs/agent_cards/email_agent.card.json \
-  --card planner_agent/configs/agent_cards/weather_agent.card.json
+  --card email_agent/email_agent.card.json \
+  --card coding_agent/coding_agent.card.json
 ```
 
 Use a different env file:
@@ -160,7 +157,7 @@ export OPENAI_API_KEY=sk-...
 export AGENT_NETWORK_FAKE_ADS=true
 planner_agent/.venv/bin/python -m planner_agent.scripts.run_server \
   --fake-ads \
-  --card planner_agent/configs/agent_cards/email_agent.card.json
+  --card email_agent/email_agent.card.json
 ```
 
 Open `http://localhost:8090/` for the chat UI, or POST to `/messages`:
@@ -173,29 +170,25 @@ curl -s http://localhost:8090/messages \
 
 `GET /agents` returns the raw ADS listing for inspection.
 
-### 4. Real local ADS
+### 4. Real ADS (cluster or tunnel)
 
-Make sure `dirctl` is installed (the doctor script will tell you if it
-isn't), start the ADS daemon, publish cards if needed, then point the main
-agent at it. The current demo uses a remote ADS at `10.229.117.37:8888`,
-so this section is mostly for self-hosted testing.
+In the cluster the planner container connects to ADS automatically via
+`ADS_SERVER_ADDR`. For local testing against a tunneled cluster ADS (see
+`agent_directory_service/README.md`), point the planner at it directly — agents
+will already be publishing their own cards:
 
 ```bash
-# Start ADS daemon if you're hosting one locally
-dirctl daemon start
-
-# Publish with the planner-local publisher
-cd /path/to/AgenticNetwork
-AGENT_NETWORK_FAKE_ADS=false ADS_BACKEND=cli ADS_SERVER_ADDR=localhost:8888 \
-  planner_agent/.venv/bin/python -m planner_agent.scripts.publish_agents \
-  --card planner_agent/configs/agent_cards/email_agent.card.json
-
-# Run main agent against real ADS
 export OPENAI_API_KEY=sk-...
 export AGENT_NETWORK_FAKE_ADS=false
 export ADS_BACKEND=cli
-export ADS_SERVER_ADDR=localhost:8888       # or 10.229.117.37:8888 for the shared one
+export ADS_SERVER_ADDR=localhost:8888
 planner_agent/.venv/bin/python -m planner_agent.scripts.run_server
+```
+
+To manually publish a card (e.g. an agent crashed before publishing):
+
+```bash
+agent_directory_service/run_ads.sh -publish email_agent/email_agent.card.json
 ```
 
 The same `/messages` and `/agents` endpoints work; they just hit real ADS
@@ -218,7 +211,7 @@ through `dirctl` instead of the in-process fake.
 | `MAIN_AGENT_HISTORY_LIMIT`     | `20`          | Last-N user/assistant turns sent to LLM                       |
 | `AGENT_NETWORK_FAKE_ADS`       | `false`       | Use in-process fake ADS                                       |
 | `ADS_BACKEND`                  | `cli`         | `cli` (uses `dirctl`) or `sdk`                                |
-| `ADS_SERVER_ADDR`              | —             | e.g. `localhost:8888` or `10.229.117.37:8888`                 |
+| `ADS_SERVER_ADDR`              | —             | e.g. `localhost:8888`                                         |
 | `MAIN_AGENT_PORT`              | `8090`        | HTTP port (avoids collision with v2's 8080)                   |
 | `PYTHON_BIN`                   | auto-detected | Optional interpreter override for wrapper scripts             |
 

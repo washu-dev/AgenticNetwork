@@ -52,7 +52,7 @@ python3 geospatial_agent.py serve-a2a --enable-remote-agent-tools --host 0.0.0.0
 Set the ADS server address:
 
 ```bash
-python3 geospatial_agent.py serve-a2a --enable-remote-agent-tools --ads-url 10.229.117.37:8888
+python3 geospatial_agent.py serve-a2a --enable-remote-agent-tools --ads-url localhost:8888
 ```
 
 Start without publishing to ADS, useful when ADS is offline:
@@ -61,13 +61,7 @@ Start without publishing to ADS, useful when ADS is offline:
 python3 geospatial_agent.py serve-a2a --enable-remote-agent-tools --no-publish-ads
 ```
 
-The Agent Card should point to the reachable host and port, for example:
-
-```text
-http://10.229.117.223:9105/
-```
-
-Use `--advertise-url` when the externally reachable URL differs from the card.
+Use `--advertise-url` when the externally reachable URL differs from the bind address (e.g. behind a reverse proxy or in a container).
 
 ## Models
 
