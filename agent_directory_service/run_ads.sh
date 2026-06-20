@@ -7,29 +7,16 @@ PYTHON_BIN="${ADS_PYTHON:-${SCRIPT_DIR}/.venv/bin/python}"
 DIRCTL_BIN="${DIRCTL_BIN:-dirctl}"
 
 SERVER_ADDR="${ADS_SERVER_ADDR:-localhost:8888}"
-LISTEN_HOST="${ADS_LAN_HOST:-localhost}"
-LISTEN_PORT="${ADS_LAN_PORT:-8888}"
 
 usage() {
   cat <<EOF
 Usage:
-  agent_directory_service/run_ads.sh [global options] -start
-  agent_directory_service/run_ads.sh [global options] -stop
-  agent_directory_service/run_ads.sh [global options] -status
-  agent_directory_service/run_ads.sh [global options] -list
-  agent_directory_service/run_ads.sh [global options] -remove <cid> [cid...]
+  agent_directory_service/run_ads.sh [--server-addr <host:port>] <command>
 
 Global options:
-  --server-addr <host:port>  ADS server address for list/publish/remove commands.
-                             Default: ${SERVER_ADDR}
-  --listen-host <ip>         LAN proxy listen host. Default: ${LISTEN_HOST}
-  --listen-port <port>       LAN proxy listen port. Default: ${LISTEN_PORT}
+  --server-addr <host:port>  ADS server address. Default: ${SERVER_ADDR}
 
-Common commands:
-  -start                     Start local dirctl daemon plus LAN proxy.
-  -stop                      Stop LAN proxy plus local dirctl daemon.
-  -proxy-stop                Stop only the LAN proxy; local dirctl daemon stays up.
-  -status                    Show proxy and local daemon status.
+Commands:
   -list                      Show routed agents with names, endpoints, labels, times.
   -raw-list                  Run raw dirctl routing list JSON.
   -diag                      Diagnose routed, queued, stale, and orphaned records.
@@ -42,8 +29,9 @@ Common commands:
   -help                      Show this help.
 
 Examples:
-  agent_directory_service/run_ads.sh -start
   agent_directory_service/run_ads.sh -list
+  agent_directory_service/run_ads.sh -diag
+  agent_directory_service/run_ads.sh -publish email_agent/email_agent.card.json
   agent_directory_service/run_ads.sh -remove bae...
   agent_directory_service/run_ads.sh --server-addr 127.0.0.1:8888 -raw-list
 EOF
@@ -75,14 +63,6 @@ while [[ "$#" -gt 0 ]]; do
       SERVER_ADDR="${2:?missing value for --server-addr}"
       shift 2
       ;;
-    --listen-host)
-      LISTEN_HOST="${2:?missing value for --listen-host}"
-      shift 2
-      ;;
-    --listen-port)
-      LISTEN_PORT="${2:?missing value for --listen-port}"
-      shift 2
-      ;;
     -h|-help|--help)
       usage
       exit 0
@@ -98,34 +78,6 @@ done
 cd "${REPO_ROOT}"
 
 case "${ACTION:-}" in
-  start)
-    require_python
-    exec "${PYTHON_BIN}" -m agent_directory_service.scripts.manage_ads_lan \
-      --listen-host "${LISTEN_HOST}" \
-      --listen-port "${LISTEN_PORT}" \
-      start "$@"
-    ;;
-  stop)
-    require_python
-    exec "${PYTHON_BIN}" -m agent_directory_service.scripts.manage_ads_lan \
-      --listen-host "${LISTEN_HOST}" \
-      --listen-port "${LISTEN_PORT}" \
-      stop --stop-daemon "$@"
-    ;;
-  proxy-stop)
-    require_python
-    exec "${PYTHON_BIN}" -m agent_directory_service.scripts.manage_ads_lan \
-      --listen-host "${LISTEN_HOST}" \
-      --listen-port "${LISTEN_PORT}" \
-      stop "$@"
-    ;;
-  status)
-    require_python
-    exec "${PYTHON_BIN}" -m agent_directory_service.scripts.manage_ads_lan \
-      --listen-host "${LISTEN_HOST}" \
-      --listen-port "${LISTEN_PORT}" \
-      status "$@"
-    ;;
   list)
     require_python
     exec "${PYTHON_BIN}" -m agent_directory_service.scripts.show_ads_routes \
