@@ -1,6 +1,6 @@
 {
   "name": "Intelligence Agent",
-  "description": "Mock A2A intelligence synthesis agent for agent directory service multi-agent demos.",
+  "description": "A2A intelligence synthesis agent: situational awareness, threat assessment, course of action, and entity tracking via LLM + OSINT tools.",
   "url": "http://127.0.0.1:9105/",
   "version": "0.1.0",
   "protocolVersion": "0.3.0",
