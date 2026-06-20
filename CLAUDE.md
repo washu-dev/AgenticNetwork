@@ -410,5 +410,11 @@ python -m agent_directory_service.scripts.validate_agent_endpoint \
 | `geoSpatial_agent/attack_bundle/src/pipeline_simple.py` | Geolocation engine (vision + grounding) |
 | `scout_agent/scout/` | Scout package (`agent.py` loop, `network/`, `capabilities/`) |
 | `deployment/` | ENGR-cluster containerized deploy (§4 Tier D): per-agent `dockerfiles/` + `entrypoints/`, `submit.sbatch` (parallel `srun --overlap` containers), `start_vllm.sbatch`, `build_and_push.sh`, `README.md` |
+| `registration_service/server.py` | FastAPI app — REST API for agent registration + static UI at `/` |
+| `registration_service/db.py` | asyncpg pool + schema migrations; `FAKE_DB=1` swaps in `fake_db.py` |
+| `registration_service/supervisor.py` | Subprocess lifecycle, ADS publish/unpublish, health loop; `FAKE_DB=1` swaps in `fake_supervisor.py` |
+| `registration_service/fake_db.py` | In-memory drop-in for the asyncpg pool — used by `FAKE_DB=1` dev mode and tests |
+| `registration_service/fake_supervisor.py` | No-op supervisor used by `FAKE_DB=1` dev mode and tests |
+| `registration_service/tests/` | pytest suite (19 tests); run with `FAKE_DB=1 PYTHONPATH=. pytest registration_service/tests` |
 | `AGENTS.md` | Project direction + working rules + validation |
 ```
