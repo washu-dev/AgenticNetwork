@@ -41,6 +41,62 @@ Runs on port **8091**. Accessible through the planner UI at `/register/` (proxie
 | `DELETE` | `/agents/{id}` | Stop, unpublish, and remove an agent |
 | `POST` | `/agents/{id}/restart` | Manually restart an agent |
 
+## Local development (no postgres, no ADS)
+
+The registration service depends on postgres and ADS at runtime. `FAKE_DB=1`
+replaces both with in-memory stubs so you can work on the UI and API without
+standing up any external services.
+
+### Run the web UI locally
+
+```bash
+cd /path/to/AgenticNetwork
+
+# One-time venv setup
+python3 -m venv registration_service/.venv
+registration_service/.venv/bin/pip install -r registration_service/requirements.txt
+
+# Start with fake DB (no postgres, no ADS, no subprocesses)
+FAKE_DB=1 PYTHONPATH=. registration_service/.venv/bin/python -m registration_service.server
+```
+
+Open **http://localhost:8091/** for the registration wizard.
+
+In fake mode:
+- Registered agents are stored in memory and lost on restart (expected).
+- `spawn_and_publish` is a no-op: agents go straight to `status: live` without
+  starting a subprocess or contacting ADS.
+- The port pool (19200–19299) is managed in memory; port reuse on delete works
+  as normal.
+- All REST endpoints behave identically to production — only the persistence
+  and subprocess layers are stubbed.
+
+### Run the tests
+
+The pytest suite drives the full FastAPI app in `FAKE_DB=1` mode and asserts
+on real HTTP responses. No postgres, no ADS, no API keys required.
+
+```bash
+# From the repo root (PYTHONPATH must include the repo root so ads_utils resolves)
+FAKE_DB=1 PYTHONPATH=. registration_service/.venv/bin/python -m pytest \
+  registration_service/tests -v
+```
+
+Tests cover: register (LLM + api_proxy), list, get, delete, restart, port
+reuse after delete, validation errors, and skills round-trip.
+
+### How this relates to the planner's `--fake-ads`
+
+The planner has an analogous flag: `--fake-ads` runs its in-process ADS stub so
+you can test planner logic without `dirctl`. `FAKE_DB=1` fills the same gap for
+the registration service. The two modes are independent — use whichever matches
+the component you are working on.
+
+| Mode | What it stubs | When to use |
+|---|---|---|
+| `planner --fake-ads` | ADS/dirctl directory | Working on planner logic or LLM tool loop |
+| `FAKE_DB=1` | postgres + ADS + subprocesses | Working on registration UI, API, or handlers |
+
 ## Environment variables
 
 | Variable | Default | Description |

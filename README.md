@@ -68,6 +68,16 @@ planner_agent/scripts/start.sh --fake-ads \
 
 Open **http://localhost:8090/** for the chat UI.
 
+The registration service has an analogous **fake-DB mode** (`FAKE_DB=1`) that stubs out postgres, ADS publishing, and subprocess spawning — useful for working on the registration UI and API without any external services:
+
+```bash
+python3 -m venv registration_service/.venv
+registration_service/.venv/bin/pip install -r registration_service/requirements.txt
+FAKE_DB=1 PYTHONPATH=. registration_service/.venv/bin/python -m registration_service.server
+```
+
+Open **http://localhost:8091/** for the registration wizard. See [`registration_service/README.md`](registration_service/README.md) for details including how to run its test suite.
+
 ## Environments
 
 Each component is isolated — do not install one component's requirements into another's environment. They communicate only over HTTP (A2A), so dependency versions don't need to align.
