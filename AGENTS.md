@@ -2,12 +2,18 @@
 
 ## Project Direction
 
-The active repo is split into separate product components:
+The system is split across two repos:
 
+- **This repo (`AgenticNetwork`)** owns the infrastructure: planner, ADS operator
+  tooling, registration service, and the `agent_skeleton` template.
+- **[`agent-directory`](https://github.com/washu-dev/agent-directory)** owns the
+  specialist agents: email, coding, intelligence, geoSpatial, disaster_response, scout.
+
+Within this repo:
 - `agent_directory_service/` owns ADS operation, publication, route inspection,
   diagnostics, and repair tooling.
 - `planner_agent/` owns the product main-agent runtime.
-- Root-level agent folders own their individual A2A services and Agent Cards.
+- `agent_skeleton/` is the canonical template for building new agents.
 
 Do not reintroduce the old prototype, milestone demo agents, or PI runtime under
 `agent_directory_service/`. ADS and A2A should stay conceptually separate:

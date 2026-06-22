@@ -19,9 +19,10 @@ task. There are three kinds of thing in the repo:
   to. It has *no domain skills of its own*; it discovers other agents and
   delegates whole tasks to them. It is deliberately **agent-agnostic**: adding a
   new agent to the directory makes it usable with **zero planner code changes**.
-- **Specialist agents** — `email_agent/`, `coding_agent/`, `intelligence_agent/`,
-  `geoSpatial_agent/`, `disaster_response_agent/`, `scout_agent/`. Each is its own
-  HTTP service wrapping one capability.
+- **Specialist agents** — live in the separate [`agent-directory`](https://github.com/washu-dev/agent-directory)
+  repo: `email_agent`, `coding_agent`, `intelligence_agent`, `geoSpatial_agent`,
+  `disaster_response_agent`, `scout_agent`. Each is its own HTTP service wrapping
+  one capability.
 - **A directory (ADS)** — `agent_directory_service/`. The registry/"phone book"
   where agents publish a card so the others can look them up by skill.
 
@@ -82,10 +83,18 @@ whole `agent_directory_service/scripts/` suite exists to detect and repair this.
 
 ## 3. Components & ports
 
+**This repo (infrastructure):**
+
 | Component | Role | Default port | Environment | LLM API surface |
 |---|---|---|---|---|
 | `planner_agent` | Orchestrator + chat UI | **8090** | pip venv (`requirements.txt`) | OpenAI **Chat Completions** (vLLM-ready; migrated 2026-06) |
 | `agent_directory_service` | Directory (ADS) operator tooling | dir at **8888** (routing 8999) | conda `agent-directory-service` | n/a (`dirctl`) |
+| `registration_service` | Agent self-registration web UI + manager | **8091** | pip venv (`requirements.txt`) | n/a |
+
+**[`agent-directory`](https://github.com/washu-dev/agent-directory) repo (specialist agents):**
+
+| Component | Role | Default port | Environment | LLM API surface |
+|---|---|---|---|---|
 | `email_agent` | Gmail/Calendar/Docs/Sheets | **9103** | conda `email-agent-a2a` (shared) | OpenAI **Responses** (gpt-5.2) |
 | `disaster_response_agent` | Emergency response plans | **9104** | conda `email-agent-a2a` (shared) | OpenAI **Responses** (gpt-5) |
 | `geoSpatial_agent` | Photo geolocation + incident class. | **9105** | conda `email-agent-a2a` (shared) | Gemini + OpenAI **Responses** (multimodal) |
@@ -118,8 +127,8 @@ python3 -m venv planner_agent/.venv
 planner_agent/.venv/bin/python -m pip install -r planner_agent/requirements.txt
 cp planner_agent/.env.example planner_agent/.env.local   # set OPENAI_API_KEY=sk-...
 planner_agent/scripts/start.sh --fake-ads \
-  --card email_agent/email_agent.card.json \
-  --card coding_agent/coding_agent.card.json
+  --card ../agent-directory/email_agent/email_agent.card.json \
+  --card ../agent-directory/coding_agent/coding_agent.card.json
 ```
 Open **http://localhost:8090/** for the chat UI. (Agents are "discovered" from the
 `--card` files; they only *execute* if actually running.)
@@ -390,6 +399,8 @@ python -m agent_directory_service.scripts.validate_agent_endpoint \
 
 ## 11. Key file index
 
+**This repo:**
+
 | Path | What it is |
 |---|---|
 | `planner_agent/main_agent/runtime.py` | Orchestrator tool loop, ADS/A2A dispatch, policy, dedup |
@@ -403,13 +414,8 @@ python -m agent_directory_service.scripts.validate_agent_endpoint \
 | `agent_directory_service/services/directory/card_oasf_converter.py` | Agent Card ↔ OASF record |
 | `agent_directory_service/scripts/` | publish / show / diagnose / repair / watch ADS |
 | `agent_directory_service/configs/ads_daemon_fast_routing.yaml` | Fast-routing daemon config |
-| `<agent>/*.card.json` | Agent Cards (skills, endpoint, capabilities) |
-| `coding_agent/agent_loop.py`, `intelligence_agent/agent_loop.py` | litellm tool loops |
-| `coding_agent/_vendor_v2/`, `intelligence_agent/_vendor_v2/` | Vendored A2A + directory stack |
-| `email_agent/email_agent.py` | Email/Workspace agent (monolith; `ToolCallingEmailAgent`) |
-| `geoSpatial_agent/attack_bundle/src/pipeline_simple.py` | Geolocation engine (vision + grounding) |
-| `scout_agent/scout/` | Scout package (`agent.py` loop, `network/`, `capabilities/`) |
-| `deployment/` | ENGR-cluster containerized deploy (§4 Tier D): per-agent `dockerfiles/` + `entrypoints/`, `submit.sbatch` (parallel `srun --overlap` containers), `start_vllm.sbatch`, `build_and_push.sh`, `README.md` |
+| `agent_skeleton/` | Template for building new agents |
+| `deployment/` | ENGR-cluster infra deploy: `dockerfiles/` + `entrypoints/` for planner/ADS/registration, `submit.sbatch`, `build_and_push.sh` |
 | `registration_service/server.py` | FastAPI app — REST API for agent registration + static UI at `/` |
 | `registration_service/db.py` | asyncpg pool + schema migrations; `FAKE_DB=1` swaps in `fake_db.py` |
 | `registration_service/supervisor.py` | Subprocess lifecycle, ADS publish/unpublish, health loop; `FAKE_DB=1` swaps in `fake_supervisor.py` |
@@ -417,4 +423,21 @@ python -m agent_directory_service.scripts.validate_agent_endpoint \
 | `registration_service/fake_supervisor.py` | No-op supervisor used by `FAKE_DB=1` dev mode and tests |
 | `registration_service/tests/` | pytest suite (19 tests); run with `FAKE_DB=1 PYTHONPATH=. pytest registration_service/tests` |
 | `AGENTS.md` | Project direction + working rules + validation |
+
+**[`agent-directory`](https://github.com/washu-dev/agent-directory) repo:**
+
+| Path | What it is |
+|---|---|
+| `ads_utils/converter.py` | Shared Agent Card → OASF/ADS record converter (used by all agents) |
+| `ads_utils/publisher.py` | Shared `DirectoryPublisher` — canonical ADS publish/unpublish logic |
+| `email_agent/email_agent.py` | Email/Workspace agent (monolith; `ToolCallingEmailAgent`) |
+| `coding_agent/agent_loop.py` | litellm tool loop |
+| `coding_agent/_vendor_v2/` | Vendored A2A + directory stack for peer discovery |
+| `intelligence_agent/agent_loop.py` | litellm tool loop |
+| `intelligence_agent/_vendor_v2/` | Vendored A2A + directory stack for peer discovery |
+| `geoSpatial_agent/attack_bundle/src/pipeline_simple.py` | Geolocation engine (vision + grounding) |
+| `scout_agent/scout/` | Scout package (`agent.py` loop, `network/`, `capabilities/`) |
+| `<agent>/<agent>.card.json` | Agent Cards (skills, endpoint, capabilities) |
+| `<agent>/Dockerfile` | Per-agent Docker image (build from repo root) |
+| `<agent>/entrypoint.sh` | Container entrypoint (waits for ADS, sets PYTHONPATH, starts agent) |
 ```

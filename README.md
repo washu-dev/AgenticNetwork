@@ -33,18 +33,26 @@ Adding a new agent to ADS makes it available to the planner with **zero planner 
 
 ## Components
 
+**This repo — infrastructure:**
+
 | Directory | Role | Port | Full docs |
 |---|---|---|---|
 | [`planner_agent/`](planner_agent/) | Orchestrator + chat UI | 8090 | [README](planner_agent/README.md) |
 | [`agent_directory_service/`](agent_directory_service/) | ADS operator tooling (cluster ops) | — | [README](agent_directory_service/README.md) |
-| [`email_agent/`](email_agent/) | Gmail, Calendar, Docs, Sheets | 9103 | [README](email_agent/README.md) |
-| [`disaster_response_agent/`](disaster_response_agent/) | Emergency response planning | 9104 | [README](disaster_response_agent/README.md) |
-| [`geoSpatial_agent/`](geoSpatial_agent/) | Photo geolocation + incident classification | 9105 | [README](geoSpatial_agent/README.md) |
-| [`intelligence_agent/`](intelligence_agent/) | Situational awareness + threat assessment | 9105 | [README](intelligence_agent/README.md) |
-| [`coding_agent/`](coding_agent/) | Code writing via mini-swe-agent | 9106 | [README](coding_agent/README.md) |
-| [`scout_agent/`](scout_agent/) | OSINT web research | 9104 | [README](scout_agent/README.md) |
-| [`deployment/`](deployment/) | ENGR cluster containerized deployment | — | [README](deployment/README.md) |
 | [`registration_service/`](registration_service/) | Agent self-registration web UI + manager | — | [README](registration_service/README.md) |
+| [`agent_skeleton/`](agent_skeleton/) | Template for building new agents | — | [README](agent_skeleton/CLAUDE.md) |
+| [`deployment/`](deployment/) | ENGR cluster containerized deployment | — | [README](deployment/README.md) |
+
+**[`agent-directory`](https://github.com/washu-dev/agent-directory) repo — specialist agents:**
+
+| Agent | Role | Port |
+|---|---|---|
+| `email_agent` | Gmail, Calendar, Docs, Sheets | 9103 |
+| `disaster_response_agent` | Emergency response planning | 9104 |
+| `geoSpatial_agent` | Photo geolocation + incident classification | 9105 |
+| `intelligence_agent` | Situational awareness + threat assessment | 9105 |
+| `coding_agent` | Code writing via mini-swe-agent | 9106 |
+| `scout_agent` | OSINT web research | 9104 |
 
 > **Port collisions:** geospatial and intelligence both default to 9105; disaster and scout both default to 9104. Fine on separate machines or containers; reassign ports if running several on one host.
 
@@ -62,8 +70,8 @@ python3 -m venv planner_agent/.venv
 planner_agent/.venv/bin/python -m pip install -r planner_agent/requirements.txt
 cp planner_agent/.env.example planner_agent/.env.local  # add OPENAI_API_KEY
 planner_agent/scripts/start.sh --fake-ads \
-  --card email_agent/email_agent.card.json \
-  --card coding_agent/coding_agent.card.json
+  --card ../agent-directory/email_agent/email_agent.card.json \
+  --card ../agent-directory/coding_agent/coding_agent.card.json
 ```
 
 Open **http://localhost:8090/** for the chat UI.
@@ -85,25 +93,16 @@ Each component is isolated — do not install one component's requirements into 
 | Environment | Components |
 |---|---|
 | pip venv | `planner_agent` |
-| pip venv (editable) | `scout_agent` |
 | conda `agent-directory-service` | `agent_directory_service` |
-| conda `email-agent-a2a` (shared) | `email_agent`, `disaster_response_agent`, `geoSpatial_agent` |
-| conda `coding-agent-a2a` | `coding_agent` |
-| conda `intelligence-agent-a2a` | `intelligence_agent` |
+| pip venv | `registration_service` |
+
+Specialist agent environments live in the [`agent-directory`](https://github.com/washu-dev/agent-directory) repo.
 
 ## Agent Cards
 
-Each agent owns its card — a JSON file that describes its name, endpoint URL, and skills. Cards live next to the agent code and are published to ADS on startup:
+Each agent owns its card — a JSON file that describes its name, endpoint URL, and skills. Cards live next to the agent code in the `agent-directory` repo and are published to ADS on startup.
 
-```
-email_agent/email_agent.card.json
-coding_agent/coding_agent.card.json
-disaster_response_agent/disaster_response_agent.card.json
-intelligence_agent/intelligence_agent.card.json
-geoSpatial_agent/geospatial_agent.card.json
-```
-
-The planner uses ADS to discover agents at runtime. In fake-ADS mode for local dev, pass cards directly with `--card`.
+The planner uses ADS to discover agents at runtime. In fake-ADS mode for local dev, pass card paths directly with `--card` (pointing into a checkout of `agent-directory`).
 
 ## Adding a new agent
 
