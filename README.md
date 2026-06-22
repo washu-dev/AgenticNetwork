@@ -8,17 +8,17 @@ A demo of an **"Internet of Agents"**: independent, LLM-powered services that di
         You (browser / curl)
               │
               ▼
-        ┌───────────┐   "who can send email?"    ┌─────────────┐
-        │  PLANNER  │ ─────────────────────────▶ │     ADS     │  agent registry
+        ┌───────────┐   "who can send email?"     ┌─────────────┐
+        │  PLANNER  │ ─────────────────────────▶  │     ADS     │  agent registry
         │  :8090    │ ◀──── card + endpoint ───── │    :8888    │
         └─────┬─────┘                             └─────────────┘
               │
               │  A2A call (HTTP/JSON-RPC)
               ▼
-   ┌──────────┬──────────┬─────────────┬──────────┬──────────┐
-   │  email   │  coding  │  disaster   │ geospatial│  intel  │
-   │  :9103   │  :9106   │   :9104     │   :9105   │  :9105  │
-   └──────────┴──────────┴─────────────┴──────────┴──────────┘
+   ┌──────────┬──────────┬─────────────┬───────────┬──────────┐
+   │  email   │  coding  │  disaster   │ geospatial│  intel   │
+   │  :9103   │  :9106   │   :9104     │   :9105   │  :9105   │
+   └──────────┴──────────┴─────────────┴───────────┴──────────┘
 ```
 
 Three contracts hold the system together:
