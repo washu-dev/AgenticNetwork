@@ -1,0 +1,36 @@
+{
+  "name": "Skeleton Agent",
+  "description": "A template A2A agent that answers requests and can call simple text tools. Replace this with your agent's real capabilities.",
+  "url": "http://127.0.0.1:9110/",
+  "version": "0.1.0",
+  "protocolVersion": "0.3.0",
+  "preferredTransport": "JSONRPC",
+  "provider": {
+    "organization": "Your Org",
+    "url": "https://example.invalid/your-org"
+  },
+  "capabilities": {
+    "streaming": true,
+    "pushNotifications": false,
+    "stateTransitionHistory": true
+  },
+  "defaultInputModes": ["text/plain", "application/json"],
+  "defaultOutputModes": ["text/plain", "application/json"],
+  "securitySchemes": {},
+  "security": [],
+  "skills": [
+    {
+      "id": "skeleton/answer",
+      "name": "Answer a request",
+      "description": "Answer a natural-language request, optionally using helper tools, and return a structured answer.",
+      "tags": ["skeleton/answer", "skeleton", "demo", "read"],
+      "examples": [
+        "How many words are in 'the quick brown fox'?",
+        "Reverse the text 'hello world' and upper-case it."
+      ],
+      "inputModes": ["text/plain", "application/json"],
+      "outputModes": ["text/plain", "application/json"],
+      "security": []
+    }
+  ]
+}
