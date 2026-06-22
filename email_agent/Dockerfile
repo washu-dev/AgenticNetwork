@@ -1,0 +1,35 @@
+# Email agent (Gmail/Calendar/Docs/Sheets) — port 9103
+# Build from repo root:
+#   docker build --platform linux/amd64 -f deployment/dockerfiles/Dockerfile.email \
+#       -t amaankhan25/agenticnetwork-email:latest .
+FROM ghcr.io/agntcy/dir-ctl:v1.2.0 AS dirctl-src
+
+FROM continuumio/miniconda3:24.9.2-0
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl git build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=dirctl-src /dirctl /usr/local/bin/dirctl
+RUN chmod +x /usr/local/bin/dirctl
+
+WORKDIR /app
+
+RUN conda install -n base -c conda-forge mamba -y --quiet
+
+COPY email_agent/environment.yml email_agent/environment.yml
+RUN mamba env create -f email_agent/environment.yml --quiet
+
+COPY email_agent/ email_agent/
+COPY ads_utils/ ads_utils/
+# TODO: Google credentials should be mounted at runtime, not baked into the image.
+COPY deployment/google_credentials/ deployment/google_credentials/
+COPY deployment/entrypoints/entrypoint-email.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENV PATH=/opt/conda/envs/email-agent-a2a/bin:$PATH
+ENV PYTHONPATH=/app
+
+EXPOSE 9103
+
+ENTRYPOINT ["/entrypoint.sh"]
