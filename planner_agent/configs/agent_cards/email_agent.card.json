@@ -1,0 +1,685 @@
+{
+  "name": "Email Agent",
+  "description": "Gmail-backed A2A Google Workspace agent for email, group notice email, calendar invites, Google Docs, and Google Sheets workflows.",
+  "url": "http://AGENT_HOST:9103/",
+  "version": "0.2.6",
+  "protocolVersion": "0.3.0",
+  "preferredTransport": "JSONRPC",
+  "provider": {
+    "organization": "CSPL Email Agent",
+    "url": "https://example.invalid/cspl-email-agent"
+  },
+  "capabilities": {
+    "streaming": true,
+    "pushNotifications": false,
+    "stateTransitionHistory": true
+  },
+  "defaultInputModes": [
+    "text/plain",
+    "application/json"
+  ],
+  "defaultOutputModes": [
+    "text/plain",
+    "application/json"
+  ],
+  "securitySchemes": {},
+  "security": [],
+  "skills": [
+    {
+      "id": "email/search",
+      "name": "Search Email",
+      "description": "Search Gmail message metadata using Gmail query criteria.",
+      "tags": [
+        "email/search",
+        "email",
+        "gmail",
+        "search"
+      ],
+      "examples": [
+        "Find Bob's last email.",
+        "Search unread messages from alice@example.com."
+      ],
+      "inputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "outputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "security": []
+    },
+    {
+      "id": "email/read",
+      "name": "Read Email",
+      "description": "Read Gmail messages, optionally including body text and attachment previews.",
+      "tags": [
+        "email/read",
+        "email",
+        "gmail",
+        "read"
+      ],
+      "examples": [
+        "Read the latest unread email.",
+        "Read the last email from Bob with the message body."
+      ],
+      "inputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "outputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "security": []
+    },
+    {
+      "id": "email/draft",
+      "name": "Draft Email",
+      "description": "Prepare a structured email draft from user instructions and optional workflow artifacts, including optional high-importance headers and attachments selected only from email_agent/visible_files; Gmail draft creation can be performed directly.",
+      "tags": [
+        "email/draft",
+        "email",
+        "gmail",
+        "draft"
+      ],
+      "examples": [
+        "Draft an email to Bob with two meeting options."
+      ],
+      "inputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "outputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "security": []
+    },
+    {
+      "id": "email/send",
+      "name": "Send Email",
+      "description": "Send email through Gmail directly, including multiple explicit recipients, optional high-importance priority headers, and attachments selected only from email_agent/visible_files.",
+      "tags": [
+        "email/send",
+        "email",
+        "gmail",
+        "send",
+        "multi-recipient"
+      ],
+      "examples": [
+        "Send this email to Bob.",
+        "Send the test email to wyy0115@outlook.com and tomsonlee13@gmail.com."
+      ],
+      "inputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "outputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "security": []
+    },
+    {
+      "id": "email/group_send",
+      "name": "Send Group Email",
+      "description": "Send one Gmail group notice message directly using the Email Agent's configured group delivery mode, with optional attachments selected only from email_agent/visible_files.",
+      "tags": [
+        "email/group_send",
+        "email/send",
+        "email",
+        "gmail",
+        "send",
+        "group",
+        "group-email",
+        "notice",
+        "notice-delivery"
+      ],
+      "examples": [
+        "Send the group notice email.",
+        "Send the group notice email with high importance."
+      ],
+      "inputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "outputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "security": []
+    },
+    {
+      "id": "email/files/list",
+      "name": "List Visible Files",
+      "description": "List files and folders in the local email_agent/visible_files sandbox. This is the only local filesystem discovery skill and it cannot view paths outside that folder.",
+      "tags": [
+        "email/files/list",
+        "email",
+        "files",
+        "visible-files",
+        "local-files",
+        "read"
+      ],
+      "examples": [
+        "Show me the files available to attach.",
+        "Find visible files with report in the name.",
+        "Find the SSH public key file in visible_files."
+      ],
+      "inputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "outputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "security": []
+    },
+    {
+      "id": "email/files/read",
+      "name": "Read Visible File",
+      "description": "Read text or a safe preview from a file inside email_agent/visible_files. Paths outside the visible files sandbox are rejected.",
+      "tags": [
+        "email/files/read",
+        "email",
+        "files",
+        "visible-files",
+        "local-files",
+        "read"
+      ],
+      "examples": [
+        "Read the visible file called agenda.txt.",
+        "Preview the report PDF before attaching it.",
+        "Read id_rsa.pub so I can send the SSH public key."
+      ],
+      "inputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "outputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "security": []
+    },
+    {
+      "id": "email/files/write",
+      "name": "Write Visible File",
+      "description": "Create, overwrite, or append UTF-8 text files inside email_agent/visible_files. Paths outside the visible files sandbox are rejected. For programming requests, this skill should store code supplied by the user or by an explicitly enabled remote coding agent, not author substantial source code locally.",
+      "tags": [
+        "email/files/write",
+        "email",
+        "files",
+        "visible-files",
+        "local-files",
+        "write"
+      ],
+      "examples": [
+        "Write a summary file in visible_files.",
+        "Create notes.txt so I can attach it to an email."
+      ],
+      "inputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "outputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "security": []
+    },
+    {
+      "id": "email/summarize_thread",
+      "name": "Summarize Thread",
+      "description": "Read matching Gmail messages and return a concise thread summary.",
+      "tags": [
+        "email/summarize_thread",
+        "email",
+        "gmail",
+        "summary"
+      ],
+      "examples": [
+        "Summarize the thread with Bob."
+      ],
+      "inputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "outputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "security": []
+    },
+    {
+      "id": "email/google/status",
+      "name": "Google Workspace Status",
+      "description": "Check Google Workspace dependency, OAuth token, credential, and scope status.",
+      "tags": [
+        "email/google/status",
+        "email",
+        "google",
+        "workspace",
+        "status"
+      ],
+      "examples": [
+        "Check whether Google Workspace OAuth is configured."
+      ],
+      "inputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "outputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "security": []
+    },
+    {
+      "id": "email/current_time",
+      "name": "Current Time",
+      "description": "Return the email agent's current local time and timezone.",
+      "tags": [
+        "email/current_time",
+        "email",
+        "time"
+      ],
+      "examples": [
+        "What time is it for the email agent?"
+      ],
+      "inputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "outputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "security": []
+    },
+    {
+      "id": "email/calendar/status",
+      "name": "Calendar Status",
+      "description": "Check Google Calendar dependency and OAuth status.",
+      "tags": [
+        "email/calendar/status",
+        "email",
+        "calendar",
+        "status"
+      ],
+      "examples": [
+        "Check whether Calendar access is configured."
+      ],
+      "inputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "outputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "security": []
+    },
+    {
+      "id": "email/calendar/list_events",
+      "name": "List Calendar Events",
+      "description": "List Google Calendar events in a time window.",
+      "tags": [
+        "email/calendar/list_events",
+        "email",
+        "calendar",
+        "events",
+        "read"
+      ],
+      "examples": [
+        "List my calendar events for tomorrow."
+      ],
+      "inputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "outputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "security": []
+    },
+    {
+      "id": "email/calendar/create_event",
+      "name": "Create Calendar Event",
+      "description": "Create a calendar event and optionally email calendar invites to attendees directly.",
+      "tags": [
+        "email/calendar/create_event",
+        "email",
+        "calendar",
+        "invite"
+      ],
+      "examples": [
+        "Create a calendar invite for Friday at 2pm and email it to Alice."
+      ],
+      "inputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "outputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "security": []
+    },
+    {
+      "id": "email/calendar/update_event",
+      "name": "Update Calendar Event",
+      "description": "Update an existing Google Calendar event by event ID, including title, time, attendees, description, or location.",
+      "tags": [
+        "email/calendar/update_event",
+        "email",
+        "calendar",
+        "events",
+        "update",
+        "modify",
+        "write"
+      ],
+      "examples": [
+        "Move my 2pm calendar event to 3pm.",
+        "Update the location of my project meeting."
+      ],
+      "inputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "outputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "security": []
+    },
+    {
+      "id": "email/calendar/delete_event",
+      "name": "Delete Calendar Event",
+      "description": "Delete or cancel an existing Google Calendar event by event ID.",
+      "tags": [
+        "email/calendar/delete_event",
+        "email",
+        "calendar",
+        "events",
+        "delete",
+        "cancel",
+        "write"
+      ],
+      "examples": [
+        "Cancel my dentist appointment tomorrow.",
+        "Delete the calendar event with this ID."
+      ],
+      "inputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "outputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "security": []
+    },
+    {
+      "id": "email/docs/list",
+      "name": "List Google Docs",
+      "description": "List Google Docs visible to the authorized account.",
+      "tags": [
+        "email/docs/list",
+        "email",
+        "docs",
+        "google-docs",
+        "read"
+      ],
+      "examples": [
+        "Find my recent Google Docs about the project."
+      ],
+      "inputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "outputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "security": []
+    },
+    {
+      "id": "email/docs/read",
+      "name": "Read Google Doc",
+      "description": "Read plain text from a Google Doc by document ID.",
+      "tags": [
+        "email/docs/read",
+        "email",
+        "docs",
+        "google-docs",
+        "read"
+      ],
+      "examples": [
+        "Read this Google Doc by ID."
+      ],
+      "inputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "outputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "security": []
+    },
+    {
+      "id": "email/docs/create",
+      "name": "Create Google Doc",
+      "description": "Create a Google Doc with optional initial content directly.",
+      "tags": [
+        "email/docs/create",
+        "email",
+        "docs",
+        "google-docs"
+      ],
+      "examples": [
+        "Create a Google Doc titled Meeting Notes."
+      ],
+      "inputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "outputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "security": []
+    },
+    {
+      "id": "email/docs/append",
+      "name": "Append Google Doc",
+      "description": "Append text to an existing Google Doc directly.",
+      "tags": [
+        "email/docs/append",
+        "email",
+        "docs",
+        "google-docs"
+      ],
+      "examples": [
+        "Append these notes to the project Google Doc."
+      ],
+      "inputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "outputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "security": []
+    },
+    {
+      "id": "email/docs/replace_text",
+      "name": "Replace Google Doc Text",
+      "description": "Replace matching text in an existing Google Doc directly.",
+      "tags": [
+        "email/docs/replace_text",
+        "email",
+        "docs",
+        "google-docs"
+      ],
+      "examples": [
+        "Replace TODO with Done in this Google Doc."
+      ],
+      "inputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "outputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "security": []
+    },
+    {
+      "id": "email/docs/create_and_email",
+      "name": "Create And Email Google Doc",
+      "description": "Create a Google Doc and email its link to recipients directly.",
+      "tags": [
+        "email/docs/create_and_email",
+        "email",
+        "docs",
+        "google-docs",
+        "send"
+      ],
+      "examples": [
+        "Create a Google Doc with this plan and email the link to Bob."
+      ],
+      "inputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "outputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "security": []
+    },
+    {
+      "id": "email/sheets/list",
+      "name": "List Google Sheets",
+      "description": "List Google Sheets visible to the authorized account.",
+      "tags": [
+        "email/sheets/list",
+        "email",
+        "sheets",
+        "google-sheets",
+        "read"
+      ],
+      "examples": [
+        "Find my spreadsheet about expenses."
+      ],
+      "inputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "outputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "security": []
+    },
+    {
+      "id": "email/sheets/read",
+      "name": "Read Google Sheet",
+      "description": "Read values from a Google Sheet range.",
+      "tags": [
+        "email/sheets/read",
+        "email",
+        "sheets",
+        "google-sheets",
+        "read"
+      ],
+      "examples": [
+        "Read Sheet1!A1:D20 from this spreadsheet."
+      ],
+      "inputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "outputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "security": []
+    },
+    {
+      "id": "email/sheets/create",
+      "name": "Create Google Sheet",
+      "description": "Create a Google Sheet with optional initial rows directly.",
+      "tags": [
+        "email/sheets/create",
+        "email",
+        "sheets",
+        "google-sheets"
+      ],
+      "examples": [
+        "Create a spreadsheet with these rows."
+      ],
+      "inputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "outputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "security": []
+    },
+    {
+      "id": "email/sheets/write",
+      "name": "Write Google Sheet",
+      "description": "Overwrite values in a Google Sheet range directly.",
+      "tags": [
+        "email/sheets/write",
+        "email",
+        "sheets",
+        "google-sheets"
+      ],
+      "examples": [
+        "Write these rows to Sheet1!A1."
+      ],
+      "inputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "outputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "security": []
+    },
+    {
+      "id": "email/sheets/append",
+      "name": "Append Google Sheet",
+      "description": "Append rows to a Google Sheet range directly.",
+      "tags": [
+        "email/sheets/append",
+        "email",
+        "sheets",
+        "google-sheets"
+      ],
+      "examples": [
+        "Append this row to the tracker spreadsheet."
+      ],
+      "inputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "outputModes": [
+        "text/plain",
+        "application/json"
+      ],
+      "security": []
+    }
+  ]
+}

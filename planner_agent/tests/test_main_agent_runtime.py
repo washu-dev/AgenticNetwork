@@ -28,7 +28,7 @@ from planner_agent.main_agent.server import create_app
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 EMAIL_CARD = REPO_ROOT / "planner_agent" / "configs" / "agent_cards" / "email_agent.card.json"
-WEATHER_CARD = REPO_ROOT / "coding_agent" / "coding_agent.card.json"
+WEATHER_CARD = REPO_ROOT / "planner_agent" / "configs" / "agent_cards" / "coding_agent.card.json"
 CODING_CARD = REPO_ROOT / "planner_agent" / "configs" / "agent_cards" / "coding_agent.card.json"
 
 
