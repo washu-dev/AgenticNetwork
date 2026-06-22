@@ -13,6 +13,14 @@ It is a companion to three other docs — read them for the surrounding context:
   at scale" companion to §4–§5 of this file.** This spec describes *what is*; that
   doc describes *what should change*.
 
+> **Update (2026-06):** The registration service (`registration_service/`) is now the
+> recommended path for adding dynamically-managed agents. It owns subprocess lifecycle,
+> ADS publish/unpublish, crash recovery, and persistent state — the "platform registrar"
+> that replaces per-agent self-publish hooks for new agents. §6 covers both paths; §10
+> covers the registration service in detail. The six hand-crafted specialist agents
+> (email, coding, disaster, geospatial, intelligence, scout) still use the old self-publish
+> model and are not managed by the registration service.
+
 > Code is referenced by `path` + symbol name. Line numbers drift, so they are
 > avoided here on purpose — `grep` the symbol.
 
@@ -264,7 +272,7 @@ k8s/containers), **scale-to-zero** (cold/on-demand agents), and **N replicas**
 | LLM API surface (Chat/litellm/**Responses**/Gemini) | agent code | Creator-convention | ❌ **Responses/Gemini agents need rewrite** (#2 downstream) | ✅ | ✅ |
 | per-agent secrets (`BRAVE`, `GOOGLE_*`, OAuth tokens) | deploy env / baked image | Creator-convention | ❌ **baked → mounted secrets**; email OAuth tokens → shared store | ⚠️ email tokens not shared | ❌ email local-disk tokens break |
 | directory address (5+ vars; scout's gRPC `:8889`) | deploy env | Cluster-specific | ❌ unify on one directory service; reconcile scout | ✅ | ✅ |
-| **self-publish-on-boot + atexit/signal unpublish** | agent code | **Activate-all coupling** | ✅ | ❌ **the dominant blocker** — presence tied to process life (#1 downstream) | ⚠️ N replicas re-publish same record |
+| **self-publish-on-boot + atexit/signal unpublish** | agent code | **Activate-all coupling** | ✅ | ❌ **the dominant blocker** — presence tied to process life (#1 downstream) | ⚠️ N replicas re-publish same record | *For new agents: use the registration service (§10) instead — it owns publish/unpublish externally.* |
 | OASF record / CID / routing entry | publish path | AGNTCY-required | ✅ | ⚠️ must stay *routed* when cold | ✅ |
 | conda env / image | Dockerfile | Cluster-specific (conda detail) | ⚠️ image layers carry over; conda specifics may not | ✅ | ✅ |
 | `auth` (empty securitySchemes/security) | card author | Creator-convention | ❌ **must add real authn/authz** before shared exposure | n/a | n/a |
@@ -386,6 +394,11 @@ runs its own LLM loop and returns text + a `DataPart` artifact → `final_answer
 `publish_agents.py` registers a card **without the agent running** — the seam that a
 scale-to-zero design (#1 downstream) builds on.
 
+**Alternative lifecycle — registration service (new agents):** See §10. Instead of
+authoring a card and self-publish hook, POST a `RegisterRequest` to the registration
+service; it generates the card, spawns the subprocess, publishes to ADS, and monitors
+health — all externally. The six existing specialist agents do not use this path.
+
 ---
 
 ## 7. Fixed (AGNTCY) vs. changeable (creators)
@@ -450,3 +463,63 @@ scale-to-zero design (#1 downstream) builds on.
 | `planner_agent/main_agent/a2a/`, `directory/` | A2A transport + directory client (the more-evolved fork) |
 | `deployment/dockerfiles/`, `entrypoints/`, `submit.sbatch`, `start_vllm.sbatch`, `build_and_push.sh`, `.env.example`, `ads_daemon.yaml` | the cluster scaffolding |
 | `deployment/DOWNSTREAM_CONSIDERATIONS.md` | what changes at scale (#1 scale-to-zero, #2 per-agent cloud, #3 cross-cutting prerequisites) |
+| `registration_service/server.py` | REST API: `POST /agents`, `GET /agents`, `DELETE /agents/{id}`, `POST /agents/{id}/restart` |
+| `registration_service/supervisor.py` | `Supervisor`: spawn, ADS publish, health loop, crash recovery |
+| `registration_service/db.py` | asyncpg pool + schema (`agents`, `port_pool` tables); `FAKE_DB=1` swaps in `fake_db.py` |
+| `registration_service/backend.py` | `SubprocessBackend`: the actual process management layer under `Supervisor` |
+| `registration_service/models.py` | `RegisterRequest`, `LLMConfig`, `APIProxyConfig`, `AgentResponse` |
+| `registration_service/tests/` | pytest suite (19 tests); run with `FAKE_DB=1 PYTHONPATH=. pytest registration_service/tests` |
+
+---
+
+## 10. Registration service — the external lifecycle manager
+
+The registration service (`registration_service/`, port **8091**) is the recommended
+path for adding new agents that should be centrally managed. It implements the
+"platform registrar" described in §4's scale-to-zero row — ADS presence is no longer
+tied to the agent's own process lifecycle.
+
+### How it differs from the hand-crafted path
+
+| Concern | Hand-crafted agents (§5–§6) | Registration service |
+|---|---|---|
+| Card authoring | You write `*.card.json` | Service generates card from `RegisterRequest` |
+| ADS publish | Agent calls `dirctl push` + `routing publish` on boot | `Supervisor.spawn_and_publish()` does it externally |
+| ADS unpublish | Agent's `atexit`/signal handler | `Supervisor.stop_and_unpublish()` on `DELETE /agents/{id}` |
+| Persistent record | None — lost on restart | Postgres `agents` table; survives service restarts |
+| Crash recovery | Nothing | Health loop + `restart_with_backoff()` (3 attempts, exponential backoff) |
+| Port allocation | Hardcoded per agent | `port_pool` table: allocates from a managed range |
+
+### Adding an agent via the registration service
+
+```bash
+curl -s http://localhost:8091/agents -H 'Content-Type: application/json' -d '{
+  "name": "my-agent",
+  "description": "Does X",
+  "handler_type": "llm",
+  "oasf_skills": [{"name": "myagent/do_thing", "id": 42}],
+  "config": {"model": "gpt-4o", "system_prompt": "You are ..."}
+}' | jq
+```
+
+The service assigns a port, inserts a DB record, spawns the subprocess, waits for
+health, publishes to ADS, and returns the live agent record including `endpoint_url`
+and `ads_cid`.
+
+### Known limitation — card richness
+
+`Supervisor._build_agent_card()` generates a minimal card: skill `tags` are empty and
+`examples` are absent. The planner's LLM uses `description`/`examples`/`tags` to pick
+skills (see §3b). Agents registered this way are discoverable but skill selection may
+be less precise than hand-crafted cards with rich examples. This is a known gap to
+address.
+
+### What the registration service does NOT replace
+
+- The six existing specialist agents (email, coding, disaster, geospatial,
+  intelligence, scout) are not managed by the registration service — they self-publish
+  on boot as always.
+- The ADS contracts (stored-vs-routed, OASF record schema, routing poll) are
+  unchanged — the service uses the same `DirectoryPublisher` under the hood.
+- The A2A executor contract (§3c) still applies to agents the service spawns — they
+  must implement `AgentExecutor` and serve via `A2AStarletteApplication`.
