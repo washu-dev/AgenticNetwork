@@ -14,7 +14,7 @@ def _csv_env(name: str) -> list[str]:
 @dataclass
 class Settings:
     # Model + agent loop
-    model: str = "gpt-5-mini"
+    model: str = "openai/gpt-oss-120b"
     max_iterations: int = 8
     max_tool_calls: int = 12
     brave_timeout: float = 15.0
