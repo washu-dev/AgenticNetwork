@@ -520,7 +520,7 @@ class MainAgentRuntime:
             )
 
         prior_dispatch = _first_completed_dispatch(selected_agents)
-        if prior_dispatch is not None:
+        if prior_dispatch is not None and prior_dispatch.get("agent_id") == agent.agent_id:
             if not _prior_dispatch_reports_failed_handoff(structured_outputs):
                 return (
                     {
