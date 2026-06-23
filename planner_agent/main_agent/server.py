@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import collections
 import contextlib
 import json
 import logging
 import mimetypes
 import os
 import re
+import time as _time
 from pathlib import Path
 from typing import Annotated, Any, Sequence
 from uuid import uuid4
@@ -29,6 +31,7 @@ from planner_agent.main_agent.config import MainAgentConfig, load_config
 from planner_agent.main_agent.db import close_db, fetch_user_credentials, init_db
 from planner_agent.main_agent.llm_client import LLMClient, OpenAIToolLoopClient
 from planner_agent.main_agent.runtime import MainAgentRuntime
+from planner_agent.main_agent import conversation_store
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +49,15 @@ class ConfirmationRequest(BaseModel):
     context_id: str
     confirmed: bool = True
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class FeedbackRequest(BaseModel):
+    context_id: str | None = None
+    rating: str                   # "up" or "down"
+    comment: str | None = None
+    agent_id: str | None = None
+    skill: str | None = None
+    prompt_text: str | None = None
 
 
 def create_app(
@@ -84,12 +96,41 @@ def create_app(
     for card_path in _agent_card_paths(agent_card_paths, allow_local=cfg.fake_ads):
         directory.publish_agent_card(load_agent_card(card_path))
 
+    # Ring buffer of the last 200 requests. Each entry is a dict.
+    _request_log: collections.deque = collections.deque(maxlen=200)
+    _feedback_log: collections.deque = collections.deque(maxlen=500)
+    _agent_health: dict[str, dict] = {}
+    # user_id → deque of { context_id, title, started_at, last_active_at }
+    _session_index: dict[str, collections.deque] = collections.defaultdict(lambda: collections.deque(maxlen=20))
+
+    _ADMIN_TOKEN = os.getenv("MAIN_AGENT_ADMIN_TOKEN", "")
+
+    def _require_admin(request: Request) -> None:
+        if not _ADMIN_TOKEN:
+            return
+        token = request.headers.get("X-Admin-Token", "")
+        if token != _ADMIN_TOKEN:
+            raise HTTPException(status_code=401, detail="Admin token required")
+
     app = FastAPI(title="Planner Agent", version="0.1.0")
     app.state.config = cfg
     app.state.runtime = runtime
     app.state.directory = directory
     app.state.a2a = a2a
     app.state.store = store
+
+    @app.post("/admin/login")
+    async def admin_login(payload: dict[str, str]) -> dict[str, Any]:
+        if _ADMIN_TOKEN and payload.get("password") != _ADMIN_TOKEN:
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+        return {"ok": True, "token": _ADMIN_TOKEN or "open"}
+
+    # Conversation history store (SQLite, always active).
+    _conv_db_path = os.getenv(
+        "MAIN_AGENT_CONVERSATION_DB",
+        "/tmp/planner_agent_conversations.db",
+    )
+    conversation_store.init(_conv_db_path)
 
     # DB lifecycle (skipped when REGISTRATION_DB_DSN is unset, e.g. in unit tests).
     if os.getenv("REGISTRATION_DB_DSN"):
@@ -161,6 +202,7 @@ def create_app(
         metadata = dict(msg.metadata)
         await _inject_credentials(request, metadata)
         try:
+            t0 = _time.monotonic()
             result = await runtime.handle_message(
                 user_id=msg.user_id,
                 channel=msg.channel,
@@ -168,6 +210,31 @@ def create_app(
                 context_id=msg.context_id,
                 metadata=metadata,
             )
+            latency_ms = int((_time.monotonic() - t0) * 1000)
+            _request_log.appendleft({
+                "timestamp": _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()),
+                "prompt": msg.text[:80],
+                "routed_to": result.selected_agents[-1]["agent_id"] if result.selected_agents else "planner",
+                "latency_ms": latency_ms,
+                "state": result.state,
+            })
+            now_ts = _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime())
+            sessions = _session_index[msg.user_id]
+            existing = next((s for s in sessions if s["context_id"] == result.context_id), None)
+            if existing:
+                existing["last_active_at"] = now_ts
+            else:
+                sessions.appendleft({
+                    "context_id": result.context_id,
+                    "title": msg.text[:60],
+                    "started_at": now_ts,
+                    "last_active_at": now_ts,
+                })
+            try:
+                ctx = store.get_context(result.context_id)
+                await conversation_store.save(result.context_id, ctx.conversation_history)
+            except Exception:
+                pass
         except HTTPException:
             raise
         except Exception as exc:
@@ -189,6 +256,7 @@ def create_app(
 
             async def run_message() -> None:
                 try:
+                    t0 = _time.monotonic()
                     result = await runtime.handle_message(
                         user_id=msg.user_id,
                         channel=msg.channel,
@@ -197,6 +265,31 @@ def create_app(
                         metadata=metadata,
                         progress_callback=progress,
                     )
+                    latency_ms = int((_time.monotonic() - t0) * 1000)
+                    now_ts = _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime())
+                    _request_log.appendleft({
+                        "timestamp": now_ts,
+                        "prompt": msg.text[:80],
+                        "routed_to": result.selected_agents[-1]["agent_id"] if result.selected_agents else "planner",
+                        "latency_ms": latency_ms,
+                        "state": result.state,
+                    })
+                    sessions = _session_index[msg.user_id]
+                    existing = next((s for s in sessions if s["context_id"] == result.context_id), None)
+                    if existing:
+                        existing["last_active_at"] = now_ts
+                    else:
+                        sessions.appendleft({
+                            "context_id": result.context_id,
+                            "title": msg.text[:60],
+                            "started_at": now_ts,
+                            "last_active_at": now_ts,
+                        })
+                    try:
+                        ctx = store.get_context(result.context_id)
+                        await conversation_store.save(result.context_id, ctx.conversation_history)
+                    except Exception:
+                        pass
                     await queue.put(("final", result.to_response()))
                 except asyncio.CancelledError:
                     await queue.put(("error", {"detail": "Request was cancelled or timed out."}))
@@ -243,6 +336,197 @@ def create_app(
             req.context_id, req.user_id, req.channel, req.metadata
         )
         return result.to_response()
+
+    @app.post("/feedback")
+    async def post_feedback(req: FeedbackRequest) -> dict[str, bool]:
+        _feedback_log.appendleft({
+            "timestamp": _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()),
+            "rating": req.rating,
+            "comment": req.comment or "",
+            "agent_id": req.agent_id or "",
+            "skill": req.skill or "",
+            "prompt_text": req.prompt_text or "",
+        })
+        return {"ok": True}
+
+    @app.get("/admin/stats")
+    async def admin_stats(request: Request, _: None = Depends(_require_admin)) -> dict[str, Any]:
+        try:
+            agents = directory.search_agents()
+            agent_count = len(agents)
+        except Exception:
+            agent_count = 0
+
+        today_prefix = _time.strftime("%Y-%m-%d", _time.gmtime())
+        today_reqs = [r for r in _request_log if r["timestamp"].startswith(today_prefix)]
+        latencies = [r["latency_ms"] for r in today_reqs]
+        sorted_lat = sorted(latencies)
+
+        pos = sum(1 for f in _feedback_log if f["rating"] == "up")
+        neg = sum(1 for f in _feedback_log if f["rating"] == "down")
+
+        return {
+            "agents_connected": agent_count,
+            "requests_today": len(today_reqs),
+            "last_request_ts": _request_log[0]["timestamp"] if _request_log else None,
+            "avg_latency_ms": int(sum(latencies) / len(latencies)) if latencies else 0,
+            "p95_latency_ms": int(sorted_lat[int(len(sorted_lat) * 0.95)]) if sorted_lat else 0,
+            "feedback_total": len(_feedback_log),
+            "feedback_positive": pos,
+            "feedback_negative": neg,
+        }
+
+    @app.get("/admin/traces")
+    async def admin_traces(request: Request, _: None = Depends(_require_admin)) -> dict[str, Any]:
+        rows = [
+            {
+                "timestamp": entry["timestamp"],
+                "prompt": entry["prompt"],
+                "routed_to": entry["routed_to"],
+                "latency_ms": entry["latency_ms"],
+                "state": entry["state"],
+            }
+            for entry in _request_log
+        ]
+        return {"traces": rows}
+
+    @app.get("/admin/feedback")
+    async def admin_feedback(request: Request, _: None = Depends(_require_admin)) -> dict[str, Any]:
+        items = list(_feedback_log)
+        pos = sum(1 for f in items if f["rating"] == "up")
+        return {
+            "total": len(items),
+            "positive": pos,
+            "negative": len(items) - pos,
+            "items": items,
+        }
+
+    async def _probe_agent(agent_id: str, endpoint: str) -> None:
+        url = endpoint.rstrip("/") + "/"
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                t0 = _time.monotonic()
+                r = await client.get(url)
+                latency_ms = (_time.monotonic() - t0) * 1000
+            reachable = r.status_code < 500
+        except Exception:
+            reachable = False
+            latency_ms = 0.0
+
+        prev = _agent_health.get(agent_id, {})
+        if reachable:
+            _agent_health[agent_id] = {
+                "status": "online",
+                "last_ok_ts": _time.monotonic(),
+                "avg_latency_ms": int(latency_ms),
+                "requests_today": prev.get("requests_today", 0),
+            }
+        else:
+            last_ok = prev.get("last_ok_ts")
+            elapsed = (_time.monotonic() - last_ok) if last_ok else float("inf")
+            _agent_health[agent_id] = {
+                "status": "degraded" if elapsed < 300 else "offline",
+                "last_ok_ts": last_ok,
+                "avg_latency_ms": prev.get("avg_latency_ms", 0),
+                "requests_today": prev.get("requests_today", 0),
+            }
+
+    @app.on_event("startup")
+    async def _start_health_probe_loop():
+        async def _loop():
+            while True:
+                try:
+                    agents = directory.search_agents()
+                    tasks = [_probe_agent(a.agent_id, a.endpoint) for a in agents if a.endpoint]
+                    if tasks:
+                        await asyncio.gather(*tasks, return_exceptions=True)
+                except Exception:
+                    pass
+                await asyncio.sleep(60)
+        asyncio.create_task(_loop())
+
+    @app.get("/admin/agents/health")
+    async def admin_agents_health(request: Request, _: None = Depends(_require_admin)) -> dict[str, Any]:
+        try:
+            agents = directory.search_agents()
+        except Exception:
+            agents = []
+        rows = []
+        for a in agents:
+            h = _agent_health.get(a.agent_id, {"status": "unknown", "avg_latency_ms": 0, "requests_today": 0})
+            last_ok = h.get("last_ok_ts")
+            rows.append({
+                "agent_id": a.agent_id,
+                "name": a.name,
+                "endpoint": a.endpoint,
+                "status": h["status"],
+                "last_ping_s": int(_time.monotonic() - last_ok) if last_ok else None,
+                "avg_latency_ms": h["avg_latency_ms"],
+                "requests_today": h["requests_today"],
+            })
+        return {"agents": rows}
+
+    @app.get("/sessions")
+    async def get_sessions(user_id: str = "demo-user") -> dict[str, Any]:
+        return {"sessions": list(_session_index.get(user_id, []))}
+
+    @app.delete("/conversations/{context_id}")
+    async def delete_conversation(context_id: str) -> dict[str, bool]:
+        await conversation_store.delete(context_id)
+        _session_index.pop(context_id, None)
+        for sessions in _session_index.values():
+            to_remove = [s for s in sessions if s["context_id"] == context_id]
+            for s in to_remove:
+                sessions.remove(s)
+        return {"ok": True}
+
+    @app.get("/conversations/{context_id}")
+    async def get_conversation(context_id: str) -> dict[str, Any]:
+        # Try SQLite first (survives restarts), fall back to in-memory store.
+        messages = await conversation_store.load(context_id)
+        if messages is None:
+            # SQLite not initialised — fall back to in-memory
+            try:
+                ctx = store.get_context(context_id)
+                messages = conversation_store._parse_history(ctx.conversation_history)
+                messages = [{"role": r, "text": t} for r, t in messages]
+            except KeyError:
+                raise HTTPException(status_code=404, detail="Conversation not found")
+        if not messages:
+            # SQLite has no rows for this id — check in-memory as fallback
+            try:
+                ctx = store.get_context(context_id)
+                parsed = conversation_store._parse_history(ctx.conversation_history)
+                messages = [{"role": r, "text": t} for r, t in parsed]
+            except KeyError:
+                pass
+        return {"context_id": context_id, "messages": messages}
+
+    @app.post("/admin/ads/reset")
+    async def admin_ads_reset(request: Request, _: None = Depends(_require_admin)) -> dict[str, bool]:
+        if hasattr(directory, "_cache_ts"):
+            directory._cache_ts = 0
+        _agent_health.clear()
+        return {"ok": True}
+
+    @app.delete("/admin/agents/{agent_id}")
+    async def admin_remove_agent(agent_id: str, request: Request, _: None = Depends(_require_admin)) -> dict[str, bool]:
+        _agent_health.pop(agent_id, None)
+        logger.info("admin_removed_agent agent_id=%s", agent_id)
+        return {"ok": True}
+
+    @app.post("/admin/agents/{agent_id}/ping")
+    async def admin_ping_agent(agent_id: str, request: Request, _: None = Depends(_require_admin)) -> dict[str, Any]:
+        try:
+            agents = directory.search_agents()
+        except Exception:
+            agents = []
+        agent = next((a for a in agents if a.agent_id == agent_id), None)
+        if not agent or not agent.endpoint:
+            raise HTTPException(status_code=404, detail="Agent not found or has no endpoint")
+        await _probe_agent(agent_id, agent.endpoint)
+        h = _agent_health.get(agent_id, {})
+        return {"agent_id": agent_id, "status": h.get("status", "unknown"), "avg_latency_ms": h.get("avg_latency_ms", 0)}
 
     return app
 

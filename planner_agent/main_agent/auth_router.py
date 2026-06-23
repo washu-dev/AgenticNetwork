@@ -36,6 +36,12 @@ def _google_auth_url() -> str:
     return "https://accounts.google.com/o/oauth2/v2/auth?" + urlencode(params)
 
 
+@router.get("/logout")
+async def logout() -> RedirectResponse:
+    """Clear the Shibboleth session and redirect back to the app (which will re-trigger SSO login)."""
+    return RedirectResponse("/Shibboleth.sso/Logout?return=/", status_code=303)
+
+
 @router.get("/google")
 async def google_oauth_start(
     _user: Annotated[dict, Depends(get_current_user)],
