@@ -135,6 +135,7 @@ class MainAgentRuntime:
 
         context = self._open_context(user_id, channel, text, context_id)
         uploaded_images = _uploaded_images_from_metadata(metadata or {})
+        credentials = (metadata or {}).get("credentials") or {}
         state = TurnState(
             context_id=context.context_id,
             user_text=text,
@@ -146,6 +147,7 @@ class MainAgentRuntime:
         result = await self._run_loop(
             state=state,
             context=context,
+            credentials=credentials,
             progress_callback=progress_callback,
         )
         # Append assistant final text to conversation history.
@@ -164,6 +166,7 @@ class MainAgentRuntime:
         *,
         state: TurnState,
         context: PIContext,
+        credentials: dict[str, Any] | None = None,
         progress_callback: ProgressCallback | None = None,
     ) -> TurnResult:
         tool_trace: list[dict[str, Any]] = []
@@ -225,6 +228,7 @@ class MainAgentRuntime:
                 structured_outputs=structured_outputs,
                 successful_calls=successful_calls,
                 discovered=discovered,
+                credentials=credentials or {},
                 progress_callback=progress_callback,
             )
             if terminal is not None:
@@ -254,6 +258,7 @@ class MainAgentRuntime:
         structured_outputs: dict[str, Any],
         successful_calls: set[str],
         discovered: dict[str, DiscoveredAgent],
+        credentials: dict[str, Any] | None = None,
         progress_callback: ProgressCallback | None = None,
     ) -> TurnResult | None:
         name = tool_call.tool_name
@@ -327,6 +332,7 @@ class MainAgentRuntime:
                 selected_agents=selected_agents,
                 structured_outputs=structured_outputs,
                 successful_calls=successful_calls,
+                credentials=credentials or {},
                 progress_callback=progress_callback,
             )
             await _record_trace(
@@ -421,6 +427,7 @@ class MainAgentRuntime:
         selected_agents: list[dict[str, Any]],
         structured_outputs: dict[str, Any],
         successful_calls: set[str],
+        credentials: dict[str, Any] | None = None,
         progress_callback: ProgressCallback | None = None,
     ) -> tuple[dict[str, Any], dict[str, Any] | None]:
         agent_id = str(args.get("agent_id") or "").strip()
@@ -605,6 +612,7 @@ class MainAgentRuntime:
             user_text=state.user_text,
             confirmed=False,
             uploaded_images=state.uploaded_images,
+            credentials=credentials or {},
         )
         remote_progress_callback = None
         if progress_callback is not None:
@@ -733,6 +741,7 @@ class MainAgentRuntime:
             user_text=context.current_goal,
             confirmed=True,
             uploaded_images=[],
+            credentials=metadata.get("credentials") or {},
         )
         result = await self._send_task(agent, request)
         confirmed_decision = PolicyDecision(
@@ -864,6 +873,7 @@ class MainAgentRuntime:
         user_text: str,
         confirmed: bool,
         uploaded_images: list[dict[str, Any]] | None = None,
+        credentials: dict[str, Any] | None = None,
     ) -> A2ATaskRequest:
         should_attach_images = bool(uploaded_images) and _is_geospatial_agent(agent, skill)
         outbound_task_input = dict(task_input)
@@ -886,6 +896,8 @@ class MainAgentRuntime:
             "channel": context.channel.value,
             **{k: v for k, v in outbound_task_input.items() if k not in {"user_id", "channel", "skill"}},
         }
+        if credentials:
+            metadata["credentials"] = credentials
         if attached_images:
             metadata["uploaded_images"] = attached_images
             metadata["image_transfer"] = "a2a_file_bytes"
