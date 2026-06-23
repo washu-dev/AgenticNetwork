@@ -9,7 +9,7 @@ from urllib.parse import urlencode
 import httpx
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
-from passlib.context import CryptContext
+import bcrypt
 
 from planner_agent.main_agent.auth import (
     SESSION_COOKIE,
@@ -23,8 +23,6 @@ from planner_agent.main_agent.crypto import encrypt
 from planner_agent.main_agent.db import get_pool
 
 router = APIRouter(prefix="/auth", tags=["auth"])
-
-_pwd_ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 _LOGIN_HTML_PATH = (
     __file__.replace("auth_router.py", "web/login.html")
@@ -79,7 +77,7 @@ async def signup(
     if len(password) < 8:
         raise HTTPException(status_code=400, detail="Password must be at least 8 characters.")
 
-    pw_hash = _pwd_ctx.hash(password)
+    pw_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
     pool = await get_pool()
     async with pool.acquire() as conn:
         existing = await conn.fetchval("SELECT id FROM users WHERE email = $1", email)
@@ -109,7 +107,7 @@ async def login(
             "SELECT id, password_hash FROM users WHERE email = $1", email
         )
 
-    if row is None or not row["password_hash"] or not _pwd_ctx.verify(password, row["password_hash"]):
+    if row is None or not row["password_hash"] or not bcrypt.checkpw(password.encode(), row["password_hash"].encode()):
         raise HTTPException(status_code=401, detail="Invalid email or password.")
 
     token = await create_session(row["id"])
