@@ -1,4 +1,7 @@
 a2a-sdk==0.3.26
+asyncpg>=0.29.0
+bcrypt>=4.0.0
+python-multipart>=0.0.9
 aiologic==0.16.0
 annotated-doc==0.0.4
 annotated-types==0.7.0

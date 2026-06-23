@@ -8,13 +8,14 @@ import mimetypes
 import os
 import re
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Annotated, Any, Sequence
 from uuid import uuid4
 
 import httpx
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, Response, StreamingResponse
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.responses import HTMLResponse, RedirectResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from planner_agent.main_agent.a2a.client import A2AClient
 from planner_agent.main_agent.models import Channel
@@ -22,11 +23,37 @@ from planner_agent.main_agent.directory.card_oasf_converter import load_agent_ca
 from planner_agent.main_agent.directory.client import DirectoryClient
 from planner_agent.main_agent.state.store import InMemoryStateStore
 
+from planner_agent.main_agent.auth import SESSION_COOKIE, get_current_user
+from planner_agent.main_agent.auth_router import router as auth_router
+from planner_agent.main_agent.credentials_router import router as credentials_router
 from planner_agent.main_agent.config import MainAgentConfig, load_config
+from planner_agent.main_agent.db import close_db, fetch_user_credentials, init_db
 from planner_agent.main_agent.llm_client import LLMClient, OpenAIToolLoopClient
 from planner_agent.main_agent.runtime import MainAgentRuntime
 
 logger = logging.getLogger(__name__)
+
+# Paths that don't require a session cookie.
+_AUTH_EXEMPT = {"/auth/login", "/auth/signup", "/health"}
+_AUTH_EXEMPT_PREFIXES = ("/auth/", "/static/")
+
+
+class _AuthMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        path = request.url.path
+        if path in _AUTH_EXEMPT or any(path.startswith(p) for p in _AUTH_EXEMPT_PREFIXES):
+            return await call_next(request)
+
+        # Check for a valid session cookie without raising — redirect on failure.
+        token = request.cookies.get(SESSION_COOKIE)
+        if not token:
+            return RedirectResponse(url="/auth/login", status_code=302)
+        try:
+            await get_current_user(planner_session=token)
+        except Exception:
+            return RedirectResponse(url="/auth/login", status_code=302)
+
+        return await call_next(request)
 
 
 class IncomingMessage(BaseModel):
@@ -88,6 +115,26 @@ def create_app(
     app.state.a2a = a2a
     app.state.store = store
 
+    # DB lifecycle (skipped when REGISTRATION_DB_DSN is unset, e.g. in unit tests).
+    if os.getenv("REGISTRATION_DB_DSN"):
+        @app.on_event("startup")
+        async def _startup_db():
+            await init_db()
+
+        @app.on_event("shutdown")
+        async def _shutdown_db():
+            await close_db()
+
+    # Auth middleware + router (active whenever the DB is configured).
+    if os.getenv("REGISTRATION_DB_DSN"):
+        app.add_middleware(_AuthMiddleware)
+        app.include_router(auth_router)
+        app.include_router(credentials_router)
+
+    @app.get("/me")
+    async def me(user: Annotated[dict, Depends(get_current_user)]) -> dict[str, Any]:
+        return {"email": user["email"]}
+
     @app.get("/health")
     async def health() -> dict[str, str]:
         return {"status": "ok", "fake_ads": str(cfg.fake_ads), "model": cfg.llm_model}
@@ -136,13 +183,15 @@ def create_app(
     @app.post("/messages")
     async def post_message(request: Request) -> dict[str, Any]:
         msg = await _incoming_message_from_request(request)
+        metadata = dict(msg.metadata)
+        await _inject_credentials(request, metadata)
         try:
             result = await runtime.handle_message(
                 user_id=msg.user_id,
                 channel=msg.channel,
                 text=msg.text,
                 context_id=msg.context_id,
-                metadata=msg.metadata,
+                metadata=metadata,
             )
         except HTTPException:
             raise
@@ -154,6 +203,8 @@ def create_app(
     @app.post("/messages/stream")
     async def post_message_stream(request: Request) -> StreamingResponse:
         msg = await _incoming_message_from_request(request)
+        metadata = dict(msg.metadata)
+        await _inject_credentials(request, metadata)
 
         async def event_stream():
             queue: asyncio.Queue[tuple[str, dict[str, Any] | None]] = asyncio.Queue()
@@ -168,7 +219,7 @@ def create_app(
                         channel=msg.channel,
                         text=msg.text,
                         context_id=msg.context_id,
-                        metadata=msg.metadata,
+                        metadata=metadata,
                         progress_callback=progress,
                     )
                     await queue.put(("final", result.to_response()))
@@ -219,6 +270,22 @@ def create_app(
         return result.to_response()
 
     return app
+
+
+async def _inject_credentials(request: Request, metadata: dict[str, Any]) -> None:
+    """Fetch the current user's credentials and add them to metadata if auth is active."""
+    if not os.getenv("REGISTRATION_DB_DSN"):
+        return
+    token = request.cookies.get(SESSION_COOKIE)
+    if not token:
+        return
+    try:
+        user = await get_current_user(planner_session=token)
+        credentials = await fetch_user_credentials(user["id"])
+        if credentials:
+            metadata["credentials"] = credentials
+    except Exception:
+        pass  # auth errors are already handled by the middleware; don't block the message
 
 
 async def _incoming_message_from_request(request: Request) -> IncomingMessage:

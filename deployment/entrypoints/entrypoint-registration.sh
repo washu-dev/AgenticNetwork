@@ -31,7 +31,24 @@ if [ -z "$(ls -A "$PGDATA" 2>/dev/null)" ]; then
         "$PGDATA/postgresql.conf" > "$PGDATA/postgresql.conf.tmp" \
         && mv "$PGDATA/postgresql.conf.tmp" "$PGDATA/postgresql.conf"
 
+    # Enable TCP on localhost so the planner container can connect over 127.0.0.1:5432.
+    sed "s|#listen_addresses = 'localhost'|listen_addresses = 'localhost'|" \
+        "$PGDATA/postgresql.conf" > "$PGDATA/postgresql.conf.tmp" \
+        && mv "$PGDATA/postgresql.conf.tmp" "$PGDATA/postgresql.conf"
+    echo "host  all  all  127.0.0.1/32  trust" >> "$PGDATA/pg_hba.conf"
+
     echo "[registration] Cluster initialised."
+fi
+
+# For already-initialised clusters: ensure TCP is enabled (idempotent).
+# This block runs on every start and is a no-op once the setting is present.
+if ! grep -q "^listen_addresses" "$PGDATA/postgresql.conf" 2>/dev/null; then
+    echo "[registration] Patching postgresql.conf to enable TCP on localhost..."
+    echo "listen_addresses = 'localhost'" >> "$PGDATA/postgresql.conf"
+fi
+if ! grep -q "127.0.0.1/32" "$PGDATA/pg_hba.conf" 2>/dev/null; then
+    echo "[registration] Patching pg_hba.conf to allow local TCP connections..."
+    echo "host  all  all  127.0.0.1/32  trust" >> "$PGDATA/pg_hba.conf"
 fi
 
 echo "[registration] Starting PostgreSQL..."
