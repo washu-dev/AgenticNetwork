@@ -15,7 +15,6 @@ import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
-from starlette.middleware.base import BaseHTTPMiddleware
 
 from planner_agent.main_agent.a2a.client import A2AClient
 from planner_agent.main_agent.models import Channel
@@ -23,7 +22,7 @@ from planner_agent.main_agent.directory.card_oasf_converter import load_agent_ca
 from planner_agent.main_agent.directory.client import DirectoryClient
 from planner_agent.main_agent.state.store import InMemoryStateStore
 
-from planner_agent.main_agent.auth import SESSION_COOKIE, get_current_user
+from planner_agent.main_agent.auth import get_current_user, get_shib_email
 from planner_agent.main_agent.auth_router import router as auth_router
 from planner_agent.main_agent.credentials_router import router as credentials_router
 from planner_agent.main_agent.config import MainAgentConfig, load_config
@@ -32,29 +31,6 @@ from planner_agent.main_agent.llm_client import LLMClient, OpenAIToolLoopClient
 from planner_agent.main_agent.runtime import MainAgentRuntime
 
 logger = logging.getLogger(__name__)
-
-# Paths that don't require a session cookie.
-_AUTH_EXEMPT = {"/auth/login", "/auth/signup", "/health"}
-_AUTH_EXEMPT_PREFIXES = ("/auth/", "/static/")
-
-
-class _AuthMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
-        path = request.url.path
-        if path in _AUTH_EXEMPT or any(path.startswith(p) for p in _AUTH_EXEMPT_PREFIXES):
-            return await call_next(request)
-
-        # Check for a valid session cookie without raising — redirect on failure.
-        token = request.cookies.get(SESSION_COOKIE)
-        if not token:
-            return RedirectResponse(url="/auth/login", status_code=302)
-        try:
-            await get_current_user(planner_session=token)
-        except Exception:
-            return RedirectResponse(url="/auth/login", status_code=302)
-
-        return await call_next(request)
-
 
 class IncomingMessage(BaseModel):
     user_id: str = Field(default="demo-user")
@@ -125,9 +101,8 @@ def create_app(
         async def _shutdown_db():
             await close_db()
 
-    # Auth middleware + router (active whenever the DB is configured).
+    # Auth + credential routers (active whenever the DB is configured).
     if os.getenv("REGISTRATION_DB_DSN"):
-        app.add_middleware(_AuthMiddleware)
         app.include_router(auth_router)
         app.include_router(credentials_router)
 
@@ -276,19 +251,22 @@ async def _inject_credentials(request: Request, metadata: dict[str, Any]) -> Non
     """Fetch the current user's credentials and add them to metadata if auth is active."""
     if not os.getenv("REGISTRATION_DB_DSN"):
         return
-    token = request.cookies.get(SESSION_COOKIE)
-    if not token:
-        return
     try:
-        user = await get_current_user(planner_session=token)
+        user = await get_current_user(request)
         credentials = await fetch_user_credentials(user["id"])
         if credentials:
             metadata["credentials"] = credentials
     except Exception:
-        pass  # auth errors are already handled by the middleware; don't block the message
+        pass
 
 
 async def _incoming_message_from_request(request: Request) -> IncomingMessage:
+    # Use the Shibboleth-authenticated email as user_id when available.
+    try:
+        shib_user_id = get_shib_email(request)
+    except Exception:
+        shib_user_id = "demo-user"
+
     content_type = request.headers.get("content-type", "").lower()
     if content_type.startswith("multipart/form-data"):
         form = await request.form()
@@ -308,7 +286,7 @@ async def _incoming_message_from_request(request: Request) -> IncomingMessage:
             text = "Analyze this image, infer its likely location, and describe what happened."
         context_id = _clean_optional_form_value(form.get("context_id"))
         return IncomingMessage(
-            user_id=str(form.get("user_id") or "demo-user"),
+            user_id=shib_user_id,
             channel=Channel(str(form.get("channel") or Channel.api.value)),
             text=text,
             context_id=context_id,
@@ -319,7 +297,11 @@ async def _incoming_message_from_request(request: Request) -> IncomingMessage:
         payload = await request.json()
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=400, detail="Request body must be JSON or multipart/form-data.") from exc
-    return IncomingMessage.model_validate(payload)
+    msg = IncomingMessage.model_validate(payload)
+    # Override user_id with authenticated identity unless the caller explicitly set it.
+    if msg.user_id == "demo-user":
+        msg.user_id = shib_user_id
+    return msg
 
 
 def _parse_metadata_field(value: Any) -> dict[str, Any]:

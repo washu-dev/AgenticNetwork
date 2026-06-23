@@ -13,16 +13,8 @@ _pool: asyncpg.Pool | None = None
 
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS users (
-    id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    email          TEXT NOT NULL UNIQUE,
-    password_hash  TEXT,
-    created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS sessions (
-    token      TEXT PRIMARY KEY,
-    user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    expires_at TIMESTAMPTZ NOT NULL,
+    id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    email      TEXT NOT NULL UNIQUE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 

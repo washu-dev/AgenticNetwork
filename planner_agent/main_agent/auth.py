@@ -1,88 +1,47 @@
-"""Session-based auth dependency and helpers."""
+"""Shibboleth-based auth — identity comes from Apache-injected headers."""
 
 from __future__ import annotations
 
-import os
-import secrets
-from datetime import datetime, timedelta, timezone
+import logging
 from typing import Any
-from uuid import UUID
 
-from fastapi import Cookie, HTTPException, status
+from fastapi import HTTPException, Request, status
 
 from planner_agent.main_agent.db import get_pool
 
-SESSION_COOKIE = "planner_session"
-SESSION_TTL_HOURS = 24
+logger = logging.getLogger(__name__)
+
+# Shibboleth injects these via ShibUseHeaders On. Try in priority order.
+# With WashU's attribute release, "eppn" is eduPersonPrincipalName (wustlkey@wustl.edu).
+_SHIB_HEADER_PRIORITY = ("mail", "eppn", "remote-user")
 
 
-async def create_session(user_id: UUID) -> str:
-    token = secrets.token_hex(32)
-    expires_at = datetime.now(timezone.utc) + timedelta(hours=SESSION_TTL_HOURS)
+def get_shib_email(request: Request) -> str:
+    """Extract the authenticated user's email from Shibboleth-injected headers."""
+    for header in _SHIB_HEADER_PRIORITY:
+        value = request.headers.get(header, "").strip()
+        if value:
+            return value.lower()
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="No Shibboleth identity header present — is the request coming through Apache?",
+    )
+
+
+async def get_or_create_user(email: str) -> dict[str, Any]:
+    """Return the user row for this email, auto-provisioning on first login."""
     pool = await get_pool()
     async with pool.acquire() as conn:
-        await conn.execute(
-            "INSERT INTO sessions (token, user_id, expires_at) VALUES ($1, $2, $3)",
-            token,
-            user_id,
-            expires_at,
-        )
-    return token
-
-
-async def delete_session(token: str) -> None:
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        await conn.execute("DELETE FROM sessions WHERE token = $1", token)
-
-
-async def get_current_user(
-    planner_session: str | None = Cookie(default=None, alias=SESSION_COOKIE),
-) -> dict[str, Any]:
-    """FastAPI dependency — returns the user row or raises 401."""
-    if not planner_session:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Not authenticated",
-        )
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            """
-            SELECT u.id, u.email
-            FROM sessions s
-            JOIN users u ON u.id = s.user_id
-            WHERE s.token = $1 AND s.expires_at > now()
-            """,
-            planner_session,
-        )
-    if row is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Session expired or invalid",
-        )
+        row = await conn.fetchrow("SELECT id, email FROM users WHERE email = $1", email)
+        if row is None:
+            row = await conn.fetchrow(
+                "INSERT INTO users (email) VALUES ($1) RETURNING id, email",
+                email,
+            )
     return {"id": row["id"], "email": row["email"]}
 
 
-def _cookie_kwargs(token: str) -> dict[str, Any]:
-    secure = os.getenv("AUTH_COOKIE_SECURE", "true").lower() != "false"
-    return dict(
-        key=SESSION_COOKIE,
-        value=token,
-        httponly=True,
-        samesite="lax",
-        secure=secure,
-        max_age=SESSION_TTL_HOURS * 3600,
-        path="/",
-    )
-
-
-def _clear_cookie_kwargs() -> dict[str, Any]:
-    return dict(
-        key=SESSION_COOKIE,
-        value="",
-        httponly=True,
-        samesite="lax",
-        path="/",
-        max_age=0,
-    )
+async def get_current_user(request: Request) -> dict[str, Any]:
+    """FastAPI dependency — returns the user dict or raises 401."""
+    email = get_shib_email(request)
+    return await get_or_create_user(email)
