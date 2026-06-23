@@ -8,11 +8,11 @@ import mimetypes
 import os
 import re
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Annotated, Any, Sequence
 from uuid import uuid4
 
 import httpx
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -130,6 +130,10 @@ def create_app(
         app.add_middleware(_AuthMiddleware)
         app.include_router(auth_router)
         app.include_router(credentials_router)
+
+    @app.get("/me")
+    async def me(user: Annotated[dict, Depends(get_current_user)]) -> dict[str, Any]:
+        return {"email": user["email"]}
 
     @app.get("/health")
     async def health() -> dict[str, str]:
