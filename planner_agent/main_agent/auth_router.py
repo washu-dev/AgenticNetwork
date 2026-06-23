@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 import os
+
+logger = logging.getLogger(__name__)
 from typing import Annotated
 from urllib.parse import urlencode
 
@@ -158,7 +161,8 @@ async def google_oauth_callback(
         )
 
     if resp.status_code != 200:
-        raise HTTPException(status_code=502, detail="Google token exchange failed.")
+        logger.error("google_token_exchange_failed status=%d body=%s", resp.status_code, resp.text[:500])
+        raise HTTPException(status_code=502, detail=f"Google token exchange failed: {resp.text[:300]}")
 
     tokens = resp.json()
     payload = {
