@@ -22,10 +22,10 @@
 #SBATCH --mem=64G
 #SBATCH --time=04:00:00
 #SBATCH -A engr-lab-di2
-#SBATCH --output=/engrfs/project/di2/AgenticNetwork/logs/agenticnetwork-%j.log
-#SBATCH --error=/engrfs/project/di2/AgenticNetwork/logs/agenticnetwork-%j.err
+#SBATCH --output=/engrfs/project/di2/AgenticNetwork/logs/%u/agenticnetwork-%j.log
+#SBATCH --error=/engrfs/project/di2/AgenticNetwork/logs/%u/agenticnetwork-%j.err
 
-LOGS=/engrfs/project/di2/AgenticNetwork/logs
+LOGS=/engrfs/project/di2/AgenticNetwork/logs/$USER
 ENV_FILE=/engrfs/project/di2/AgenticNetwork/deployment/.env
 MOUNTS=/engrfs/project/di2/AgenticNetwork:/workspace
 

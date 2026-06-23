@@ -8,8 +8,8 @@
 #SBATCH --container-image=vllm/vllm-openai:latest
 #SBATCH --container-mounts=/engrfs/project/di2/AgenticNetwork:/workspace
 #SBATCH --container-writable
-#SBATCH --output=/engrfs/project/di2/AgenticNetwork/logs/vllm-%j.log
-#SBATCH --error=/engrfs/project/di2/AgenticNetwork/logs/vllm-%j.err
+#SBATCH --output=/engrfs/project/di2/AgenticNetwork/logs/%u/vllm-%j.log
+#SBATCH --error=/engrfs/project/di2/AgenticNetwork/logs/%u/vllm-%j.err
 
 unset CC CXX CUDAHOSTCXX
 if command -v gcc >/dev/null 2>&1; then export CC="$(command -v gcc)"; fi
