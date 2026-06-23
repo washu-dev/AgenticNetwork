@@ -15,12 +15,11 @@
 # ─────────────────────────────────────────────────────────────────────────────
 
 #SBATCH --job-name=agenticnetwork
-#SBATCH -p general-cpu
+#SBATCH -p condo-di2
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=64G
-#SBATCH --time=04:00:00
 #SBATCH -A engr-lab-di2
 #SBATCH --output=/engrfs/project/di2/AgenticNetwork/logs/%u/agenticnetwork-%j.log
 #SBATCH --error=/engrfs/project/di2/AgenticNetwork/logs/%u/agenticnetwork-%j.err
