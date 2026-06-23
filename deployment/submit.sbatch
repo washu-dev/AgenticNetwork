@@ -63,11 +63,23 @@ for i in $(seq 1 30); do
     sleep 1
 done
 
+# ── Port assignments (single source of truth — entrypoints read these env vars) ─
+# Each variable name matches what the agent's entrypoint.sh reads.
+MAIN_AGENT_PORT=8090
+REGISTRATION_SERVICE_PORT=8091
+EMAIL_AGENT_A2A_PORT=9103
+SCOUT_HTTP_PORT=9104
+GEOSPATIAL_AGENT_A2A_PORT=9105
+CODING_AGENT_A2A_PORT=9106
+INTEL_AGENT_A2A_PORT=9107
+DISASTER_AGENT_A2A_PORT=9108
+
 # ── Agent containers (all start in parallel after ADS is up) ─────────────────
 srun --ntasks=1 --overlap \
      --container-image=amaankhan25/agenticnetwork-registration:latest \
      --container-mounts="$MOUNTS,/engrfs/project/di2/postgres_data:/var/lib/postgresql/data" \
      --container-writable \
+     --container-env=REGISTRATION_SERVICE_PORT=$REGISTRATION_SERVICE_PORT \
      /entrypoint.sh \
      >> "$LOGS/registration.log" 2>> "$LOGS/registration.err" &
 
@@ -75,6 +87,7 @@ srun --ntasks=1 --overlap \
      --container-image=amaankhan25/agenticnetwork-planner:latest \
      --container-mounts="$MOUNTS" \
      --container-writable \
+     --container-env=MAIN_AGENT_PORT=$MAIN_AGENT_PORT \
      /entrypoint.sh \
      >> "$LOGS/planner.log" 2>> "$LOGS/planner.err" &
 
@@ -82,6 +95,7 @@ srun --ntasks=1 --overlap \
      --container-image=amaankhan25/agenticnetwork-scout:latest \
      --container-mounts="$MOUNTS" \
      --container-writable \
+     --container-env=SCOUT_HTTP_PORT=$SCOUT_HTTP_PORT \
      /entrypoint.sh \
      >> "$LOGS/scout.log" 2>> "$LOGS/scout.err" &
 
@@ -89,6 +103,7 @@ srun --ntasks=1 --overlap \
      --container-image=amaankhan25/agenticnetwork-email:latest \
      --container-mounts="$MOUNTS" \
      --container-writable \
+     --container-env=EMAIL_AGENT_A2A_PORT=$EMAIL_AGENT_A2A_PORT \
      /entrypoint.sh \
      >> "$LOGS/email.log" 2>> "$LOGS/email.err" &
 
@@ -96,6 +111,7 @@ srun --ntasks=1 --overlap \
      --container-image=amaankhan25/agenticnetwork-coding:latest \
      --container-mounts="$MOUNTS" \
      --container-writable \
+     --container-env=CODING_AGENT_A2A_PORT=$CODING_AGENT_A2A_PORT \
      /entrypoint.sh \
      >> "$LOGS/coding.log" 2>> "$LOGS/coding.err" &
 
@@ -103,6 +119,7 @@ srun --ntasks=1 --overlap \
      --container-image=amaankhan25/agenticnetwork-intelligence:latest \
      --container-mounts="$MOUNTS" \
      --container-writable \
+     --container-env=INTEL_AGENT_A2A_PORT=$INTEL_AGENT_A2A_PORT \
      /entrypoint.sh \
      >> "$LOGS/intelligence.log" 2>> "$LOGS/intelligence.err" &
 
@@ -110,6 +127,7 @@ srun --ntasks=1 --overlap \
      --container-image=amaankhan25/agenticnetwork-disaster:latest \
      --container-mounts="$MOUNTS" \
      --container-writable \
+     --container-env=DISASTER_AGENT_A2A_PORT=$DISASTER_AGENT_A2A_PORT \
      /entrypoint.sh \
      >> "$LOGS/disaster.log" 2>> "$LOGS/disaster.err" &
 
@@ -117,6 +135,7 @@ srun --ntasks=1 --overlap \
      --container-image=amaankhan25/agenticnetwork-geospatial:latest \
      --container-mounts="$MOUNTS" \
      --container-writable \
+     --container-env=GEOSPATIAL_AGENT_A2A_PORT=$GEOSPATIAL_AGENT_A2A_PORT \
      /entrypoint.sh \
      >> "$LOGS/geospatial.log" 2>> "$LOGS/geospatial.err" &
 
