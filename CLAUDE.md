@@ -51,7 +51,7 @@ task. There are three kinds of thing in the repo:
               ▼
    ┌──────────┬───────────┬─────────────┬──────────┐
    │  email   │  coding   │  geospatial │   …      │  specialist agents,
-   │  :9103   │  :9106    │  :9105      │          │  each its own service
+   │  :9103   │  :19106   │  :19105     │          │  each its own service
    └──────────┴───────────┴─────────────┴──────────┘
 ```
 
@@ -96,15 +96,15 @@ whole `agent_directory_service/scripts/` suite exists to detect and repair this.
 | Component | Role | Default port | Environment | LLM API surface |
 |---|---|---|---|---|
 | `email_agent` | Gmail/Calendar/Docs/Sheets | **9103** | conda `email-agent-a2a` (shared) | OpenAI **Responses** (gpt-5.2) |
-| `disaster_response_agent` | Emergency response plans | **9104** | conda `email-agent-a2a` (shared) | OpenAI **Responses** (gpt-5) |
-| `geoSpatial_agent` | Photo geolocation + incident class. | **9105** | conda `email-agent-a2a` (shared) | Gemini + OpenAI **Responses** (multimodal) |
-| `coding_agent` | Code writing via mini-swe-agent | **9106** | conda `coding-agent-a2a` | **litellm** (Chat) |
-| `intelligence_agent` | Analyst / situational briefs | **9105** | conda `intelligence-agent-a2a` | **litellm** (Chat) |
 | `scout_agent` | OSINT web research | **9104** | pip venv (`pyproject.toml`) | OpenAI **Chat Completions** |
+| `geoSpatial_agent` | Photo geolocation + incident class. | **19105** | conda `email-agent-a2a` (shared) | Gemini + OpenAI **Responses** (multimodal) |
+| `coding_agent` | Code writing via mini-swe-agent | **19106** | conda `coding-agent-a2a` | **litellm** (Chat) |
+| `intelligence_agent` | Analyst / situational briefs | **19107** | conda `intelligence-agent-a2a` | **litellm** (Chat) |
+| `disaster_response_agent` | Emergency response plans | **19108** | conda `email-agent-a2a` (shared) | OpenAI **Responses** (gpt-5) |
 
-> **Port collisions if co-hosted:** geospatial and intelligence both default to
-> **9105**; disaster's card and scout's serve mode both default to **9104**.
-> Fine on separate machines; reassign ports if running several on one host.
+> **5-digit ports (19105–19108)** are used for geospatial, coding, intelligence, and
+> disaster to avoid collisions with other users on shared ENGR cluster nodes.
+> Override via the `*_PORT` env vars in `deployment/.env` if needed.
 
 > **Card URLs use `AGENT_HOST` placeholder or `127.0.0.1`.** The email, disaster,
 > and geospatial cards use `http://AGENT_HOST:<port>/`; intelligence and coding use
@@ -320,7 +320,51 @@ RIS docs (vLLM sbatch + inference examples) live in the sibling `ris-tips/llms-o
 
 ---
 
-## 8. Important realities & caveats
+## 8. Authentication & per-user credentials
+
+The planner (`:8090`) is protected by **WashU Shibboleth SSO**. Identity arrives
+via Apache-injected headers (`eppn` / `mail` / `remote-user`); the planner never
+handles passwords directly.
+
+```
+Browser → Apache (Shibboleth SP)
+  → validates WashU SAML assertion
+  → injects eppn/mail headers
+  → proxies to planner :8090
+```
+
+**Key files:**
+| File | Role |
+|---|---|
+| `main_agent/auth.py` | `get_shib_email()` — reads Shibboleth headers; `get_current_user()` — FastAPI dependency |
+| `main_agent/auth_router.py` | `/auth/*` endpoints: logout, Google OAuth connect flow |
+| `main_agent/credentials_router.py` | `/me/credentials/*` — store/list/delete per-user API keys |
+| `main_agent/crypto.py` | AES-256-GCM encrypt/decrypt (`CREDENTIALS_ENCRYPTION_KEY` env var) |
+| `main_agent/db.py` | Postgres pool; creates `users`, `sessions`, `user_credentials` tables |
+
+**Per-user Google OAuth** — users can connect their Google account via
+`GET /auth/google` → Google consent → `GET /auth/google/callback`. The resulting
+`access_token`/`refresh_token` are AES-256-GCM encrypted and stored in
+`user_credentials` under provider `google_oauth`.
+
+**Admin login fallback** — `POST /admin/login` accepts a password from
+`ADMIN_PASSWORD` env var for local development without a Shibboleth SP.
+
+**Credential injection** — at the start of each `/messages` request the planner
+fetches + decrypts the requesting user's credentials and injects them into the A2A
+task context. Specialist agents receive credentials in task context and remain
+auth-unaware.
+
+**What's not yet done (see `docs/AUTH_PLAN.md`):**
+- Credential migration: `BRAVE_API_KEY`, `GOOGLE_API_KEY`, `GOOGLE_MAPS_API_KEY`
+  are still environment variables; the per-user injection path is built but agents
+  don't yet read from context.
+- Removing `deployment/google_credentials/` (still used by email agent).
+- Google OAuth token refresh (access tokens expire ~1 h).
+
+---
+
+## 9. Important realities & caveats
 
 - **Heavy code duplication, not a shared library.** The A2A + directory protocol
   layer exists in ~5 divergent copies: canonical `agent_directory_service/services/`,
@@ -336,10 +380,12 @@ RIS docs (vLLM sbatch + inference examples) live in the sibling `ris-tips/llms-o
   `DIRECTORY_ENDPOINT` (default `127.0.0.1:8889`, gRPC). It is unverified whether
   these are the same logical directory — if not, scout may not be discoverable by
   the others.
-- **No authentication.** Cards have empty `securitySchemes`/`security` and bind
-  `0.0.0.0`. On a shared network any client can drive Gmail send, calendar/file
-  writes, code execution, and geolocation. Write actions are gated only by the
-  planner's optional `strict` policy mode, not real auth.
+- **Authentication is planner-only.** The planner (`:8090`) requires WashU
+  Shibboleth login (see §8). However, specialist agent ports (9103, 9104, 19105–19108)
+  have no auth — agent cards have empty `securitySchemes` and bind `0.0.0.0`. On a
+  shared node, any process on localhost can drive Gmail send, calendar/file writes,
+  code execution, and geolocation directly. Write actions are gated only by the
+  planner's optional `strict` policy mode when going through the planner.
 - **`coding_agent` runs mini-swe-agent in YOLO mode** (bash runs without
   confirmation), contained only by a per-request scratch workspace — run it in a
   container/VM.
@@ -355,7 +401,7 @@ RIS docs (vLLM sbatch + inference examples) live in the sibling `ris-tips/llms-o
 
 ---
 
-## 9. Testing & validation
+## 10. Testing & validation
 
 ```bash
 # Planner (no network, no ADS, no OpenAI key — uses ScriptedLLMClient + fake ADS)
@@ -378,7 +424,7 @@ python -m agent_directory_service.scripts.validate_agent_endpoint \
 
 ---
 
-## 10. Git, GitHub & OneDrive
+## 11. Git, GitHub & OneDrive
 
 - **Remote:** `origin` → `https://github.com/washu-dev/AgenticNetwork.git`,
   default branch `main`.
@@ -397,7 +443,7 @@ python -m agent_directory_service.scripts.validate_agent_endpoint \
 
 ---
 
-## 11. Key file index
+## 12. Key file index
 
 **This repo:**
 

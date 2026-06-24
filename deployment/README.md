@@ -16,10 +16,10 @@ the vLLM inference server on a GPU node.
   srun step: amaankhan25/agenticnetwork-planner:latest      :8090
   srun step: amaankhan25/agenticnetwork-scout:latest        :9104
   srun step: amaankhan25/agenticnetwork-email:latest        :9103
-  srun step: amaankhan25/agenticnetwork-coding:latest       :9106
-  srun step: amaankhan25/agenticnetwork-intelligence:latest :9105
-  srun step: amaankhan25/agenticnetwork-disaster:latest     :19107
-  srun step: amaankhan25/agenticnetwork-geospatial:latest   :19108
+  srun step: amaankhan25/agenticnetwork-coding:latest       :19106
+  srun step: amaankhan25/agenticnetwork-intelligence:latest :19107
+  srun step: amaankhan25/agenticnetwork-disaster:latest     :19108
+  srun step: amaankhan25/agenticnetwork-geospatial:latest   :19105
 
 [GPU node — start_vllm.sbatch]
   enroot container (vllm/vllm-openai:latest)
@@ -224,13 +224,13 @@ after the job exits. The main job log is `agenticnetwork-<jobid>.log`.
 | Planner | 8090 | `MAIN_AGENT_PORT` |
 | Scout | 9104 | `SCOUT_HTTP_PORT` |
 | Email | 9103 | `EMAIL_AGENT_A2A_PORT` |
-| Coding | 9106 | `CODING_AGENT_A2A_PORT` |
-| Intelligence | 9105 | `INTEL_AGENT_A2A_PORT` |
-| Disaster Response | 19107 | `DISASTER_AGENT_A2A_PORT` |
-| GeoSpatial | 19108 | `GEOSPATIAL_AGENT_A2A_PORT` |
+| GeoSpatial | 19105 | `GEOSPATIAL_AGENT_A2A_PORT` |
+| Coding | 19106 | `CODING_AGENT_A2A_PORT` |
+| Intelligence | 19107 | `INTEL_AGENT_A2A_PORT` |
+| Disaster Response | 19108 | `DISASTER_AGENT_A2A_PORT` |
 | vLLM | 8100 | `OPENAI_BASE_URL` |
 
-Ports 19107 and 19108 use 5-digit numbers to avoid collisions with other users on shared nodes.
+Ports 19105–19108 use 5-digit numbers to avoid collisions with other users on shared nodes.
 
 ---
 
