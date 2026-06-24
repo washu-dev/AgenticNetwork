@@ -558,16 +558,16 @@ async def _incoming_message_from_request(request: Request) -> IncomingMessage:
         uploads = []
         for key in ("image", "file", "attachment"):
             uploads.extend(form.getlist(key))
-        uploaded_images = []
+        uploaded_files = []
         for upload in uploads:
             if not (hasattr(upload, "filename") and hasattr(upload, "read")):
                 continue
-            uploaded_images.append(await _store_uploaded_image(upload))
-        if uploaded_images:
-            metadata["uploaded_images"] = uploaded_images
+            uploaded_files.append(await _store_uploaded_file(upload))
+        if uploaded_files:
+            metadata["uploaded_files"] = uploaded_files
         text = str(form.get("text") or "").strip()
-        if not text and uploaded_images:
-            text = "Analyze this image, infer its likely location, and describe what happened."
+        if not text and uploaded_files:
+            text = f"I've attached a file: {uploaded_files[0]['filename']}"
         context_id = _clean_optional_form_value(form.get("context_id"))
         return IncomingMessage(
             user_id=shib_user_id,
@@ -607,27 +607,21 @@ def _clean_optional_form_value(value: Any) -> str | None:
     return text
 
 
-async def _store_uploaded_image(upload: Any) -> dict[str, Any]:
-    filename = Path(str(upload.filename or "uploaded-image")).name
+async def _store_uploaded_file(upload: Any) -> dict[str, Any]:
+    filename = Path(str(upload.filename or "upload")).name
     content_type = (
         str(getattr(upload, "content_type", "") or "")
         or mimetypes.guess_type(filename)[0]
         or "application/octet-stream"
     )
-    if not content_type.startswith("image/"):
-        raise HTTPException(status_code=400, detail=f"Unsupported upload type {content_type!r}; image/* required.")
-
     data = await upload.read()
     if not data:
-        raise HTTPException(status_code=400, detail="Uploaded image was empty.")
-    max_bytes = int(os.getenv("MAIN_AGENT_MAX_IMAGE_UPLOAD_BYTES", str(15 * 1024 * 1024)))
+        raise HTTPException(status_code=400, detail="Uploaded file was empty.")
+    max_bytes = int(os.getenv("MAIN_AGENT_MAX_UPLOAD_BYTES", str(50 * 1024 * 1024)))
     if len(data) > max_bytes:
-        raise HTTPException(status_code=413, detail=f"Uploaded image exceeds {max_bytes} bytes.")
-
-    suffix = Path(filename).suffix.lower()
-    if suffix not in {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tif", ".tiff"}:
-        suffix = mimetypes.guess_extension(content_type) or ".img"
-    safe_stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", Path(filename).stem).strip("._") or "image"
+        raise HTTPException(status_code=413, detail=f"Upload exceeds {max_bytes} bytes.")
+    suffix = Path(filename).suffix.lower() or (mimetypes.guess_extension(content_type) or ".bin")
+    safe_stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", Path(filename).stem).strip("._") or "upload"
     out_dir = Path(os.getenv("MAIN_AGENT_UPLOAD_DIR", "/tmp/planner_agent_uploads"))
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / f"{uuid4().hex}_{safe_stem}{suffix}"

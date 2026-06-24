@@ -134,14 +134,14 @@ class MainAgentRuntime:
                 return self._cancel_confirmation(context_id, pending, user_text=text)
 
         context = self._open_context(user_id, channel, text, context_id)
-        uploaded_images = _uploaded_images_from_metadata(metadata or {})
+        uploaded_files = _uploaded_files_from_metadata(metadata or {})
         credentials = (metadata or {}).get("credentials") or {}
         state = TurnState(
             context_id=context.context_id,
             user_text=text,
             conversation_history=list(context.conversation_history)[-self.config.history_limit :],
             pending_confirmation=self.store.get_pending_confirmation(context.context_id),
-            uploaded_images=uploaded_images,
+            uploaded_files=uploaded_files,
         )
 
         result = await self._run_loop(
@@ -611,7 +611,7 @@ class MainAgentRuntime:
             task_input=task_input,
             user_text=state.user_text,
             confirmed=False,
-            uploaded_images=state.uploaded_images,
+            uploaded_files=state.uploaded_files,
             credentials=credentials or {},
         )
         remote_progress_callback = None
@@ -740,7 +740,7 @@ class MainAgentRuntime:
             task_input=task_input,
             user_text=context.current_goal,
             confirmed=True,
-            uploaded_images=[],
+            uploaded_files=[],
             credentials=metadata.get("credentials") or {},
         )
         result = await self._send_task(agent, request)
@@ -872,24 +872,24 @@ class MainAgentRuntime:
         task_input: dict[str, Any],
         user_text: str,
         confirmed: bool,
-        uploaded_images: list[dict[str, Any]] | None = None,
+        uploaded_files: list[dict[str, Any]] | None = None,
         credentials: dict[str, Any] | None = None,
     ) -> A2ATaskRequest:
-        should_attach_images = bool(uploaded_images) and _is_geospatial_agent(agent, skill)
+        should_attach_files = bool(uploaded_files)
         outbound_task_input = dict(task_input)
-        image_parts: list[A2APart] = []
-        attached_images: list[dict[str, Any]] = []
-        if should_attach_images:
-            for image in (uploaded_images or [])[:1]:
-                image_part = _uploaded_image_to_a2a_part(image)
-                if image_part is None:
+        file_parts: list[A2APart] = []
+        attached_files: list[dict[str, Any]] = []
+        if should_attach_files:
+            for file in (uploaded_files or [])[:1]:
+                file_part = _uploaded_file_to_a2a_part(file)
+                if file_part is None:
                     continue
-                image_parts.append(image_part)
-                attached_images.append(_uploaded_image_summary(image))
-            if attached_images:
-                first = attached_images[0]
-                outbound_task_input.setdefault("image_filename", first.get("filename"))
-                outbound_task_input.setdefault("image_content_type", first.get("content_type"))
+                file_parts.append(file_part)
+                attached_files.append(_uploaded_file_summary(file))
+            if attached_files:
+                first = attached_files[0]
+                outbound_task_input.setdefault("file_filename", first.get("filename"))
+                outbound_task_input.setdefault("file_content_type", first.get("content_type"))
 
         metadata: dict[str, Any] = {
             "user_id": context.user_id,
@@ -898,9 +898,9 @@ class MainAgentRuntime:
         }
         if credentials:
             metadata["credentials"] = credentials
-        if attached_images:
-            metadata["uploaded_images"] = attached_images
-            metadata["image_transfer"] = "a2a_file_bytes"
+        if attached_files:
+            metadata["uploaded_files"] = attached_files
+            metadata["file_transfer"] = "a2a_file_bytes"
         if skill:
             metadata["skill"] = skill
             metadata["requested_skill"] = skill
@@ -911,7 +911,7 @@ class MainAgentRuntime:
         parts = [A2APart(kind="text", text=user_text)]
         if outbound_task_input:
             parts.append(A2APart(kind="data", data=outbound_task_input))
-        parts.extend(image_parts)
+        parts.extend(file_parts)
         return A2ATaskRequest(
             task_id=str(uuid4()),
             context_id=context.context_id,
@@ -1210,18 +1210,18 @@ def _is_geospatial_agent(agent: DiscoveredAgent, skill: str | None) -> bool:
     return "geospatial" in haystack or "geo-spatial" in haystack
 
 
-def _uploaded_images_from_metadata(metadata: dict[str, Any]) -> list[dict[str, Any]]:
-    raw = metadata.get("uploaded_images")
+def _uploaded_files_from_metadata(metadata: dict[str, Any]) -> list[dict[str, Any]]:
+    raw = metadata.get("uploaded_files") or metadata.get("uploaded_images")  # back-compat
     if not isinstance(raw, list):
         return []
-    images: list[dict[str, Any]] = []
+    files: list[dict[str, Any]] = []
     for item in raw:
         if not isinstance(item, dict):
             continue
         path = str(item.get("path") or "")
         if not _is_safe_uploaded_file(path):
             continue
-        images.append(
+        files.append(
             {
                 "path": str(Path(path).resolve()),
                 "filename": str(item.get("filename") or Path(path).name),
@@ -1229,7 +1229,7 @@ def _uploaded_images_from_metadata(metadata: dict[str, Any]) -> list[dict[str, A
                 "size": item.get("size"),
             }
         )
-    return images
+    return files
 
 
 def _is_safe_uploaded_file(path_text: str) -> bool:
@@ -1244,30 +1244,28 @@ def _is_safe_uploaded_file(path_text: str) -> bool:
     return path.is_file()
 
 
-def _uploaded_image_to_a2a_part(image: dict[str, Any]) -> A2APart | None:
-    path = Path(str(image.get("path") or ""))
+def _uploaded_file_to_a2a_part(file: dict[str, Any]) -> A2APart | None:
+    path = Path(str(file.get("path") or ""))
     if not _is_safe_uploaded_file(str(path)):
         return None
-    content_type = str(image.get("content_type") or "application/octet-stream")
-    if not content_type.startswith("image/"):
-        return None
+    content_type = str(file.get("content_type") or "application/octet-stream")
     data = path.read_bytes()
     return A2APart(
-        kind="image",
+        kind="file",
         content_type=content_type,
         bytes=base64.b64encode(data).decode("ascii"),
         metadata={
-            "name": str(image.get("filename") or path.name),
+            "name": str(file.get("filename") or path.name),
             "transfer": "a2a_file_bytes",
         },
     )
 
 
-def _uploaded_image_summary(image: dict[str, Any]) -> dict[str, Any]:
+def _uploaded_file_summary(file: dict[str, Any]) -> dict[str, Any]:
     return {
-        "filename": image.get("filename"),
-        "content_type": image.get("content_type"),
-        "size": image.get("size"),
+        "filename": file.get("filename"),
+        "content_type": file.get("content_type"),
+        "size": file.get("size"),
     }
 
 

@@ -344,6 +344,18 @@ body {
   flex-shrink:0; display:flex; align-items:center; justify-content:center; transition:all .15s;
 }
 .uv-attach-btn:hover { background:var(--canvas); border-color:var(--border-s); color:var(--t2); }
+.uv-attach-btn.has-file { background:var(--teal-light); border-color:var(--teal); color:var(--teal); }
+.uv-file-badge {
+  display:flex; align-items:center; gap:6px; padding:4px 10px 4px 12px;
+  background:var(--teal-light); border:1px solid var(--teal-mid); border-radius:var(--r-sm);
+  font-size:12px; color:var(--teal); font-weight:500; flex-shrink:0; max-width:220px;
+}
+.uv-file-badge-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.uv-file-badge-remove {
+  background:none; border:none; cursor:pointer; color:var(--teal); font-size:14px;
+  line-height:1; padding:0 2px; flex-shrink:0; opacity:.7;
+}
+.uv-file-badge-remove:hover { opacity:1; }
 .uv-chat-input {
   flex:1; border:1px solid var(--border); border-radius:var(--r);
   padding:8px 12px; font-size:13px; resize:none; outline:none; line-height:1.55;
@@ -936,8 +948,15 @@ body {
       </div>
 
       <p class="uv-input-hint">Enter to send &nbsp;&middot;&nbsp; Shift+Enter for new line</p>
+      <div id="uv-file-badge-row" style="display:none; padding:0 20px 6px; background:var(--surface);">
+        <div class="uv-file-badge" id="uv-file-badge">
+          <span class="uv-file-badge-name" id="uv-file-badge-name"></span>
+          <button type="button" class="uv-file-badge-remove" title="Remove file" onclick="uvClearFile()">&#x2715;</button>
+        </div>
+      </div>
       <div class="uv-input-bar">
-        <button type="button" class="uv-attach-btn" title="Attach">+</button>
+        <input type="file" id="uv-file-input" style="display:none" accept="*/*">
+        <button type="button" class="uv-attach-btn" id="uv-attach-btn" title="Attach file" onclick="document.getElementById('uv-file-input').click()">+</button>
         <textarea class="uv-chat-input" id="uv-chat-input" placeholder="Ask the planner..." rows="1"
           onkeydown="uvHandleKey(event)" oninput="uvAutoResize(this)"></textarea>
         <button type="button" class="uv-send-btn" id="uv-send-btn" onclick="uvSendMessage()">Send</button>
@@ -1668,14 +1687,37 @@ function uvParseSse(raw) {
   return {event, data};
 }
 
+let _stagedFile = null;
+
+function uvClearFile() {
+  _stagedFile = null;
+  document.getElementById('uv-file-input').value = '';
+  document.getElementById('uv-file-badge-row').style.display = 'none';
+  document.getElementById('uv-attach-btn').classList.remove('has-file');
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+  document.getElementById('uv-file-input').addEventListener('change', function() {
+    const f = this.files && this.files[0];
+    if (!f) return;
+    _stagedFile = f;
+    document.getElementById('uv-file-badge-name').textContent = f.name;
+    document.getElementById('uv-file-badge-row').style.display = 'block';
+    document.getElementById('uv-attach-btn').classList.add('has-file');
+  });
+});
+
 async function uvSendMessage() {
   const inputEl = document.getElementById('uv-chat-input');
   const text = inputEl.value.trim();
   if (!text || isBusy) return;
   const es = document.getElementById('uv-empty-state'); if (es) es.style.display = 'none';
-  uvAppendMsg('user', 'You', text);
+  const displayText = _stagedFile ? `${text} [${_stagedFile.name}]` : text;
+  uvAppendMsg('user', 'You', displayText);
   window._lastPromptText = text;
   inputEl.value = ''; uvAutoResize(inputEl);
+  const fileToSend = _stagedFile;
+  uvClearFile();
   isBusy = true;
   document.getElementById('uv-send-btn').disabled = true;
   uvSetStatus('thinking');
@@ -1691,11 +1733,21 @@ async function uvSendMessage() {
   let liveBubble = null;
 
   try {
-    const r = await fetch('/messages/stream', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({user_id: 'demo-user', channel: 'api', text, context_id: contextId}),
-    });
+    let fetchOpts;
+    if (fileToSend) {
+      const fd = new FormData();
+      fd.append('text', text);
+      fd.append('file', fileToSend);
+      if (contextId) fd.append('context_id', contextId);
+      fetchOpts = {method: 'POST', body: fd};
+    } else {
+      fetchOpts = {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({user_id: 'demo-user', channel: 'api', text, context_id: contextId}),
+      };
+    }
+    const r = await fetch('/messages/stream', fetchOpts);
     if (!r.ok) {
       const d = await r.json().catch(()=>({}));
       throw new Error(d.detail || r.statusText);

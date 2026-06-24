@@ -461,12 +461,12 @@ async def _uploaded_image_is_attached_to_geospatial_a2a_call(image_path: Path, i
     assert result.state == A2ATaskState.completed
     assert a2a.calls == [("geospatial-agent", "geospatial/analyze_image")]
     request = a2a.requests[0]
-    image_parts = [part for part in request.messages[0].parts if part.kind == "image"]
-    assert len(image_parts) == 1
-    assert image_parts[0].content_type == "image/jpeg"
-    assert image_parts[0].bytes == base64.b64encode(image_bytes).decode("ascii")
-    assert image_parts[0].uri is None
-    assert request.metadata["image_transfer"] == "a2a_file_bytes"
+    file_parts = [part for part in request.messages[0].parts if part.kind == "file"]
+    assert len(file_parts) == 1
+    assert file_parts[0].content_type == "image/jpeg"
+    assert file_parts[0].bytes == base64.b64encode(image_bytes).decode("ascii")
+    assert file_parts[0].uri is None
+    assert request.metadata["file_transfer"] == "a2a_file_bytes"
 
 
 def test_compound_workflow_skips_second_main_agent_dispatch() -> None:

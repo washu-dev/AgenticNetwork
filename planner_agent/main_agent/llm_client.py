@@ -34,7 +34,7 @@ class TurnState(BaseModel):
     conversation_history: list[str] = Field(default_factory=list)
     observations: list[dict[str, Any]] = Field(default_factory=list)
     pending_confirmation: dict[str, Any] | None = None
-    uploaded_images: list[dict[str, Any]] = Field(default_factory=list)
+    uploaded_files: list[dict[str, Any]] = Field(default_factory=list)
     # Accumulated Chat Completions message history for this turn.
     messages: list[dict[str, Any]] = Field(default_factory=list)
     last_call_id: str | None = None
@@ -138,15 +138,17 @@ def _initial_payload(state: TurnState) -> dict[str, Any]:
         "context_id": state.context_id,
         "conversation_history": state.conversation_history,
         "pending_confirmation": state.pending_confirmation,
-        "uploaded_images": _uploaded_image_summary(state.uploaded_images),
+        "uploaded_files": _uploaded_files_summary(state.uploaded_files),
         "instructions": (
             "Pick exactly one tool for this model step. The runtime will feed the observation "
             "back so you can take another step in the same user request. Prefer list_agents "
             "first when you don't yet know which agent fits, then continue to call_agent when "
             "a suitable agent exists. Use describe_agent only when capability detail is needed. "
-            "If uploaded_images is non-empty, choose an image/geospatial-capable agent when the "
-            "user asks to analyze, localize, or explain the photo; the runtime will attach the "
-            "actual image bytes to that geospatial A2A call. "
+            "If uploaded_files is non-empty, the user has attached a file. The runtime will forward "
+            "the file bytes in the A2A call to whatever agent you invoke — you do not need to handle "
+            "file transfer yourself. Choose the agent that best matches the user's intent: a geospatial "
+            "agent for photos to analyze or localize, a coding agent for code/data files, an email agent "
+            "to send the file as an attachment, etc. "
             "For compound requests, choose one primary related agent and send the whole task; "
             "external agents coordinate peer A2A calls when needed. "
             "Use final_answer only after the user request has been answered or delegated. "
@@ -157,14 +159,14 @@ def _initial_payload(state: TurnState) -> dict[str, Any]:
     }
 
 
-def _uploaded_image_summary(images: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _uploaded_files_summary(files: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [
         {
-            "filename": image.get("filename"),
-            "content_type": image.get("content_type"),
-            "size": image.get("size"),
+            "filename": f.get("filename"),
+            "content_type": f.get("content_type"),
+            "size": f.get("size"),
         }
-        for image in images
+        for f in files
     ]
 
 
