@@ -15,10 +15,10 @@ A demo of an **"Internet of Agents"**: independent, LLM-powered services that di
               │
               │  A2A call (HTTP/JSON-RPC)
               ▼
-   ┌──────────┬──────────┬─────────────┬───────────┬──────────┐
-   │  email   │  coding  │  disaster   │ geospatial│  intel   │
-   │  :9103   │  :9106   │   :9104     │   :9105   │  :9105   │
-   └──────────┴──────────┴─────────────┴───────────┴──────────┘
+   ┌──────────┬──────────┬─────────────┬───────────┬──────────┬──────────┐
+   │  email   │  scout   │ geospatial  │  coding   │  intel   │ disaster │
+   │  :9103   │  :9104   │   :19105    │  :19106   │  :19107  │  :19108  │
+   └──────────┴──────────┴─────────────┴───────────┴──────────┴──────────┘
 ```
 
 Three contracts hold the system together:
@@ -48,13 +48,13 @@ Adding a new agent to ADS makes it available to the planner with **zero planner 
 | Agent | Role | Port |
 |---|---|---|
 | `email_agent` | Gmail, Calendar, Docs, Sheets | 9103 |
-| `disaster_response_agent` | Emergency response planning | 9104 |
-| `geoSpatial_agent` | Photo geolocation + incident classification | 9105 |
-| `intelligence_agent` | Situational awareness + threat assessment | 9105 |
-| `coding_agent` | Code writing via mini-swe-agent | 9106 |
 | `scout_agent` | OSINT web research | 9104 |
+| `geoSpatial_agent` | Photo geolocation + incident classification | 19105 |
+| `coding_agent` | Code writing via mini-swe-agent | 19106 |
+| `intelligence_agent` | Situational awareness + threat assessment | 19107 |
+| `disaster_response_agent` | Emergency response planning | 19108 |
 
-> **Port collisions:** geospatial and intelligence both default to 9105; disaster and scout both default to 9104. Fine on separate machines or containers; reassign ports if running several on one host.
+> **5-digit ports (19105–19108)** avoid collisions with other users on shared ENGR cluster nodes. Override via the corresponding `*_PORT` env vars in `deployment/.env`.
 
 ## Deployment
 
