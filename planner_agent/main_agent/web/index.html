@@ -1626,7 +1626,7 @@ function openDetail(agentId) {
     </div>
     <div style="display:flex;gap:8px;margin-top:4px">
       <button type="button" class="av-btn av-btn-ghost av-btn-sm" onclick="pingAgent('${uvEsc(a.agent_id)}',this)">Ping</button>
-      <button type="button" class="av-btn av-btn-danger av-btn-sm" onclick="alert('Agent removed')">Remove</button>
+      <button type="button" class="av-btn av-btn-danger av-btn-sm" onclick="removeAgent('${uvEsc(a.agent_id)}', this)">Remove</button>
     </div>`;
   document.getElementById('detail-panel').classList.add('open');
   document.getElementById('overlay').classList.add('active');
@@ -1646,6 +1646,19 @@ async function pingAgent(agentId, btn) {
     if (btn) btn.textContent = 'Error';
   } finally {
     setTimeout(() => { if (btn) { btn.disabled = false; btn.textContent = 'Ping'; } }, 2000);
+  }
+}
+async function removeAgent(agentId, btn) {
+  if (!confirm('Remove this agent from the directory?')) return;
+  if (btn) { btn.disabled = true; btn.textContent = 'Removing…'; }
+  try {
+    const res = await adminFetch(`/admin/agents/${encodeURIComponent(agentId)}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({ detail: res.statusText }))).detail);
+    closeDetail();
+    await loadAgentHealth();
+  } catch (e) {
+    alert('Remove failed: ' + e.message);
+    if (btn) { btn.disabled = false; btn.textContent = 'Remove'; }
   }
 }
 function toggleAgent(el, name) { console.log(name, el.checked ? 'enabled' : 'disabled'); }

@@ -66,5 +66,8 @@ class DirectoryClient:
     def resolve_agent(self, agent_id_or_record_id: str) -> DiscoveredAgent:
         return self._backend.resolve_agent(agent_id_or_record_id)
 
+    def unpublish_agent(self, agent_id: str) -> None:
+        return self._backend.unpublish_agent(agent_id)
+
     def healthcheck(self) -> bool:
         return self._backend.healthcheck()

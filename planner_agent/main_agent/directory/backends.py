@@ -44,6 +44,8 @@ class DirectoryBackend(Protocol):
 
     def resolve_agent(self, agent_id_or_record_id: str) -> DiscoveredAgent: ...
 
+    def unpublish_agent(self, agent_id: str) -> None: ...
+
     def healthcheck(self) -> bool: ...
 
 
@@ -92,6 +94,11 @@ class FakeDirectoryBackend:
             if agent_id_or_record_id in {record["record_id"], record["agent_id"]}:
                 return oasf_record_to_discovered_agent(record)
         raise KeyError(f"Agent not found: {agent_id_or_record_id}")
+
+    def unpublish_agent(self, agent_id: str) -> None:
+        to_delete = [rid for rid, rec in self._records.items() if rec.get("agent_id") == agent_id]
+        for rid in to_delete:
+            del self._records[rid]
 
     def healthcheck(self) -> bool:
         return True
@@ -241,6 +248,23 @@ class RealADSDirectoryBackend:
             if agent_id_or_record_id in {agent.agent_id, agent.source_record_id}:
                 return agent
         raise KeyError(f"Agent not found: {agent_id_or_record_id}")
+
+    def unpublish_agent(self, agent_id: str) -> None:
+        """Remove an agent from the ADS routing index by agent_id."""
+        result = self._run_dirctl(["routing", "search", "--limit", "200", "--output", "json"])
+        cids = _cids_from_routing_output(result.stdout)
+        if not cids:
+            result = self._run_dirctl(["routing", "list", "--output", "json"])
+            cids = _cids_from_routing_output(result.stdout)
+        logger.info("directory_unpublish_agent_start agent_id=%s cids_found=%d", agent_id, len(cids))
+        for cid in cids:
+            try:
+                record = self._pull_record(cid)
+                if record.get("agent_id") == agent_id:
+                    self._run_dirctl(["routing", "unpublish", cid, "--output", "json"])
+                    logger.info("directory_unpublish_agent agent_id=%s cid=%s", agent_id, cid)
+            except Exception:
+                logger.warning("directory_unpublish_agent_cid_error agent_id=%s cid=%s", agent_id, cid, exc_info=True)
 
     def healthcheck(self) -> bool:
         if self.backend == "cli":

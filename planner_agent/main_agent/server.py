@@ -511,6 +511,10 @@ def create_app(
 
     @app.delete("/admin/agents/{agent_id}")
     async def admin_remove_agent(agent_id: str, request: Request, _: None = Depends(_require_admin)) -> dict[str, bool]:
+        try:
+            await asyncio.get_event_loop().run_in_executor(None, directory.unpublish_agent, agent_id)
+        except Exception:
+            logger.warning("admin_remove_agent_unpublish_failed agent_id=%s", agent_id, exc_info=True)
         _agent_health.pop(agent_id, None)
         logger.info("admin_removed_agent agent_id=%s", agent_id)
         return {"ok": True}
@@ -531,6 +535,28 @@ def create_app(
     return app
 
 
+async def _refresh_google_token(creds: dict) -> dict:
+    """Exchange the stored refresh_token for a fresh access_token."""
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                creds.get("token_uri", "https://oauth2.googleapis.com/token"),
+                data={
+                    "client_id": creds["client_id"],
+                    "client_secret": creds["client_secret"],
+                    "refresh_token": creds["refresh_token"],
+                    "grant_type": "refresh_token",
+                },
+                timeout=10,
+            )
+        if resp.status_code == 200:
+            return {**creds, "access_token": resp.json()["access_token"]}
+        logger.warning("google_token_refresh_failed status=%d", resp.status_code)
+    except Exception:
+        logger.warning("google_token_refresh_error", exc_info=True)
+    return creds
+
+
 async def _inject_credentials(request: Request, metadata: dict[str, Any]) -> None:
     """Fetch the current user's credentials and add them to metadata if auth is active."""
     if not os.getenv("REGISTRATION_DB_DSN"):
@@ -539,6 +565,8 @@ async def _inject_credentials(request: Request, metadata: dict[str, Any]) -> Non
         user = await get_current_user(request)
         credentials = await fetch_user_credentials(user["id"])
         if credentials:
+            if "google_oauth" in credentials and credentials["google_oauth"].get("refresh_token"):
+                credentials["google_oauth"] = await _refresh_google_token(credentials["google_oauth"])
             metadata["credentials"] = credentials
     except Exception:
         pass
