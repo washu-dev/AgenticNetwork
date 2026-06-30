@@ -246,7 +246,7 @@ def _build_agent_card(
 ) -> AgentCard:
     skills = [
         AgentSkill(
-            id=s["name"],
+            id=s["key"],
             name=s["name"].split("/")[-1],
             description=description,
             tags=[],
@@ -271,7 +271,7 @@ def _register_oasf_routing_skills(
     """Add the agent's OASF skills to the converter's routing map so dirctl publish works."""
     agent_key = name.lower().replace(" ", "-")
     _AGENT_OASF_ROUTING_SKILLS[agent_key] = [
-        OfficialOASFSkill(name=s["name"], id=s.get("id"))
+        OfficialOASFSkill(name=s["key"], id=s.get("id"))
         for s in oasf_skills
     ]
 

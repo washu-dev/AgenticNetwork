@@ -28,13 +28,6 @@ class OfficialOASFSkill:
     id: int | None = None
 
 
-KNOWN_OASF_SKILLS: dict[str, OfficialOASFSkill] = {
-    "images_computer_vision/image_classification": OfficialOASFSkill(
-        name="images_computer_vision/image_classification",
-        id=203,
-    )
-}
-
 # Official OASF taxonomy skill entries sourced from:
 # https://github.com/agntcy/oasf/tree/main/schema/skills
 # Full path = directory path under schema/skills/ + the "name" field in each JSON file.
@@ -237,15 +230,7 @@ def _skill_tags(card: AgentCard) -> list[str]:
 
 
 def _official_and_custom_skills(card: AgentCard) -> tuple[list[dict[str, Any]], list[str]]:
-    official: list[dict[str, Any]] = []
-    custom: list[str] = []
-    for tag in _skill_tags(card):
-        if tag in KNOWN_OASF_SKILLS:
-            s = KNOWN_OASF_SKILLS[tag]
-            official.append({"name": s.name, "id": s.id})
-        else:
-            custom.append(tag)
-    return official, custom
+    return [], _skill_tags(card)
 
 
 def _skill_policy(skill: Any) -> dict[str, Any]:
@@ -278,11 +263,7 @@ def _looks_like_write(skill: Any) -> bool:
 
 
 def _ads_routing_skills(card: AgentCard) -> list[OfficialOASFSkill]:
-    official = [
-        KNOWN_OASF_SKILLS[skill.id]
-        for skill in card.skills
-        if skill.id in KNOWN_OASF_SKILLS
-    ]
+    official: list[OfficialOASFSkill] = []
     if card.name.lower().replace(" ", "-") == "email-agent":
         official.extend(EMAIL_ADS_ROUTING_SKILLS)
     deduped: dict[str, OfficialOASFSkill] = {}
@@ -310,7 +291,8 @@ def _ads_name(provider_url: str, agent_id: str) -> str:
 
 
 def _ads_skill_payload(skill: OfficialOASFSkill) -> dict[str, Any]:
-    payload: dict[str, Any] = {"name": skill.name}
+    # Send only the ID when available — ADS resolves the canonical name from its
+    # taxonomy, avoiding ID/name mismatch validation errors.
     if skill.id is not None:
-        payload["id"] = skill.id
-    return payload
+        return {"id": skill.id}
+    return {"name": skill.name}
