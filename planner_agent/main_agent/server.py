@@ -511,6 +511,10 @@ def create_app(
 
     @app.delete("/admin/agents/{agent_id}")
     async def admin_remove_agent(agent_id: str, request: Request, _: None = Depends(_require_admin)) -> dict[str, bool]:
+        try:
+            await asyncio.get_event_loop().run_in_executor(None, directory.unpublish_agent, agent_id)
+        except Exception:
+            logger.warning("admin_remove_agent_unpublish_failed agent_id=%s", agent_id, exc_info=True)
         _agent_health.pop(agent_id, None)
         logger.info("admin_removed_agent agent_id=%s", agent_id)
         return {"ok": True}
@@ -531,6 +535,28 @@ def create_app(
     return app
 
 
+async def _refresh_google_token(creds: dict) -> dict:
+    """Exchange the stored refresh_token for a fresh access_token."""
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                creds.get("token_uri", "https://oauth2.googleapis.com/token"),
+                data={
+                    "client_id": creds["client_id"],
+                    "client_secret": creds["client_secret"],
+                    "refresh_token": creds["refresh_token"],
+                    "grant_type": "refresh_token",
+                },
+                timeout=10,
+            )
+        if resp.status_code == 200:
+            return {**creds, "access_token": resp.json()["access_token"]}
+        logger.warning("google_token_refresh_failed status=%d", resp.status_code)
+    except Exception:
+        logger.warning("google_token_refresh_error", exc_info=True)
+    return creds
+
+
 async def _inject_credentials(request: Request, metadata: dict[str, Any]) -> None:
     """Fetch the current user's credentials and add them to metadata if auth is active."""
     if not os.getenv("REGISTRATION_DB_DSN"):
@@ -539,6 +565,8 @@ async def _inject_credentials(request: Request, metadata: dict[str, Any]) -> Non
         user = await get_current_user(request)
         credentials = await fetch_user_credentials(user["id"])
         if credentials:
+            if "google_oauth" in credentials and credentials["google_oauth"].get("refresh_token"):
+                credentials["google_oauth"] = await _refresh_google_token(credentials["google_oauth"])
             metadata["credentials"] = credentials
     except Exception:
         pass
@@ -558,16 +586,16 @@ async def _incoming_message_from_request(request: Request) -> IncomingMessage:
         uploads = []
         for key in ("image", "file", "attachment"):
             uploads.extend(form.getlist(key))
-        uploaded_images = []
+        uploaded_files = []
         for upload in uploads:
             if not (hasattr(upload, "filename") and hasattr(upload, "read")):
                 continue
-            uploaded_images.append(await _store_uploaded_image(upload))
-        if uploaded_images:
-            metadata["uploaded_images"] = uploaded_images
+            uploaded_files.append(await _store_uploaded_file(upload))
+        if uploaded_files:
+            metadata["uploaded_files"] = uploaded_files
         text = str(form.get("text") or "").strip()
-        if not text and uploaded_images:
-            text = "Analyze this image, infer its likely location, and describe what happened."
+        if not text and uploaded_files:
+            text = f"I've attached a file: {uploaded_files[0]['filename']}"
         context_id = _clean_optional_form_value(form.get("context_id"))
         return IncomingMessage(
             user_id=shib_user_id,
@@ -607,27 +635,21 @@ def _clean_optional_form_value(value: Any) -> str | None:
     return text
 
 
-async def _store_uploaded_image(upload: Any) -> dict[str, Any]:
-    filename = Path(str(upload.filename or "uploaded-image")).name
+async def _store_uploaded_file(upload: Any) -> dict[str, Any]:
+    filename = Path(str(upload.filename or "upload")).name
     content_type = (
         str(getattr(upload, "content_type", "") or "")
         or mimetypes.guess_type(filename)[0]
         or "application/octet-stream"
     )
-    if not content_type.startswith("image/"):
-        raise HTTPException(status_code=400, detail=f"Unsupported upload type {content_type!r}; image/* required.")
-
     data = await upload.read()
     if not data:
-        raise HTTPException(status_code=400, detail="Uploaded image was empty.")
-    max_bytes = int(os.getenv("MAIN_AGENT_MAX_IMAGE_UPLOAD_BYTES", str(15 * 1024 * 1024)))
+        raise HTTPException(status_code=400, detail="Uploaded file was empty.")
+    max_bytes = int(os.getenv("MAIN_AGENT_MAX_UPLOAD_BYTES", str(50 * 1024 * 1024)))
     if len(data) > max_bytes:
-        raise HTTPException(status_code=413, detail=f"Uploaded image exceeds {max_bytes} bytes.")
-
-    suffix = Path(filename).suffix.lower()
-    if suffix not in {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tif", ".tiff"}:
-        suffix = mimetypes.guess_extension(content_type) or ".img"
-    safe_stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", Path(filename).stem).strip("._") or "image"
+        raise HTTPException(status_code=413, detail=f"Upload exceeds {max_bytes} bytes.")
+    suffix = Path(filename).suffix.lower() or (mimetypes.guess_extension(content_type) or ".bin")
+    safe_stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", Path(filename).stem).strip("._") or "upload"
     out_dir = Path(os.getenv("MAIN_AGENT_UPLOAD_DIR", "/tmp/planner_agent_uploads"))
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / f"{uuid4().hex}_{safe_stem}{suffix}"
