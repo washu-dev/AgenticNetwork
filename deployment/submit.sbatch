@@ -75,6 +75,12 @@ export CODING_AGENT_A2A_PORT=19106
 export INTEL_AGENT_A2A_PORT=19107
 export DISASTER_AGENT_A2A_PORT=19108
 
+# ── Custom agent spawning (registration service) ─────────────────────────────
+# ClusterBackend + GitHub→DockerHub build pipeline for approved custom agents.
+# (Also settable in .env; exported here so they propagate even if .env omits them.)
+export SPAWN_BACKEND="${SPAWN_BACKEND:-cluster}"
+export HANDLER_FILES_DIR="${HANDLER_FILES_DIR:-/workspace/registration_service/uploaded_handlers}"
+
 # ── Agent containers (all start in parallel after ADS is up) ─────────────────
 srun --ntasks=1 --overlap \
      --container-image=amaankhan25/agenticnetwork-registration:latest \
@@ -131,6 +137,16 @@ srun --ntasks=1 --overlap \
      --container-writable \
      /entrypoint.sh \
      >> "$LOGS/geospatial.log" 2>> "$LOGS/geospatial.err" &
+
+# ── Host-side spawn loop for approved custom agents (plan Note #8) ────────────
+# Runs in this native Slurm env (where `srun` works) — the registration container
+# can't call srun itself. Polls the registration service's /internal/* endpoints.
+if [ "${SPAWN_BACKEND:-}" = "cluster" ]; then
+    echo "[submit] Launching host-side custom-agent spawn loop..."
+    LOGS="$LOGS" \
+    REGISTRATION_INTERNAL_URL="http://localhost:${REGISTRATION_SERVICE_PORT:-8091}" \
+    bash /workspace/deployment/spawn_agent_loop.sh >> "$LOGS/spawn_agent_loop.log" 2>&1 &
+fi
 
 echo "[submit] All containers launched. Waiting..."
 wait

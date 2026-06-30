@@ -16,6 +16,7 @@ RUN chmod +x /usr/local/bin/dirctl
 
 WORKDIR /app
 
+COPY agent_skeleton/ agent_skeleton/
 COPY registration_service/requirements.txt registration_service/requirements.txt
 RUN pip install --no-cache-dir -r registration_service/requirements.txt
 

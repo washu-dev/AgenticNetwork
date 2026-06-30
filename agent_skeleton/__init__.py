@@ -7,6 +7,14 @@ Edit these to make your agent; everything else is plumbing:
     agent.card.json  — your skills & endpoint
 
 See README.md for the walkthrough and CLAUDE.md for working notes.
+
+Custom-handler API (for uploaded agents via the registration service):
+    AgentHandler    — subclass and implement handle_structured()
+    FileInput       — wrapper for binary inputs (PDFs, images)
+    HandlerExecutor — A2A executor that wraps an AgentHandler
 """
 
-__all__ = ["__doc__"]
+from agent_skeleton.base import AgentHandler, FileInput
+from agent_skeleton.handler_executor import HandlerExecutor
+
+__all__ = ["__doc__", "AgentHandler", "FileInput", "HandlerExecutor"]

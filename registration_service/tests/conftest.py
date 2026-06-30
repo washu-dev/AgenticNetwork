@@ -73,3 +73,30 @@ API_PROXY_PAYLOAD = {
         "auth_header": "Bearer test-token",
     },
 }
+
+CUSTOM_PAYLOAD = {
+    "name": "Test Custom Agent",
+    "description": "A custom uploaded agent",
+    "handler_type": "custom",
+    "oasf_skills": [{"name": "nlp/text-summarization", "id": 10101}],
+    "config": {
+        "class_name": "MyAgentHandler",
+        "python_version": "3.11",
+        "requirements": [],
+        "extra": {"greeting": "hi"},
+    },
+}
+
+VALID_HANDLER_SRC = '''
+from agent_skeleton import AgentHandler, FileInput
+
+class MyAgentHandler(AgentHandler):
+    async def handle_structured(self, user_input: str, files: list = []) -> dict:
+        return {"answer": "ok"}
+'''
+
+INVALID_HANDLER_SRC = '''
+class MyAgentHandler:  # does not extend AgentHandler
+    def handle_structured(self):
+        pass
+'''

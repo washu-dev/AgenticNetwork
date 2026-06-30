@@ -55,14 +55,19 @@
     .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
     label.field-label { display: block; font-weight: 600; margin-bottom: 5px; font-size: .8125rem; }
     .hint { font-weight: 400; color: var(--muted); }
-    input[type=text], input[type=url], textarea {
+    input[type=text], input[type=url], textarea, select {
       width: 100%; padding: 7px 10px; border: 1px solid var(--border);
       border-radius: var(--radius); font-size: .875rem; font-family: inherit;
       background: var(--surface); color: var(--text); transition: border-color .15s, box-shadow .15s;
     }
-    input:focus, textarea:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(37,99,235,.12); }
+    input:focus, textarea:focus, select:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(37,99,235,.12); }
     textarea { resize: vertical; min-height: 90px; }
     input[readonly] { background: var(--bg); color: var(--muted); cursor: default; }
+    textarea.code-editor {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: .8rem; line-height: 1.5; white-space: pre; overflow-wrap: normal;
+      overflow-x: auto; tab-size: 4;
+    }
 
     /* ── Radio group ── */
     .radio-group { display: flex; gap: 20px; }
@@ -117,6 +122,8 @@
     .badge-registered { background: #fef9c3; color: #854d0e; }
     .badge-failed     { background: #fee2e2; color: #991b1b; }
     .badge-stopped    { background: #f3f4f6; color: #4b5563; }
+    .badge-pending    { background: #fef3c7; color: #92400e; }
+    .badge-building   { background: #dbeafe; color: #1e40af; }
 
     .actions { display: flex; gap: 6px; }
     .empty-state { text-align: center; color: var(--muted); padding: 52px 0; font-size: .9rem; }
@@ -158,6 +165,10 @@
             <input type="radio" name="handler_type" value="api_proxy" onchange="onHandlerChange()">
             API Proxy <span class="hint" style="margin-left:4px">— forwards calls to your existing service</span>
           </label>
+          <label class="radio-label">
+            <input type="radio" name="handler_type" value="custom" onchange="onHandlerChange()">
+            Custom (Python) <span class="hint" style="margin-left:4px">— upload a handler; requires admin approval</span>
+          </label>
         </div>
       </div>
 
@@ -196,6 +207,42 @@
         <div class="form-group">
           <label class="field-label" for="inp-auth-header">Authorization header <span class="hint">— optional</span></label>
           <input type="text" id="inp-auth-header" placeholder="Bearer sk-…">
+        </div>
+      </div>
+
+      <!-- Custom (Python) fields -->
+      <div id="custom-fields" style="display:none">
+        <div class="form-row">
+          <div>
+            <label class="field-label" for="inp-class-name">Class name <span class="hint">— must match the class in the editor</span></label>
+            <input type="text" id="inp-class-name" value="MyAgentHandler">
+          </div>
+          <div>
+            <label class="field-label" for="inp-python-version">Python version</label>
+            <select id="inp-python-version">
+              <option value="3.11" selected>3.11</option>
+              <option value="3.12">3.12</option>
+              <option value="3.13">3.13</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="field-label" for="inp-requirements">Requirements <span class="hint">— comma-separated pip packages, optional</span></label>
+          <input type="text" id="inp-requirements" placeholder="refbot>=0.1, numpy">
+        </div>
+        <div class="form-group">
+          <div style="display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:5px">
+            <label class="field-label" for="inp-handler-code" style="margin:0">Handler code <span class="hint">— extends AgentHandler, implements handle_structured()</span></label>
+            <label class="btn btn-sm btn-outline" style="cursor:pointer;margin-bottom:0">
+              Upload .py file
+              <input type="file" accept=".py,text/x-python" style="display:none" onchange="loadHandlerFile(this)">
+            </label>
+          </div>
+          <textarea id="inp-handler-code" class="code-editor" rows="16" spellcheck="false"></textarea>
+        </div>
+        <div class="form-group">
+          <label class="field-label" for="inp-extra">Extra config (JSON) <span class="hint">— optional, passed to your handler's __init__</span></label>
+          <textarea id="inp-extra" class="code-editor" rows="3" placeholder='{"key": "value"}'></textarea>
         </div>
       </div>
 
@@ -257,12 +304,14 @@ function switchTab(tab) {
 
 // ── Handler type toggle ───────────────────────────────────────────────────────
 function onHandlerChange() {
-  const isLLM = document.querySelector('input[name=handler_type]:checked').value === 'llm';
-  document.getElementById('llm-fields').style.display = isLLM ? '' : 'none';
-  document.getElementById('proxy-fields').style.display = isLLM ? 'none' : '';
-  document.getElementById('label-model').textContent = isLLM ? 'Model' : 'Model';
-  document.getElementById('inp-model').style.display = isLLM ? '' : 'none';
-  document.getElementById('label-model').style.display = isLLM ? '' : 'none';
+  const v = document.querySelector('input[name=handler_type]:checked').value;
+  document.getElementById('llm-fields').style.display    = v === 'llm'       ? '' : 'none';
+  document.getElementById('proxy-fields').style.display  = v === 'api_proxy' ? '' : 'none';
+  document.getElementById('custom-fields').style.display = v === 'custom'    ? '' : 'none';
+  // The Model field only applies to LLM agents.
+  const showModel = v === 'llm';
+  document.getElementById('inp-model').style.display    = showModel ? '' : 'none';
+  document.getElementById('label-model').style.display  = showModel ? '' : 'none';
 }
 
 // ── OASF skills ───────────────────────────────────────────────────────────────
@@ -344,16 +393,32 @@ async function submitRegistration() {
   if (!selectedSkills.size) return showAlert('error', 'Select at least one OASF skill.');
 
   let config;
+  let handlerCode = null;
   if (handler_type === 'llm') {
     const system_prompt = document.getElementById('inp-system-prompt').value.trim();
     const model         = document.getElementById('inp-model').value.trim() || 'openai/gpt-oss-120b';
     if (!system_prompt) return showAlert('error', 'System prompt is required for LLM agents.');
     config = { system_prompt, model };
-  } else {
+  } else if (handler_type === 'api_proxy') {
     const upstream_url = document.getElementById('inp-upstream-url').value.trim();
     const auth_header  = document.getElementById('inp-auth-header').value.trim();
     if (!upstream_url) return showAlert('error', 'Upstream URL is required for API proxy agents.');
     config = { upstream_url, ...(auth_header ? { auth_header } : {}) };
+  } else { // custom
+    const class_name     = document.getElementById('inp-class-name').value.trim();
+    const python_version = document.getElementById('inp-python-version').value;
+    const reqRaw         = document.getElementById('inp-requirements').value.trim();
+    const requirements   = reqRaw ? reqRaw.split(',').map(s => s.trim()).filter(Boolean) : [];
+    handlerCode          = document.getElementById('inp-handler-code').value;
+    const extraRaw       = document.getElementById('inp-extra').value.trim();
+    if (!class_name)        return showAlert('error', 'Class name is required for custom agents.');
+    if (!handlerCode.trim()) return showAlert('error', 'Handler code is required for custom agents.');
+    let extra = {};
+    if (extraRaw) {
+      try { extra = JSON.parse(extraRaw); }
+      catch { return showAlert('error', 'Extra config must be valid JSON.'); }
+    }
+    config = { class_name, python_version, requirements, extra };
   }
 
   const payload = {
@@ -374,11 +439,25 @@ async function submitRegistration() {
     });
     if (!res.ok) {
       const body = await res.json().catch(() => ({ detail: res.statusText }));
-      throw new Error(body.detail || `HTTP ${res.status}`);
+      throw new Error(fmtDetail(body.detail) || `HTTP ${res.status}`);
     }
     const agent = await res.json();
-    showAlert('success',
-      `"${agent.name}" registered! Status: ${agent.status}. Port: ${agent.port}.`);
+
+    if (handler_type === 'custom') {
+      // Step 2: upload the handler file. Validation errors surface here.
+      const fd = new FormData();
+      fd.append('file', new Blob([handlerCode], { type: 'text/x-python' }), 'handler.py');
+      const up = await fetch(`${API_PREFIX}/agents/${agent.id}/handler`, { method: 'POST', body: fd });
+      if (!up.ok) {
+        const body = await up.json().catch(() => ({ detail: up.statusText }));
+        throw new Error(fmtDetail(body.detail) || `HTTP ${up.status}`);
+      }
+      showAlert('success',
+        `"${agent.name}" registered and handler uploaded. It is pending admin approval before it goes live.`);
+    } else {
+      showAlert('success',
+        `"${agent.name}" registered! Status: ${agent.status}. Port: ${agent.port}.`);
+    }
     resetForm();
   } catch (e) {
     showAlert('error', String(e.message || e));
@@ -388,12 +467,24 @@ async function submitRegistration() {
   }
 }
 
+// Format a FastAPI error detail, which may be a string or {errors: [...]}.
+function fmtDetail(detail) {
+  if (!detail) return '';
+  if (typeof detail === 'string') return detail;
+  if (Array.isArray(detail.errors)) return 'Validation failed: ' + detail.errors.join('; ');
+  return JSON.stringify(detail);
+}
+
 function resetForm() {
   ['inp-name','inp-description','inp-system-prompt',
-   'inp-upstream-url','inp-auth-header','skill-search'].forEach(id => {
+   'inp-upstream-url','inp-auth-header','skill-search',
+   'inp-requirements','inp-extra'].forEach(id => {
     document.getElementById(id).value = '';
   });
   document.getElementById('inp-model').value = 'openai/gpt-oss-120b';
+  document.getElementById('inp-class-name').value = 'MyAgentHandler';
+  document.getElementById('inp-python-version').value = '3.11';
+  document.getElementById('inp-handler-code').value = DEFAULT_HANDLER_CODE;
   selectedSkills.clear();
   renderBadges();
   renderSkillList(allSkills);
@@ -423,7 +514,7 @@ function renderAgentTable(agents) {
         <div class="agent-desc">${esc(a.description.length > 80 ? a.description.slice(0,80)+'…' : a.description)}</div>
       </td>
       <td>${esc(a.handler_type)}</td>
-      <td><span class="badge badge-${esc(a.status)}">${esc(a.status)}</span></td>
+      <td>${statusBadge(a)}</td>
       <td>${a.port ?? '—'}</td>
       <td>${a.endpoint_url
         ? `<a class="endpoint-link" href="${esc(a.endpoint_url)}" target="_blank">${esc(a.endpoint_url)}</a>`
@@ -447,6 +538,19 @@ function renderAgentTable(agents) {
         <tbody>${rows}</tbody>
       </table>
     </div>`;
+}
+
+// Derive the status badge: custom agents awaiting approval show "Pending
+// Approval"; "building" agents show "Building"; everything else uses the raw
+// status value.
+function statusBadge(a) {
+  let key = a.status, label = a.status;
+  if (a.handler_type === 'custom' && a.approved === false && a.status === 'registered') {
+    key = 'pending'; label = 'Pending Approval';
+  } else if (a.status === 'building') {
+    key = 'building'; label = 'Building';
+  }
+  return `<span class="badge badge-${esc(key)}">${esc(label)}</span>`;
 }
 
 async function restartAgent(id) {
@@ -486,6 +590,39 @@ function esc(s) {
     .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
+// ── Custom handler editor ───────────────────────────────────────────────────────
+const DEFAULT_HANDLER_CODE = `from agent_skeleton import AgentHandler, FileInput
+
+class MyAgentHandler(AgentHandler):
+    """Describe what your agent does here."""
+
+    async def handle_structured(
+        self,
+        user_input: str,
+        files: list[FileInput] = []
+    ) -> dict:
+        # Access uploaded files:
+        #   with files[0].as_tempfile() as path:
+        #       content = path.read_text()
+        #
+        # "answer" is required — it becomes the human-readable response.
+        # All other keys are returned to the planner as structured data.
+
+        return {
+            "answer": "Your response here",
+            # "key": value,
+        }
+`;
+
+function loadHandlerFile(input) {
+  const f = input.files && input.files[0];
+  if (!f) return;
+  const reader = new FileReader();
+  reader.onload = e => { document.getElementById('inp-handler-code').value = e.target.result; };
+  reader.readAsText(f);
+  input.value = '';  // allow re-selecting the same file
+}
+
 // ── Boot ──────────────────────────────────────────────────────────────────────
 // When served via the planner proxy at /register/, API calls must be absolute.
 // When served directly from the registration service, window.location.pathname
@@ -494,6 +631,7 @@ const API_PREFIX = window.location.pathname.replace(/\/$/, '').endsWith('/regist
   ? '/register'
   : '';
 
+document.getElementById('inp-handler-code').value = DEFAULT_HANDLER_CODE;
 loadSkills();
 </script>
 </body>

@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-skeleton"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "a2a-sdk>=0.3.2",
+    "openai>=1.40",
+    "uvicorn>=0.30",
+]
+
+# pyproject.toml lives *inside* the package directory, so map the
+# `agent_skeleton` import package to "." (this directory) rather than
+# auto-discovering a subdirectory that does not exist.
+[tool.setuptools]
+packages = ["agent_skeleton"]
+
+[tool.setuptools.package-dir]
+agent_skeleton = "."
