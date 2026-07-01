@@ -24,9 +24,10 @@
 #SBATCH --output=/engrfs/project/di2/AgenticNetwork/logs/%u/agenticnetwork-%j.log
 #SBATCH --error=/engrfs/project/di2/AgenticNetwork/logs/%u/agenticnetwork-%j.err
 
-LOGS=/engrfs/project/di2/AgenticNetwork/logs/$USER
-ENV_FILE=/engrfs/project/di2/AgenticNetwork/deployment/.env
-MOUNTS=/engrfs/project/di2/AgenticNetwork:/workspace
+REPO=/engrfs/project/di2/AgenticNetwork
+LOGS=$REPO/logs/$USER
+ENV_FILE=$REPO/deployment/.env
+MOUNTS=$REPO:/workspace
 
 mkdir -p "$LOGS"
 
@@ -143,9 +144,11 @@ srun --ntasks=1 --overlap \
 # can't call srun itself. Polls the registration service's /internal/* endpoints.
 if [ "${SPAWN_BACKEND:-}" = "cluster" ]; then
     echo "[submit] Launching host-side custom-agent spawn loop..."
+    # Runs on the HOST (not in a container), so use the host path — /workspace only
+    # exists inside containers via --container-mounts.
     LOGS="$LOGS" \
     REGISTRATION_INTERNAL_URL="http://localhost:${REGISTRATION_SERVICE_PORT:-8091}" \
-    bash /workspace/deployment/spawn_agent_loop.sh >> "$LOGS/spawn_agent_loop.log" 2>&1 &
+    bash "$REPO/deployment/spawn_agent_loop.sh" >> "$LOGS/spawn_agent_loop.log" 2>&1 &
 fi
 
 echo "[submit] All containers launched. Waiting..."
