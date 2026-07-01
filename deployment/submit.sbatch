@@ -42,6 +42,34 @@ echo " Job ID   : ${SLURM_JOB_ID}"
 echo " vLLM node: ${OPENAI_BASE_URL}"
 echo "======================================================"
 
+# ── PostgreSQL (shared: registration "dir" + ADS "dir") ───────────────────────
+# Dedicated Postgres service — starts FIRST so both ADS (database=postgres) and
+# the registration service can connect as pure clients over host-localhost:5432.
+# The data-dir volume is mounted here (moved off the registration container).
+PG_READY_HOST="$LOGS/postgres_ready"                                    # host-visible path
+PG_READY_CONTAINER="/workspace/logs/$(basename "$LOGS")/postgres_ready"  # same file, container view
+rm -f "$PG_READY_HOST" 2>/dev/null || true
+
+srun --ntasks=1 --overlap \
+     --container-image=amaankhan25/agenticnetwork-postgres:latest \
+     --container-mounts="$MOUNTS,/engrfs/project/di2/postgres_data:/var/lib/postgresql/data" \
+     --container-writable \
+     --export=ALL,POSTGRES_READY_FILE="$PG_READY_CONTAINER" \
+     /entrypoint.sh >> "$LOGS/postgres.log" 2>&1 &
+
+echo "[submit] Waiting for PostgreSQL (registration + dir) ..."
+for i in $(seq 1 60); do
+    if [ -f "$PG_READY_HOST" ] && python3 -c "import socket; socket.create_connection(('localhost',5432),timeout=1).close()" 2>/dev/null; then
+        echo "[submit] PostgreSQL ready (${i}s)."
+        break
+    fi
+    if [ "$i" -eq 60 ]; then
+        echo "[submit] ERROR: PostgreSQL not ready after 60s. Check $LOGS/postgres.log"
+        exit 1
+    fi
+    sleep 1
+done
+
 # ── ADS daemon ────────────────────────────────────────────────────────────────
 srun --ntasks=1 --overlap \
      --container-image=amaankhan25/agenticnetwork-ads:v4 \
@@ -90,7 +118,7 @@ STAGGER="${AGENT_START_STAGGER_SECONDS:-4}"
 
 srun --ntasks=1 --overlap \
      --container-image=amaankhan25/agenticnetwork-registration:latest \
-     --container-mounts="$MOUNTS,/engrfs/project/di2/postgres_data:/var/lib/postgresql/data" \
+     --container-mounts="$MOUNTS" \
      --container-writable \
      /entrypoint.sh \
      >> "$LOGS/registration.log" 2>> "$LOGS/registration.err" &

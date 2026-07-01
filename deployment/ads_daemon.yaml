@@ -25,13 +25,16 @@ server:
     gossipsub:
       enabled: true
   database:
-    type: "sqlite"
+    type: "postgres"          # was "sqlite" — moved to the dedicated Postgres
+                              # service to eliminate SQLITE_BUSY on cold-start.
     sqlite:
-      path: "/var/lib/ads/dir.db"
+      path: "/var/lib/ads/dir.db"     # harmless to leave; unused when type=postgres
     postgres:
       host: "localhost"
       port: 5432
       database: "dir"
+      username: "postgres"    # trust auth, superuser created by entrypoint-postgres
+      password: "postgres"    # ignored by trust auth; present to satisfy the DSN
       ssl_mode: "disable"
   publication:
     scheduler_interval: 5s
