@@ -1608,14 +1608,16 @@ async function loadAgentDirectory() {
 }
 async function loadAgentHealth() {
   try {
-    const { agents } = await adminFetch('/admin/agents/health').then(r => r.json());
+    const resp = await adminFetch('/admin/agents/health').then(r => r.json());
+    const agents = resp.agents || [];
+    const adsReachable = resp.ads_reachable !== false;
     window._agentHealth = {};
     agents.forEach(a => { window._agentHealth[a.agent_id] = a; });
     // Populate dashboard health table
     const tbody = document.getElementById('health-tbody');
     if (tbody) {
       if (!agents.length) {
-        tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--t4);padding:24px;font-size:13px">No agents registered.</td></tr>';
+        tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;color:var(--t4);padding:24px;font-size:13px">${adsReachable ? 'No agents registered.' : 'ADS unreachable — cannot list agents.'}</td></tr>`;
       } else {
         tbody.innerHTML = agents.map(a => {
           const lastPing = a.last_ping_s != null ? (a.last_ping_s < 60 ? `${a.last_ping_s}s ago` : `${Math.round(a.last_ping_s/60)}m ago`) : '—';
@@ -1638,12 +1640,12 @@ async function loadAgentHealth() {
       const dirTbody = document.querySelector('#agent-table tbody');
       if (dirTbody) dirTbody.innerHTML = window._agents.map(a => agentRowHtml(a, window._agentHealth[a.agent_id])).join('');
     }
-    // Update agents-connected stat
+    // Update agents-connected stat (owned here, not in loadAdminStats).
     const online = agents.filter(a => a.status === 'online').length;
     const connEl = document.getElementById('stat-agents-connected');
-    if (connEl) connEl.textContent = online;
+    if (connEl) connEl.textContent = adsReachable ? online : '—';
     const subEl = document.getElementById('stat-agents-sub');
-    if (subEl) subEl.textContent = `of ${agents.length} registered`;
+    if (subEl) subEl.textContent = adsReachable ? `of ${agents.length} registered` : 'ADS unreachable';
   } catch (e) {}
 }
 async function loadAdminView() {
@@ -1669,8 +1671,8 @@ async function loadAdminStats() {
   try {
     const s = await adminFetch('/admin/stats').then(r => r.json());
     const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
-    set('stat-agents-connected', s.agents_connected);
-    set('stat-agents-sub', s.agents_connected === 1 ? '1 agent' : `${s.agents_connected} agents`);
+    // Note: the "Agents connected" tile is owned by loadAgentHealth() (online / of
+    // N registered), which reflects live probe results + ADS reachability.
     set('stat-requests-today', s.requests_today);
     set('stat-requests-sub', s.last_request_ts ? `last: ${s.last_request_ts.slice(11,16)} UTC` : 'no requests yet');
     set('stat-avg-latency', s.avg_latency_ms ? `${(s.avg_latency_ms/1000).toFixed(1)}s` : '—');

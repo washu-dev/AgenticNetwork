@@ -82,13 +82,19 @@ export DISASTER_AGENT_A2A_PORT=19108
 export SPAWN_BACKEND="${SPAWN_BACKEND:-cluster}"
 export HANDLER_FILES_DIR="${HANDLER_FILES_DIR:-/workspace/registration_service/uploaded_handlers}"
 
-# ── Agent containers (all start in parallel after ADS is up) ─────────────────
+# ── Agent containers ─────────────────────────────────────────────────────────
+# Launched with a stagger: all agents publish to the ADS routing index (SQLite)
+# shortly after start, and simultaneous writes cause "database is locked
+# (SQLITE_BUSY)" crashes. Spacing the launches spreads the publishes out.
+STAGGER="${AGENT_START_STAGGER_SECONDS:-4}"
+
 srun --ntasks=1 --overlap \
      --container-image=amaankhan25/agenticnetwork-registration:latest \
      --container-mounts="$MOUNTS,/engrfs/project/di2/postgres_data:/var/lib/postgresql/data" \
      --container-writable \
      /entrypoint.sh \
      >> "$LOGS/registration.log" 2>> "$LOGS/registration.err" &
+sleep "$STAGGER"
 
 srun --ntasks=1 --overlap \
      --container-image=amaankhan25/agenticnetwork-planner:latest \
@@ -96,6 +102,7 @@ srun --ntasks=1 --overlap \
      --container-writable \
      /entrypoint.sh \
      >> "$LOGS/planner.log" 2>> "$LOGS/planner.err" &
+sleep "$STAGGER"
 
 srun --ntasks=1 --overlap \
      --container-image=amaankhan25/agenticnetwork-scout:latest \
@@ -103,6 +110,7 @@ srun --ntasks=1 --overlap \
      --container-writable \
      /entrypoint.sh \
      >> "$LOGS/scout.log" 2>> "$LOGS/scout.err" &
+sleep "$STAGGER"
 
 srun --ntasks=1 --overlap \
      --container-image=amaankhan25/agenticnetwork-email:latest \
@@ -110,6 +118,7 @@ srun --ntasks=1 --overlap \
      --container-writable \
      /entrypoint.sh \
      >> "$LOGS/email.log" 2>> "$LOGS/email.err" &
+sleep "$STAGGER"
 
 srun --ntasks=1 --overlap \
      --container-image=amaankhan25/agenticnetwork-coding:latest \
@@ -117,6 +126,7 @@ srun --ntasks=1 --overlap \
      --container-writable \
      /entrypoint.sh \
      >> "$LOGS/coding.log" 2>> "$LOGS/coding.err" &
+sleep "$STAGGER"
 
 srun --ntasks=1 --overlap \
      --container-image=amaankhan25/agenticnetwork-intelligence:latest \
@@ -124,6 +134,7 @@ srun --ntasks=1 --overlap \
      --container-writable \
      /entrypoint.sh \
      >> "$LOGS/intelligence.log" 2>> "$LOGS/intelligence.err" &
+sleep "$STAGGER"
 
 srun --ntasks=1 --overlap \
      --container-image=amaankhan25/agenticnetwork-disaster:latest \
@@ -131,6 +142,7 @@ srun --ntasks=1 --overlap \
      --container-writable \
      /entrypoint.sh \
      >> "$LOGS/disaster.log" 2>> "$LOGS/disaster.err" &
+sleep "$STAGGER"
 
 srun --ntasks=1 --overlap \
      --container-image=amaankhan25/agenticnetwork-geospatial:latest \
