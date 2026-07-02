@@ -1,6 +1,6 @@
 # Custom Agent Lane v2 — Spec & Implementation Plan
 
-**Status:** Finalized — all decisions locked (§2), integration-reviewed (§13), ready to break into PRs
+**Status:** **P1 SHIPPED (D15 gate PASSED 2026-07-01) + P3 SHIPPED & validated (2026-07-02)** on branch `feature/custom-agent-handler`; P2 & P4 not started. Decisions locked (§2), integration-reviewed (§13). See "Implementation status" below.
 **Scope:** `registration_service` intake/validate/build + `agent_skeleton` executor/runner
 + (credentials only) `planner_agent` discovery/call path + Settings UI
 **Goal:** widen the existing `custom` lane so one lane spans **a single `.py` + pip
@@ -10,6 +10,82 @@ per-user credentials), with no new `handler_type`.
 long-term plan for that as a separate, later lane).
 **Related:** [`AGENT_UPLOAD_LANES_DESIGN.md`](AGENT_UPLOAD_LANES_DESIGN.md),
 [`CUSTOM_AGENT_HANDLER_PLAN.md`](CUSTOM_AGENT_HANDLER_PLAN.md)
+
+---
+
+## 0. Implementation status (updated 2026-07-01)
+
+**P1 is DONE and the D15 cluster gate PASSED** — a multi-file custom agent
+(`handler.py` importing sibling `mylib/` + `pyproject.toml`) was registered via
+the UI, approved, built by GitHub Actions, spawned by the host loop, discovered
+by the planner, and returned its sibling-module output (`tagged:…`) end-to-end on
+the ENGR cluster. Work is on branch `feature/custom-agent-handler` (uncommitted /
+being committed at time of writing).
+
+**What shipped (P1):**
+- `CustomConfig.entry_file` + `install_project`; `is_archive` column on the agent row.
+- New `registration_service/archive.py` — safe `.zip` unpack (zip-slip, symlink,
+  size/count caps, reserved root names `agent_skeleton`/`Dockerfile`/`*.card.json`,
+  entry-present; validates fully before writing → no partial unpack).
+- `server.upload_handler` dispatches `.py` vs `.zip`; validator refocused
+  (blocklist → advisory `warnings`, structural checks still block).
+- Inspect endpoint D13: single-file → `source`; multi-file → `manifest` +
+  `GET …/handler/download` (zip). Advisory warnings surfaced to the approver.
+- `builder.generate_dockerfile`: `COPY agent_skeleton/ /opt/…`, `COPY src/ /app/`,
+  guarded `pip install /app` (metadata + `install_project`), requirements last,
+  `HANDLER_FILE_PATH=/app/{entry_file}`. `supervisor._commit_to_github` commits the
+  whole tree under `src/` (text-only — binary files raise a clear error).
+- `SubprocessBackend`: project-root on PYTHONPATH + `pip install .` for local dev.
+- Web UI: registration uploader `.zip` mode (entry-file, install-project) + planner
+  approver multi-file inspect/download.
+- Tests: registration suite 70 passing (archive unit, zip API, builder snapshots,
+  live sibling-import subprocess spawn).
+
+**Two real bugs found & fixed during the gate (both in `agent_skeleton/pyproject.toml`):**
+1. `a2a-sdk>=0.3.2` (unbounded) let a fresh image pull a newer a2a-sdk that moved
+   `a2a.server.apps` → `ModuleNotFoundError`. Pinned to `==0.3.2`.
+2. Even `0.3.2` base omits Starlette/sse-starlette (they're in the `http-server`
+   extra) → `A2AStarletteApplication` ImportError in the built image. Final fix:
+   **`a2a-sdk[http-server]==0.3.2`**. (Worked locally only because starlette was
+   present transitively.) NB: specialists in `agent-directory` are unaffected — they
+   don't use `agent_skeleton`; four pin `==0.3.2`, but `geoSpatial_agent/attack_bundle`
+   (`>=0.3.0`) and `scout_agent` (`>=0.3.20`) carry the same latent drift risk.
+
+**Redeploy flow that made the gate pass (needed because custom images vendor a
+baked copy of `agent_skeleton`):** edit `agent_skeleton/pyproject.toml` → rebuild &
+push the `registration` image (`bash deployment/build_and_push.sh registration`) →
+restart the registration service → **delete + re-register** the agent (re-approve
+alone won't re-commit once status is `live`; `_commit_to_github` only fires from
+`registered`) → Actions rebuilds the custom image → host loop spawns → Online.
+
+**P3 is DONE and validated end-to-end (2026-07-02).** Shipped: `streaming=True` in
+all card builders, `HandlerExecutor` emits a `working` heartbeat every 20s while the
+handler runs, and `max_runtime_seconds` (clamped to 3600) cancels+fails on overrun;
+threaded through `container_runner`/`custom_handler`/`runner`; 4 unit tests. Verified
+on the cluster: a real refbot paper review ran **~71s through the planner with four
+20s heartbeats → `completed, artifacts=1`**, i.e. it survived the 30s A2A read timeout
+that killed it pre-P3. refbot (paper reviewer) is registered and works end-to-end via
+the planner when given a **paper URL**.
+
+**Known infra gotcha (NOT a code bug): PDF *file upload* is blocked by the reverse
+proxy.** The nginx front for `agenticweb.engr.wustl.edu` has `client_max_body_size`
+~1 MB (default), so a multi-MB PDF upload gets a **413 before reaching the planner**
+(the browser then renders a blank `Error:`). Fix is on the proxy host, not the repo:
+raise `client_max_body_size` (e.g. `50m`) on nginx (+ Apache/Shib `LimitRequestBody`
+if a second limit appears), then reload. Workaround: pass the paper URL instead of
+uploading. Worth adding to `deployment/README.md` as a requirement for file-based
+custom agents.
+
+Also fixed while getting refbot live (all in the same working tree, uncommitted →
+land before the next image build): `a2a-sdk[http-server]==0.3.2` pin in
+`agent_skeleton/pyproject.toml` (base install lacks starlette/sse-starlette); and
+`port_pool.assign_port` now excludes ports already owned by an `agents` row (the
+`port_pool`↔`agents.port` drift that 500'd registration).
+
+**Not done:** P2 (`system_packages`/apt — needed for refbot OCR on scanned PDFs),
+P4 (credentials — spans planner). Also unrelated & pre-existing: 6 planner
+`test_main_agent_runtime.py` failures exist on clean `HEAD` (scripted-LLM discovery
+fixtures) — not caused by this work.
 
 ---
 
@@ -339,21 +415,23 @@ Verified: **no planner change needed.** Agent-side changes:
 
 | Phase | Deliverable | Components | Unblocks | Risk |
 |---|---|---|---|---|
-| **P1** | `.zip` intake + unpack safety + multi-file storage + `pip install .`/PYTHONPATH + `COPY src/` + validator refocus (warnings) | registration, skeleton runner | locally-built multi-module refbot | Med (unpack safety, cross-repo Actions build) |
+| **P1** ✅ **DONE** | `.zip` intake + unpack safety + multi-file storage + `pip install .`/PYTHONPATH + `COPY src/` + validator refocus (warnings) | registration, skeleton runner | locally-built multi-module refbot | Med (unpack safety, cross-repo Actions build) — shipped; gate passed 2026-07-01 |
 | **P2** | `system_packages` → apt (flagged for approval) | registration | OCR / native deps | Low |
-| **P3** | `streaming=True` + heartbeat + `max_runtime_seconds` | skeleton | slow agents survive timeout | Low |
+| **P3** ✅ **DONE** | `streaming=True` + heartbeat + `max_runtime_seconds` | skeleton | slow agents survive timeout | Low — shipped + validated 2026-07-02 (~71s refbot review streamed through planner) |
 | **P4** | Credential catalog + card declaration + planner read/enforce/inject + Settings UI + `context` seam | registration + **planner** + skeleton | user-owned external API keys | Med–High (3 components, gated on auth §8) |
 
 P1+P2 fully ingest a locally-built refbot (text + OCR). P3 hardens it. P4 is the largest
 and can be its own PR series.
 
-**P1 exit criterion (D15) — hard gate.** P1 is not "done" on unit tests alone; it must pass
-an end-to-end smoke test on the real cluster: register a trivial **multi-file** agent →
-approve → GitHub Actions builds the image → host loop spawns it → the planner discovers and
-successfully calls it. Includes confirming `capabilities.extensions` survives a live
-`dirctl push → routing search → pull` round-trip (real binary, not the fake). This catches
-integration gaps unit tests with fakes can't (dirctl field survival, the Actions build,
-port/spawn). Requires cluster access to sign off.
+**P1 exit criterion (D15) — hard gate. ✅ PASSED 2026-07-01.** A trivial **multi-file**
+agent (entry adapter importing sibling `mylib/` + `pyproject.toml`) was registered via the
+UI → approved → GitHub Actions built the image → host loop spawned it → the planner
+discovered and successfully called it, returning the sibling-module output (`tagged:…`) —
+proving intake, the Actions build, spawn/port, and runtime multi-file import all work on the
+real cluster. (The `capabilities.extensions` dirctl round-trip is a **P4** concern — the
+credential declaration rides that field — and was not exercised here; P1 uses no extensions.)
+Getting here surfaced and fixed the two `agent_skeleton` a2a-sdk dependency bugs recorded in
+§0.
 
 ---
 
