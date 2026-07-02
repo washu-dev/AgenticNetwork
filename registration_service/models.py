@@ -9,11 +9,38 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+from registration_service.credential_catalog import is_known_type
+
 
 class OASFSkill(BaseModel):
     name: str
     id: int | None = None
     key: str | None = None   # canonical path-style id used for the card skill.id + ADS routing
+
+
+class CredentialRequirement(BaseModel):
+    """A user-owned credential a custom agent consumes (P4a).
+
+    ``type`` is a canonical catalog key (e.g. ``openai_api_key``) or a
+    ``custom:<slug>`` escape — see ``registration_service/credential_catalog.py``.
+    ``required`` drives P4c enforcement (required→block if missing; optional→proceed);
+    ``env_var`` names the variable the agent reads the value under in its context.
+    """
+    type: str
+    label: str
+    required: bool = True
+    env_var: str | None = None
+
+    @field_validator("type")
+    @classmethod
+    def _known_type(cls, v: str) -> str:
+        v = v.strip()
+        if not is_known_type(v):
+            raise ValueError(
+                f"Unknown credential type: {v!r} "
+                "(use a catalog type or 'custom:<slug>')"
+            )
+        return v
 
 
 class LLMConfig(BaseModel):
@@ -46,6 +73,7 @@ class CustomConfig(BaseModel):
     entry_file: str = "handler.py"          # adapter module at the upload root that defines class_name
     install_project: bool = True            # pip install . if pyproject.toml/setup.py present at root
     max_runtime_seconds: int = 1800         # per-request cap; clamped to HARD_MAX_RUNTIME_SECONDS
+    credentials: list[CredentialRequirement] = Field(default_factory=list)   # P4a: user-owned creds this agent consumes
     extra: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("max_runtime_seconds")
