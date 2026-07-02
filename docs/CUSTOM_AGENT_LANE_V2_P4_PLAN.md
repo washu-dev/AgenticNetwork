@@ -121,9 +121,9 @@ fields, so adding one is safe and requires an explicit edit.
 | Sub-phase | Deliverable | Components | Depends on | Exit criterion |
 |---|---|---|---|---|
 | **P4a** ✅ | Credential **declaration** + catalog + card carrier | registration + skeleton contract | — | **DONE.** A custom agent declares creds; they land in the published card's `capabilities.extensions`; unit test round-trips extension→card. |
-| **P4b** | Planner **discovery read** + LLM surface (read-only, no enforcement) | planner | P4a | `DiscoveredAgent.required_credentials` populated from the extension; visible in `_agent_full_card`; unit test with a stubbed record. |
-| **P4c** | **Grant + consent + enforcement + scoped injection** | planner | P4b | Required-missing → blocked w/ consent; optional-missing → proceeds; injected creds scoped to *granted*; grants persist + revocable via API. |
-| **P4d** | Skeleton **context seam** + **Settings UI** | skeleton + planner web | P4c | A custom agent reads a user key from `context` and uses it; Settings tab manages keys + grants; `context` never logged. |
+| **P4b** ✅ | Planner **discovery read** + LLM surface (read-only, no enforcement) | planner | P4a | **DONE.** `DiscoveredAgent.required_credentials` populated from the extension; visible in `_agent_full_card`; unit test with a stubbed record. |
+| **P4c** ✅ | **Grant + consent + enforcement + scoped injection** | planner | P4b | **DONE (impl + unit tests; cluster gate pending).** Required-missing → blocked w/ consent; optional-missing → proceeds; injected creds scoped to *granted*; grants persist + revocable via API. |
+| **P4d** ✅ | Skeleton **context seam** + **Settings UI** | skeleton + planner web | P4c | **DONE (impl + unit tests; cluster e2e pending).** A custom agent reads a user key from `context` and uses it; Settings tab manages keys + grants; `context` never logged. |
 
 **Track 2 — Auth restructuring** (see §9–§11)
 

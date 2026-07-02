@@ -251,6 +251,24 @@ directory doesn't exist (create it — see One-time Setup), or a previous run le
 stale `postmaster.pid` (the entrypoint removes it automatically on start, but if
 the data directory is corrupted, delete it and let `initdb` re-initialise on next run).
 
+**Custom agents don't auto-start on a fresh deployment (unlike the 6 core agents)**
+Known limitation. The 6 core agents are hardcoded as `srun` steps in `submit.sbatch`,
+so they always launch with the job. Custom agents are **not** in that static set — their
+(re)start is driven entirely by the registration service's Postgres DB: on startup
+`Supervisor.recover_live_agents` re-queues only rows with `status='live'` (and whose image
+still exists on Docker Hub) to `image_ready`, and the host spawn loop (`spawn_agent_loop.py`)
+then `srun`s them. Consequences:
+- If the Postgres data dir is fresh/reset, or the custom agent's row isn't `status='live'`
+  (e.g. it was `stopped`/`failed`), it will **not** come back up on the next deploy — even
+  though its build context is committed in the `agent-directory` GitHub registry and its image
+  is on Docker Hub. Recovery is **DB-driven, not registry-driven**: nothing enumerates the
+  GitHub registry / Docker Hub to decide what should be running.
+- To bring such an agent back, re-approve it via the registration UI (rebuilds/re-queues), or
+  set its DB row back to `status='live'` before the deploy so `recover_live_agents` picks it up.
+- The `agent-directory` GitHub registry is a **build-context store**, not the source of truth
+  for what runs; deleting a stale entry there (see the delete flow) doesn't stop a running agent
+  and leaving one there doesn't start it.
+
 **`ModuleNotFoundError` or wrong Python version in agent logs**
 The cluster auto-mounts its system anaconda (Python 3.7) into containers. All
 entrypoints use absolute paths to the conda env Python to avoid this. If you see
