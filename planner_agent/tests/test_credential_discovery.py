@@ -93,22 +93,13 @@ def test_round_trip_no_credentials_is_empty():
 
 # ── LLM surface ──────────────────────────────────────────────────────────────
 
-def test_agent_full_card_includes_required_credentials():
+def test_agent_full_card_does_not_leak_required_credentials():
+    # Credentials are handled out-of-band (Settings + consent gate). Surfacing the
+    # requirement to the LLM made it solicit API keys in chat, so it's excluded.
     agent = DiscoveredAgent(
         agent_id="a1", name="Cred Agent", organization="org", description="d",
         endpoint="http://10.0.0.9:19110/", source_record_id="r1",
         risk_level=RiskLevel.low,
         required_credentials=[{"type": "openai_api_key", "label": "OpenAI key"}],
     )
-    card = _agent_full_card(agent)
-    assert card["required_credentials"] == [
-        {"type": "openai_api_key", "label": "OpenAI key", "required": True, "env_var": None}
-    ]
-
-
-def test_agent_full_card_empty_when_none_declared():
-    agent = DiscoveredAgent(
-        agent_id="a1", name="Plain", organization="org", description="d",
-        endpoint="http://10.0.0.9:19110/", source_record_id="r1",
-    )
-    assert _agent_full_card(agent)["required_credentials"] == []
+    assert "required_credentials" not in _agent_full_card(agent)
