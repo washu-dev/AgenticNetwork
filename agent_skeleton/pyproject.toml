@@ -7,7 +7,12 @@ name = "agent-skeleton"
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
-    "a2a-sdk>=0.3.2",
+    # Pin exactly + include the [http-server] extra: A2AStarletteApplication needs
+    # starlette + sse-starlette (+ fastapi), which live in a2a-sdk's optional
+    # `http-server` extra — the base install omits them, so a freshly-built custom
+    # image raises ImportError at serve time without it. Newer a2a-sdk releases also
+    # moved a2a.server.apps, so pin exactly to the version validated locally / used by ADS.
+    "a2a-sdk[http-server]==0.3.2",
     "openai>=1.40",
     "uvicorn>=0.30",
 ]
