@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import pytest
+from pydantic import ValidationError
+
 from registration_service.builder import generate_dockerfile
 from registration_service.models import CustomConfig
 from registration_service.supervisor import _vendored_skeleton_files
@@ -58,6 +61,37 @@ def test_dockerfile_requirements_installed_last():
     # Ordering (§7.2): COPY src → install project → requirements last (so they win).
     assert df.index("COPY src/ /app/") < df.index("pip install --no-cache-dir /app") \
         < df.index('pip install --no-cache-dir "numpy"')
+
+
+def test_dockerfile_apt_line_iff_system_packages():
+    # No system_packages → no apt line.
+    df_off = generate_dockerfile(CustomConfig(class_name="H"))
+    assert "apt-get install" not in df_off
+    # With system_packages → an apt-get install line listing the packages, run
+    # BEFORE the framework install so a C toolchain is available to later pip builds.
+    df_on = generate_dockerfile(
+        CustomConfig(class_name="H", system_packages=["tesseract-ocr", "build-essential"])
+    )
+    assert "apt-get update && apt-get install -y --no-install-recommends" in df_on
+    assert "tesseract-ocr build-essential" in df_on
+    assert "rm -rf /var/lib/apt/lists/*" in df_on
+    assert df_on.index("apt-get install") < df_on.index("pip install --no-cache-dir /opt/agent_skeleton")
+
+
+def test_system_packages_accepts_valid_names_and_version_pins():
+    cfg = CustomConfig(
+        class_name="H",
+        system_packages=["tesseract-ocr", "libpq-dev", "build-essential=12.9", "  ", "gcc:amd64"],
+    )
+    # Whitespace-only tokens dropped; valid names (incl. version/arch) kept.
+    assert cfg.system_packages == ["tesseract-ocr", "libpq-dev", "build-essential=12.9", "gcc:amd64"]
+
+
+@pytest.mark.parametrize("bad", ["foo && rm -rf /", "foo;bar", "foo bar", "$(id)", "foo\nbar"])
+def test_system_packages_rejects_injection(bad):
+    # Charset guard blocks shell/Dockerfile breakout before it reaches the RUN line.
+    with pytest.raises(ValidationError):
+        CustomConfig(class_name="H", system_packages=[bad])
 
 
 def test_vendored_skeleton_files_complete():

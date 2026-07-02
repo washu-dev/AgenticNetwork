@@ -1,6 +1,6 @@
 # Custom Agent Lane v2 — Spec & Implementation Plan
 
-**Status:** **P1 SHIPPED (D15 gate PASSED 2026-07-01) + P3 SHIPPED & validated (2026-07-02)** on branch `feature/custom-agent-handler`; P2 & P4 not started. Decisions locked (§2), integration-reviewed (§13). See "Implementation status" below.
+**Status:** **P1 SHIPPED (D15 gate PASSED 2026-07-01) + P3 SHIPPED & validated (2026-07-02) + P2 SHIPPED (2026-07-02)** on branch `feature/custom-agent-handler`; P4 not started. Decisions locked (§2), integration-reviewed (§13). See "Implementation status" below.
 **Scope:** `registration_service` intake/validate/build + `agent_skeleton` executor/runner
 + (credentials only) `planner_agent` discovery/call path + Settings UI
 **Goal:** widen the existing `custom` lane so one lane spans **a single `.py` + pip
@@ -82,8 +82,23 @@ land before the next image build): `a2a-sdk[http-server]==0.3.2` pin in
 `port_pool.assign_port` now excludes ports already owned by an `agents` row (the
 `port_pool`↔`agents.port` drift that 500'd registration).
 
-**Not done:** P2 (`system_packages`/apt — needed for refbot OCR on scanned PDFs),
-P4 (credentials — spans planner). Also unrelated & pre-existing: 6 planner
+**P2 is DONE (2026-07-02).** Shipped: `system_packages: list[str]` on `CustomConfig`
+(charset-validated at the model layer — an injection guard, *not* a package allowlist:
+tokens must match `^[A-Za-z0-9][A-Za-z0-9+.:=~-]*$`, so version pins `pkg=1.2` and arch
+qualifiers `pkg:amd64` pass but whitespace/shell metacharacters are rejected with 422);
+`builder.generate_dockerfile` emits an `apt-get update && apt-get install -y
+--no-install-recommends {pkgs} && rm -rf /var/lib/apt/lists/*` line **first** (before the
+framework install, so a C toolchain via `build-essential` is available to later pip builds
+— §7.2); `SubprocessBackend` **log-and-skips** system_packages locally (apt can't be
+installed per-agent in subprocess dev — the warning tells the operator to install the lib
+on the host); the inspect endpoint (`GET /agents/{id}/handler`) returns `system_packages`
+so both approver UIs (registration form input + planner approver panel) surface the apt
+list for review (D10 = arbitrary apt, flagged for the approver). Tests: apt line iff
+system_packages + ordering, model accepts valid names/pins, model rejects injection tokens
+(registration suite now 81 passing). **Not yet cluster-gated** — the apt install path
+hasn't been exercised by a real image build (no D15-style smoke test for P2 yet).
+
+**Not done:** P4 (credentials — spans planner). Also unrelated & pre-existing: 6 planner
 `test_main_agent_runtime.py` failures exist on clean `HEAD` (scripted-LLM discovery
 fixtures) — not caused by this work.
 
@@ -294,6 +309,12 @@ change** (separate repo).
 
 ## 8. Credentials (P4 — spans registration + planner + skeleton)
 
+> **Detailed subplan:** [`CUSTOM_AGENT_LANE_V2_P4_PLAN.md`](CUSTOM_AGENT_LANE_V2_P4_PLAN.md)
+> breaks P4 into sub-phases P4a–P4d and records a fresh read of the auth code that **corrects
+> two assumptions below** — injection reaches the wire (`MessageSendParams.metadata`) but is
+> **not per-agent scoped**, and the skeleton executor **cannot read it** (2-arg
+> `handle_structured`, no context param). Prefer the subplan where they differ.
+
 > Bigger than the lane work and touches three components. Could be split into its own
 > companion doc/PR series; kept here for the full picture. Ships **after** P1–P3.
 
@@ -416,7 +437,7 @@ Verified: **no planner change needed.** Agent-side changes:
 | Phase | Deliverable | Components | Unblocks | Risk |
 |---|---|---|---|---|
 | **P1** ✅ **DONE** | `.zip` intake + unpack safety + multi-file storage + `pip install .`/PYTHONPATH + `COPY src/` + validator refocus (warnings) | registration, skeleton runner | locally-built multi-module refbot | Med (unpack safety, cross-repo Actions build) — shipped; gate passed 2026-07-01 |
-| **P2** | `system_packages` → apt (flagged for approval) | registration | OCR / native deps | Low |
+| **P2** ✅ **DONE** | `system_packages` → apt (flagged for approval) | registration | OCR / native deps | Low — shipped 2026-07-02 (unit-tested; not yet cluster-gated) |
 | **P3** ✅ **DONE** | `streaming=True` + heartbeat + `max_runtime_seconds` | skeleton | slow agents survive timeout | Low — shipped + validated 2026-07-02 (~71s refbot review streamed through planner) |
 | **P4** | Credential catalog + card declaration + planner read/enforce/inject + Settings UI + `context` seam | registration + **planner** + skeleton | user-owned external API keys | Med–High (3 components, gated on auth §8) |
 

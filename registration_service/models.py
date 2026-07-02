@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import datetime
 from typing import Any, Literal
@@ -28,11 +29,20 @@ class APIProxyConfig(BaseModel):
 
 HARD_MAX_RUNTIME_SECONDS = 3600   # ceiling for a single agent request (D11)
 
+# apt package tokens permitted in system_packages. Debian names are lowercase
+# letters/digits plus +.-, but we also allow version pins (pkg=1.2) and arch
+# qualifiers (pkg:amd64). This is NOT a judgment about which packages are
+# "safe" (D10 permits arbitrary apt, flagged for the approver) — it purely
+# blocks shell/Dockerfile injection by rejecting whitespace and metacharacters
+# before the token reaches the generated `apt-get install` RUN line.
+_APT_TOKEN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9+.:=~-]*$")
+
 
 class CustomConfig(BaseModel):
     class_name: str
     python_version: str = "3.11"
     requirements: list[str] = Field(default_factory=list)
+    system_packages: list[str] = Field(default_factory=list)   # apt, cluster build only (D10)
     entry_file: str = "handler.py"          # adapter module at the upload root that defines class_name
     install_project: bool = True            # pip install . if pyproject.toml/setup.py present at root
     max_runtime_seconds: int = 1800         # per-request cap; clamped to HARD_MAX_RUNTIME_SECONDS
@@ -46,6 +56,21 @@ class CustomConfig(BaseModel):
         if v <= 0:
             return 1800
         return min(v, HARD_MAX_RUNTIME_SECONDS)
+
+    @field_validator("system_packages")
+    @classmethod
+    def _sanitize_apt(cls, v: list[str]) -> list[str]:
+        # Reject tokens that could break out of the `apt-get install` RUN line
+        # (injection guard, not a package allowlist — see _APT_TOKEN_RE).
+        cleaned: list[str] = []
+        for pkg in v:
+            pkg = pkg.strip()
+            if not pkg:
+                continue
+            if not _APT_TOKEN_RE.match(pkg):
+                raise ValueError(f"Invalid apt package name: {pkg!r}")
+            cleaned.append(pkg)
+        return cleaned
 
 
 def parse_config(handler_type: str, raw: dict) -> LLMConfig | APIProxyConfig | CustomConfig:

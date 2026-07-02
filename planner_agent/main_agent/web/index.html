@@ -1406,6 +1406,9 @@ async function toggleApprovalCode(id) {
     const data = await r.json();
     const warn = (data.warnings && data.warnings.length)
       ? `<div class="appr-warn">⚠ Advisory (not blocking): ${data.warnings.map(uvEsc).join('; ')}</div>` : '';
+    const apt = (data.system_packages && data.system_packages.length)
+      ? `<div class="appr-warn">📦 apt system packages (installed into the image): ${data.system_packages.map(uvEsc).join(', ')}</div>` : '';
+    const notes = warn + apt;
     if (data.is_archive) {
       // Multi-file project: show the file tree + a download of the whole tree
       // (this is the trust-boundary review, so the approver can inspect everything).
@@ -1413,11 +1416,11 @@ async function toggleApprovalCode(id) {
         const isEntry = f === data.entry_file;
         return `<div class="appr-file${isEntry ? ' appr-file-entry' : ''}">${uvEsc(f)}${isEntry ? '  ← entry' : ''}</div>`;
       }).join('');
-      pre.innerHTML = `${warn}<div class="appr-tree-head">📦 Project archive — ${(data.manifest || []).length} file(s):</div>`
+      pre.innerHTML = `${notes}<div class="appr-tree-head">📦 Project archive — ${(data.manifest || []).length} file(s):</div>`
         + `<div class="appr-tree">${files || '(empty)'}</div>`
         + `<button type="button" class="av-btn av-btn-sm av-btn-outline" style="margin-top:8px" onclick="downloadHandlerArchive('${uvEsc(id)}')">Download project (.zip)</button>`;
     } else {
-      pre.innerHTML = warn + `<div>${uvEsc(data.source || '(empty)')}</div>`;
+      pre.innerHTML = notes + `<div>${uvEsc(data.source || '(empty)')}</div>`;
     }
   } catch (e) { pre.textContent = 'Failed to load: ' + (e.message || e); }
 }

@@ -341,7 +341,8 @@ async def get_handler_source(agent_id: str, request: Request) -> dict:
     entry_source = Path(path).read_text(encoding="utf-8", errors="replace")
     raw_cfg = agent["config"]
     cfg_dict = raw_cfg if isinstance(raw_cfg, dict) else json.loads(raw_cfg)
-    warnings = validate_handler(entry_source, CustomConfig(**cfg_dict).class_name).warnings
+    config = CustomConfig(**cfg_dict)
+    warnings = validate_handler(entry_source, config.class_name).warnings
 
     if agent.get("is_archive"):
         handler_dir = _handler_dir(agent_id)
@@ -351,12 +352,14 @@ async def get_handler_source(agent_id: str, request: Request) -> dict:
             "manifest": list_tree(handler_dir),
             "download_url": f"/agents/{agent_id}/handler/download",
             "warnings": warnings,
+            "system_packages": config.system_packages,   # apt, flagged for review (D10)
         }
     return {
         "is_archive": False,
         "source": entry_source,
         "handler_file_path": path,
         "warnings": warnings,
+        "system_packages": config.system_packages,       # apt, flagged for review (D10)
     }
 
 

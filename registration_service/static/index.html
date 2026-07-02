@@ -230,6 +230,10 @@
           <label class="field-label" for="inp-requirements">Requirements <span class="hint">— comma-separated pip packages, optional</span></label>
           <input type="text" id="inp-requirements" placeholder="refbot>=0.1, numpy">
         </div>
+        <div class="form-group">
+          <label class="field-label" for="inp-system-packages">System packages <span class="hint">— comma-separated apt packages, optional; cluster build only, flagged for admin review</span></label>
+          <input type="text" id="inp-system-packages" placeholder="tesseract-ocr, build-essential">
+        </div>
         <!-- Upload mode: a single .py file, or a zipped multi-file project -->
         <div class="form-group">
           <label class="field-label">Code upload <span class="hint">— a single file, or a zipped project (multiple modules + deps)</span></label>
@@ -460,6 +464,8 @@ async function submitRegistration() {
     const python_version = document.getElementById('inp-python-version').value;
     const reqRaw         = document.getElementById('inp-requirements').value.trim();
     const requirements   = reqRaw ? reqRaw.split(',').map(s => s.trim()).filter(Boolean) : [];
+    const sysRaw         = document.getElementById('inp-system-packages').value.trim();
+    const system_packages = sysRaw ? sysRaw.split(',').map(s => s.trim()).filter(Boolean) : [];
     const extraRaw       = document.getElementById('inp-extra').value.trim();
     const mode           = document.querySelector('input[name=custom_mode]:checked').value;
     if (!class_name)        return showAlert('error', 'Class name is required for custom agents.');
@@ -468,7 +474,7 @@ async function submitRegistration() {
       try { extra = JSON.parse(extraRaw); }
       catch { return showAlert('error', 'Extra config must be valid JSON.'); }
     }
-    config = { class_name, python_version, requirements, extra };
+    config = { class_name, python_version, requirements, system_packages, extra };
     if (mode === 'zip') {
       if (!customZipFile) return showAlert('error', 'Choose a .zip project file to upload.');
       const entry_file = document.getElementById('inp-entry-file').value.trim() || 'handler.py';
@@ -548,7 +554,7 @@ function fmtDetail(detail) {
 function resetForm() {
   ['inp-name','inp-description','inp-system-prompt',
    'inp-upstream-url','inp-auth-header','skill-search',
-   'inp-requirements','inp-extra'].forEach(id => {
+   'inp-requirements','inp-system-packages','inp-extra'].forEach(id => {
     document.getElementById(id).value = '';
   });
   document.getElementById('inp-model').value = 'openai/gpt-oss-120b';

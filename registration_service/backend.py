@@ -166,6 +166,15 @@ class SubprocessBackend(ContainerBackend):
             assert isinstance(config, CustomConfig)
             handler_dir = _handler_files_dir() / agent_id
             env["HANDLER_FILE_PATH"] = str(handler_dir / config.entry_file)
+            if config.system_packages:
+                # apt is a cluster-image concern (D10); we can't apt-install per-agent
+                # in local subprocess dev, so skip and warn. If the handler needs a
+                # system lib locally, install it on the host first.
+                logger.warning(
+                    "subprocess_skipping_system_packages agent_id=%s packages=%s "
+                    "(apt only applies to the cluster image build)",
+                    agent_id, config.system_packages,
+                )
             # Both roots must be importable: registration_service + agent_skeleton
             # (framework) via _REPO_ROOT, and the uploaded project root (handler_dir)
             # so a multi-file handler can `import` its siblings. Single-file handlers

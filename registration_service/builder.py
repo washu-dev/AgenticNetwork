@@ -21,15 +21,27 @@ def generate_dockerfile(config: CustomConfig) -> str:
       src/             — the user's uploaded project tree: the entry file at the root
                          plus any importable siblings (refbot/, pyproject.toml, …).
 
-    Ordering (§7.2): framework, then the project tree, then `pip install /app` (only
-    if the project ships build metadata — D8), then agent requirements LAST so they
-    win over project/framework pins. cwd is /app under `python -m`, so `import <pkg>`
-    resolves and HANDLER_FILE_PATH points at the entry file; runtime config arrives
-    via AGENT_CONFIG_JSON (set by ClusterBackend).
+    Ordering (§7.2): apt system_packages first (so a C toolchain via build-essential
+    is available to any later pip build — D10), then framework, then the project tree,
+    then `pip install /app` (only if the project ships build metadata — D8), then agent
+    requirements LAST so they win over project/framework pins. cwd is /app under
+    `python -m`, so `import <pkg>` resolves and HANDLER_FILE_PATH points at the entry
+    file; runtime config arrives via AGENT_CONFIG_JSON (set by ClusterBackend).
 
     Note: pip packages needing a C compiler still require the user to add build tools
-    via system_packages (P2) — not auto-added here.
+    (e.g. build-essential) to system_packages — not auto-added here. Package tokens are
+    charset-validated at the model layer, so they interpolate into the RUN line safely.
     """
+    apt_line = ""
+    if config.system_packages:
+        pkgs = " ".join(config.system_packages)
+        apt_line = (
+            "# System packages (apt) — arbitrary, flagged for approver review (D10)\n"
+            "RUN apt-get update && apt-get install -y --no-install-recommends "
+            f"{pkgs} \\\n"
+            "    && rm -rf /var/lib/apt/lists/*\n\n"
+        )
+
     req_line = ""
     if config.requirements:
         pkgs = " ".join(f'"{r}"' for r in config.requirements)
@@ -52,6 +64,7 @@ def generate_dockerfile(config: CustomConfig) -> str:
         "\n"
         "WORKDIR /app\n"
         "\n"
+        f"{apt_line}"
         "# Agent framework — vendored into the build context (no external repo access)\n"
         "COPY agent_skeleton/ /opt/agent_skeleton/\n"
         "RUN pip install --no-cache-dir /opt/agent_skeleton\n"
