@@ -26,10 +26,14 @@ from planner_agent.main_agent.state.store import InMemoryStateStore
 
 from planner_agent.main_agent.auth import get_current_user, get_shib_email
 from planner_agent.main_agent.auth_router import router as auth_router
-from planner_agent.main_agent.credentials_router import router as credentials_router
+from planner_agent.main_agent.credentials_router import (
+    grants_router,
+    router as credentials_router,
+)
 from planner_agent.main_agent.config import MainAgentConfig, load_config
 from planner_agent.main_agent.db import close_db, fetch_user_credentials, init_db
 from planner_agent.main_agent.llm_client import LLMClient, OpenAIToolLoopClient
+from planner_agent.main_agent.credential_gate import DbCredentialGate
 from planner_agent.main_agent.runtime import MainAgentRuntime
 from planner_agent.main_agent import conversation_store
 
@@ -84,12 +88,17 @@ def create_app(
             )
         llm_client = OpenAIToolLoopClient(cfg)
 
+    # P4c: per-agent credential grants are DB-backed; without a DB there's nothing
+    # to enforce against, so the gate is None and enforcement is a pass-through.
+    credential_gate = DbCredentialGate() if os.getenv("REGISTRATION_DB_DSN") else None
+
     runtime = MainAgentRuntime(
         config=cfg,
         directory_client=directory,
         a2a_client=a2a,
         state_store=store,
         llm_client=llm_client,
+        credential_gate=credential_gate,
     )
 
     # In fake-ADS mode, optionally pre-publish Agent Cards into the in-process directory.
@@ -146,6 +155,7 @@ def create_app(
     if os.getenv("REGISTRATION_DB_DSN"):
         app.include_router(auth_router)
         app.include_router(credentials_router)
+        app.include_router(grants_router)
 
     @app.get("/me")
     async def me(user: Annotated[dict, Depends(get_current_user)]) -> dict[str, Any]:
@@ -327,14 +337,23 @@ def create_app(
         )
 
     @app.post("/confirmations")
-    async def post_confirmation(req: ConfirmationRequest) -> dict[str, Any]:
+    async def post_confirmation(req: ConfirmationRequest, request: Request) -> dict[str, Any]:
+        # P4c: the confirm button must carry the same per-user credentials +
+        # auth_user_id as /messages, or a credential-consent resume dispatches
+        # with no key and records no grant.
+        await _inject_credentials(request, req.metadata)
+        pending = store.get_pending_confirmation(req.context_id) or {}
         if not req.confirmed:
-            pending = store.get_pending_confirmation(req.context_id) or {}
             cancel = runtime._cancel_confirmation(req.context_id, pending)
             return cancel.to_response()
-        result = await runtime._resume_confirmation(
-            req.context_id, req.user_id, req.channel, req.metadata
-        )
+        if pending.get("kind") == "credential_consent":
+            result = await runtime._resume_credential_consent(
+                req.context_id, req.user_id, req.channel, req.metadata, pending
+            )
+        else:
+            result = await runtime._resume_confirmation(
+                req.context_id, req.user_id, req.channel, req.metadata
+            )
         return result.to_response()
 
     @app.post("/feedback")
@@ -576,6 +595,9 @@ async def _inject_credentials(request: Request, metadata: dict[str, Any]) -> Non
         return
     try:
         user = await get_current_user(request)
+        # P4c: the runtime keys credential grants on the DB user UUID (grants live
+        # under users.id, not the Shib email). Pass it through metadata.
+        metadata["auth_user_id"] = str(user["id"])
         credentials = await fetch_user_credentials(user["id"])
         if credentials:
             if "google_oauth" in credentials and credentials["google_oauth"].get("refresh_token"):

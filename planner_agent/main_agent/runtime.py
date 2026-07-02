@@ -35,6 +35,7 @@ from planner_agent.main_agent.directory.backends import DirectoryUnavailable
 from planner_agent.main_agent.state.store import InMemoryStateStore
 
 from planner_agent.main_agent.config import MainAgentConfig
+from planner_agent.main_agent.credential_gate import CredentialGate
 from planner_agent.main_agent.llm_client import LLMClient, ToolCall, TurnState
 
 logger = logging.getLogger(__name__)
@@ -103,12 +104,16 @@ class MainAgentRuntime:
         a2a_client: A2AClient,
         state_store: InMemoryStateStore,
         llm_client: LLMClient,
+        credential_gate: "CredentialGate | None" = None,
     ):
         self.config = config
         self.directory = directory_client
         self.a2a_client = a2a_client
         self.store = state_store
         self.llm_client = llm_client
+        # P4c: per-agent credential grants. None → enforcement is a pass-through
+        # (no DB configured); see _enforce_credentials.
+        self.credential_gate = credential_gate
 
     # -------- public API --------
 
@@ -124,6 +129,10 @@ class MainAgentRuntime:
     ) -> TurnResult:
         if context_id and self._is_affirmative(text):
             pending = self.store.get_pending_confirmation(context_id)
+            if pending and pending.get("kind") == "credential_consent":
+                return await self._resume_credential_consent(
+                    context_id, user_id, channel, metadata or {}, pending, user_text=text,
+                )
             if pending:
                 return await self._resume_confirmation(
                     context_id, user_id, channel, metadata or {}, user_text=text,
@@ -136,6 +145,7 @@ class MainAgentRuntime:
         context = self._open_context(user_id, channel, text, context_id)
         uploaded_files = _uploaded_files_from_metadata(metadata or {})
         credentials = (metadata or {}).get("credentials") or {}
+        auth_user_id = (metadata or {}).get("auth_user_id")
         state = TurnState(
             context_id=context.context_id,
             user_text=text,
@@ -148,6 +158,7 @@ class MainAgentRuntime:
             state=state,
             context=context,
             credentials=credentials,
+            auth_user_id=auth_user_id,
             progress_callback=progress_callback,
         )
         # Append assistant final text to conversation history.
@@ -167,6 +178,7 @@ class MainAgentRuntime:
         state: TurnState,
         context: PIContext,
         credentials: dict[str, Any] | None = None,
+        auth_user_id: str | None = None,
         progress_callback: ProgressCallback | None = None,
     ) -> TurnResult:
         tool_trace: list[dict[str, Any]] = []
@@ -229,6 +241,7 @@ class MainAgentRuntime:
                 successful_calls=successful_calls,
                 discovered=discovered,
                 credentials=credentials or {},
+                auth_user_id=auth_user_id,
                 progress_callback=progress_callback,
             )
             if terminal is not None:
@@ -259,6 +272,7 @@ class MainAgentRuntime:
         successful_calls: set[str],
         discovered: dict[str, DiscoveredAgent],
         credentials: dict[str, Any] | None = None,
+        auth_user_id: str | None = None,
         progress_callback: ProgressCallback | None = None,
     ) -> TurnResult | None:
         name = tool_call.tool_name
@@ -333,6 +347,7 @@ class MainAgentRuntime:
                 structured_outputs=structured_outputs,
                 successful_calls=successful_calls,
                 credentials=credentials or {},
+                auth_user_id=auth_user_id,
                 progress_callback=progress_callback,
             )
             await _record_trace(
@@ -345,16 +360,19 @@ class MainAgentRuntime:
             )
             state.observations.append(obs)
             if pending is not None:
-                # confirmation_required: build the terminal TurnResult HERE
-                # so it carries the full accumulated tool_trace, not just [].
+                # Terminal payload from call_agent: either a confirmation/consent
+                # prompt (carries pending_confirmation) or a hard block (e.g. a
+                # required credential the user hasn't added — no pending state).
+                # Build the TurnResult HERE so it carries the full tool_trace.
+                pending_confirmation = pending.get("pending_confirmation")
                 return TurnResult(
                     context_id=context.context_id,
                     state=A2ATaskState.input_required,
                     text=pending["text"],
                     tool_trace=list(tool_trace),
                     selected_agents=list(selected_agents),
-                    confirmation_required=True,
-                    pending_confirmation=pending["pending_confirmation"],
+                    confirmation_required=pending_confirmation is not None,
+                    pending_confirmation=pending_confirmation,
                     structured_outputs=dict(structured_outputs),
                     llm_model=self.config.llm_model,
                 )
@@ -428,6 +446,7 @@ class MainAgentRuntime:
         structured_outputs: dict[str, Any],
         successful_calls: set[str],
         credentials: dict[str, Any] | None = None,
+        auth_user_id: str | None = None,
         progress_callback: ProgressCallback | None = None,
     ) -> tuple[dict[str, Any], dict[str, Any] | None]:
         agent_id = str(args.get("agent_id") or "").strip()
@@ -557,6 +576,33 @@ class MainAgentRuntime:
                 agent.agent_id,
             )
 
+        # P4c: credential gate — runs before policy/dispatch. Blocks or asks for
+        # consent when the agent declares credentials the user hasn't provided/granted;
+        # otherwise returns the least-privilege subset to inject.
+        scoped_credentials, cred_terminal = await self._enforce_credentials(
+            context=context,
+            agent=agent,
+            credentials=credentials,
+            auth_user_id=auth_user_id,
+            canonical_hint=canonical_hint,
+            requested_skill=requested_skill,
+            task_input=task_input,
+        )
+        if cred_terminal is not None:
+            obs, payload = cred_terminal
+            selected_agents.append(
+                {
+                    "skill": canonical_hint,
+                    "requested_skill": requested_skill,
+                    "chosen_skill": None,
+                    "agent_id": agent.agent_id,
+                    "task_id": None,
+                    "request_fingerprint": fingerprint,
+                    "state": obs["status"],
+                }
+            )
+            return obs, payload
+
         decision = self._evaluate_policy(canonical_hint, capability)
         if decision.status == PolicyDecisionStatus.requires_confirmation:
             pending = {
@@ -612,7 +658,7 @@ class MainAgentRuntime:
             user_text=state.user_text,
             confirmed=False,
             uploaded_files=state.uploaded_files,
-            credentials=credentials or {},
+            credentials=scoped_credentials,
         )
         remote_progress_callback = None
         if progress_callback is not None:
@@ -733,6 +779,10 @@ class MainAgentRuntime:
         skill = str(pending.get("skill") or "")
         task_input = dict(pending.get("task_input") or {})
 
+        # P4c: apply the same least-privilege scoping on the post-confirmation path.
+        scoped = await self._scope_credentials(
+            agent, metadata.get("credentials") or {}, metadata.get("auth_user_id")
+        )
         request = self._build_a2a_request(
             context=context,
             agent=agent,
@@ -741,7 +791,7 @@ class MainAgentRuntime:
             user_text=context.current_goal,
             confirmed=True,
             uploaded_files=[],
-            credentials=metadata.get("credentials") or {},
+            credentials=scoped,
         )
         result = await self._send_task(agent, request)
         confirmed_decision = PolicyDecision(
@@ -803,6 +853,193 @@ class MainAgentRuntime:
             context_id=context_id,
             state=A2ATaskState.canceled,
             text=text,
+            llm_model=self.config.llm_model,
+        )
+
+    # -------- credentials (P4c) --------
+
+    async def _scope_credentials(
+        self,
+        agent: DiscoveredAgent,
+        credentials: dict[str, Any] | None,
+        auth_user_id: str | None,
+    ) -> dict[str, Any]:
+        """Least-privilege filter: only creds this agent DECLARED and the user GRANTED.
+
+        Carve-out: an agent that declares no credentials gets today's full unscoped
+        dict (email/geo rely on the whole google_oauth bundle until they migrate).
+        Without a gate/identity we cannot enforce, so we pass through unchanged.
+        """
+        creds = credentials or {}
+        reqs = agent.required_credentials
+        if not reqs or self.credential_gate is None or not auth_user_id:
+            return creds
+        granted = await self.credential_gate.list_granted(auth_user_id, agent.agent_id)
+        return {r.type: creds[r.type] for r in reqs if r.type in creds and r.type in granted}
+
+    async def _enforce_credentials(
+        self,
+        *,
+        context: PIContext,
+        agent: DiscoveredAgent,
+        credentials: dict[str, Any] | None,
+        auth_user_id: str | None,
+        canonical_hint: str | None,
+        requested_skill: str | None,
+        task_input: dict[str, Any],
+    ) -> tuple[dict[str, Any], tuple[dict[str, Any], dict[str, Any]] | None]:
+        """Gate a call on the agent's declared credentials.
+
+        Returns ``(scoped_credentials, None)`` to proceed, or
+        ``(None-ish, (obs, terminal_payload))`` to short-circuit with a block or a
+        consent prompt. Optional creds never block; they are injected only once
+        granted. See the carve-out in :meth:`_scope_credentials`.
+        """
+        creds = credentials or {}
+        reqs = agent.required_credentials
+        if not reqs or self.credential_gate is None or not auth_user_id:
+            return creds, None
+
+        granted = await self.credential_gate.list_granted(auth_user_id, agent.agent_id)
+        scoped: dict[str, Any] = {}
+        missing: list[Any] = []    # required, not stored → block
+        ungranted: list[Any] = []  # required, stored, not granted → consent
+        for r in reqs:
+            if r.type in creds and r.type in granted:
+                scoped[r.type] = creds[r.type]
+            elif r.required and r.type not in creds:
+                missing.append(r)
+            elif r.required:
+                ungranted.append(r)
+            # optional + (missing or ungranted) → skip silently
+
+        if missing:
+            labels = ", ".join(f"{r.label} ({r.type})" for r in missing)
+            obs = {
+                "tool": "call_agent",
+                "status": "credentials_required",
+                "content": {
+                    "agent_id": agent.agent_id,
+                    "reason": "missing_credentials",
+                    "missing_credentials": [r.model_dump() for r in missing],
+                },
+            }
+            payload = {
+                "text": (
+                    f"“{agent.name}” needs {labels}, which you haven't added yet. "
+                    "Add it under Settings → Credentials, then ask me again."
+                )
+            }
+            return {}, (obs, payload)
+
+        if ungranted:
+            pending = {
+                "kind": "credential_consent",
+                "agent_id": agent.agent_id,
+                "grant_types": [r.type for r in ungranted],
+                "skill": canonical_hint,
+                "requested_skill": requested_skill,
+                "task_input": task_input,
+                "confirmation_status": ConfirmationStatus.pending.value,
+                "selected_agent": agent.model_dump(mode="json"),
+            }
+            self.store.save_pending_confirmation(context.context_id, pending)
+            labels = ", ".join(f"{r.label} ({r.type})" for r in ungranted)
+            obs = {
+                "tool": "call_agent",
+                "status": "credential_consent_required",
+                "content": {
+                    "agent_id": agent.agent_id,
+                    "reason": "credential_consent",
+                    "grant_credentials": [r.model_dump() for r in ungranted],
+                },
+            }
+            payload = {
+                "text": (
+                    f"“{agent.name}” wants to use your {labels}. "
+                    "Reply 'yes' to allow it (you can revoke anytime in Settings), or 'no' to cancel."
+                ),
+                "pending_confirmation": pending,
+            }
+            return {}, (obs, payload)
+
+        return scoped, None
+
+    async def _resume_credential_consent(
+        self,
+        context_id: str,
+        user_id: str,
+        channel: Channel,
+        metadata: dict[str, Any],
+        pending: dict[str, Any],
+        user_text: str = "yes",
+    ) -> TurnResult:
+        """User approved a credential grant → persist grants, then dispatch the call.
+
+        Symmetric to :meth:`_resume_confirmation`. Note: approving the credential
+        also proceeds with the call (we do not additionally re-prompt the write
+        policy — credential consent implies proceed; see P4c plan §4.2).
+        """
+        try:
+            context = self.store.get_context(context_id)
+        except KeyError:
+            return TurnResult(
+                context_id=context_id, state=A2ATaskState.failed,
+                text=f"Unknown context_id {context_id}.", errors=["unknown_context"],
+                llm_model=self.config.llm_model,
+            )
+        context.conversation_history.append(f"user: {user_text}")
+        context.updated_at = utc_now()
+
+        agent = DiscoveredAgent.model_validate(pending["selected_agent"])
+        auth_user_id = metadata.get("auth_user_id")
+        grant_types = list(pending.get("grant_types") or [])
+        if self.credential_gate is not None and auth_user_id:
+            for cred_type in grant_types:
+                await self.credential_gate.add_grant(auth_user_id, agent.agent_id, cred_type)
+        self.store.clear_pending_confirmation(context_id)
+
+        credentials = metadata.get("credentials") or {}
+        scoped = await self._scope_credentials(agent, credentials, auth_user_id)
+        skill = pending.get("skill") or pending.get("requested_skill")
+        task_input = dict(pending.get("task_input") or {})
+        request = self._build_a2a_request(
+            context=context,
+            agent=agent,
+            skill=skill,
+            task_input=task_input,
+            user_text=context.current_goal,
+            confirmed=False,
+            uploaded_files=[],
+            credentials=scoped,
+        )
+        result = await self._send_task(agent, request)
+        confirmed_decision = PolicyDecision(
+            status=PolicyDecisionStatus.allowed,
+            reason=f"User granted credentials to {agent.agent_id}.",
+            confirmation_status=ConfirmationStatus.confirmed,
+        )
+        self._save_invocation(context, agent, skill or "agent/autonomous", result, confirmed_decision)
+
+        text = _last_text(result) or f"{skill or 'The request'} completed."
+        context.conversation_history.append(f"assistant: {text}")
+        context.updated_at = utc_now()
+        self.store.save_context(context)
+        return TurnResult(
+            context_id=context_id,
+            state=result.state,
+            text=text,
+            tool_trace=[{
+                "tool": "call_agent",
+                "status": result.state.value,
+                "content": {
+                    "skill": skill, "agent_id": agent.agent_id, "task_id": result.task_id,
+                    "granted_credentials": grant_types,
+                    "structured_output": result.structured_output,
+                },
+            }],
+            selected_agents=[{"skill": skill, "agent_id": agent.agent_id, "task_id": result.task_id}],
+            structured_outputs=({skill: result.structured_output} if (skill and result.structured_output) else {}),
             llm_model=self.config.llm_model,
         )
 
@@ -1101,10 +1338,11 @@ def _agent_full_card(agent: DiscoveredAgent) -> dict[str, Any]:
             }
             for cap in agent.skills
         ],
-        # P4b: read-only surface so the LLM can explain why a key is needed during
-        # first-use consent (P4c). No enforcement here.
-        "required_credentials": [c.model_dump() for c in agent.required_credentials],
     }
+    # NOTE: an agent's required_credentials are deliberately NOT surfaced to the
+    # LLM. Credential handling is out-of-band (Settings + the consent gate in
+    # _enforce_credentials); exposing the requirement here made the model solicit
+    # API keys in chat. The gate blocks/prompts on call, so the LLM just calls.
 
 
 def _capability_for_skill(agent: DiscoveredAgent, skill: str) -> AgentCapability | None:

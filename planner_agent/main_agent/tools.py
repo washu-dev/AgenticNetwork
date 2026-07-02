@@ -144,6 +144,11 @@ request, but structured fields make the action safer. Concretely, for an email s
 with status `completed` or `skipped`, the action already ran. Read the structured_output and call \
 final_answer — do NOT call call_agent again with the same arguments. Calling a side-effecting request \
 (email/send, email/docs/create_and_email, etc.) twice will send the email twice.
+  - **Never ask the user for API keys, passwords, tokens, or other secrets, and never accept them in \
+chat.** Agents that need user credentials are handled automatically by the platform: users add \
+credentials in Settings and the runtime injects them (asking the user for consent) when you call the \
+agent. To use such an agent, just call call_agent normally — if a credential is missing or not yet \
+granted, the runtime tells the user what to do. Do not mention needing a key or ask them to paste one.
   - Be concise; the user only sees your final_answer / ask_user text.
   - When asked broadly \"draft me a plan if there's a tornado\" you may either delegate to a disaster/\
 intelligence agent (preferred) or, if no such agent exists in ADS, answer from general knowledge and \
