@@ -38,9 +38,26 @@ fi
 grep -q "^listen_addresses" "$PGDATA/postgresql.conf" || echo "listen_addresses = 'localhost'" >> "$PGDATA/postgresql.conf"
 grep -q "127.0.0.1/32" "$PGDATA/pg_hba.conf" || echo "host  all  all  127.0.0.1/32  trust" >> "$PGDATA/pg_hba.conf"
 
-rm -f "$PGDATA/postmaster.pid"
-"$PGBIN/pg_ctl" start -D "$PGDATA" -l "$PGDATA/postgres.log" -w -t 30 \
-    -o "-c unix_socket_directories=$PGSOCKET -c listen_addresses='localhost'"
+# Clear ONLY a stale postmaster.pid (leftover from a previous unclean shutdown).
+# If the recorded PID is still alive, another Postgres already owns this data dir
+# (e.g. an accidental double-submit) — refuse rather than start a second postmaster,
+# which would run crash-recovery concurrently and CORRUPT pg_control/WAL.
+if [ -f "$PGDATA/postmaster.pid" ]; then
+    OLDPID="$(head -n1 "$PGDATA/postmaster.pid" 2>/dev/null || true)"
+    if [ -n "${OLDPID:-}" ] && kill -0 "$OLDPID" 2>/dev/null; then
+        echo "[postgres] ERROR: postmaster.pid holds live PID $OLDPID — another Postgres is"
+        echo "[postgres]        already using $PGDATA (double-submit?). Refusing to start a second."
+        exit 1
+    fi
+    echo "[postgres] Removing stale postmaster.pid (recorded PID ${OLDPID:-?} not running)."
+    rm -f "$PGDATA/postmaster.pid"
+fi
+if ! "$PGBIN/pg_ctl" start -D "$PGDATA" -l "$PGDATA/postgres.log" -w -t 30 \
+    -o "-c unix_socket_directories=$PGSOCKET -c listen_addresses='localhost'"; then
+    echo "[postgres] ERROR: pg_ctl could not start the server. PG_VERSION=$(cat "$PGDATA/PG_VERSION" 2>/dev/null || echo '?'). Server log:"
+    cat "$PGDATA/postgres.log" 2>/dev/null || echo "[postgres] (no $PGDATA/postgres.log written)"
+    exit 1
+fi
 
 echo "[postgres] Waiting for PostgreSQL to accept connections..."
 for i in $(seq 1 30); do

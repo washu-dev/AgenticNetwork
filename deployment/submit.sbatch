@@ -15,6 +15,11 @@
 # ─────────────────────────────────────────────────────────────────────────────
 
 #SBATCH --job-name=agenticnetwork
+# singleton: only one agenticnetwork job per user runs at a time — a second
+# submission QUEUES until the first finishes instead of starting concurrently.
+# This prevents an accidental double-submit from running two Postgres containers
+# on the shared /engrfs postgres_data volume and corrupting the cluster.
+#SBATCH --dependency=singleton
 #SBATCH -p condo-di2
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
