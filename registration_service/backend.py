@@ -44,6 +44,11 @@ def _handler_files_dir() -> Path:
     return Path(os.getenv("HANDLER_FILES_DIR", "./uploaded_handlers"))
 
 
+def _has_build_metadata(handler_dir: Path) -> bool:
+    """True if the uploaded project root ships pip-installable build metadata (D8)."""
+    return (handler_dir / "pyproject.toml").exists() or (handler_dir / "setup.py").exists()
+
+
 def _envelope_json(agent_id: str, handler_type: str, port: int, config_payload: dict) -> str:
     """The nested AGENT_CONFIG_JSON envelope (config_payload already has name/description)."""
     return json.dumps(
@@ -102,7 +107,12 @@ def cluster_srun_argv(
         f"--container-mounts={mounts}",
         "--container-writable",
         "--export=ALL",
-        "python", "-m", "agent_skeleton.container_runner",
+        # Use the image's own interpreter by ABSOLUTE path and drop any leaked
+        # PYTHONPATH. --export=ALL propagates the submit shell's conda env, so a
+        # bare `python` resolves to the host anaconda (e.g. 3.7) instead of the
+        # image's /usr/local/bin/python (3.11) — which then can't run 3.9+ syntax.
+        "/bin/sh", "-c",
+        "unset PYTHONPATH; exec /usr/local/bin/python -m agent_skeleton.container_runner",
     ]
     return argv, {"AGENT_CONFIG_JSON": envelope}
 
@@ -155,14 +165,16 @@ class SubprocessBackend(ContainerBackend):
         if handler_type == "custom":
             assert isinstance(config, CustomConfig)
             handler_dir = _handler_files_dir() / agent_id
-            env["HANDLER_FILE_PATH"] = str(handler_dir / "handler.py")
-            # Ensure registration_service + agent_skeleton are importable from
-            # the (possibly isolated) child interpreter.
+            env["HANDLER_FILE_PATH"] = str(handler_dir / config.entry_file)
+            # Both roots must be importable: registration_service + agent_skeleton
+            # (framework) via _REPO_ROOT, and the uploaded project root (handler_dir)
+            # so a multi-file handler can `import` its siblings. Single-file handlers
+            # never needed the latter; it's harmless for them.
             env["PYTHONPATH"] = os.pathsep.join(
-                p for p in [str(_REPO_ROOT), env.get("PYTHONPATH", "")] if p
+                p for p in [str(handler_dir), str(_REPO_ROOT), env.get("PYTHONPATH", "")] if p
             )
-            if config.requirements:
-                python = await self._ensure_venv(handler_dir, config.requirements)
+            if config.requirements or (config.install_project and _has_build_metadata(handler_dir)):
+                python = await self._ensure_venv(handler_dir, config)
 
         runner_path = os.path.join(os.path.dirname(__file__), "runner.py")
         proc = await asyncio.create_subprocess_exec(
@@ -180,8 +192,15 @@ class SubprocessBackend(ContainerBackend):
 
         await self._wait_for_health(agent_id, port)
 
-    async def _ensure_venv(self, handler_dir: Path, requirements: list[str]) -> str:
-        """Create a per-agent venv (if absent) and install requirements. Returns its python."""
+    async def _ensure_venv(self, handler_dir: Path, config: CustomConfig) -> str:
+        """Create a per-agent venv (if absent) and install project + requirements.
+
+        Order mirrors the cluster Dockerfile (§7.2/§7.3): framework, then the
+        uploaded project (`pip install .` if it ships build metadata and
+        install_project is set — D8), then requirements LAST so they win.
+        Returns the venv's python. system_packages (apt, P2) can't be installed
+        per-agent locally — it's log-and-skipped by the caller path in P2.
+        """
         venv = handler_dir / ".venv"
         py = venv / "bin" / "python"
         if not py.exists():
@@ -191,8 +210,10 @@ class SubprocessBackend(ContainerBackend):
             # Install the framework (editable) so `import agent_skeleton` works even
             # if the system site-packages don't already carry it.
             await _run([str(py), "-m", "pip", "install", "--quiet", "-e", str(_AGENT_SKELETON_DIR)])
-        if requirements:
-            await _run([str(py), "-m", "pip", "install", "--quiet", *requirements])
+        if config.install_project and _has_build_metadata(handler_dir):
+            await _run([str(py), "-m", "pip", "install", "--quiet", str(handler_dir)])
+        if config.requirements:
+            await _run([str(py), "-m", "pip", "install", "--quiet", *config.requirements])
         return str(py)
 
     async def stop(self, agent_id: str) -> None:

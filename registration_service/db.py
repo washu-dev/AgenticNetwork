@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS agents (
                           CHECK (status IN ('registered', 'live', 'failed', 'stopped', 'building', 'image_ready')),
     handler_file_path TEXT,
     approved          BOOLEAN NOT NULL DEFAULT TRUE,
+    is_archive        BOOLEAN NOT NULL DEFAULT FALSE,
     endpoint_url      TEXT,
     ads_cid           TEXT,
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -34,6 +35,7 @@ CREATE TABLE IF NOT EXISTS agents (
 -- Idempotent migrations for databases created before custom-handler support.
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS handler_file_path TEXT;
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS approved BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS is_archive BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE agents DROP CONSTRAINT IF EXISTS agents_handler_type_check;
 ALTER TABLE agents ADD CONSTRAINT agents_handler_type_check
     CHECK (handler_type IN ('llm', 'api_proxy', 'custom'));
@@ -138,6 +140,7 @@ _UPDATABLE_COLUMNS = {
     "status",
     "approved",
     "handler_file_path",
+    "is_archive",
     "endpoint_url",
     "ads_cid",
     "port",

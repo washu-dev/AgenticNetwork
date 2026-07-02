@@ -13,20 +13,51 @@ def test_dockerfile_vendors_skeleton_no_external_repo():
     )
     assert "FROM python:3.12-slim-bookworm" in df
     # Vendored install, not a git+ / PyPI fetch of the private repo.
-    assert "COPY agent_skeleton/ agent_skeleton/" in df
-    assert "pip install --no-cache-dir ./agent_skeleton" in df
+    assert "COPY agent_skeleton/ /opt/agent_skeleton/" in df
+    # User project tree lands at the workdir root.
+    assert "COPY src/ /app/" in df
+    assert "pip install --no-cache-dir /opt/agent_skeleton" in df
     assert "git+" not in df
     assert "AgenticNetwork" not in df
     # Agent requirements + entrypoint present.
     assert '"refbot>=0.1"' in df
-    assert 'ENTRYPOINT ["python", "-m", "agent_skeleton.container_runner"]' in df
+    assert 'ENTRYPOINT ["/usr/local/bin/python", "-m", "agent_skeleton.container_runner"]' in df
 
 
 def test_dockerfile_no_requirements_line_when_empty():
     df = generate_dockerfile(CustomConfig(class_name="H", requirements=[]))
     # No agent-specific pip line, but the framework install is still there.
-    assert "pip install --no-cache-dir ./agent_skeleton" in df
+    assert "pip install --no-cache-dir /opt/agent_skeleton" in df
     assert df.count("RUN pip install") == 1
+
+
+def test_dockerfile_src_layout_and_entry_file():
+    df = generate_dockerfile(CustomConfig(class_name="H", entry_file="main.py"))
+    # Framework installed out of the workdir; user tree at the workdir root.
+    assert "COPY agent_skeleton/ /opt/agent_skeleton/" in df
+    assert "COPY src/ /app/" in df
+    # Entry file wired via env for the container_runner.
+    assert "HANDLER_FILE_PATH=/app/main.py" in df
+    assert 'ENTRYPOINT ["/usr/local/bin/python", "-m", "agent_skeleton.container_runner"]' in df
+
+
+def test_dockerfile_install_project_gated():
+    # install_project=True (default) → the guarded pip-install-project line is present.
+    df_on = generate_dockerfile(CustomConfig(class_name="H"))
+    assert "pip install --no-cache-dir /app" in df_on
+    assert "[ -f /app/pyproject.toml ]" in df_on
+    # install_project=False → no such line.
+    df_off = generate_dockerfile(CustomConfig(class_name="H", install_project=False))
+    assert "pip install --no-cache-dir /app" not in df_off
+
+
+def test_dockerfile_requirements_installed_last():
+    df = generate_dockerfile(
+        CustomConfig(class_name="H", requirements=["numpy"], install_project=True)
+    )
+    # Ordering (§7.2): COPY src → install project → requirements last (so they win).
+    assert df.index("COPY src/ /app/") < df.index("pip install --no-cache-dir /app") \
+        < df.index('pip install --no-cache-dir "numpy"')
 
 
 def test_vendored_skeleton_files_complete():

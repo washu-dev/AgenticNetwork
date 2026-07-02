@@ -230,15 +230,46 @@
           <label class="field-label" for="inp-requirements">Requirements <span class="hint">— comma-separated pip packages, optional</span></label>
           <input type="text" id="inp-requirements" placeholder="refbot>=0.1, numpy">
         </div>
+        <!-- Upload mode: a single .py file, or a zipped multi-file project -->
         <div class="form-group">
-          <div style="display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:5px">
-            <label class="field-label" for="inp-handler-code" style="margin:0">Handler code <span class="hint">— extends AgentHandler, implements handle_structured()</span></label>
-            <label class="btn btn-sm btn-outline" style="cursor:pointer;margin-bottom:0">
-              Upload .py file
-              <input type="file" accept=".py,text/x-python" style="display:none" onchange="loadHandlerFile(this)">
-            </label>
+          <label class="field-label">Code upload <span class="hint">— a single file, or a zipped project (multiple modules + deps)</span></label>
+          <div style="display:flex;gap:18px;font-size:13px">
+            <label style="font-weight:400"><input type="radio" name="custom_mode" value="single" checked onchange="onCustomModeChange()"> Single file (.py)</label>
+            <label style="font-weight:400"><input type="radio" name="custom_mode" value="zip" onchange="onCustomModeChange()"> Project (.zip)</label>
           </div>
-          <textarea id="inp-handler-code" class="code-editor" rows="16" spellcheck="false"></textarea>
+        </div>
+
+        <div id="custom-single">
+          <div class="form-group">
+            <div style="display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:5px">
+              <label class="field-label" for="inp-handler-code" style="margin:0">Handler code <span class="hint">— extends AgentHandler, implements handle_structured()</span></label>
+              <label class="btn btn-sm btn-outline" style="cursor:pointer;margin-bottom:0">
+                Upload .py file
+                <input type="file" accept=".py,text/x-python" style="display:none" onchange="loadHandlerFile(this)">
+              </label>
+            </div>
+            <textarea id="inp-handler-code" class="code-editor" rows="16" spellcheck="false"></textarea>
+          </div>
+        </div>
+
+        <div id="custom-zip" style="display:none">
+          <div class="form-row">
+            <div>
+              <label class="field-label" for="inp-entry-file">Entry file <span class="hint">— adapter at the zip root that defines your class</span></label>
+              <input type="text" id="inp-entry-file" value="handler.py">
+            </div>
+            <div style="display:flex;align-items:flex-end;padding-bottom:8px">
+              <label style="font-weight:400;font-size:13px"><input type="checkbox" id="inp-install-project" checked> <code>pip install .</code> if the project ships pyproject.toml / setup.py</label>
+            </div>
+          </div>
+          <div class="form-group">
+            <label class="field-label">Project archive <span class="hint">— .zip; the entry file must sit at the archive root, next to importable siblings</span></label>
+            <label class="btn btn-sm btn-outline" style="cursor:pointer">
+              Choose .zip file
+              <input type="file" accept=".zip,application/zip" style="display:none" onchange="loadZipFile(this)">
+            </label>
+            <span id="zip-filename" style="margin-left:10px;font-size:13px;color:var(--muted)">No file selected</span>
+          </div>
         </div>
         <div class="form-group">
           <label class="field-label" for="inp-extra">Extra config (JSON) <span class="hint">— optional, passed to your handler's __init__</span></label>
@@ -286,6 +317,7 @@
 let allSkills = [];
 const selectedSkills = new Map(); // name → {name, id}
 let refreshTimer = null;
+let customZipFile = null;         // the .zip File held for project-mode uploads
 
 // ── Tab switching ─────────────────────────────────────────────────────────────
 function switchTab(tab) {
@@ -312,6 +344,19 @@ function onHandlerChange() {
   const showModel = v === 'llm';
   document.getElementById('inp-model').style.display    = showModel ? '' : 'none';
   document.getElementById('label-model').style.display  = showModel ? '' : 'none';
+}
+
+// Toggle single-file vs project(.zip) upload within the custom section.
+function onCustomModeChange() {
+  const mode = document.querySelector('input[name=custom_mode]:checked').value;
+  document.getElementById('custom-single').style.display = mode === 'single' ? '' : 'none';
+  document.getElementById('custom-zip').style.display    = mode === 'zip'    ? '' : 'none';
+}
+
+function loadZipFile(input) {
+  customZipFile = (input.files && input.files[0]) || null;
+  document.getElementById('zip-filename').textContent =
+    customZipFile ? customZipFile.name : 'No file selected';
 }
 
 // ── OASF skills ───────────────────────────────────────────────────────────────
@@ -360,8 +405,14 @@ function filterSkills(q) {
 }
 
 function toggleSkill(name, id, checked) {
-  if (checked) selectedSkills.set(name, { name, id });
-  else selectedSkills.delete(name);
+  if (checked) {
+    // Capture the canonical path-style key from the taxonomy so the published
+    // card uses it as skill.id (matches how the fixed agents advertise skills).
+    const full = allSkills.find(s => s.name === name);
+    selectedSkills.set(name, { name, id, key: (full && full.key) ? full.key : undefined });
+  } else {
+    selectedSkills.delete(name);
+  }
   renderBadges();
 }
 
@@ -409,16 +460,24 @@ async function submitRegistration() {
     const python_version = document.getElementById('inp-python-version').value;
     const reqRaw         = document.getElementById('inp-requirements').value.trim();
     const requirements   = reqRaw ? reqRaw.split(',').map(s => s.trim()).filter(Boolean) : [];
-    handlerCode          = document.getElementById('inp-handler-code').value;
     const extraRaw       = document.getElementById('inp-extra').value.trim();
+    const mode           = document.querySelector('input[name=custom_mode]:checked').value;
     if (!class_name)        return showAlert('error', 'Class name is required for custom agents.');
-    if (!handlerCode.trim()) return showAlert('error', 'Handler code is required for custom agents.');
     let extra = {};
     if (extraRaw) {
       try { extra = JSON.parse(extraRaw); }
       catch { return showAlert('error', 'Extra config must be valid JSON.'); }
     }
     config = { class_name, python_version, requirements, extra };
+    if (mode === 'zip') {
+      if (!customZipFile) return showAlert('error', 'Choose a .zip project file to upload.');
+      const entry_file = document.getElementById('inp-entry-file').value.trim() || 'handler.py';
+      config.entry_file = entry_file;
+      config.install_project = document.getElementById('inp-install-project').checked;
+    } else {
+      handlerCode = document.getElementById('inp-handler-code').value;
+      if (!handlerCode.trim()) return showAlert('error', 'Handler code is required for custom agents.');
+    }
   }
 
   const payload = {
@@ -444,16 +503,27 @@ async function submitRegistration() {
     const agent = await res.json();
 
     if (handler_type === 'custom') {
-      // Step 2: upload the handler file. Validation errors surface here.
+      // Step 2: upload the handler — a single .py blob or the chosen .zip project.
+      // Validation / unpack errors surface here.
       const fd = new FormData();
-      fd.append('file', new Blob([handlerCode], { type: 'text/x-python' }), 'handler.py');
+      if (customZipFile && config.entry_file) {
+        fd.append('file', customZipFile, customZipFile.name);
+      } else {
+        fd.append('file', new Blob([handlerCode], { type: 'text/x-python' }), 'handler.py');
+      }
       const up = await fetch(`${API_PREFIX}/agents/${agent.id}/handler`, { method: 'POST', body: fd });
       if (!up.ok) {
         const body = await up.json().catch(() => ({ detail: up.statusText }));
+        // Roll back the just-created agent so a failed upload doesn't leave a
+        // codeless "pending approval" orphan in the directory.
+        await fetch(`${API_PREFIX}/agents/${agent.id}`, { method: 'DELETE' }).catch(() => {});
         throw new Error(fmtDetail(body.detail) || `HTTP ${up.status}`);
       }
+      const upBody = await up.json().catch(() => ({}));
+      const warnNote = (upBody.warnings && upBody.warnings.length)
+        ? ` Advisory: ${upBody.warnings.join('; ')}.` : '';
       showAlert('success',
-        `"${agent.name}" registered and handler uploaded. It is pending admin approval before it goes live.`);
+        `"${agent.name}" registered and handler uploaded. It is pending admin approval before it goes live.${warnNote}`);
     } else {
       showAlert('success',
         `"${agent.name}" registered! Status: ${agent.status}. Port: ${agent.port}.`);
@@ -485,6 +555,13 @@ function resetForm() {
   document.getElementById('inp-class-name').value = 'MyAgentHandler';
   document.getElementById('inp-python-version').value = '3.11';
   document.getElementById('inp-handler-code').value = DEFAULT_HANDLER_CODE;
+  // Reset custom upload mode back to single-file.
+  const singleRadio = document.querySelector('input[name=custom_mode][value=single]');
+  if (singleRadio) { singleRadio.checked = true; onCustomModeChange(); }
+  document.getElementById('inp-entry-file').value = 'handler.py';
+  document.getElementById('inp-install-project').checked = true;
+  customZipFile = null;
+  document.getElementById('zip-filename').textContent = 'No file selected';
   selectedSkills.clear();
   renderBadges();
   renderSkillList(allSkills);
@@ -546,7 +623,9 @@ function renderAgentTable(agents) {
 function statusBadge(a) {
   let key = a.status, label = a.status;
   if (a.handler_type === 'custom' && a.approved === false && a.status === 'registered') {
-    key = 'pending'; label = 'Pending Approval';
+    // Distinguish a real pending agent from a codeless orphan (no handler uploaded).
+    if (a.has_handler) { key = 'pending'; label = 'Pending Approval'; }
+    else { key = 'registered'; label = 'Awaiting Upload'; }
   } else if (a.status === 'building') {
     key = 'building'; label = 'Building';
   }

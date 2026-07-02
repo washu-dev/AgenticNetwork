@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import io
+import zipfile
+
 import pytest
 from httpx import AsyncClient
 
@@ -19,6 +22,32 @@ def _upload_files(src: str = VALID_HANDLER_SRC):
     return {"file": ("handler.py", src.encode("utf-8"), "text/x-python")}
 
 
+def _zip_bytes(files: dict[str, str]) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        for name, data in files.items():
+            z.writestr(name, data)
+    return buf.getvalue()
+
+
+def _zip_upload(files: dict[str, str]):
+    return {"file": ("project.zip", _zip_bytes(files), "application/zip")}
+
+
+# A valid multi-file project: the entry adapter imports a sibling module.
+_ZIP_TREE = {
+    "handler.py": (
+        "from agent_skeleton import AgentHandler\n"
+        "from mylib import tag\n"
+        "class MyAgentHandler(AgentHandler):\n"
+        "    async def handle_structured(self, u, files=[]):\n"
+        "        return {'answer': tag(u)}\n"
+    ),
+    "mylib/__init__.py": "def tag(s): return 'tagged:' + s\n",
+    "pyproject.toml": "[project]\nname = 'demo'\nversion = '0.1'\n",
+}
+
+
 async def _register_custom(client: AsyncClient) -> dict:
     resp = await client.post("/agents", json=CUSTOM_PAYLOAD)
     assert resp.status_code == 201, resp.text
@@ -27,15 +56,34 @@ async def _register_custom(client: AsyncClient) -> dict:
 
 # ── Registration ────────────────────────────────────────────────────────────────
 
+async def test_duplicate_name_slug_rejected(client: AsyncClient) -> None:
+    await _register_custom(client)  # "Test Custom Agent" → slug test-custom-agent
+    # Same slug via different casing → 409 ("test custom agent" → test-custom-agent)
+    dup = {**CUSTOM_PAYLOAD, "name": "test custom agent"}
+    assert (await client.post("/agents", json=dup)).status_code == 409
+    # A genuinely distinct name is allowed
+    ok = {**CUSTOM_PAYLOAD, "name": "Test Custom Agent 2"}
+    assert (await client.post("/agents", json=ok)).status_code == 201
+
+
 async def test_register_custom_not_approved_and_not_started(client: AsyncClient) -> None:
     body = await _register_custom(client)
     assert body["handler_type"] == "custom"
     assert body["approved"] is False
     assert body["status"] == "registered"
     assert body["port"] is not None
+    assert body["has_handler"] is False   # no handler uploaded yet
     # Not spawned: no endpoint_url / ads_cid yet.
     assert body["endpoint_url"] is None
     assert body["ads_cid"] is None
+
+
+async def test_has_handler_flips_true_after_upload(client: AsyncClient, monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("HANDLER_FILES_DIR", str(tmp_path))
+    agent = await _register_custom(client)
+    assert (await client.get(f"/agents/{agent['id']}")).json()["has_handler"] is False
+    await client.post(f"/agents/{agent['id']}/handler", files=_upload_files())
+    assert (await client.get(f"/agents/{agent['id']}")).json()["has_handler"] is True
 
 
 # ── Upload ──────────────────────────────────────────────────────────────────────
@@ -45,7 +93,7 @@ async def test_upload_valid_handler(client: AsyncClient, monkeypatch, tmp_path) 
     agent = await _register_custom(client)
     resp = await client.post(f"/agents/{agent['id']}/handler", files=_upload_files())
     assert resp.status_code == 200, resp.text
-    assert resp.json() == {"status": "uploaded", "errors": []}
+    assert resp.json() == {"status": "uploaded", "errors": [], "warnings": []}
     # File landed on disk.
     assert (tmp_path / agent["id"] / "handler.py").exists()
     # Still unapproved after upload.
@@ -68,6 +116,70 @@ async def test_upload_to_non_custom_agent_404(client: AsyncClient) -> None:
     llm = (await client.post("/agents", json=LLM_PAYLOAD)).json()
     resp = await client.post(f"/agents/{llm['id']}/handler", files=_upload_files())
     assert resp.status_code == 404
+
+
+async def test_blocklist_is_advisory_not_blocking(client: AsyncClient, monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("HANDLER_FILES_DIR", str(tmp_path))
+    agent = await _register_custom(client)
+    src = (
+        "import subprocess\n"
+        "from agent_skeleton import AgentHandler\n"
+        "class MyAgentHandler(AgentHandler):\n"
+        "    async def handle_structured(self, u, files=[]):\n"
+        "        return {'answer': 'ok'}\n"
+    )
+    resp = await client.post(f"/agents/{agent['id']}/handler", files=_upload_files(src))
+    assert resp.status_code == 200, resp.text          # advisory, not a block (D1)
+    assert any("subprocess" in w for w in resp.json()["warnings"])
+
+
+# ── Zip (multi-file) upload ──────────────────────────────────────────────────────
+
+async def test_upload_zip_stores_tree(client: AsyncClient, monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("HANDLER_FILES_DIR", str(tmp_path))
+    agent = await _register_custom(client)
+    resp = await client.post(f"/agents/{agent['id']}/handler", files=_zip_upload(_ZIP_TREE))
+    assert resp.status_code == 200, resp.text
+    # Whole tree stored, structure preserved.
+    base = tmp_path / agent["id"]
+    assert (base / "handler.py").exists()
+    assert (base / "mylib" / "__init__.py").exists()
+    assert (base / "pyproject.toml").exists()
+    # Row flagged as an archive; still unapproved.
+    got = (await client.get(f"/agents/{agent['id']}")).json()
+    assert got["is_archive"] is True
+    assert got["approved"] is False
+    assert got["has_handler"] is True
+
+
+async def test_upload_zip_missing_entry_422(client: AsyncClient, monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("HANDLER_FILES_DIR", str(tmp_path))
+    agent = await _register_custom(client)  # entry_file defaults to handler.py
+    resp = await client.post(f"/agents/{agent['id']}/handler", files=_zip_upload({"other.py": "x = 1"}))
+    assert resp.status_code == 422
+    assert any("handler.py" in e for e in resp.json()["detail"]["errors"])
+
+
+async def test_upload_zip_zipslip_422(client: AsyncClient, monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("HANDLER_FILES_DIR", str(tmp_path))
+    agent = await _register_custom(client)
+    files = {**_ZIP_TREE, "../evil.py": "boom"}
+    resp = await client.post(f"/agents/{agent['id']}/handler", files=_zip_upload(files))
+    assert resp.status_code == 422
+    assert any("escapes" in e for e in resp.json()["detail"]["errors"])
+
+
+async def test_upload_zip_bad_structural_entry_422(client: AsyncClient, monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("HANDLER_FILES_DIR", str(tmp_path))
+    agent = await _register_custom(client)
+    # Entry present but doesn't subclass AgentHandler → structural failure blocks.
+    files = {"handler.py": "class MyAgentHandler:\n    pass\n"}
+    resp = await client.post(f"/agents/{agent['id']}/handler", files=_zip_upload(files))
+    assert resp.status_code == 422
+    assert any("AgentHandler" in e for e in resp.json()["detail"]["errors"])
+    # Rejected tree is not left on disk.
+    base = tmp_path / agent["id"]
+    assert not base.exists() or not any(base.iterdir())
 
 
 # ── Approve / reject ─────────────────────────────────────────────────────────────
@@ -119,6 +231,48 @@ async def test_get_handler_source(client: AsyncClient, monkeypatch, tmp_path) ->
 async def test_get_handler_source_before_upload_404(client: AsyncClient) -> None:
     agent = await _register_custom(client)
     resp = await client.get(f"/agents/{agent['id']}/handler")
+    assert resp.status_code == 404
+
+
+async def test_inspect_single_file_returns_source(client: AsyncClient, monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("HANDLER_FILES_DIR", str(tmp_path))
+    agent = await _register_custom(client)
+    await client.post(f"/agents/{agent['id']}/handler", files=_upload_files())
+    body = (await client.get(f"/agents/{agent['id']}/handler")).json()
+    assert body["is_archive"] is False
+    assert "class MyAgentHandler(AgentHandler)" in body["source"]
+    assert body["warnings"] == []
+
+
+async def test_inspect_multifile_returns_manifest(client: AsyncClient, monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("HANDLER_FILES_DIR", str(tmp_path))
+    agent = await _register_custom(client)
+    await client.post(f"/agents/{agent['id']}/handler", files=_zip_upload(_ZIP_TREE))
+    body = (await client.get(f"/agents/{agent['id']}/handler")).json()
+    assert body["is_archive"] is True
+    assert body["entry_file"] == "handler.py"
+    assert body["manifest"] == ["handler.py", "mylib/__init__.py", "pyproject.toml"]
+    assert body["download_url"].endswith(f"/agents/{agent['id']}/handler/download")
+    assert "source" not in body
+
+
+async def test_download_multifile_zip(client: AsyncClient, monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("HANDLER_FILES_DIR", str(tmp_path))
+    agent = await _register_custom(client)
+    await client.post(f"/agents/{agent['id']}/handler", files=_zip_upload(_ZIP_TREE))
+    resp = await client.get(f"/agents/{agent['id']}/handler/download")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "application/zip"
+    names = zipfile.ZipFile(io.BytesIO(resp.content)).namelist()
+    assert set(names) == {"handler.py", "mylib/__init__.py", "pyproject.toml"}
+
+
+async def test_download_single_file_404(client: AsyncClient, monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("HANDLER_FILES_DIR", str(tmp_path))
+    agent = await _register_custom(client)
+    await client.post(f"/agents/{agent['id']}/handler", files=_upload_files())
+    # Single-file agents have no archive to download.
+    resp = await client.get(f"/agents/{agent['id']}/handler/download")
     assert resp.status_code == 404
 
 

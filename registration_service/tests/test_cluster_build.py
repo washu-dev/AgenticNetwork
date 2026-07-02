@@ -51,7 +51,9 @@ async def _make_custom(approved=True):
         name="Paper Reviewer",
         description="Reviews papers",
         handler_type="custom",
-        oasf_skills=[{"name": "nlp/text-summarization", "id": 1, "key": "nlp/text-summarization"}],
+        # No "key" on purpose — mirrors what the DB stored before the key-capture fix;
+        # exercises the supervisor's name-fallback in _build_agent_card / routing.
+        oasf_skills=[{"name": "nlp/text-summarization", "id": 1}],
         config={"class_name": "H", "python_version": "3.12", "requirements": [], "extra": {}},
         approved=approved,
     )
@@ -123,7 +125,7 @@ async def test_spawn_queue_finalize_and_stop(monkeypatch):
     entry = queue[0]
     assert entry["agent_id"] == aid
     assert entry["argv"][0] == "srun"
-    assert "agent_skeleton.container_runner" in entry["argv"]
+    assert "agent_skeleton.container_runner" in " ".join(entry["argv"])
     assert "AGENT_CONFIG_JSON" in entry["env"]
     assert f"agenticnetwork-custom-paper-reviewer" in " ".join(entry["argv"])
 
@@ -141,6 +143,28 @@ async def test_spawn_queue_finalize_and_stop(monkeypatch):
 
 
 # ── Local path unaffected (no SPAWN_BACKEND → direct spawn) ───────────────────────
+
+async def test_delete_github_context_gated_and_invoked(monkeypatch):
+    await _fresh_db()
+    sup = Supervisor(backend=ClusterBackend(), publisher=_FakePublisher())
+    called = []
+
+    async def fake_delete(slug):
+        called.append(slug)
+
+    monkeypatch.setattr(sup_mod, "_delete_from_github", fake_delete)
+
+    # Not cluster-enabled → no-op.
+    monkeypatch.delenv("SPAWN_BACKEND", raising=False)
+    await sup.delete_github_context("Paper Reviewer")
+    assert called == []
+
+    # Cluster-enabled → deletes using the image slug.
+    _cluster_env(monkeypatch)
+    await sup.delete_github_context("Paper Reviewer")
+    assert called == ["paper-reviewer"]
+    await db.close_db()
+
 
 async def test_local_approve_spawns_directly(monkeypatch):
     monkeypatch.delenv("SPAWN_BACKEND", raising=False)

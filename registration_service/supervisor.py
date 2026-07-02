@@ -17,6 +17,7 @@ from ads_utils.converter import OfficialOASFSkill, _AGENT_OASF_ROUTING_SKILLS
 from ads_utils.publisher import DirectoryPublisher, DirectoryUnavailable
 from a2a.types import AgentCard, AgentCapabilities, AgentSkill
 
+from registration_service.archive import list_tree
 from registration_service.backend import (
     _AGENT_SKELETON_DIR,
     ClusterBackend,
@@ -204,28 +205,90 @@ class Supervisor:
         await _set_status(agent_id, "failed")
 
     async def recover_live_agents(self) -> None:
-        """On startup, re-spawn all agents that were 'live' before the last shutdown."""
-        if isinstance(self._backend, ClusterBackend):
-            # Cluster agents are independent srun steps managed by Slurm + the host
-            # loop; the registration container can't re-spawn or re-attach to them.
-            logger.info("recovery_skipped_cluster")
-            return
+        """On startup, reconcile agents that were 'live' before the last shutdown.
+
+        Local (subprocess) backend: re-spawn them in-process.
+
+        Cluster backend: the actual agent processes were independent srun steps
+        that died with the previous Slurm job, and ADS's routing index (`dir`) is
+        wiped fresh each deploy — so a persisted status='live' row is a *ghost*
+        (no process, not routed, invisible on the planner dashboard). The
+        registration container can't re-spawn srun steps itself, but it can
+        reconcile the DB to reality: re-queue custom agents whose image still
+        exists on Docker Hub back to 'image_ready' (the host spawn loop then
+        redeploys + republishes them), and mark the rest 'stopped' so the DB no
+        longer falsely claims they're live.
+        """
         pool = await get_pool()
+
+        if not isinstance(self._backend, ClusterBackend):
+            async with pool.acquire() as conn:
+                rows = await conn.fetch("SELECT id FROM agents WHERE status = 'live'")
+            agent_ids = [str(row["id"]) for row in rows]
+            if not agent_ids:
+                return
+            logger.info("recovery_starting count=%d", len(agent_ids))
+            results = await asyncio.gather(
+                *[self.spawn_and_publish(aid) for aid in agent_ids],
+                return_exceptions=True,
+            )
+            for aid, result in zip(agent_ids, results):
+                if isinstance(result, Exception):
+                    logger.error("recovery_failed agent_id=%s error=%s", aid, result)
+            return
+
+        # ── Cluster backend: reconcile ghost 'live' rows to reality ──
         async with pool.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT id FROM agents WHERE status = 'live'"
+                "SELECT id, name, handler_type, port, updated_at "
+                "FROM agents WHERE status = 'live'"
             )
-        agent_ids = [str(row["id"]) for row in rows]
-        if not agent_ids:
+        if not rows:
+            logger.info("recovery_skipped_cluster no_live_agents")
             return
-        logger.info("recovery_starting count=%d", len(agent_ids))
-        results = await asyncio.gather(
-            *[self.spawn_and_publish(aid) for aid in agent_ids],
-            return_exceptions=True,
+
+        requeued = 0
+        stopped = 0
+        for row in rows:
+            agent_id = str(row["id"])
+            redeployable = (
+                row["handler_type"] == "custom"
+                and _cluster_build_enabled()
+                and await _image_exists_on_dockerhub(
+                    f"amaankhan25/agenticnetwork-custom-{_image_slug(row['name'])}",
+                    row["updated_at"],
+                )
+            )
+            async with pool.acquire() as conn:
+                async with conn.transaction():
+                    if redeployable:
+                        # Keep the port (spawn_queue reuses it); clear the stale
+                        # ads_cid (its `dir` entry was wiped). The host spawn loop
+                        # picks this up and finalize_spawned republishes to ADS.
+                        await conn.execute(
+                            "UPDATE agents SET status = 'image_ready', ads_cid = NULL, "
+                            "updated_at = now() WHERE id = $1",
+                            row["id"],
+                        )
+                        requeued += 1
+                    else:
+                        # Not auto-redeployable (image gone or non-custom): free the
+                        # port and mark stopped. init_db() purges stopped rows next run.
+                        if row["port"]:
+                            await release_port(conn, row["port"])
+                        await conn.execute(
+                            "UPDATE agents SET status = 'stopped', ads_cid = NULL, "
+                            "updated_at = now() WHERE id = $1",
+                            row["id"],
+                        )
+                        stopped += 1
+            logger.info(
+                "recovery_reconciled_cluster agent_id=%s name=%s -> %s",
+                agent_id, row["name"], "image_ready" if redeployable else "stopped",
+            )
+        logger.info(
+            "recovery_complete_cluster requeued=%d stopped=%d", requeued, stopped
         )
-        for aid, result in zip(agent_ids, results):
-            if isinstance(result, Exception):
-                logger.error("recovery_failed agent_id=%s error=%s", aid, result)
 
     # ── Health-check loop ──────────────────────────────────────────────────────
 
@@ -354,6 +417,20 @@ class Supervisor:
 
     # ── GitHub commit on approval ────────────────────────────────────────────────
 
+    async def delete_github_context(self, name: str) -> None:
+        """Best-effort removal of a custom agent's committed build context.
+
+        Only acts on the cluster build path (GITHUB_TOKEN/REPO + SPAWN_BACKEND set);
+        a failure is logged, never raised, so it can't block agent deletion.
+        """
+        if not _cluster_build_enabled():
+            return
+        try:
+            await _delete_from_github(_image_slug(name))
+            logger.info("github_context_deleted name=%s", name)
+        except Exception as exc:
+            logger.warning("github_delete_failed name=%s error=%s", name, exc)
+
     async def _commit_to_github(self, agent: dict[str, Any], oasf_skills: list) -> None:
         from registration_service.builder import generate_card_json, generate_dockerfile
 
@@ -370,7 +447,7 @@ class Supervisor:
         handler_path = agent.get("handler_file_path")
         if not handler_path or not Path(handler_path).exists():
             raise RuntimeError(f"Handler file missing for agent {agent['id']}")
-        source = Path(handler_path).read_text()
+        handler_dir = Path(handler_path).parent
 
         dockerfile = generate_dockerfile(config)
         card_json = json.dumps(
@@ -379,10 +456,20 @@ class Supervisor:
 
         base = f"registered_agents/{slug}"
         files = {
-            f"{base}/handler.py": source,
             f"{base}/Dockerfile": dockerfile,
             f"{base}/{slug}.card.json": card_json,
         }
+        # The user's uploaded project tree → src/ (entry file at the src root, next
+        # to importable siblings). Covers both single-file and multi-file uploads.
+        for rel in list_tree(handler_dir):
+            fpath = handler_dir / rel
+            try:
+                files[f"{base}/src/{rel}"] = fpath.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                raise RuntimeError(
+                    f"Cannot commit binary file {rel!r} for agent {agent['id']}: the "
+                    f"cluster build path currently supports text project files only."
+                )
         # Vendor agent_skeleton into the build context so the image installs it from
         # a local copy (the private AgenticNetwork repo isn't reachable from CI, and
         # a token in the Dockerfile would be committed). See builder.generate_dockerfile.
@@ -447,6 +534,57 @@ async def _github_commit_files(
             await client.post(
                 f"{api}/git/commits",
                 json={"message": message, "tree": new_tree["sha"], "parents": [base_commit_sha]},
+            )
+        ).raise_for_status().json()
+        (
+            await client.patch(f"{api}/git/refs/heads/{branch}", json={"sha": new_commit["sha"]})
+        ).raise_for_status()
+
+
+async def _delete_from_github(slug: str) -> None:
+    """Remove registered_agents/{slug}/ from the agent-directory repo in ONE commit.
+
+    Git Data API: build a new tree off the base tree with every blob under the
+    agent's dir marked for deletion (sha=None). No-op if the dir isn't present.
+    (The deletion push won't trigger a spurious image build — the workflow's detect
+    step skips changed dirs that no longer contain a Dockerfile.)
+    """
+    repo = os.environ["GITHUB_REPO"]
+    token = os.environ["GITHUB_TOKEN"]
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    api = f"https://api.github.com/repos/{repo}"
+    prefix = f"registered_agents/{slug}/"
+    async with httpx.AsyncClient(timeout=30.0, headers=headers) as client:
+        repo_info = (await client.get(api)).raise_for_status().json()
+        branch = repo_info.get("default_branch", "main")
+        ref = (await client.get(f"{api}/git/ref/heads/{branch}")).raise_for_status().json()
+        base_commit_sha = ref["object"]["sha"]
+        base_commit = (await client.get(f"{api}/git/commits/{base_commit_sha}")).raise_for_status().json()
+        base_tree_sha = base_commit["tree"]["sha"]
+        tree = (
+            await client.get(f"{api}/git/trees/{base_tree_sha}", params={"recursive": "1"})
+        ).raise_for_status().json()
+        blobs = [
+            it for it in tree.get("tree", [])
+            if it.get("type") == "blob" and it["path"].startswith(prefix)
+        ]
+        if not blobs:
+            return  # nothing committed for this agent
+        deletions = [
+            {"path": it["path"], "mode": it["mode"], "type": "blob", "sha": None}
+            for it in blobs
+        ]
+        new_tree = (
+            await client.post(f"{api}/git/trees", json={"base_tree": base_tree_sha, "tree": deletions})
+        ).raise_for_status().json()
+        new_commit = (
+            await client.post(
+                f"{api}/git/commits",
+                json={"message": f"Remove custom agent: {slug}", "tree": new_tree["sha"], "parents": [base_commit_sha]},
             )
         ).raise_for_status().json()
         (
@@ -527,7 +665,7 @@ def _build_agent_card(
 ) -> AgentCard:
     skills = [
         AgentSkill(
-            id=s["key"],
+            id=s.get("key") or s["name"],   # prefer canonical key; fall back to name
             name=s["name"].split("/")[-1],
             description=description,
             tags=[],
@@ -552,7 +690,7 @@ def _register_oasf_routing_skills(
     """Add the agent's OASF skills to the converter's routing map so dirctl publish works."""
     agent_key = name.lower().replace(" ", "-")
     _AGENT_OASF_ROUTING_SKILLS[agent_key] = [
-        OfficialOASFSkill(name=s["key"], id=s.get("id"))
+        OfficialOASFSkill(name=s.get("key") or s["name"], id=s.get("id"))
         for s in oasf_skills
     ]
 

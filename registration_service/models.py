@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field, field_validator
 class OASFSkill(BaseModel):
     name: str
     id: int | None = None
+    key: str | None = None   # canonical path-style id used for the card skill.id + ADS routing
 
 
 class LLMConfig(BaseModel):
@@ -29,6 +30,8 @@ class CustomConfig(BaseModel):
     class_name: str
     python_version: str = "3.11"
     requirements: list[str] = Field(default_factory=list)
+    entry_file: str = "handler.py"          # adapter module at the upload root that defines class_name
+    install_project: bool = True            # pip install . if pyproject.toml/setup.py present at root
     extra: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -83,6 +86,8 @@ class AgentResponse(BaseModel):
     port: int | None
     status: str
     approved: bool = True
+    has_handler: bool = False
+    is_archive: bool = False
     endpoint_url: str | None
     ads_cid: str | None
     created_at: datetime

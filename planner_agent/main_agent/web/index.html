@@ -518,6 +518,11 @@ body {
   font-family:'Roboto Mono',monospace; font-size:11.5px; line-height:1.55;
   color:var(--t2); white-space:pre; tab-size:4;
 }
+.appr-warn { white-space:normal; color:var(--wn,#d98b1f); margin-bottom:10px; font-family:inherit; font-size:12px; }
+.appr-tree-head { white-space:normal; color:var(--t3); margin-bottom:6px; font-family:inherit; font-size:12px; }
+.appr-tree { border-left:2px solid var(--border); padding-left:10px; }
+.appr-file { color:var(--t2); }
+.appr-file-entry { color:var(--t1); font-weight:600; }
 .appr-reject-form { display:flex; gap:8px; margin-top:8px; align-items:flex-start; }
 .appr-reject-form textarea {
   flex:1; min-height:34px; padding:6px 9px; border:1px solid var(--border);
@@ -1332,7 +1337,9 @@ async function loadApprovals() {
   if (window._adminGuest) return;  // approvals are admin-only
   try {
     const agents = await adminFetch('/register/agents').then(r => r.ok ? r.json() : []);
-    const pending = (agents || []).filter(a => a.handler_type === 'custom' && !a.approved);
+    // Only surface custom agents that have actually uploaded a handler — a failed
+    // two-step upload can leave a codeless, unapprovable record (approve returns 409).
+    const pending = (agents || []).filter(a => a.handler_type === 'custom' && !a.approved && a.has_handler);
     const badge = document.getElementById('approvals-badge');
     if (badge) { badge.textContent = pending.length; badge.style.display = pending.length ? '' : 'none'; }
     // Only re-render when the pending set actually changes, so an expanded code
@@ -1396,9 +1403,36 @@ async function toggleApprovalCode(id) {
   try {
     const r = await adminFetch(`/register/agents/${encodeURIComponent(id)}/handler`);
     if (!r.ok) { pre.textContent = r.status === 404 ? 'No handler file uploaded yet.' : `Error ${r.status}`; return; }
-    const { source } = await r.json();
-    pre.textContent = source || '(empty)';
+    const data = await r.json();
+    const warn = (data.warnings && data.warnings.length)
+      ? `<div class="appr-warn">⚠ Advisory (not blocking): ${data.warnings.map(uvEsc).join('; ')}</div>` : '';
+    if (data.is_archive) {
+      // Multi-file project: show the file tree + a download of the whole tree
+      // (this is the trust-boundary review, so the approver can inspect everything).
+      const files = (data.manifest || []).map(f => {
+        const isEntry = f === data.entry_file;
+        return `<div class="appr-file${isEntry ? ' appr-file-entry' : ''}">${uvEsc(f)}${isEntry ? '  ← entry' : ''}</div>`;
+      }).join('');
+      pre.innerHTML = `${warn}<div class="appr-tree-head">📦 Project archive — ${(data.manifest || []).length} file(s):</div>`
+        + `<div class="appr-tree">${files || '(empty)'}</div>`
+        + `<button type="button" class="av-btn av-btn-sm av-btn-outline" style="margin-top:8px" onclick="downloadHandlerArchive('${uvEsc(id)}')">Download project (.zip)</button>`;
+    } else {
+      pre.innerHTML = warn + `<div>${uvEsc(data.source || '(empty)')}</div>`;
+    }
   } catch (e) { pre.textContent = 'Failed to load: ' + (e.message || e); }
+}
+
+async function downloadHandlerArchive(id) {
+  try {
+    const r = await adminFetch(`/register/agents/${encodeURIComponent(id)}/handler/download`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `${id}-handler.zip`;
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+  } catch (e) { alert('Download failed: ' + (e.message || e)); }
 }
 
 async function approveAgentReq(id, btn) {
