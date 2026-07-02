@@ -101,6 +101,20 @@ class AgentCapability(BaseModel):
     action_type: Literal["read", "write"] = "read"
 
 
+class CredentialRequirement(BaseModel):
+    """A user-owned credential an agent declares it needs (P4b, read-only mirror).
+
+    Parsed from the published card's ``capabilities.extensions`` carrier
+    (``agenticnetwork.dev/ext/required-credentials``). Mirrors the registration
+    service's model; the planner is a separate deploy unit so it can't import it.
+    ``required`` will drive enforcement in P4c; here it is surfaced read-only.
+    """
+    type: str
+    label: str
+    required: bool = True
+    env_var: str | None = None
+
+
 class DiscoveredAgent(BaseModel):
     agent_id: str
     name: str
@@ -119,6 +133,7 @@ class DiscoveredAgent(BaseModel):
     source_card_url: str | None = None
     raw_record: dict[str, Any] | None = None
     risk_level: RiskLevel = RiskLevel.low
+    required_credentials: list[CredentialRequirement] = Field(default_factory=list)
 
 
 class A2APart(BaseModel):

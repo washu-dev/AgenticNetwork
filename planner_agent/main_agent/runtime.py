@@ -1101,6 +1101,9 @@ def _agent_full_card(agent: DiscoveredAgent) -> dict[str, Any]:
             }
             for cap in agent.skills
         ],
+        # P4b: read-only surface so the LLM can explain why a key is needed during
+        # first-use consent (P4c). No enforcement here.
+        "required_credentials": [c.model_dump() for c in agent.required_credentials],
     }
 
 

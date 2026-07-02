@@ -10,11 +10,40 @@ from a2a.types import AgentCard
 
 from planner_agent.main_agent.models import (
     AgentCapability,
+    CredentialRequirement,
     DiscoveredAgent,
     OfficialOASFSkill,
     PublishedRecord,
     RiskLevel,
 )
+
+# Cross-component contract: the registration service writes declared credentials
+# onto the published card's capabilities.extensions under this URI (P4a,
+# registration_service/card_credentials.py). The planner reads them back here (P4b).
+REQUIRED_CREDENTIALS_EXTENSION_URI = "agenticnetwork.dev/ext/required-credentials"
+
+
+def _required_credentials_from_card(card: AgentCard) -> list[CredentialRequirement]:
+    """Parse declared credentials off the card's capabilities.extensions carrier.
+
+    Fully defensive: any missing/absent/malformed piece yields an empty list so a
+    bad declaration never breaks discovery of an otherwise-valid agent.
+    """
+    caps = getattr(card, "capabilities", None)
+    extensions = getattr(caps, "extensions", None) or []
+    out: list[CredentialRequirement] = []
+    for ext in extensions:
+        if getattr(ext, "uri", None) != REQUIRED_CREDENTIALS_EXTENSION_URI:
+            continue
+        params = getattr(ext, "params", None) or {}
+        for entry in params.get("credentials", []) or []:
+            if not isinstance(entry, dict):
+                continue
+            try:
+                out.append(CredentialRequirement.model_validate(entry))
+            except Exception:
+                continue  # skip malformed entry, keep the rest
+    return out
 
 
 # Local known official mappings only. Demo-only skills are preserved as custom
@@ -280,6 +309,7 @@ def oasf_record_to_discovered_agent(record: dict[str, Any]) -> DiscoveredAgent:
         source_card_url=f"{record['interaction']['endpoint'].rstrip('/')}/.well-known/agent-card.json",
         raw_record=record,
         risk_level=RiskLevel(record.get("policy", {}).get("risk_level", "low")),
+        required_credentials=_required_credentials_from_card(card),
     )
 
 

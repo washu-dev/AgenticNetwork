@@ -1,6 +1,12 @@
 # Custom Agent Lane v2 — P4 Subplan: Per-User Credentials + Auth Restructuring
 
-**Status:** NOT STARTED. Detailed subplan only — no code yet.
+**Status:** IN PROGRESS. **P4a shipped** (2026-07-02, branch `feature/custom-agent-credentials-and-auth`):
+credential catalog + `CredentialRequirement` model + card carrier (`capabilities.extensions`), registration
+UI field, `/credential-catalog` endpoint, approver visibility; verified locally (91 tests) and on the cluster
+(Level 1 — declaration round-trips + persists). Deviations from this plan, all deliberate: extension-level
+`required=False` (enforcement driven by `params.credentials[].required`, not the A2A protocol flag);
+extension omitted when no creds declared (decision A); added `GET /credential-catalog` as the UI's single
+source of truth. Next: **P4b**.
 **Parent:** [`CUSTOM_AGENT_LANE_V2_PLAN.md`](CUSTOM_AGENT_LANE_V2_PLAN.md) §8 (P4). P1/P2/P3 shipped.
 **Branch:** a new branch off `main` after `feature/custom-agent-handler` is closed —
 suggest `feature/custom-agent-credentials-and-auth`.
@@ -114,7 +120,7 @@ fields, so adding one is safe and requires an explicit edit.
 
 | Sub-phase | Deliverable | Components | Depends on | Exit criterion |
 |---|---|---|---|---|
-| **P4a** | Credential **declaration** + catalog + card carrier | registration + skeleton contract | — | A custom agent declares creds; they land in the published card's `capabilities.extensions`; unit test round-trips extension→card. |
+| **P4a** ✅ | Credential **declaration** + catalog + card carrier | registration + skeleton contract | — | **DONE.** A custom agent declares creds; they land in the published card's `capabilities.extensions`; unit test round-trips extension→card. |
 | **P4b** | Planner **discovery read** + LLM surface (read-only, no enforcement) | planner | P4a | `DiscoveredAgent.required_credentials` populated from the extension; visible in `_agent_full_card`; unit test with a stubbed record. |
 | **P4c** | **Grant + consent + enforcement + scoped injection** | planner | P4b | Required-missing → blocked w/ consent; optional-missing → proceeds; injected creds scoped to *granted*; grants persist + revocable via API. |
 | **P4d** | Skeleton **context seam** + **Settings UI** | skeleton + planner web | P4c | A custom agent reads a user key from `context` and uses it; Settings tab manages keys + grants; `context` never logged. |
