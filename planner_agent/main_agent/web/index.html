@@ -1408,7 +1408,9 @@ async function toggleApprovalCode(id) {
       ? `<div class="appr-warn">⚠ Advisory (not blocking): ${data.warnings.map(uvEsc).join('; ')}</div>` : '';
     const apt = (data.system_packages && data.system_packages.length)
       ? `<div class="appr-warn">📦 apt system packages (installed into the image): ${data.system_packages.map(uvEsc).join(', ')}</div>` : '';
-    const notes = warn + apt;
+    const creds = (data.credentials && data.credentials.length)
+      ? `<div class="appr-warn">🔑 Requests user credentials: ${data.credentials.map(c => uvEsc(c.label) + ' (' + uvEsc(c.type) + (c.required ? ', required' : ', optional') + ')').join('; ')}</div>` : '';
+    const notes = warn + apt + creds;
     if (data.is_archive) {
       // Multi-file project: show the file tree + a download of the whole tree
       // (this is the trust-boundary review, so the approver can inspect everything).

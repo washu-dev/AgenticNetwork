@@ -276,6 +276,11 @@
           </div>
         </div>
         <div class="form-group">
+          <label class="field-label">Required credentials <span class="hint">— user-owned API keys this agent needs; the user supplies them in Settings and grants access per-agent</span></label>
+          <div id="cred-rows"></div>
+          <button type="button" class="btn btn-sm btn-outline" onclick="addCredRow()">+ Add credential</button>
+        </div>
+        <div class="form-group">
           <label class="field-label" for="inp-extra">Extra config (JSON) <span class="hint">— optional, passed to your handler's __init__</span></label>
           <textarea id="inp-extra" class="code-editor" rows="3" placeholder='{"key": "value"}'></textarea>
         </div>
@@ -361,6 +366,73 @@ function loadZipFile(input) {
   customZipFile = (input.files && input.files[0]) || null;
   document.getElementById('zip-filename').textContent =
     customZipFile ? customZipFile.name : 'No file selected';
+}
+
+// ── Required credentials (P4a) ─────────────────────────────────────────────────
+let credCatalog = [];
+async function loadCredCatalog() {
+  try {
+    const res = await fetch(`${API_PREFIX}/credential-catalog`);
+    credCatalog = await res.json();
+  } catch { credCatalog = []; }
+}
+
+function addCredRow() {
+  const row = document.createElement('div');
+  row.className = 'cred-row';
+  row.style = 'display:flex;gap:8px;align-items:center;margin-bottom:6px;flex-wrap:wrap';
+  const opts = credCatalog.map(c =>
+    `<option value="${c.type}">${esc(c.label)}</option>`).join('');
+  row.innerHTML = `
+    <select class="cred-type" style="flex:0 0 190px" onchange="onCredTypeChange(this)">
+      ${opts}
+      <option value="__custom__">Custom (custom:…)</option>
+    </select>
+    <input type="text" class="cred-slug" placeholder="slug" style="flex:0 0 110px;display:none">
+    <input type="text" class="cred-label" placeholder="Label (shown to user)" style="flex:1 1 160px">
+    <input type="text" class="cred-envvar" placeholder="ENV_VAR (optional)" style="flex:0 0 150px">
+    <label style="font-weight:400;font-size:13px;white-space:nowrap"><input type="checkbox" class="cred-required" checked> required</label>
+    <button type="button" class="btn btn-sm btn-outline" onclick="this.closest('.cred-row').remove()">×</button>`;
+  document.getElementById('cred-rows').appendChild(row);
+  // Prefill label from the selected catalog entry for convenience.
+  const sel = row.querySelector('.cred-type');
+  const lbl = row.querySelector('.cred-label');
+  const known = credCatalog.find(c => c.type === sel.value);
+  if (known && !lbl.value) lbl.value = known.label;
+}
+
+function onCredTypeChange(sel) {
+  const row = sel.closest('.cred-row');
+  const slug = row.querySelector('.cred-slug');
+  const lbl = row.querySelector('.cred-label');
+  if (sel.value === '__custom__') {
+    slug.style.display = '';
+  } else {
+    slug.style.display = 'none';
+    const known = credCatalog.find(c => c.type === sel.value);
+    if (known) lbl.value = known.label;
+  }
+}
+
+function readCredentials() {
+  const creds = [];
+  for (const row of document.querySelectorAll('#cred-rows .cred-row')) {
+    let type = row.querySelector('.cred-type').value;
+    if (type === '__custom__') {
+      const slug = row.querySelector('.cred-slug').value.trim();
+      if (!slug) throw new Error('Custom credential needs a slug.');
+      type = `custom:${slug}`;
+    }
+    const label = row.querySelector('.cred-label').value.trim();
+    if (!label) throw new Error('Each credential needs a label.');
+    const env_var = row.querySelector('.cred-envvar').value.trim();
+    creds.push({
+      type, label,
+      required: row.querySelector('.cred-required').checked,
+      ...(env_var ? { env_var } : {}),
+    });
+  }
+  return creds;
 }
 
 // ── OASF skills ───────────────────────────────────────────────────────────────
@@ -474,7 +546,10 @@ async function submitRegistration() {
       try { extra = JSON.parse(extraRaw); }
       catch { return showAlert('error', 'Extra config must be valid JSON.'); }
     }
-    config = { class_name, python_version, requirements, system_packages, extra };
+    let credentials;
+    try { credentials = readCredentials(); }
+    catch (e) { return showAlert('error', e.message); }
+    config = { class_name, python_version, requirements, system_packages, credentials, extra };
     if (mode === 'zip') {
       if (!customZipFile) return showAlert('error', 'Choose a .zip project file to upload.');
       const entry_file = document.getElementById('inp-entry-file').value.trim() || 'handler.py';
@@ -718,6 +793,7 @@ const API_PREFIX = window.location.pathname.replace(/\/$/, '').endsWith('/regist
 
 document.getElementById('inp-handler-code').value = DEFAULT_HANDLER_CODE;
 loadSkills();
+loadCredCatalog();
 </script>
 </body>
 </html>

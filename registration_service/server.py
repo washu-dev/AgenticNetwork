@@ -28,6 +28,7 @@ from registration_service.models import (
     RejectRequest,
     SpawnedReport,
 )
+from registration_service.credential_catalog import CATALOG as CREDENTIAL_CATALOG
 from registration_service.oasf_skills import OASF_SKILLS
 from registration_service.port_pool import assign_port
 from registration_service.supervisor import get_supervisor
@@ -95,6 +96,16 @@ async def root() -> FileResponse:
 async def list_oasf_skills() -> list[dict]:
     """Return the full flat OASF skill taxonomy available for registration."""
     return OASF_SKILLS
+
+
+@app.get("/credential-catalog", tags=["reference"])
+async def list_credential_catalog() -> list[dict]:
+    """Known credential types a custom agent may declare (P4a). The registration
+    form populates its type dropdown from this; ``custom:<slug>`` is also allowed."""
+    return [
+        {"type": e.type, "label": e.label, "kind": e.kind, "docs_url": e.docs_url}
+        for e in CREDENTIAL_CATALOG
+    ]
 
 
 # ── Agent CRUD ─────────────────────────────────────────────────────────────────
@@ -353,6 +364,7 @@ async def get_handler_source(agent_id: str, request: Request) -> dict:
             "download_url": f"/agents/{agent_id}/handler/download",
             "warnings": warnings,
             "system_packages": config.system_packages,   # apt, flagged for review (D10)
+            "credentials": [c.model_dump() for c in config.credentials],   # user creds it asks for (P4a)
         }
     return {
         "is_archive": False,
@@ -360,6 +372,7 @@ async def get_handler_source(agent_id: str, request: Request) -> dict:
         "handler_file_path": path,
         "warnings": warnings,
         "system_packages": config.system_packages,       # apt, flagged for review (D10)
+        "credentials": [c.model_dump() for c in config.credentials],       # user creds it asks for (P4a)
     }
 
 
