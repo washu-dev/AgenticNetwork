@@ -61,7 +61,7 @@ def main() -> None:
     from a2a.server.apps import A2AStarletteApplication
     from a2a.server.request_handlers import DefaultRequestHandler
     from a2a.server.tasks import InMemoryTaskStore
-    from a2a.types import AgentCapabilities, AgentCard, AgentSkill
+    from a2a.types import AgentCapabilities, AgentCard, AgentExtension, AgentSkill
     import uvicorn
 
     from agent_skeleton import HandlerExecutor
@@ -70,12 +70,26 @@ def main() -> None:
         handler,
         max_runtime_seconds=float(config.get("max_runtime_seconds", 1800)),
     )
+    # P4a: mirror the declared-credentials carrier on the served card. Inlined
+    # (not shared with registration_service.card_credentials) because this runs
+    # inside the custom agent's own image where that package isn't importable.
+    # URI must match registration_service.card_credentials.CREDENTIALS_EXTENSION_URI.
+    credentials: list = config.get("credentials", [])
+    extensions = (
+        [AgentExtension(
+            uri="agenticnetwork.dev/ext/required-credentials",
+            description="User credentials this agent consumes",
+            required=False,
+            params={"credentials": credentials},
+        )]
+        if credentials else None
+    )
     card = AgentCard(
         name=name,
         description=description,
         url=f"http://localhost:{port}/",
         version="1.0.0",
-        capabilities=AgentCapabilities(streaming=True),  # heartbeat support (P3)
+        capabilities=AgentCapabilities(streaming=True, extensions=extensions),  # heartbeat support (P3)
         skills=[AgentSkill(id=f"{agent_id}/handle", name="handle", description=description, tags=[])],
         default_input_modes=["text"],
         default_output_modes=["text"],

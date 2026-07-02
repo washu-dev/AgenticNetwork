@@ -17,6 +17,8 @@ from ads_utils.converter import OfficialOASFSkill, _AGENT_OASF_ROUTING_SKILLS
 from ads_utils.publisher import DirectoryPublisher, DirectoryUnavailable
 from a2a.types import AgentCard, AgentCapabilities, AgentSkill
 
+from registration_service.card_credentials import build_credentials_extension
+
 from registration_service.archive import list_tree
 from registration_service.backend import (
     _AGENT_SKELETON_DIR,
@@ -120,7 +122,9 @@ class Supervisor:
             await _set_status(agent_id, "failed")
             raise
 
-        await self._publish_and_set_live(agent_id, name, description, oasf_skills, port)
+        await self._publish_and_set_live(
+            agent_id, name, description, oasf_skills, port, _declared_credentials(config)
+        )
 
     async def _publish_and_set_live(
         self,
@@ -129,11 +133,12 @@ class Supervisor:
         description: str,
         oasf_skills: list,
         port: int,
+        credentials: list[dict[str, Any]] | None = None,
     ) -> None:
         """Publish the agent card to ADS and mark it live. Shared by the local-spawn
         path (spawn_and_publish) and the cluster host-loop path (finalize_spawned)."""
         endpoint_url = f"http://localhost:{port}/"
-        card = _build_agent_card(agent_id, name, description, oasf_skills, port)
+        card = _build_agent_card(agent_id, name, description, oasf_skills, port, credentials)
 
         ads_cid: str | None = None
         try:
@@ -405,7 +410,8 @@ class Supervisor:
             self._backend.record_pid(agent_id, pid, port)
         _register_oasf_routing_skills(agent["name"], oasf_skills)
         await self._publish_and_set_live(
-            agent_id, agent["name"], agent["description"], oasf_skills, port
+            agent_id, agent["name"], agent["description"], oasf_skills, port,
+            _declared_credentials(_deserialize_config(agent)),
         )
         logger.info("custom_spawned_live agent_id=%s pid=%s port=%s", agent_id, pid, port)
 
@@ -645,6 +651,15 @@ def set_supervisor(sup: Any) -> None:
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
+def _declared_credentials(
+    config: LLMConfig | APIProxyConfig | CustomConfig,
+) -> list[dict[str, Any]]:
+    """Declared user credentials (P4a) — only custom agents can declare them."""
+    if isinstance(config, CustomConfig):
+        return [c.model_dump() for c in config.credentials]
+    return []
+
+
 def _deserialize_config(agent: dict[str, Any]) -> LLMConfig | APIProxyConfig | CustomConfig:
     handler_type: str = agent["handler_type"]
     raw = agent["config"]
@@ -662,6 +677,7 @@ def _build_agent_card(
     description: str,
     oasf_skills: list[dict[str, Any]],
     port: int,
+    credentials: list[dict[str, Any]] | None = None,
 ) -> AgentCard:
     skills = [
         AgentSkill(
@@ -672,6 +688,9 @@ def _build_agent_card(
         )
         for s in oasf_skills
     ]
+    # P4a: declared user credentials ride on capabilities.extensions (the only
+    # field the planner's discovery read path round-trips). Omitted when empty.
+    ext = build_credentials_extension(credentials)
     return AgentCard(
         name=name,
         description=description,
@@ -679,7 +698,10 @@ def _build_agent_card(
         version="1.0.0",
         # streaming=True so the planner uses SSE and honors the executor's <30s
         # heartbeat (P3) — this is the card the planner actually reads from ADS.
-        capabilities=AgentCapabilities(streaming=True),
+        capabilities=AgentCapabilities(
+            streaming=True,
+            extensions=[ext] if ext else None,
+        ),
         skills=skills,
         default_input_modes=["text"],
         default_output_modes=["text"],

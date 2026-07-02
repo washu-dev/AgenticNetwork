@@ -17,6 +17,7 @@ from a2a.server.tasks import InMemoryTaskStore
 from a2a.types import AgentCapabilities, AgentCard, AgentSkill
 
 from agent_skeleton import HandlerExecutor
+from registration_service.card_credentials import build_credentials_extension
 
 logger = logging.getLogger(__name__)
 
@@ -32,13 +33,25 @@ def _load_handler_class(handler_file_path: str, class_name: str):
     return getattr(module, class_name)
 
 
-def build_agent_card(agent_id: str, name: str, description: str, port: int) -> AgentCard:
+def build_agent_card(
+    agent_id: str,
+    name: str,
+    description: str,
+    port: int,
+    credentials: list[dict] | None = None,
+) -> AgentCard:
+    # P4a: mirror the ADS-card credential carrier on the served card for direct
+    # callers (the planner reads the ADS-published card, not this one).
+    ext = build_credentials_extension(credentials)
     return AgentCard(
         name=name,
         description=description,
         url=f"http://localhost:{port}/",
         version="1.0.0",
-        capabilities=AgentCapabilities(streaming=True),  # heartbeat support (P3)
+        capabilities=AgentCapabilities(  # heartbeat support (P3)
+            streaming=True,
+            extensions=[ext] if ext else None,
+        ),
         skills=[
             AgentSkill(
                 id=f"{agent_id}/handle",
@@ -61,12 +74,13 @@ def run(
     extra: dict,
     port: int,
     max_runtime_seconds: float = 1800.0,
+    credentials: list[dict] | None = None,
 ) -> None:
     handler_class = _load_handler_class(handler_file_path, class_name)
     handler = handler_class(extra)
     executor = HandlerExecutor(handler, max_runtime_seconds=max_runtime_seconds)
 
-    card = build_agent_card(agent_id, name, description, port)
+    card = build_agent_card(agent_id, name, description, port, credentials)
     request_handler = DefaultRequestHandler(
         agent_executor=executor,
         task_store=InMemoryTaskStore(),
