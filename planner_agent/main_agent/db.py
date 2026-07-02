@@ -28,6 +28,25 @@ CREATE TABLE IF NOT EXISTS user_credentials (
     UNIQUE (user_id, provider)
 );
 
+-- P4c (Option A): the provider column now stores canonical catalog `type`
+-- strings. Self-healing migration of legacy values written before P4c — idempotent
+-- (only rewrites the known legacy set; google_oauth is already canonical, untouched).
+UPDATE user_credentials SET provider = 'openai_api_key'      WHERE provider = 'openai';
+UPDATE user_credentials SET provider = 'anthropic_api_key'   WHERE provider = 'anthropic';
+UPDATE user_credentials SET provider = 'brave_api_key'       WHERE provider = 'brave';
+UPDATE user_credentials SET provider = 'google_api_key'      WHERE provider = 'google_api';
+UPDATE user_credentials SET provider = 'google_maps_api_key' WHERE provider = 'google_maps';
+
+-- P4c: per-agent credential grants. A grant records that the user consented to
+-- inject a given credential type into a specific agent's requests.
+CREATE TABLE IF NOT EXISTS agent_credential_grants (
+    user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    agent_id   TEXT NOT NULL,
+    cred_type  TEXT NOT NULL,
+    granted_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_id, agent_id, cred_type)
+);
+
 CREATE OR REPLACE FUNCTION planner_update_updated_at()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN
@@ -95,6 +114,59 @@ async def fetch_user_credentials(user_id: object) -> dict:
         except Exception:
             logger.warning("planner_db_credential_decrypt_failed provider=%s", row["provider"])
     return result
+
+
+async def list_grants(user_id: object, agent_id: str) -> set[str]:
+    """Return the set of cred_types the user has granted to a specific agent (P4c)."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT cred_type FROM agent_credential_grants WHERE user_id = $1 AND agent_id = $2",
+            user_id,
+            agent_id,
+        )
+    return {r["cred_type"] for r in rows}
+
+
+async def list_all_grants(user_id: object) -> list[dict]:
+    """Return all of the user's grants across agents (for the Settings UI)."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT agent_id, cred_type, granted_at FROM agent_credential_grants "
+            "WHERE user_id = $1 ORDER BY agent_id, cred_type",
+            user_id,
+        )
+    return [
+        {"agent_id": r["agent_id"], "cred_type": r["cred_type"], "granted_at": r["granted_at"].isoformat()}
+        for r in rows
+    ]
+
+
+async def add_grant(user_id: object, agent_id: str, cred_type: str) -> None:
+    """Record a per-agent credential grant (idempotent)."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO agent_credential_grants (user_id, agent_id, cred_type) "
+            "VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
+            user_id,
+            agent_id,
+            cred_type,
+        )
+
+
+async def revoke_grant(user_id: object, agent_id: str, cred_type: str) -> bool:
+    """Remove a grant. Returns True if a row was deleted."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            "DELETE FROM agent_credential_grants WHERE user_id = $1 AND agent_id = $2 AND cred_type = $3",
+            user_id,
+            agent_id,
+            cred_type,
+        )
+    return result != "DELETE 0"
 
 
 async def close_db() -> None:
