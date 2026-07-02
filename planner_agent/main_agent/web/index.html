@@ -834,6 +834,28 @@ body {
 
       <div class="apikey-row">
         <div class="apikey-label-row">
+          <div class="settings-row-label">OpenAI API Key</div>
+          <div class="settings-row-sub">Used by agents that call OpenAI on your behalf</div>
+        </div>
+        <div class="apikey-field" id="key-field-openai">
+          <input class="apikey-input" id="key-input-openai" type="password" placeholder="Paste key&hellip;" autocomplete="new-password">
+          <button type="button" class="av-btn av-btn-primary av-btn-sm" onclick="saveKey('openai')">Save</button>
+        </div>
+      </div>
+
+      <div class="apikey-row">
+        <div class="apikey-label-row">
+          <div class="settings-row-label">Anthropic API Key</div>
+          <div class="settings-row-sub">Used by agents that call Anthropic on your behalf</div>
+        </div>
+        <div class="apikey-field" id="key-field-anthropic">
+          <input class="apikey-input" id="key-input-anthropic" type="password" placeholder="Paste key&hellip;" autocomplete="new-password">
+          <button type="button" class="av-btn av-btn-primary av-btn-sm" onclick="saveKey('anthropic')">Save</button>
+        </div>
+      </div>
+
+      <div class="apikey-row">
+        <div class="apikey-label-row">
           <div class="settings-row-label">Brave Search API</div>
           <div class="settings-row-sub">Used by Scout Agent for web search</div>
         </div>
@@ -865,6 +887,13 @@ body {
         </div>
       </div>
 
+    </div>
+
+    <!-- Agent Permissions (per-agent credential grants) -->
+    <div class="settings-section">
+      <div class="settings-section-label">Agent Permissions</div>
+      <div class="settings-row-sub" style="padding-bottom:8px">Agents you've allowed to use your saved credentials. Revoking re-prompts on the next use.</div>
+      <div id="grants-list"><div class="settings-row-sub">Loading&hellip;</div></div>
     </div>
   </div>
 </div>
@@ -1507,6 +1536,7 @@ async function openSettings() {
     if (creds) renderSavedCredentials(creds.providers);
   } catch (e) {}
   _renderGoogleStatus();
+  loadGrants();
 }
 function closeSettings() {
   document.getElementById('settings-drawer').classList.remove('open');
@@ -1533,11 +1563,11 @@ async function _disconnectGoogle() {
   _renderGoogleStatus();
 }
 
-// ── API keys ──
-const savedKeys = { brave: null, googleApi: null, googleMaps: null };
-const keyMasks  = { brave: 'BSA-••••••••', googleApi: 'AIza••••••••', googleMaps: 'AIza••••••••' };
-const _keyToProvider = { brave: 'brave', googleApi: 'google_api', googleMaps: 'google_maps' };
-const _providerToKey = { brave: 'brave', google_api: 'googleApi', google_maps: 'googleMaps' };
+// ── API keys ── (providers use the canonical catalog `type` namespace, P4c)
+const savedKeys = { openai: null, anthropic: null, brave: null, googleApi: null, googleMaps: null };
+const keyMasks  = { openai: 'sk-••••••••', anthropic: 'sk-ant-••••••••', brave: 'BSA-••••••••', googleApi: 'AIza••••••••', googleMaps: 'AIza••••••••' };
+const _keyToProvider = { openai: 'openai_api_key', anthropic: 'anthropic_api_key', brave: 'brave_api_key', googleApi: 'google_api_key', googleMaps: 'google_maps_api_key' };
+const _providerToKey = { openai_api_key: 'openai', anthropic_api_key: 'anthropic', brave_api_key: 'brave', google_api_key: 'googleApi', google_maps_api_key: 'googleMaps' };
 
 function renderSavedCredentials(providers) {
   Object.keys(savedKeys).forEach(k => { savedKeys[k] = null; });
@@ -1547,6 +1577,40 @@ function renderSavedCredentials(providers) {
     if (k) savedKeys[k] = true;
   });
   Object.keys(savedKeys).forEach(k => renderKeyField(k));
+}
+
+// ── Agent permissions (per-agent credential grants, P4c/P4d) ──
+async function loadGrants() {
+  const el = document.getElementById('grants-list');
+  if (!el) return;
+  try {
+    const data = await fetch('/me/grants').then(r => r.ok ? r.json() : null);
+    renderGrants(data ? data.grants : null);
+  } catch (e) { el.innerHTML = '<div class="settings-row-sub">Unavailable.</div>'; }
+}
+function renderGrants(grants) {
+  const el = document.getElementById('grants-list');
+  if (!el) return;
+  if (!grants || !grants.length) {
+    el.innerHTML = '<div class="settings-row-sub">No agents have been granted access to your credentials yet.</div>';
+    return;
+  }
+  el.innerHTML = grants.map(g => `
+    <div class="settings-row">
+      <div class="settings-row-info">
+        <div class="settings-row-label">${uvEsc(g.agent_id)}</div>
+        <div class="settings-row-sub">${uvEsc(g.cred_type)}</div>
+      </div>
+      <button type="button" class="av-btn av-btn-ghost av-btn-sm"
+        onclick="revokeGrant('${uvEsc(g.agent_id)}','${uvEsc(g.cred_type)}')">Revoke</button>
+    </div>`).join('');
+}
+async function revokeGrant(agentId, credType) {
+  try {
+    const r = await fetch(`/me/grants/${encodeURIComponent(agentId)}/${encodeURIComponent(credType)}`, { method: 'DELETE' });
+    if (r.ok || r.status === 204) loadGrants();
+    else alert('Error revoking access.');
+  } catch (e) { alert('Error revoking access: ' + e.message); }
 }
 async function saveKey(k) {
   const input = document.getElementById('key-input-'+k);
@@ -2001,34 +2065,37 @@ async function uvSendMessage() {
               area.insertBefore(liveDiv, typingEl);
               liveBubble = document.getElementById('uv-live-bubble-' + liveId);
             }
-            liveBubble.innerHTML = uvFmt(finalData.text || finalData.final_response || '(no response)');
-            const fb = document.createElement('div');
-            fb.innerHTML = `
-              <div class="uv-feedback-row" id="uv-fbr-${liveId}">
-                <button type="button" class="uv-fb-btn up" onclick="uvVote(${liveId},'up')">Helpful</button>
-                <button type="button" class="uv-fb-btn down" onclick="uvVote(${liveId},'down')">Not helpful</button>
-                <span class="uv-fb-label">Was this response useful?</span>
-              </div>
-              <div class="uv-fb-comment-row" id="uv-fbc-${liveId}">
-                <input class="uv-fb-input" placeholder="Optional: tell us more…">
-                <button type="button" class="uv-fb-submit" onclick="uvSubmitFb(${liveId})">Submit</button>
-              </div>
-              <span class="uv-fb-thanks" id="uv-fbt-${liveId}">Thanks for your feedback.</span>`;
-            liveDiv.appendChild(fb);
-            if (finalData.state === 'input_required' && finalData.confirmation_required) {
-              const skill = finalData.pending_confirmation && finalData.pending_confirmation.skill;
-              const confDiv = document.createElement('div');
-              confDiv.className = 'uv-msg agent';
-              confDiv.innerHTML = `
-                <span class="uv-msg-sender">Planner Agent</span>
-                <div class="uv-msg-bubble">
-                  Confirm: run <strong>${uvEsc(skill||'action')}</strong>?
-                  <div style="display:flex;gap:8px;margin-top:8px">
-                    <button type="button" class="av-btn av-btn-primary av-btn-sm" onclick="uvConfirm(true)">Yes, proceed</button>
-                    <button type="button" class="av-btn av-btn-ghost av-btn-sm" onclick="uvConfirm(false)">Cancel</button>
-                  </div>
+            const needsConfirm = finalData.state === 'input_required' && finalData.confirmation_required;
+            if (needsConfirm) {
+              // A confirmation/consent prompt renders as a single card (the prompt +
+              // action buttons) — not also as a plain message with feedback, which
+              // would duplicate the text.
+              const pc = finalData.pending_confirmation || {};
+              const prompt = pc.kind === 'credential_consent'
+                ? uvEsc(finalData.text || 'This agent needs one of your saved credentials.')
+                : `Confirm: run <strong>${uvEsc(pc.skill || 'action')}</strong>?`;
+              const okLabel = pc.kind === 'credential_consent' ? 'Allow' : 'Yes, proceed';
+              liveBubble.innerHTML = `
+                ${prompt}
+                <div style="display:flex;gap:8px;margin-top:8px">
+                  <button type="button" class="av-btn av-btn-primary av-btn-sm" onclick="uvConfirm(true)">${okLabel}</button>
+                  <button type="button" class="av-btn av-btn-ghost av-btn-sm" onclick="uvConfirm(false)">Cancel</button>
                 </div>`;
-              area.insertBefore(confDiv, typingEl);
+            } else {
+              liveBubble.innerHTML = uvFmt(finalData.text || finalData.final_response || '(no response)');
+              const fb = document.createElement('div');
+              fb.innerHTML = `
+                <div class="uv-feedback-row" id="uv-fbr-${liveId}">
+                  <button type="button" class="uv-fb-btn up" onclick="uvVote(${liveId},'up')">Helpful</button>
+                  <button type="button" class="uv-fb-btn down" onclick="uvVote(${liveId},'down')">Not helpful</button>
+                  <span class="uv-fb-label">Was this response useful?</span>
+                </div>
+                <div class="uv-fb-comment-row" id="uv-fbc-${liveId}">
+                  <input class="uv-fb-input" placeholder="Optional: tell us more…">
+                  <button type="button" class="uv-fb-submit" onclick="uvSubmitFb(${liveId})">Submit</button>
+                </div>
+                <span class="uv-fb-thanks" id="uv-fbt-${liveId}">Thanks for your feedback.</span>`;
+              liveDiv.appendChild(fb);
             }
             uvScroll();
           } else if (msg.event === 'error') {
