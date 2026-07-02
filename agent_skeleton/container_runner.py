@@ -66,13 +66,16 @@ def main() -> None:
 
     from agent_skeleton import HandlerExecutor
 
-    executor = HandlerExecutor(handler)
+    executor = HandlerExecutor(
+        handler,
+        max_runtime_seconds=float(config.get("max_runtime_seconds", 1800)),
+    )
     card = AgentCard(
         name=name,
         description=description,
         url=f"http://localhost:{port}/",
         version="1.0.0",
-        capabilities=AgentCapabilities(streaming=False),
+        capabilities=AgentCapabilities(streaming=True),  # heartbeat support (P3)
         skills=[AgentSkill(id=f"{agent_id}/handle", name="handle", description=description, tags=[])],
         default_input_modes=["text"],
         default_output_modes=["text"],

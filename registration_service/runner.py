@@ -75,6 +75,7 @@ def main() -> None:
             class_name=config["class_name"],
             extra=config.get("extra", {}),
             port=port,
+            max_runtime_seconds=float(config.get("max_runtime_seconds", 1800)),
         )
     else:
         logger.error("runner_unknown_handler_type handler_type=%s", handler_type)

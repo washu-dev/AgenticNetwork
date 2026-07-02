@@ -26,13 +26,26 @@ class APIProxyConfig(BaseModel):
     auth_header: str | None = None
 
 
+HARD_MAX_RUNTIME_SECONDS = 3600   # ceiling for a single agent request (D11)
+
+
 class CustomConfig(BaseModel):
     class_name: str
     python_version: str = "3.11"
     requirements: list[str] = Field(default_factory=list)
     entry_file: str = "handler.py"          # adapter module at the upload root that defines class_name
     install_project: bool = True            # pip install . if pyproject.toml/setup.py present at root
+    max_runtime_seconds: int = 1800         # per-request cap; clamped to HARD_MAX_RUNTIME_SECONDS
     extra: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("max_runtime_seconds")
+    @classmethod
+    def _clamp_runtime(cls, v: int) -> int:
+        # Clamp to a sane window: non-positive falls back to the default; the
+        # hard ceiling protects the node from a runaway request.
+        if v <= 0:
+            return 1800
+        return min(v, HARD_MAX_RUNTIME_SECONDS)
 
 
 def parse_config(handler_type: str, raw: dict) -> LLMConfig | APIProxyConfig | CustomConfig:

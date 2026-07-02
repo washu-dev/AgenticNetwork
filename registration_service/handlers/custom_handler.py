@@ -38,7 +38,7 @@ def build_agent_card(agent_id: str, name: str, description: str, port: int) -> A
         description=description,
         url=f"http://localhost:{port}/",
         version="1.0.0",
-        capabilities=AgentCapabilities(streaming=False),
+        capabilities=AgentCapabilities(streaming=True),  # heartbeat support (P3)
         skills=[
             AgentSkill(
                 id=f"{agent_id}/handle",
@@ -60,10 +60,11 @@ def run(
     class_name: str,
     extra: dict,
     port: int,
+    max_runtime_seconds: float = 1800.0,
 ) -> None:
     handler_class = _load_handler_class(handler_file_path, class_name)
     handler = handler_class(extra)
-    executor = HandlerExecutor(handler)
+    executor = HandlerExecutor(handler, max_runtime_seconds=max_runtime_seconds)
 
     card = build_agent_card(agent_id, name, description, port)
     request_handler = DefaultRequestHandler(

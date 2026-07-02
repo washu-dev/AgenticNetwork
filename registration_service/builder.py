@@ -81,7 +81,7 @@ def generate_card_json(agent: dict[str, Any]) -> dict[str, Any]:
         "description": description,
         "url": f"http://AGENT_HOST:{port}/" if port else "http://AGENT_HOST/",
         "version": "1.0.0",
-        "capabilities": {"streaming": False},
+        "capabilities": {"streaming": True},
         "skills": [
             {
                 "id": s.get("key") or s.get("name", ""),

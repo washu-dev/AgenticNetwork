@@ -8,11 +8,14 @@ raises a clear error via require_a2a().
 """
 from __future__ import annotations
 
+import asyncio
 import base64
+import contextlib
 from typing import TYPE_CHECKING
 
 from agent_skeleton.a2a_runtime import (
     AgentExecutorBase,
+    TaskState,
     data_part,
     require_a2a,
     task_updater,
@@ -24,28 +27,90 @@ if TYPE_CHECKING:
     from a2a.server.agent_execution import RequestContext
     from a2a.server.events import EventQueue
 
+# A `working` heartbeat must arrive more often than the caller's between-bytes
+# read timeout (planner default A2A_HTTP_TIMEOUT_SECONDS=30s) or a slow handler's
+# call is dropped mid-flight. 20s stays comfortably under that.
+HEARTBEAT_SECONDS = 20.0
+DEFAULT_MAX_RUNTIME_SECONDS = 1800.0
+
 
 class HandlerExecutor(AgentExecutorBase):
-    """Wraps any AgentHandler in the A2A executor interface."""
+    """Wraps any AgentHandler in the A2A executor interface.
 
-    def __init__(self, handler: AgentHandler):
+    Runs handle_structured() as a background task and, while it's in flight,
+    emits a `working` status update every ``heartbeat_seconds`` so long-running
+    handlers keep the caller's streaming connection alive (P3). Enforces a
+    ``max_runtime_seconds`` ceiling: on overrun the task is cancelled and the
+    task is marked failed. Fast handlers finish before the first beat, so their
+    behavior is unchanged.
+    """
+
+    def __init__(
+        self,
+        handler: AgentHandler,
+        *,
+        heartbeat_seconds: float = HEARTBEAT_SECONDS,
+        max_runtime_seconds: float = DEFAULT_MAX_RUNTIME_SECONDS,
+    ):
         require_a2a()
         self.handler = handler
+        self.heartbeat_seconds = heartbeat_seconds
+        self.max_runtime_seconds = max_runtime_seconds
 
     async def execute(self, context: "RequestContext", event_queue: "EventQueue") -> None:
         user_input = context.get_user_input() or ""
         files = _extract_files(context)
 
-        result = await self.handler.handle_structured(user_input, files)
-
-        if "answer" not in result:
-            raise ValueError(
-                f"handle_structured() must return a dict with an 'answer' key. "
-                f"Got keys: {list(result.keys())}"
-            )
-
         updater = task_updater(event_queue, context.task_id, context.context_id)
         await updater.start_work()
+
+        task = asyncio.ensure_future(self.handler.handle_structured(user_input, files))
+        elapsed = 0.0
+        while True:
+            # asyncio.wait does NOT cancel the task on timeout — it just tells us
+            # whether it finished within this beat window.
+            done, _ = await asyncio.wait({task}, timeout=self.heartbeat_seconds)
+            if task in done:
+                break
+            elapsed += self.heartbeat_seconds
+            if self.max_runtime_seconds and elapsed >= self.max_runtime_seconds:
+                task.cancel()
+                with contextlib.suppress(BaseException):
+                    await task
+                await updater.failed(
+                    message=updater.new_agent_message(
+                        [text_part(
+                            f"Agent exceeded its {self.max_runtime_seconds:g}s runtime limit."
+                        )]
+                    )
+                )
+                return
+            await updater.update_status(
+                TaskState.working,
+                message=updater.new_agent_message(
+                    [text_part(f"working… ({int(elapsed)}s elapsed)")]
+                ),
+            )
+
+        try:
+            result = task.result()
+        except Exception as exc:  # handler raised — surface as a failed task
+            await updater.failed(
+                message=updater.new_agent_message([text_part(f"Agent failed: {exc}")])
+            )
+            return
+
+        if "answer" not in result:
+            await updater.failed(
+                message=updater.new_agent_message(
+                    [text_part(
+                        "handle_structured() must return a dict with an 'answer' key. "
+                        f"Got keys: {list(result.keys())}"
+                    )]
+                )
+            )
+            return
+
         await updater.add_artifact(
             [data_part(result)],
             name="result",

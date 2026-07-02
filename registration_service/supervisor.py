@@ -677,7 +677,9 @@ def _build_agent_card(
         description=description,
         url=f"http://localhost:{port}/",
         version="1.0.0",
-        capabilities=AgentCapabilities(streaming=False),
+        # streaming=True so the planner uses SSE and honors the executor's <30s
+        # heartbeat (P3) — this is the card the planner actually reads from ADS.
+        capabilities=AgentCapabilities(streaming=True),
         skills=skills,
         default_input_modes=["text"],
         default_output_modes=["text"],
