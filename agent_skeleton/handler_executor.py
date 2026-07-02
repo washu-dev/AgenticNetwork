@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import inspect
 from typing import TYPE_CHECKING
 
 from agent_skeleton.a2a_runtime import (
@@ -64,7 +65,22 @@ class HandlerExecutor(AgentExecutorBase):
         updater = task_updater(event_queue, context.task_id, context.context_id)
         await updater.start_work()
 
-        task = asyncio.ensure_future(self.handler.handle_structured(user_input, files))
+        # P4d: per-user credentials arrive in the request params metadata (the
+        # planner injects them scoped to this agent's declared+granted creds).
+        # Pass a context dict only to handlers that opted in by declaring the
+        # parameter — 2-arg handlers are called exactly as before. NEVER log the
+        # context: it holds raw secrets.
+        if _handler_accepts_context(self.handler.handle_structured):
+            request_meta = getattr(context, "metadata", None) or {}
+            handler_context = {
+                "credentials": request_meta.get("credentials") or {},
+                "user_id": request_meta.get("user_id"),
+            }
+            task = asyncio.ensure_future(
+                self.handler.handle_structured(user_input, files, handler_context)
+            )
+        else:
+            task = asyncio.ensure_future(self.handler.handle_structured(user_input, files))
         elapsed = 0.0
         while True:
             # asyncio.wait does NOT cancel the task on timeout — it just tells us
@@ -126,6 +142,28 @@ class HandlerExecutor(AgentExecutorBase):
     async def cancel(self, context: "RequestContext", event_queue: "EventQueue") -> None:
         updater = task_updater(event_queue, context.task_id, context.context_id)
         await updater.reject()
+
+
+def _handler_accepts_context(fn) -> bool:
+    """True if ``handle_structured`` opts into the P4d credential context.
+
+    Accepts either a ``context`` keyword or a 3rd positional parameter beyond
+    ``user_input`` and ``files`` (``fn`` is bound, so ``self`` is excluded). A
+    handler that accepts ``**kwargs`` also opts in.
+    """
+    try:
+        params = inspect.signature(fn).parameters
+    except (ValueError, TypeError):
+        return False
+    if "context" in params:
+        return True
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return True
+    positional = [
+        p for p in params.values()
+        if p.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.POSITIONAL_ONLY)
+    ]
+    return len(positional) >= 3  # user_input, files, <context>
 
 
 def _extract_files(context: "RequestContext") -> list[FileInput]:

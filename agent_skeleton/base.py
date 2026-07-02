@@ -58,6 +58,20 @@ class AgentHandler(ABC):
                 self, user_input: str, files: list[FileInput] = []
             ) -> dict:
                 return {"answer": "your response"}
+
+    Per-user credentials (optional): declare required credentials at registration
+    time, then accept an optional 3rd ``context`` argument to receive them:
+
+        class MyHandler(AgentHandler):
+            async def handle_structured(self, user_input, files=[], context=None):
+                creds = (context or {}).get("credentials", {})
+                api_key = creds.get("openai_api_key", {}).get("api_key")
+                ...
+
+    ``context`` is injected only for handlers that declare the parameter; 2-arg
+    handlers keep working unchanged. It carries ``{"credentials": {type: payload},
+    "user_id": ...}`` where ``type`` is the declared credential type (e.g.
+    ``"openai_api_key"``). Treat its contents as secrets — never log them.
     """
 
     def __init__(self, config: dict):
@@ -68,12 +82,16 @@ class AgentHandler(ABC):
         self,
         user_input: str,
         files: list[FileInput] = [],
+        context: dict | None = None,
     ) -> dict:
         """
         Core logic. Must return a dict containing an "answer" key.
 
         The "answer" value is the human-readable text response shown to the user.
         All other keys are passed to the planner as structured output.
+
+        ``context`` is optional and injected only if this method declares it (see
+        the class docstring); it carries per-user credentials the agent declared.
 
         Raises ValueError at runtime if "answer" is missing.
         """
