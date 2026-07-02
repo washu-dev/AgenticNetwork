@@ -55,9 +55,7 @@ This design directly answers the front-end test prompts:
 For reasoning models (gpt-5.x, o-series), each tool step is preceded by a
 `{"tool": "reasoning", ...}` entry in `tool_trace`. The chat UI renders it
 as a blue italic block ("thinking → … chose: list_agents") so the user can
-see *why* the LLM picked the next tool. This requires
-`MAIN_AGENT_REASONING_EFFORT=medium` (or higher); `low` and `minimal`
-produce empty summaries.
+see *why* the LLM picked the next tool, when the model emits a reasoning channel.
 
 ## Layout
 
@@ -80,7 +78,6 @@ planner_agent/
 ├── scripts/
 │   ├── start.sh            # auto-loads .env.local, starts uvicorn
 │   ├── doctor.sh           # one-shot self-check (env, dirctl, ADS, server, OpenAI, tests)
-│   ├── publish_agents.py   # planner-local Agent Card publisher for fake/real ADS
 │   └── run_server.py       # python entrypoint (called by start.sh)
 └── tests/                  # tests run with mocked LLM + ADS
 ```
@@ -202,8 +199,6 @@ through `dirctl` instead of the in-process fake.
 | `MAIN_AGENT_LLM_ENABLED`       | `true`        | Set false for purely scripted (test) runs                     |
 | `MAIN_AGENT_LLM_PROVIDER`      | `openai`      | Only `openai` is supported today                              |
 | `MAIN_AGENT_LLM_MODEL`         | `gpt-4o-mini` | OpenAI model id (we ship `.env.example` with `gpt-5.1`)       |
-| `MAIN_AGENT_REASONING_EFFORT`  | (unset)       | `minimal`/`low`/`medium`/`high`. Use `medium` to surface reasoning summaries in the UI |
-| `MAIN_AGENT_VERBOSITY`         | (unset)       | `low`/`medium`/`high` for OpenAI Responses verbosity          |
 | `MAIN_AGENT_MAX_OUTPUT_TOKENS` | `1500`        | Per-turn output cap. Bump to ≥4000 for reasoning models       |
 | `MAIN_AGENT_MAX_STEPS`         | `10`          | Max tool-loop iterations per user message                     |
 | `MAIN_AGENT_TIMEOUT_SECONDS`   | `60`          | OpenAI call timeout                                           |

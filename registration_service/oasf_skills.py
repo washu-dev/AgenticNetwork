@@ -157,7 +157,3 @@ OASF_SKILLS: list[dict] = [
     {"name": "Advanced Reasoning & Planning / Chain-of-Thought Structuring", "id": 1503, "key": "advanced_reasoning_and_planning/chain_of_thought_structuring"},
     {"name": "Advanced Reasoning & Planning / Hypothesis Generation", "id": 1504, "key": "advanced_reasoning_and_planning/hypothesis_generation"},
 ]
-
-# Quick lookup by taxonomy path
-OASF_SKILLS_BY_NAME: dict[str, dict] = {s["name"]: s for s in OASF_SKILLS}
-OASF_SKILLS_BY_KEY: dict[str, dict] = {s["key"]: s for s in OASF_SKILLS}

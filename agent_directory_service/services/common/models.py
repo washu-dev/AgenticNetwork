@@ -117,14 +117,6 @@ class A2ATaskRequest(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
-class A2ATaskStatus(BaseModel):
-    task_id: str
-    context_id: str
-    state: A2ATaskState
-    message: str | None = None
-    updated_at: datetime = Field(default_factory=utc_now)
-
-
 class A2ATaskResult(BaseModel):
     task_id: str
     context_id: str

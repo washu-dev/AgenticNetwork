@@ -1,9 +1,13 @@
 __pycache__/
 *.py[cod]
 *$py.class
+*.egg-info/
 
 .pytest_cache/
 *.log
+
+# Runtime output: uploaded custom-agent handler trees (never source)
+uploaded_handlers/
 
 # Local secrets / runtime configuration
 .env

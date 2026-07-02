@@ -167,14 +167,6 @@ class A2ATaskRequest(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
-class A2ATaskStatus(BaseModel):
-    task_id: str
-    context_id: str
-    state: A2ATaskState
-    message: str | None = None
-    updated_at: datetime = Field(default_factory=utc_now)
-
-
 class A2ATaskResult(BaseModel):
     task_id: str
     context_id: str
@@ -183,16 +175,6 @@ class A2ATaskResult(BaseModel):
     artifacts: list[A2AArtifact] = Field(default_factory=list)
     structured_output: dict[str, Any] | None = None
     error: str | None = None
-
-
-class RoutingDecision(BaseModel):
-    context_id: str
-    user_goal: str
-    selected_agents: list[DiscoveredAgent]
-    rejected_agents: list[DiscoveredAgent] = Field(default_factory=list)
-    reason: str
-    confidence: float = Field(..., ge=0, le=1)
-    requires_human_confirmation: bool = False
 
 
 class PolicyDecision(BaseModel):
