@@ -19,8 +19,6 @@ class MainAgentConfig(BaseModel):
     llm_enabled: bool = True
     llm_provider: str = "openai"
     llm_model: str = "gpt-4o-mini"
-    reasoning_effort: str | None = None
-    verbosity: str | None = None
     max_output_tokens: int = Field(1500, gt=0)
     timeout_seconds: float = Field(60, gt=0)
     max_steps: int = Field(10, gt=0)
@@ -39,8 +37,6 @@ def load_config(env: Mapping[str, str] | None = None) -> MainAgentConfig:
         llm_enabled=_bool(values.get("MAIN_AGENT_LLM_ENABLED"), default=True),
         llm_provider=values.get("MAIN_AGENT_LLM_PROVIDER", "openai").strip().lower(),
         llm_model=values.get("MAIN_AGENT_LLM_MODEL", "gpt-4o-mini").strip(),
-        reasoning_effort=_optional(values.get("MAIN_AGENT_REASONING_EFFORT")),
-        verbosity=_optional(values.get("MAIN_AGENT_VERBOSITY")),
         max_output_tokens=_int(values.get("MAIN_AGENT_MAX_OUTPUT_TOKENS"), default=1500),
         timeout_seconds=_float(values.get("MAIN_AGENT_TIMEOUT_SECONDS"), default=60),
         max_steps=_int(values.get("MAIN_AGENT_MAX_STEPS"), default=10),

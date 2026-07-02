@@ -1,78 +1,30 @@
 #!/bin/bash
+# ─────────────────────────────────────────────────────────────────────────────
+# entrypoint-registration.sh — registration service container entrypoint.
+#
+# As of the ADS→Postgres migration (Option B), Postgres runs in its own
+# dedicated container (see entrypoint-postgres.sh). This container is now a pure
+# DB *client*: it no longer initialises or hosts Postgres. It waits for the
+# external Postgres and ADS to be reachable over host-localhost, then starts the
+# FastAPI registration service. Its DSN (REGISTRATION_DB_DSN) is unchanged.
+# ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
-PGDATA="${PGDATA:-/var/lib/postgresql/data}"
 PGPORT="${PGPORT:-5432}"
-PGDATABASE="${PGDATABASE:-registration}"
-PGBIN=/usr/lib/postgresql/15/bin
 
-PGSOCKET=/tmp/postgresql
-mkdir -p "$PGSOCKET"
-
-pg_start() {
-    "$PGBIN/pg_ctl" start -D "$PGDATA" -l "$PGDATA/postgres.log" -w -t 30 \
-        -o "-c unix_socket_directories=$PGSOCKET" || {
-        echo "[registration] pg_ctl failed to start. Postgres log:"
-        cat "$PGDATA/postgres.log" || true
-        exit 1
-    }
-}
-
-# ── PostgreSQL init ───────────────────────────────────────────────────────────
-if [ -z "$(ls -A "$PGDATA" 2>/dev/null)" ]; then
-    echo "[registration] Initialising PostgreSQL data directory at ${PGDATA}..."
-    mkdir -p "$PGDATA"
-    chmod 0700 "$PGDATA"
-    "$PGBIN/initdb" -D "$PGDATA" --encoding=UTF8 --locale=C
-
-    # SysV shared memory works in HPC containers where /dev/shm (posix) is restricted.
-    # Use mv instead of sed -i to avoid NFS permission-preservation errors.
-    sed "s|#dynamic_shared_memory_type = posix|dynamic_shared_memory_type = sysv|" \
-        "$PGDATA/postgresql.conf" > "$PGDATA/postgresql.conf.tmp" \
-        && mv "$PGDATA/postgresql.conf.tmp" "$PGDATA/postgresql.conf"
-
-    # Enable TCP on localhost so the planner container can connect over 127.0.0.1:5432.
-    sed "s|#listen_addresses = 'localhost'|listen_addresses = 'localhost'|" \
-        "$PGDATA/postgresql.conf" > "$PGDATA/postgresql.conf.tmp" \
-        && mv "$PGDATA/postgresql.conf.tmp" "$PGDATA/postgresql.conf"
-    echo "host  all  all  127.0.0.1/32  trust" >> "$PGDATA/pg_hba.conf"
-
-    echo "[registration] Cluster initialised."
-fi
-
-# For already-initialised clusters: ensure TCP is enabled (idempotent).
-# This block runs on every start and is a no-op once the setting is present.
-if ! grep -q "^listen_addresses" "$PGDATA/postgresql.conf" 2>/dev/null; then
-    echo "[registration] Patching postgresql.conf to enable TCP on localhost..."
-    echo "listen_addresses = 'localhost'" >> "$PGDATA/postgresql.conf"
-fi
-if ! grep -q "127.0.0.1/32" "$PGDATA/pg_hba.conf" 2>/dev/null; then
-    echo "[registration] Patching pg_hba.conf to allow local TCP connections..."
-    echo "host  all  all  127.0.0.1/32  trust" >> "$PGDATA/pg_hba.conf"
-fi
-
-echo "[registration] Starting PostgreSQL..."
-rm -f "$PGDATA/postmaster.pid"
-pg_start
-
-echo "[registration] Waiting for PostgreSQL to accept connections..."
-for i in $(seq 1 30); do
-    if "$PGBIN/pg_isready" -h "$PGSOCKET" -p "$PGPORT" -q 2>/dev/null; then
+# ── Wait for the external PostgreSQL service ──────────────────────────────────
+echo "[registration] Waiting for PostgreSQL on :${PGPORT} ..."
+for i in $(seq 1 60); do
+    if /usr/local/bin/python3 -c "import socket; socket.create_connection(('localhost', ${PGPORT}), timeout=1).close()" 2>/dev/null; then
         echo "[registration] PostgreSQL ready (${i}s)."
         break
     fi
-    if [ "$i" -eq 30 ]; then
-        echo "[registration] ERROR: PostgreSQL not ready after 30s. Postgres log:"
-        cat "$PGDATA/postgres.log" || true
+    if [ "$i" -eq 60 ]; then
+        echo "[registration] ERROR: PostgreSQL not reachable on :${PGPORT} after 60s."
         exit 1
     fi
     sleep 1
 done
-
-# Ensure postgres superuser role and registration database exist (idempotent).
-"$PGBIN/createuser" -h "$PGSOCKET" -p "$PGPORT" --superuser postgres 2>/dev/null || true
-"$PGBIN/createdb"   -h "$PGSOCKET" -p "$PGPORT" -U postgres "$PGDATABASE" 2>/dev/null || true
-echo "[registration] Database '${PGDATABASE}' ready."
 
 # ── Wait for ADS ──────────────────────────────────────────────────────────────
 ADS_ADDR="${ADS_SERVER_ADDR:-localhost:8888}"

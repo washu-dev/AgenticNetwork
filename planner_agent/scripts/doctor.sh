@@ -46,7 +46,6 @@ if [[ -f "$ENV_FILE" ]]; then
     ok "OPENAI_API_KEY is set (${OPENAI_API_KEY:0:8}...)"
   fi
   ok "model:           ${MAIN_AGENT_LLM_MODEL:-(unset, default gpt-4o-mini)}"
-  ok "reasoning_effort: ${MAIN_AGENT_REASONING_EFFORT:-(unset)}"
   ok "policy_mode:     ${MAIN_AGENT_POLICY_MODE:-(unset, default permissive)}"
   ok "fake_ads:        ${AGENT_NETWORK_FAKE_ADS:-(unset, default false)}"
   ok "ads_server:      ${ADS_SERVER_ADDR:-(unset!)}"

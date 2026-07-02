@@ -14,20 +14,34 @@ _pool: asyncpg.Pool | None = None
 
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS agents (
-    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    name          TEXT NOT NULL,
-    description   TEXT NOT NULL,
-    handler_type  TEXT NOT NULL CHECK (handler_type IN ('llm', 'api_proxy')),
-    oasf_skills   JSONB NOT NULL,
-    config        JSONB NOT NULL,
-    port          INT UNIQUE,
-    status        TEXT NOT NULL DEFAULT 'registered'
-                      CHECK (status IN ('registered', 'live', 'failed', 'stopped')),
-    endpoint_url  TEXT,
-    ads_cid       TEXT,
-    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name              TEXT NOT NULL,
+    description       TEXT NOT NULL,
+    handler_type      TEXT NOT NULL CHECK (handler_type IN ('llm', 'api_proxy', 'custom')),
+    oasf_skills       JSONB NOT NULL,
+    config            JSONB NOT NULL,
+    port              INT UNIQUE,
+    status            TEXT NOT NULL DEFAULT 'registered'
+                          CHECK (status IN ('registered', 'live', 'failed', 'stopped', 'building', 'image_ready')),
+    handler_file_path TEXT,
+    approved          BOOLEAN NOT NULL DEFAULT TRUE,
+    is_archive        BOOLEAN NOT NULL DEFAULT FALSE,
+    endpoint_url      TEXT,
+    ads_cid           TEXT,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Idempotent migrations for databases created before custom-handler support.
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS handler_file_path TEXT;
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS approved BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS is_archive BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE agents DROP CONSTRAINT IF EXISTS agents_handler_type_check;
+ALTER TABLE agents ADD CONSTRAINT agents_handler_type_check
+    CHECK (handler_type IN ('llm', 'api_proxy', 'custom'));
+ALTER TABLE agents DROP CONSTRAINT IF EXISTS agents_status_check;
+ALTER TABLE agents ADD CONSTRAINT agents_status_check
+    CHECK (status IN ('registered', 'live', 'failed', 'stopped', 'building', 'image_ready'));
 
 CREATE TABLE IF NOT EXISTS port_pool (
     port      INT PRIMARY KEY,
@@ -113,3 +127,126 @@ async def close_db() -> None:
         return
     await _pool.close()
     _pool = None
+
+
+# ── Agent helper layer ──────────────────────────────────────────────────────────
+# Used by the custom-handler code paths (upload / approve / reject / build poll).
+# The existing llm/api_proxy paths in server.py keep their inline SQL unchanged.
+
+import json as _json
+import uuid as _uuid
+
+_UPDATABLE_COLUMNS = {
+    "status",
+    "approved",
+    "handler_file_path",
+    "is_archive",
+    "endpoint_url",
+    "ads_cid",
+    "port",
+}
+
+
+def _coerce_uuid(value: Any) -> "_uuid.UUID":
+    return value if isinstance(value, _uuid.UUID) else _uuid.UUID(str(value))
+
+
+async def create_agent(
+    *,
+    name: str,
+    description: str,
+    handler_type: str,
+    oasf_skills: list[dict],
+    config: dict,
+    approved: bool = True,
+) -> dict[str, Any]:
+    """Insert a new agent row, assign a port, and return the row as a dict."""
+    if os.getenv("FAKE_DB"):
+        from registration_service.fake_db import fake_create_agent
+        return fake_create_agent(
+            name=name,
+            description=description,
+            handler_type=handler_type,
+            oasf_skills=oasf_skills,
+            config=config,
+            approved=approved,
+        )
+
+    from registration_service.port_pool import assign_port
+
+    pool = await get_pool()
+    agent_id = _uuid.uuid4()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                """
+                INSERT INTO agents
+                    (id, name, description, handler_type, oasf_skills, config, status, approved)
+                VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, 'registered', $7)
+                """,
+                agent_id,
+                name,
+                description,
+                handler_type,
+                _json.dumps(oasf_skills),
+                _json.dumps(config),
+                approved,
+            )
+            port = await assign_port(conn, str(agent_id))
+            await conn.execute(
+                "UPDATE agents SET port = $1 WHERE id = $2", port, agent_id
+            )
+            row = await conn.fetchrow("SELECT * FROM agents WHERE id = $1", agent_id)
+    return dict(row)
+
+
+async def get_agent(agent_id: Any) -> dict[str, Any] | None:
+    if os.getenv("FAKE_DB"):
+        from registration_service.fake_db import fake_get_agent
+        return fake_get_agent(agent_id)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM agents WHERE id = $1", _coerce_uuid(agent_id)
+        )
+    return dict(row) if row else None
+
+
+async def update_agent(agent_id: Any, **fields: Any) -> None:
+    """Update an agent's columns. Only whitelisted columns are accepted."""
+    unknown = set(fields) - _UPDATABLE_COLUMNS
+    if unknown:
+        raise ValueError(f"update_agent: unknown columns {sorted(unknown)}")
+    if not fields:
+        return
+
+    if os.getenv("FAKE_DB"):
+        from registration_service.fake_db import fake_update_agent
+        fake_update_agent(agent_id, **fields)
+        return
+
+    set_clauses = []
+    values: list[Any] = []
+    for i, (col, val) in enumerate(fields.items(), start=1):
+        set_clauses.append(f"{col} = ${i}")
+        values.append(val)
+    set_sql = ", ".join(set_clauses) + ", updated_at = now()"
+    values.append(_coerce_uuid(agent_id))
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            f"UPDATE agents SET {set_sql} WHERE id = ${len(values)}", *values
+        )
+
+
+async def list_agents_by_status(status: str) -> list[dict[str, Any]]:
+    if os.getenv("FAKE_DB"):
+        from registration_service.fake_db import fake_list_agents_by_status
+        return fake_list_agents_by_status(status)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT * FROM agents WHERE status = $1 ORDER BY created_at DESC", status
+        )
+    return [dict(r) for r in rows]

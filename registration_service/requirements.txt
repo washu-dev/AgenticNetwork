@@ -1,11 +1,17 @@
 fastapi>=0.115.0
 aiofiles>=23.0.0
+python-multipart>=0.0.9
 uvicorn[standard]>=0.30.0
 asyncpg>=0.29.0
 pydantic>=2.7.0
 openai>=1.40.0
 a2a-sdk[http-server]==0.3.2
 httpx>=0.27.0
+
+# Custom-handler framework (AgentHandler / FileInput / HandlerExecutor).
+# Editable path is relative to the CWD pip runs in; install from the repo root,
+# e.g.  pip install -r registration_service/requirements.txt  (run at repo root).
+-e ./agent_skeleton
 
 # Test dependencies (also needed for FAKE_DB=1 dev mode)
 pytest>=8.0.0

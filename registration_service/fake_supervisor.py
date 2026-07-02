@@ -65,3 +65,21 @@ class FakeSupervisor:
 
     async def stop_health_loop(self) -> None:
         pass
+
+    async def start_build_poll_loop(self) -> None:
+        pass
+
+    async def stop_build_poll_loop(self) -> None:
+        pass
+
+    async def delete_github_context(self, name: str) -> None:
+        pass
+
+    async def spawn_queue(self) -> list:
+        return []
+
+    async def finalize_spawned(self, agent_id: str, pid: int) -> None:
+        pass
+
+    def stop_queue(self) -> list:
+        return []

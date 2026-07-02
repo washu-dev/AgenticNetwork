@@ -5,34 +5,58 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import uuid
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
+
+import httpx
 
 from ads_utils.converter import OfficialOASFSkill, _AGENT_OASF_ROUTING_SKILLS
 from ads_utils.publisher import DirectoryPublisher, DirectoryUnavailable
 from a2a.types import AgentCard, AgentCapabilities, AgentSkill
 
-from registration_service.backend import SubprocessBackend
-from registration_service.db import get_pool
-from registration_service.models import LLMConfig, APIProxyConfig
+from registration_service.archive import list_tree
+from registration_service.backend import (
+    _AGENT_SKELETON_DIR,
+    ClusterBackend,
+    ContainerBackend,
+    _image_slug,
+    cluster_srun_argv,
+    make_backend,
+)
+from registration_service.db import get_pool, list_agents_by_status
+from registration_service.models import APIProxyConfig, CustomConfig, LLMConfig
 from registration_service.port_pool import release_port
 
 logger = logging.getLogger(__name__)
 
 _HEALTH_POLL_SECONDS = 30.0
+_BUILD_POLL_SECONDS = 30.0
 _BACKOFF_BASE_SECONDS = 5.0
 _MAX_RESTART_ATTEMPTS = 3
+
+
+def _cluster_build_enabled() -> bool:
+    """True when custom approvals should go through the GitHub → Docker Hub build."""
+    return (
+        os.getenv("SPAWN_BACKEND") == "cluster"
+        and bool(os.getenv("GITHUB_TOKEN"))
+        and bool(os.getenv("GITHUB_REPO"))
+    )
 
 
 class Supervisor:
     def __init__(
         self,
-        backend: SubprocessBackend | None = None,
+        backend: ContainerBackend | None = None,
         publisher: DirectoryPublisher | None = None,
     ) -> None:
-        self._backend = backend or SubprocessBackend()
+        self._backend = backend or make_backend()
         self._publisher = publisher or DirectoryPublisher()
         self._health_task: asyncio.Task[None] | None = None
+        self._build_task: asyncio.Task[None] | None = None
 
     # ── Public API ─────────────────────────────────────────────────────────────
 
@@ -58,6 +82,28 @@ class Supervisor:
         raw_skills = agent["oasf_skills"]
         oasf_skills: list = raw_skills if isinstance(raw_skills, list) else json.loads(raw_skills)
 
+        # Custom agents must be explicitly approved before they can spawn.
+        if handler_type == "custom" and not agent.get("approved", False):
+            raise RuntimeError(f"Agent {agent_id} is not approved")
+
+        # Cluster build pipeline: on first approval, commit the build context to
+        # agent-directory and wait (status='building') for the image to appear on
+        # Docker Hub. The build-poll loop re-invokes spawn_and_publish once the
+        # image exists, at which point status is already 'building' and we fall
+        # through to the actual spawn below.
+        if (
+            handler_type == "custom"
+            and _cluster_build_enabled()
+            and agent.get("status") == "registered"
+        ):
+            # First approval: commit the build context and wait for the image. The
+            # build-poll loop flips status to 'image_ready'; the host spawn loop then
+            # launches it and calls finalize_spawned (see Note #8).
+            await self._commit_to_github(agent, oasf_skills)
+            await _set_status(agent_id, "building")
+            logger.info("custom_build_started agent_id=%s name=%s", agent_id, name)
+            return
+
         _register_oasf_routing_skills(name, oasf_skills)
 
         try:
@@ -74,6 +120,18 @@ class Supervisor:
             await _set_status(agent_id, "failed")
             raise
 
+        await self._publish_and_set_live(agent_id, name, description, oasf_skills, port)
+
+    async def _publish_and_set_live(
+        self,
+        agent_id: str,
+        name: str,
+        description: str,
+        oasf_skills: list,
+        port: int,
+    ) -> None:
+        """Publish the agent card to ADS and mark it live. Shared by the local-spawn
+        path (spawn_and_publish) and the cluster host-loop path (finalize_spawned)."""
         endpoint_url = f"http://localhost:{port}/"
         card = _build_agent_card(agent_id, name, description, oasf_skills, port)
 
@@ -147,23 +205,90 @@ class Supervisor:
         await _set_status(agent_id, "failed")
 
     async def recover_live_agents(self) -> None:
-        """On startup, re-spawn all agents that were 'live' before the last shutdown."""
+        """On startup, reconcile agents that were 'live' before the last shutdown.
+
+        Local (subprocess) backend: re-spawn them in-process.
+
+        Cluster backend: the actual agent processes were independent srun steps
+        that died with the previous Slurm job, and ADS's routing index (`dir`) is
+        wiped fresh each deploy — so a persisted status='live' row is a *ghost*
+        (no process, not routed, invisible on the planner dashboard). The
+        registration container can't re-spawn srun steps itself, but it can
+        reconcile the DB to reality: re-queue custom agents whose image still
+        exists on Docker Hub back to 'image_ready' (the host spawn loop then
+        redeploys + republishes them), and mark the rest 'stopped' so the DB no
+        longer falsely claims they're live.
+        """
         pool = await get_pool()
+
+        if not isinstance(self._backend, ClusterBackend):
+            async with pool.acquire() as conn:
+                rows = await conn.fetch("SELECT id FROM agents WHERE status = 'live'")
+            agent_ids = [str(row["id"]) for row in rows]
+            if not agent_ids:
+                return
+            logger.info("recovery_starting count=%d", len(agent_ids))
+            results = await asyncio.gather(
+                *[self.spawn_and_publish(aid) for aid in agent_ids],
+                return_exceptions=True,
+            )
+            for aid, result in zip(agent_ids, results):
+                if isinstance(result, Exception):
+                    logger.error("recovery_failed agent_id=%s error=%s", aid, result)
+            return
+
+        # ── Cluster backend: reconcile ghost 'live' rows to reality ──
         async with pool.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT id FROM agents WHERE status = 'live'"
+                "SELECT id, name, handler_type, port, updated_at "
+                "FROM agents WHERE status = 'live'"
             )
-        agent_ids = [str(row["id"]) for row in rows]
-        if not agent_ids:
+        if not rows:
+            logger.info("recovery_skipped_cluster no_live_agents")
             return
-        logger.info("recovery_starting count=%d", len(agent_ids))
-        results = await asyncio.gather(
-            *[self.spawn_and_publish(aid) for aid in agent_ids],
-            return_exceptions=True,
+
+        requeued = 0
+        stopped = 0
+        for row in rows:
+            agent_id = str(row["id"])
+            redeployable = (
+                row["handler_type"] == "custom"
+                and _cluster_build_enabled()
+                and await _image_exists_on_dockerhub(
+                    f"amaankhan25/agenticnetwork-custom-{_image_slug(row['name'])}",
+                    row["updated_at"],
+                )
+            )
+            async with pool.acquire() as conn:
+                async with conn.transaction():
+                    if redeployable:
+                        # Keep the port (spawn_queue reuses it); clear the stale
+                        # ads_cid (its `dir` entry was wiped). The host spawn loop
+                        # picks this up and finalize_spawned republishes to ADS.
+                        await conn.execute(
+                            "UPDATE agents SET status = 'image_ready', ads_cid = NULL, "
+                            "updated_at = now() WHERE id = $1",
+                            row["id"],
+                        )
+                        requeued += 1
+                    else:
+                        # Not auto-redeployable (image gone or non-custom): free the
+                        # port and mark stopped. init_db() purges stopped rows next run.
+                        if row["port"]:
+                            await release_port(conn, row["port"])
+                        await conn.execute(
+                            "UPDATE agents SET status = 'stopped', ads_cid = NULL, "
+                            "updated_at = now() WHERE id = $1",
+                            row["id"],
+                        )
+                        stopped += 1
+            logger.info(
+                "recovery_reconciled_cluster agent_id=%s name=%s -> %s",
+                agent_id, row["name"], "image_ready" if redeployable else "stopped",
+            )
+        logger.info(
+            "recovery_complete_cluster requeued=%d stopped=%d", requeued, stopped
         )
-        for aid, result in zip(agent_ids, results):
-            if isinstance(result, Exception):
-                logger.error("recovery_failed agent_id=%s error=%s", aid, result)
 
     # ── Health-check loop ──────────────────────────────────────────────────────
 
@@ -188,6 +313,11 @@ class Supervisor:
                 logger.exception("health_loop_error error=%s", exc)
 
     async def _check_all_live_agents(self) -> None:
+        if isinstance(self._backend, ClusterBackend):
+            # Lifecycle of cluster agents is owned by Slurm + the host spawn loop;
+            # the supervisor doesn't health-restart them. (Known limitation: a
+            # crashed cluster agent isn't auto-respawned — re-approve to redeploy.)
+            return
         pool = await get_pool()
         async with pool.acquire() as conn:
             rows = await conn.fetch(
@@ -201,6 +331,293 @@ class Supervisor:
                     self.restart_with_backoff(agent_id),
                     name=f"restart-{agent_id}",
                 )
+
+    # ── Build-poll loop (cluster custom builds) ──────────────────────────────────
+
+    async def start_build_poll_loop(self) -> None:
+        self._build_task = asyncio.create_task(self._build_poll_loop(), name="supervisor-build-poll")
+
+    async def stop_build_poll_loop(self) -> None:
+        if self._build_task:
+            self._build_task.cancel()
+            try:
+                await self._build_task
+            except asyncio.CancelledError:
+                pass
+            self._build_task = None
+
+    async def _build_poll_loop(self) -> None:
+        while True:
+            await asyncio.sleep(_BUILD_POLL_SECONDS)
+            try:
+                await self._check_building_agents()
+            except Exception as exc:
+                logger.exception("build_poll_error error=%s", exc)
+
+    async def _check_building_agents(self) -> None:
+        if not _cluster_build_enabled():
+            return
+        building = await list_agents_by_status("building")
+        for agent in building:
+            slug = _image_slug(agent["name"])
+            image = f"amaankhan25/agenticnetwork-custom-{slug}"
+            if await _image_exists_on_dockerhub(image, agent.get("updated_at")):
+                # Hand off to the host spawn loop: it polls /internal/spawn-queue for
+                # image_ready agents, runs srun, and calls finalize_spawned (Note #8).
+                await _set_status(str(agent["id"]), "image_ready")
+                logger.info("custom_image_ready agent_id=%s image=%s -> image_ready", agent["id"], image)
+
+    # ── Host-loop spawn coordination (cluster, Note #8) ──────────────────────────
+
+    async def spawn_queue(self) -> list[dict[str, Any]]:
+        """Agents ready for the host loop to srun (status='image_ready')."""
+        if not isinstance(self._backend, ClusterBackend):
+            return []
+        out: list[dict[str, Any]] = []
+        for agent in await list_agents_by_status("image_ready"):
+            raw = agent["config"]
+            config = raw if isinstance(raw, dict) else json.loads(raw)
+            argv, env = cluster_srun_argv(
+                agent_id=str(agent["id"]),
+                name=agent["name"],
+                description=agent["description"],
+                handler_type=agent["handler_type"],
+                config=config,
+                port=agent["port"],
+            )
+            out.append({"agent_id": str(agent["id"]), "port": agent["port"], "argv": argv, "env": env})
+        return out
+
+    async def finalize_spawned(self, agent_id: str, pid: int) -> None:
+        """Called by the host loop after a successful srun: record PID, publish, go live."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM agents WHERE id = $1", uuid.UUID(agent_id))
+        if row is None:
+            logger.warning("finalize_spawned_unknown agent_id=%s", agent_id)
+            return
+        agent = dict(row)
+        port: int = agent["port"]
+        raw_skills = agent["oasf_skills"]
+        oasf_skills = raw_skills if isinstance(raw_skills, list) else json.loads(raw_skills)
+
+        if isinstance(self._backend, ClusterBackend):
+            self._backend.record_pid(agent_id, pid, port)
+        _register_oasf_routing_skills(agent["name"], oasf_skills)
+        await self._publish_and_set_live(
+            agent_id, agent["name"], agent["description"], oasf_skills, port
+        )
+        logger.info("custom_spawned_live agent_id=%s pid=%s port=%s", agent_id, pid, port)
+
+    def stop_queue(self) -> list[int]:
+        """PIDs the host loop should kill (consumed once)."""
+        if isinstance(self._backend, ClusterBackend):
+            return self._backend.pending_stops()
+        return []
+
+    # ── GitHub commit on approval ────────────────────────────────────────────────
+
+    async def delete_github_context(self, name: str) -> None:
+        """Best-effort removal of a custom agent's committed build context.
+
+        Only acts on the cluster build path (GITHUB_TOKEN/REPO + SPAWN_BACKEND set);
+        a failure is logged, never raised, so it can't block agent deletion.
+        """
+        if not _cluster_build_enabled():
+            return
+        try:
+            await _delete_from_github(_image_slug(name))
+            logger.info("github_context_deleted name=%s", name)
+        except Exception as exc:
+            logger.warning("github_delete_failed name=%s error=%s", name, exc)
+
+    async def _commit_to_github(self, agent: dict[str, Any], oasf_skills: list) -> None:
+        from registration_service.builder import generate_card_json, generate_dockerfile
+
+        repo = os.environ["GITHUB_REPO"]
+        token = os.environ["GITHUB_TOKEN"]
+        name = agent["name"]
+        slug = _image_slug(name)
+
+        raw_cfg = agent["config"]
+        config = CustomConfig.model_validate(
+            raw_cfg if isinstance(raw_cfg, dict) else json.loads(raw_cfg)
+        )
+
+        handler_path = agent.get("handler_file_path")
+        if not handler_path or not Path(handler_path).exists():
+            raise RuntimeError(f"Handler file missing for agent {agent['id']}")
+        handler_dir = Path(handler_path).parent
+
+        dockerfile = generate_dockerfile(config)
+        card_json = json.dumps(
+            generate_card_json({**agent, "oasf_skills": oasf_skills}), indent=2
+        )
+
+        base = f"registered_agents/{slug}"
+        files = {
+            f"{base}/Dockerfile": dockerfile,
+            f"{base}/{slug}.card.json": card_json,
+        }
+        # The user's uploaded project tree → src/ (entry file at the src root, next
+        # to importable siblings). Covers both single-file and multi-file uploads.
+        for rel in list_tree(handler_dir):
+            fpath = handler_dir / rel
+            try:
+                files[f"{base}/src/{rel}"] = fpath.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                raise RuntimeError(
+                    f"Cannot commit binary file {rel!r} for agent {agent['id']}: the "
+                    f"cluster build path currently supports text project files only."
+                )
+        # Vendor agent_skeleton into the build context so the image installs it from
+        # a local copy (the private AgenticNetwork repo isn't reachable from CI, and
+        # a token in the Dockerfile would be committed). See builder.generate_dockerfile.
+        for rel, content in _vendored_skeleton_files().items():
+            files[f"{base}/agent_skeleton/{rel}"] = content
+
+        await _github_commit_files(
+            repo, token, files, f"Register custom agent: {name}"
+        )
+        logger.info("github_committed agent_id=%s dir=%s files=%d", agent["id"], base, len(files))
+
+
+def _vendored_skeleton_files() -> dict[str, str]:
+    """Collect agent_skeleton's package files (all *.py + pyproject.toml) for vendoring.
+
+    Keys are paths relative to the agent_skeleton/ dir; values are file contents.
+    These are committed under registered_agents/{slug}/agent_skeleton/ so the
+    generated image can `pip install ./agent_skeleton` with no external access.
+    """
+    out: dict[str, str] = {}
+    for path in sorted(_AGENT_SKELETON_DIR.glob("*.py")):
+        out[path.name] = path.read_text()
+    pyproject = _AGENT_SKELETON_DIR / "pyproject.toml"
+    if pyproject.exists():
+        out["pyproject.toml"] = pyproject.read_text()
+    return out
+
+
+async def _github_commit_files(
+    repo: str, token: str, files: dict[str, str], message: str
+) -> None:
+    """Commit multiple files in ONE commit via the Git Data API.
+
+    A single atomic commit is important: the build workflow triggers on push to
+    registered_agents/**, and committing files one at a time (Contents API) would
+    fire the build before the Dockerfile exists. Tree entries use inline `content`,
+    so no separate blob-creation round-trips are needed.
+    """
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    api = f"https://api.github.com/repos/{repo}"
+    async with httpx.AsyncClient(timeout=30.0, headers=headers) as client:
+        # Resolve default branch → its head commit → its base tree.
+        repo_info = (await client.get(api)).raise_for_status().json()
+        branch = repo_info.get("default_branch", "main")
+        ref = (await client.get(f"{api}/git/ref/heads/{branch}")).raise_for_status().json()
+        base_commit_sha = ref["object"]["sha"]
+        base_commit = (await client.get(f"{api}/git/commits/{base_commit_sha}")).raise_for_status().json()
+        base_tree_sha = base_commit["tree"]["sha"]
+
+        tree = [
+            {"path": path, "mode": "100644", "type": "blob", "content": content}
+            for path, content in files.items()
+        ]
+        new_tree = (
+            await client.post(f"{api}/git/trees", json={"base_tree": base_tree_sha, "tree": tree})
+        ).raise_for_status().json()
+        new_commit = (
+            await client.post(
+                f"{api}/git/commits",
+                json={"message": message, "tree": new_tree["sha"], "parents": [base_commit_sha]},
+            )
+        ).raise_for_status().json()
+        (
+            await client.patch(f"{api}/git/refs/heads/{branch}", json={"sha": new_commit["sha"]})
+        ).raise_for_status()
+
+
+async def _delete_from_github(slug: str) -> None:
+    """Remove registered_agents/{slug}/ from the agent-directory repo in ONE commit.
+
+    Git Data API: build a new tree off the base tree with every blob under the
+    agent's dir marked for deletion (sha=None). No-op if the dir isn't present.
+    (The deletion push won't trigger a spurious image build — the workflow's detect
+    step skips changed dirs that no longer contain a Dockerfile.)
+    """
+    repo = os.environ["GITHUB_REPO"]
+    token = os.environ["GITHUB_TOKEN"]
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    api = f"https://api.github.com/repos/{repo}"
+    prefix = f"registered_agents/{slug}/"
+    async with httpx.AsyncClient(timeout=30.0, headers=headers) as client:
+        repo_info = (await client.get(api)).raise_for_status().json()
+        branch = repo_info.get("default_branch", "main")
+        ref = (await client.get(f"{api}/git/ref/heads/{branch}")).raise_for_status().json()
+        base_commit_sha = ref["object"]["sha"]
+        base_commit = (await client.get(f"{api}/git/commits/{base_commit_sha}")).raise_for_status().json()
+        base_tree_sha = base_commit["tree"]["sha"]
+        tree = (
+            await client.get(f"{api}/git/trees/{base_tree_sha}", params={"recursive": "1"})
+        ).raise_for_status().json()
+        blobs = [
+            it for it in tree.get("tree", [])
+            if it.get("type") == "blob" and it["path"].startswith(prefix)
+        ]
+        if not blobs:
+            return  # nothing committed for this agent
+        deletions = [
+            {"path": it["path"], "mode": it["mode"], "type": "blob", "sha": None}
+            for it in blobs
+        ]
+        new_tree = (
+            await client.post(f"{api}/git/trees", json={"base_tree": base_tree_sha, "tree": deletions})
+        ).raise_for_status().json()
+        new_commit = (
+            await client.post(
+                f"{api}/git/commits",
+                json={"message": f"Remove custom agent: {slug}", "tree": new_tree["sha"], "parents": [base_commit_sha]},
+            )
+        ).raise_for_status().json()
+        (
+            await client.patch(f"{api}/git/refs/heads/{branch}", json={"sha": new_commit["sha"]})
+        ).raise_for_status()
+
+
+async def _image_exists_on_dockerhub(image_name: str, since: Any = None) -> bool:
+    """True if {image_name}:latest exists on Docker Hub (public repo, no auth).
+
+    When `since` (the agent's approval/update time) is provided, also require the
+    tag's last_updated to be at or after it, so a stale image from a previous build
+    doesn't trigger a premature spawn.
+    """
+    url = f"https://hub.docker.com/v2/repositories/{image_name}/tags/latest"
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(url)
+        if resp.status_code != 200:
+            return False
+        if since is None:
+            return True
+        last_updated = resp.json().get("last_updated")
+        if not last_updated:
+            return True
+        tag_ts = datetime.fromisoformat(last_updated.replace("Z", "+00:00"))
+        since_ts = since if isinstance(since, datetime) else datetime.fromisoformat(str(since))
+        if since_ts.tzinfo is None:
+            since_ts = since_ts.replace(tzinfo=timezone.utc)
+        return tag_ts >= since_ts
+    except Exception as exc:
+        logger.warning("dockerhub_poll_error image=%s error=%s", image_name, exc)
+        return False
 
 
 # ── Module-level singleton ─────────────────────────────────────────────────────
@@ -228,12 +645,14 @@ def set_supervisor(sup: Any) -> None:
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
-def _deserialize_config(agent: dict[str, Any]) -> LLMConfig | APIProxyConfig:
+def _deserialize_config(agent: dict[str, Any]) -> LLMConfig | APIProxyConfig | CustomConfig:
     handler_type: str = agent["handler_type"]
     raw = agent["config"]
     config_data: dict = raw if isinstance(raw, dict) else json.loads(raw)
     if handler_type == "llm":
         return LLMConfig.model_validate(config_data)
+    if handler_type == "custom":
+        return CustomConfig.model_validate(config_data)
     return APIProxyConfig.model_validate(config_data)
 
 
@@ -246,7 +665,7 @@ def _build_agent_card(
 ) -> AgentCard:
     skills = [
         AgentSkill(
-            id=s["key"],
+            id=s.get("key") or s["name"],   # prefer canonical key; fall back to name
             name=s["name"].split("/")[-1],
             description=description,
             tags=[],
@@ -258,7 +677,9 @@ def _build_agent_card(
         description=description,
         url=f"http://localhost:{port}/",
         version="1.0.0",
-        capabilities=AgentCapabilities(streaming=False),
+        # streaming=True so the planner uses SSE and honors the executor's <30s
+        # heartbeat (P3) — this is the card the planner actually reads from ADS.
+        capabilities=AgentCapabilities(streaming=True),
         skills=skills,
         default_input_modes=["text"],
         default_output_modes=["text"],
@@ -271,7 +692,7 @@ def _register_oasf_routing_skills(
     """Add the agent's OASF skills to the converter's routing map so dirctl publish works."""
     agent_key = name.lower().replace(" ", "-")
     _AGENT_OASF_ROUTING_SKILLS[agent_key] = [
-        OfficialOASFSkill(name=s["key"], id=s.get("id"))
+        OfficialOASFSkill(name=s.get("key") or s["name"], id=s.get("id"))
         for s in oasf_skills
     ]
 

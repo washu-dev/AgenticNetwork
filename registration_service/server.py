@@ -4,21 +4,62 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import shutil
 import uuid
 from pathlib import Path
 from typing import Any
 
 import asyncpg
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, File, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from registration_service import db
+from registration_service.archive import ArchiveError, _clear_dir, list_tree, unpack_archive, zip_tree
+from registration_service.backend import _image_slug
 from registration_service.db import get_pool
 from registration_service.lifespan import lifespan
-from registration_service.models import AgentResponse, OASFSkill, RegisterRequest
+from registration_service.models import (
+    AgentResponse,
+    CustomConfig,
+    OASFSkill,
+    RegisterRequest,
+    RejectRequest,
+    SpawnedReport,
+)
 from registration_service.oasf_skills import OASF_SKILLS
 from registration_service.port_pool import assign_port
 from registration_service.supervisor import get_supervisor
+from registration_service.validator import validate_handler
+
+
+def _handler_dir(agent_id: Any) -> Path:
+    return Path(os.getenv("HANDLER_FILES_DIR", "./uploaded_handlers")) / str(agent_id)
+
+
+# ZIP local-file-header magic; used as a fallback when the filename lacks a suffix.
+_ZIP_MAGIC = (b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08")
+
+
+def _is_zip_upload(filename: str | None, raw: bytes) -> bool:
+    """Treat the upload as a .zip if its name says so, or its bytes start with PK magic."""
+    if filename and filename.lower().endswith(".zip"):
+        return True
+    if filename and filename.lower().endswith(".py"):
+        return False
+    return raw[:4] in _ZIP_MAGIC
+
+
+def _check_admin_token(request: Request) -> None:
+    """Reject the request unless it carries the configured admin token.
+
+    Mirrors the planner's admin auth: if MAIN_AGENT_ADMIN_TOKEN is unset, access
+    is open (local dev); otherwise the X-Admin-Token header must match.
+    """
+    expected = os.getenv("MAIN_AGENT_ADMIN_TOKEN", "")
+    if expected and request.headers.get("X-Admin-Token", "") != expected:
+        raise HTTPException(status_code=403, detail="Forbidden")
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +101,35 @@ async def list_oasf_skills() -> list[dict]:
 
 @app.post("/agents", response_model=AgentResponse, status_code=201, tags=["agents"])
 async def register_agent(req: RegisterRequest) -> AgentResponse:
-    """Register a new agent and start it."""
+    """Register a new agent and start it.
+
+    Custom agents are created in a not-yet-approved state and are NOT started
+    here — the handler file must be uploaded (POST /agents/{id}/handler) and an
+    admin must approve (POST /agents/{id}/approve) before they spawn.
+    """
+    # Enforce unique names: the name's slug drives the registered_agents/ dir, the
+    # Docker image tag, and the ADS routing key — duplicate names collide on all
+    # three (e.g. two "Echo Test" agents share echo-test). Reject up front.
+    new_slug = _image_slug(req.name)
+    async with (await get_pool()).acquire() as conn:
+        existing = await conn.fetch("SELECT * FROM agents ORDER BY created_at DESC")
+    if any(_image_slug(r["name"]) == new_slug for r in existing):
+        raise HTTPException(
+            status_code=409,
+            detail=f"An agent with a conflicting name already exists (slug '{new_slug}'): {req.name!r}",
+        )
+
+    if req.handler_type == "custom":
+        agent = await db.create_agent(
+            name=req.name,
+            description=req.description,
+            handler_type="custom",
+            oasf_skills=[s.model_dump() for s in req.oasf_skills],
+            config=req.typed_config().model_dump(),
+            approved=False,
+        )
+        return _row_to_response(agent)
+
     pool = await get_pool()
 
     async with pool.acquire() as conn:
@@ -135,18 +204,24 @@ async def get_agent(agent_id: str) -> AgentResponse:
 @app.delete("/agents/{agent_id}", status_code=204, tags=["agents"])
 async def delete_agent(agent_id: str) -> Response:
     """Stop and unregister an agent."""
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        exists = await conn.fetchval(
-            "SELECT 1 FROM agents WHERE id = $1", _parse_uuid(agent_id)
-        )
-    if not exists:
+    agent = await db.get_agent(_parse_uuid(agent_id))
+    if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
 
     await get_supervisor().stop_and_unpublish(agent_id)
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute("DELETE FROM agents WHERE id = $1", _parse_uuid(agent_id))
+
+    # Clean up any uploaded handler files / per-agent venv.
+    handler_dir = _handler_dir(agent_id)
+    if handler_dir.exists():
+        shutil.rmtree(handler_dir, ignore_errors=True)
+
+    # Remove the committed build context from the agent-directory repo (custom
+    # agents on the cluster build path only). Best-effort — never blocks the delete.
+    if agent["handler_type"] == "custom":
+        await get_supervisor().delete_github_context(agent["name"])
     return Response(status_code=204)
 
 
@@ -186,6 +261,178 @@ async def restart_agent(agent_id: str) -> AgentResponse:
     return _row_to_response(row)
 
 
+# ── Custom handler: upload / approve / reject ───────────────────────────────────
+
+@app.post("/agents/{agent_id}/handler", status_code=200, tags=["custom"])
+async def upload_handler(agent_id: str, file: UploadFile = File(...)) -> dict:
+    """Upload (or re-upload) a custom agent's code — a single ``.py`` or a ``.zip``.
+
+    - ``.py``  → stored as ``{handler_dir}/{entry_file}`` (single-file, as before).
+    - ``.zip`` → validated + unpacked into ``{handler_dir}/`` preserving structure;
+      the archive root is the project root, and ``entry_file`` must sit at it.
+
+    The entry file is AST-validated (structural errors block with 422; advisory
+    warnings are returned and shown to the approver). Re-upload always resets
+    approval to False.
+    """
+    agent = await db.get_agent(_parse_uuid(agent_id))
+    if not agent or agent["handler_type"] != "custom":
+        raise HTTPException(status_code=404, detail="Custom agent not found")
+
+    # asyncpg returns JSONB columns as JSON strings; fake_db returns dicts. Handle
+    # both (same guard used in _row_to_response / supervisor._deserialize_config).
+    raw_cfg = agent["config"]
+    cfg_dict = raw_cfg if isinstance(raw_cfg, dict) else json.loads(raw_cfg)
+    config = CustomConfig(**cfg_dict)
+
+    raw = await file.read()
+    is_zip = _is_zip_upload(file.filename, raw)
+    handler_dir = _handler_dir(agent_id)
+
+    if is_zip:
+        try:
+            unpack_archive(raw, handler_dir, config.entry_file)
+        except ArchiveError as exc:
+            raise HTTPException(status_code=422, detail={"errors": [str(exc)]})
+        entry_path = handler_dir / config.entry_file
+        source = entry_path.read_text(encoding="utf-8", errors="replace")
+    else:
+        try:
+            source = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            raise HTTPException(status_code=422, detail={"errors": ["File is not valid UTF-8 text"]})
+        handler_dir.mkdir(parents=True, exist_ok=True)
+        entry_path = handler_dir / config.entry_file
+        entry_path.write_text(source)
+
+    # Validate the entry file only (structural blocks; blocklist is advisory — D1).
+    result = validate_handler(source, config.class_name)
+    if not result.ok:
+        if is_zip:
+            _clear_dir(handler_dir)  # don't leave a rejected tree on disk
+        raise HTTPException(status_code=422, detail={"errors": result.errors})
+
+    await db.update_agent(
+        _parse_uuid(agent_id),
+        handler_file_path=str(entry_path),
+        is_archive=is_zip,
+        approved=False,
+    )
+    return {"status": "uploaded", "errors": [], "warnings": result.warnings}
+
+
+@app.get("/agents/{agent_id}/handler", tags=["custom"])
+async def get_handler_source(agent_id: str, request: Request) -> dict:
+    """Admin-only: what the approver reviews before approving (the trust boundary).
+
+    - single-file agent → the entry-file ``source`` (as before).
+    - multi-file agent  → a ``manifest`` of the stored tree + a ``download_url``
+      pointing at the zip (GET .../handler/download), so the whole project can be
+      inspected. In both cases advisory ``warnings`` from the entry file are included.
+    """
+    _check_admin_token(request)
+    agent = await db.get_agent(_parse_uuid(agent_id))
+    if not agent or agent["handler_type"] != "custom":
+        raise HTTPException(status_code=404, detail="Custom agent not found")
+    path = agent.get("handler_file_path")
+    if not path or not Path(path).exists():
+        raise HTTPException(status_code=404, detail="No handler file uploaded")
+
+    entry_source = Path(path).read_text(encoding="utf-8", errors="replace")
+    raw_cfg = agent["config"]
+    cfg_dict = raw_cfg if isinstance(raw_cfg, dict) else json.loads(raw_cfg)
+    config = CustomConfig(**cfg_dict)
+    warnings = validate_handler(entry_source, config.class_name).warnings
+
+    if agent.get("is_archive"):
+        handler_dir = _handler_dir(agent_id)
+        return {
+            "is_archive": True,
+            "entry_file": Path(path).name,
+            "manifest": list_tree(handler_dir),
+            "download_url": f"/agents/{agent_id}/handler/download",
+            "warnings": warnings,
+            "system_packages": config.system_packages,   # apt, flagged for review (D10)
+        }
+    return {
+        "is_archive": False,
+        "source": entry_source,
+        "handler_file_path": path,
+        "warnings": warnings,
+        "system_packages": config.system_packages,       # apt, flagged for review (D10)
+    }
+
+
+@app.get("/agents/{agent_id}/handler/download", tags=["custom"])
+async def download_handler_archive(agent_id: str, request: Request) -> Response:
+    """Admin-only: download the stored project tree as a zip (multi-file inspection)."""
+    _check_admin_token(request)
+    agent = await db.get_agent(_parse_uuid(agent_id))
+    if not agent or agent["handler_type"] != "custom":
+        raise HTTPException(status_code=404, detail="Custom agent not found")
+    handler_dir = _handler_dir(agent_id)
+    if not agent.get("is_archive") or not handler_dir.exists():
+        raise HTTPException(status_code=404, detail="No uploaded archive for this agent")
+    data = zip_tree(handler_dir)
+    return Response(
+        content=data,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{agent_id}-handler.zip"'},
+    )
+
+
+@app.post("/agents/{agent_id}/approve", tags=["custom"])
+async def approve_agent(agent_id: str, request: Request) -> dict:
+    """Admin-only: approve a custom agent and start it."""
+    _check_admin_token(request)
+    agent = await db.get_agent(_parse_uuid(agent_id))
+    if not agent or agent["handler_type"] != "custom":
+        raise HTTPException(status_code=404, detail="Custom agent not found")
+    if not agent.get("handler_file_path"):
+        raise HTTPException(status_code=409, detail="No handler file uploaded yet")
+
+    await db.update_agent(_parse_uuid(agent_id), approved=True)
+    try:
+        await get_supervisor().spawn_and_publish(agent_id)
+    except Exception as exc:
+        logger.error("approve_spawn_failed agent_id=%s error=%s", agent_id, exc)
+        raise HTTPException(status_code=500, detail=f"Approved but failed to start: {exc}")
+    return {"status": "ok"}
+
+
+@app.post("/agents/{agent_id}/reject", tags=["custom"])
+async def reject_agent(agent_id: str, body: RejectRequest, request: Request) -> dict:
+    """Admin-only: reject a custom agent (leaves it registered, not approved)."""
+    _check_admin_token(request)
+    agent = await db.get_agent(_parse_uuid(agent_id))
+    if not agent or agent["handler_type"] != "custom":
+        raise HTTPException(status_code=404, detail="Custom agent not found")
+
+    await db.update_agent(_parse_uuid(agent_id), approved=False, status="registered")
+    logger.info("agent_rejected agent_id=%s reason=%s", agent_id, body.reason)
+    return {"status": "ok"}
+
+
+# ── Internal endpoints (cluster host spawn loop, Note #8) ───────────────────────
+# Localhost-only — consumed by deployment/spawn_agent_loop.py. No auth (the
+# registration service binds only inside the allocation's node).
+
+@app.get("/internal/spawn-queue", tags=["internal"])
+async def internal_spawn_queue() -> list[dict]:
+    return await get_supervisor().spawn_queue()
+
+
+@app.post("/internal/spawned", tags=["internal"])
+async def internal_spawned(body: SpawnedReport) -> dict:
+    await get_supervisor().finalize_spawned(str(body.agent_id), body.pid)
+    return {"status": "ok"}
+
+
+@app.get("/internal/stop-queue", tags=["internal"])
+async def internal_stop_queue() -> dict:
+    return {"pids": get_supervisor().stop_queue()}
+
+
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 def _parse_uuid(value: str) -> uuid.UUID:
@@ -214,6 +461,9 @@ def _row_to_response(row: asyncpg.Record) -> AgentResponse:
         config=config_raw,
         port=row["port"],
         status=row["status"],
+        approved=row["approved"],
+        has_handler=bool(row["handler_file_path"]),
+        is_archive=bool(row.get("is_archive", False)),
         endpoint_url=row["endpoint_url"],
         ads_cid=row["ads_cid"],
         created_at=row["created_at"],

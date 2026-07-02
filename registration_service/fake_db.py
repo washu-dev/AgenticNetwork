@@ -76,6 +76,9 @@ class FakeConnection:
                 "config": json.loads(config_raw) if isinstance(config_raw, str) else config_raw,
                 "port": None,
                 "status": "registered",
+                "handler_file_path": None,
+                "approved": True,
+                "is_archive": False,
                 "endpoint_url": None,
                 "ads_cid": None,
                 "created_at": now,
@@ -254,3 +257,84 @@ def reset_fake_db() -> None:
     global _fake_store, _fake_pool
     _fake_store = None
     _fake_pool = None
+
+
+# ── Helpers backing db.py's agent helper layer in FAKE_DB mode ──────────────────
+
+_ALLOWED_UPDATE_COLS = {
+    "status",
+    "approved",
+    "handler_file_path",
+    "is_archive",
+    "endpoint_url",
+    "ads_cid",
+    "port",
+}
+
+
+def _store() -> FakeStore:
+    return get_fake_pool()._store
+
+
+def fake_create_agent(
+    *,
+    name: str,
+    description: str,
+    handler_type: str,
+    oasf_skills: list,
+    config: dict,
+    approved: bool = True,
+) -> dict:
+    s = _store()
+    s.seed_ports()
+    # Claim the lowest free port.
+    port = None
+    for p, info in sorted(s.port_pool.items()):
+        if not info["in_use"]:
+            port = p
+            info["in_use"] = True
+            break
+    uid = uuid.uuid4()
+    now = _now()
+    if port is not None:
+        s.port_pool[port]["agent_id"] = str(uid)
+    row = {
+        "id": uid,
+        "name": name,
+        "description": description,
+        "handler_type": handler_type,
+        "oasf_skills": oasf_skills,
+        "config": config,
+        "port": port,
+        "status": "registered",
+        "handler_file_path": None,
+        "approved": approved,
+        "is_archive": False,
+        "endpoint_url": None,
+        "ads_cid": None,
+        "created_at": now,
+        "updated_at": now,
+    }
+    s.agents[uid] = row
+    return dict(row)
+
+
+def fake_get_agent(agent_id: Any) -> dict | None:
+    row = _store().agents.get(_coerce_uuid(agent_id))
+    return dict(row) if row else None
+
+
+def fake_update_agent(agent_id: Any, **fields: Any) -> None:
+    row = _store().agents.get(_coerce_uuid(agent_id))
+    if row is None:
+        return
+    for col, val in fields.items():
+        if col in _ALLOWED_UPDATE_COLS:
+            row[col] = val
+    row["updated_at"] = _now()
+
+
+def fake_list_agents_by_status(status: str) -> list[dict]:
+    rows = [v for v in _store().agents.values() if v["status"] == status]
+    rows.sort(key=lambda r: r["created_at"], reverse=True)
+    return [dict(r) for r in rows]

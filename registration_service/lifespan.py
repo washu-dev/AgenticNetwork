@@ -30,12 +30,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await supervisor.start_health_loop()
     logger.info("health_loop_started")
 
+    await supervisor.start_build_poll_loop()
+    logger.info("build_poll_loop_started")
+
     yield
 
     # ── Shutdown ──────────────────────────────────────────────────────────────
     logger.info("registration_service_stopping")
 
     await supervisor.stop_health_loop()
+    await supervisor.stop_build_poll_loop()
     await close_db()
 
     logger.info("registration_service_stopped")

@@ -1,22 +1,120 @@
-"""Agent process backend — spawn, stop, and health-check agent subprocesses."""
+"""Agent process backend — spawn, stop, and health-check agent processes.
+
+Two backends share one interface (ContainerBackend):
+
+  * SubprocessBackend — local dev. Each agent is an asyncio subprocess running
+    registration_service.runner. Custom agents with requirements get a per-agent
+    virtualenv (created with --system-site-packages so the framework packages
+    remain importable) into which their requirements are installed.
+
+  * ClusterBackend — ENGR cluster. Each agent is launched as an `srun --overlap`
+    step inside the existing Slurm allocation, using a per-agent (custom) or
+    shared (llm/api_proxy) Docker image.
+
+make_backend() selects ClusterBackend when SPAWN_BACKEND == "cluster".
+"""
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import signal
 import sys
 from abc import ABC, abstractmethod
+from pathlib import Path
 
 import httpx
 
-from registration_service.models import LLMConfig, APIProxyConfig
+from registration_service.models import APIProxyConfig, CustomConfig, LLMConfig
 
 logger = logging.getLogger(__name__)
 
 _HEALTH_TIMEOUT_SECONDS = 30.0
 _HEALTH_POLL_INTERVAL_SECONDS = 0.5
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_AGENT_SKELETON_DIR = _REPO_ROOT / "agent_skeleton"
+
+AnyConfig = LLMConfig | APIProxyConfig | CustomConfig
+
+
+def _handler_files_dir() -> Path:
+    return Path(os.getenv("HANDLER_FILES_DIR", "./uploaded_handlers"))
+
+
+def _has_build_metadata(handler_dir: Path) -> bool:
+    """True if the uploaded project root ships pip-installable build metadata (D8)."""
+    return (handler_dir / "pyproject.toml").exists() or (handler_dir / "setup.py").exists()
+
+
+def _envelope_json(agent_id: str, handler_type: str, port: int, config_payload: dict) -> str:
+    """The nested AGENT_CONFIG_JSON envelope (config_payload already has name/description)."""
+    return json.dumps(
+        {
+            "agent_id": agent_id,
+            "handler_type": handler_type,
+            "port": port,
+            "config": config_payload,
+        }
+    )
+
+
+def _config_envelope(
+    agent_id: str,
+    name: str,
+    description: str,
+    handler_type: str,
+    config: AnyConfig,
+    port: int,
+) -> str:
+    """The nested AGENT_CONFIG_JSON envelope shared by every handler type (model input)."""
+    config_payload = config.model_dump()
+    config_payload["name"] = name
+    config_payload["description"] = description
+    return _envelope_json(agent_id, handler_type, port, config_payload)
+
+
+def cluster_srun_argv(
+    *,
+    agent_id: str,
+    name: str,
+    description: str,
+    handler_type: str,
+    config: dict,
+    port: int,
+) -> tuple[list[str], dict[str, str]]:
+    """Build the host-side `srun --overlap` argv + per-agent env for a custom agent.
+
+    Used by the registration service's /internal/spawn-queue so the host spawn loop
+    (deployment/spawn_agent_loop.py) can launch the agent in the native Slurm env.
+    Only custom agents reach this path (image_ready comes from the custom build flow).
+    AGENT_CONFIG_JSON is passed via env (not --export) to avoid comma/quote breakage;
+    --export=ALL then propagates it (and the host's OPENAI_* etc.) into the container.
+    """
+    image = f"amaankhan25/agenticnetwork-custom-{_image_slug(name)}:latest"
+    mounts = os.environ.get(
+        "CLUSTER_WORKSPACE_MOUNT", "/engrfs/project/di2/AgenticNetwork:/workspace"
+    )
+    payload = dict(config)
+    payload["name"] = name
+    payload["description"] = description
+    envelope = _envelope_json(agent_id, handler_type, port, payload)
+    argv = [
+        "srun", "--ntasks=1", "--overlap",
+        f"--container-image={image}",
+        f"--container-mounts={mounts}",
+        "--container-writable",
+        "--export=ALL",
+        # Use the image's own interpreter by ABSOLUTE path and drop any leaked
+        # PYTHONPATH. --export=ALL propagates the submit shell's conda env, so a
+        # bare `python` resolves to the host anaconda (e.g. 3.7) instead of the
+        # image's /usr/local/bin/python (3.11) — which then can't run 3.9+ syntax.
+        "/bin/sh", "-c",
+        "unset PYTHONPATH; exec /usr/local/bin/python -m agent_skeleton.container_runner",
+    ]
+    return argv, {"AGENT_CONFIG_JSON": envelope}
 
 
 class ContainerBackend(ABC):
@@ -27,7 +125,7 @@ class ContainerBackend(ABC):
         name: str,
         description: str,
         handler_type: str,
-        config: LLMConfig | APIProxyConfig,
+        config: AnyConfig,
         port: int,
     ) -> None: ...
 
@@ -54,37 +152,78 @@ class SubprocessBackend(ContainerBackend):
         name: str,
         description: str,
         handler_type: str,
-        config: LLMConfig | APIProxyConfig,
+        config: AnyConfig,
         port: int,
     ) -> None:
-        import json
-
-        config_payload = config.model_dump()
-        config_payload["name"] = name
-        config_payload["description"] = description
-
-        config_json = json.dumps(
-            {
-                "agent_id": agent_id,
-                "handler_type": handler_type,
-                "port": port,
-                "config": config_payload,
-            }
+        env = {**os.environ}
+        env["AGENT_CONFIG_JSON"] = _config_envelope(
+            agent_id, name, description, handler_type, config, port
         )
 
-        env = {**os.environ, "AGENT_CONFIG_JSON": config_json}
+        python = sys.executable
+
+        if handler_type == "custom":
+            assert isinstance(config, CustomConfig)
+            handler_dir = _handler_files_dir() / agent_id
+            env["HANDLER_FILE_PATH"] = str(handler_dir / config.entry_file)
+            if config.system_packages:
+                # apt is a cluster-image concern (D10); we can't apt-install per-agent
+                # in local subprocess dev, so skip and warn. If the handler needs a
+                # system lib locally, install it on the host first.
+                logger.warning(
+                    "subprocess_skipping_system_packages agent_id=%s packages=%s "
+                    "(apt only applies to the cluster image build)",
+                    agent_id, config.system_packages,
+                )
+            # Both roots must be importable: registration_service + agent_skeleton
+            # (framework) via _REPO_ROOT, and the uploaded project root (handler_dir)
+            # so a multi-file handler can `import` its siblings. Single-file handlers
+            # never needed the latter; it's harmless for them.
+            env["PYTHONPATH"] = os.pathsep.join(
+                p for p in [str(handler_dir), str(_REPO_ROOT), env.get("PYTHONPATH", "")] if p
+            )
+            if config.requirements or (config.install_project and _has_build_metadata(handler_dir)):
+                python = await self._ensure_venv(handler_dir, config)
+
         runner_path = os.path.join(os.path.dirname(__file__), "runner.py")
         proc = await asyncio.create_subprocess_exec(
-            sys.executable,
+            python,
             runner_path,
             env=env,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
         self._procs[agent_id] = proc
-        logger.info("subprocess_spawned agent_id=%s pid=%d port=%d", agent_id, proc.pid, port)
+        logger.info(
+            "subprocess_spawned agent_id=%s pid=%d port=%d handler_type=%s",
+            agent_id, proc.pid, port, handler_type,
+        )
 
         await self._wait_for_health(agent_id, port)
+
+    async def _ensure_venv(self, handler_dir: Path, config: CustomConfig) -> str:
+        """Create a per-agent venv (if absent) and install project + requirements.
+
+        Order mirrors the cluster Dockerfile (§7.2/§7.3): framework, then the
+        uploaded project (`pip install .` if it ships build metadata and
+        install_project is set — D8), then requirements LAST so they win.
+        Returns the venv's python. system_packages (apt, P2) can't be installed
+        per-agent locally — it's log-and-skipped by the caller path in P2.
+        """
+        venv = handler_dir / ".venv"
+        py = venv / "bin" / "python"
+        if not py.exists():
+            handler_dir.mkdir(parents=True, exist_ok=True)
+            await _run([sys.executable, "-m", "venv", "--system-site-packages", str(venv)])
+            await _run([str(py), "-m", "pip", "install", "--quiet", "--upgrade", "pip"])
+            # Install the framework (editable) so `import agent_skeleton` works even
+            # if the system site-packages don't already carry it.
+            await _run([str(py), "-m", "pip", "install", "--quiet", "-e", str(_AGENT_SKELETON_DIR)])
+        if config.install_project and _has_build_metadata(handler_dir):
+            await _run([str(py), "-m", "pip", "install", "--quiet", str(handler_dir)])
+        if config.requirements:
+            await _run([str(py), "-m", "pip", "install", "--quiet", *config.requirements])
+        return str(py)
 
     async def stop(self, agent_id: str) -> None:
         proc = self._procs.pop(agent_id, None)
@@ -140,3 +279,85 @@ class SubprocessBackend(ContainerBackend):
         raise RuntimeError(
             f"Agent {agent_id} did not become healthy within {_HEALTH_TIMEOUT_SECONDS}s on port {port}"
         )
+
+
+class ClusterBackend(ContainerBackend):
+    """ENGR cluster spawning via a host-side loop (plan Note #8).
+
+    `srun` is NOT available inside the registration container (verified on the
+    cluster: the image has no Slurm client tools), so this backend does not spawn
+    directly. Instead, the build-poll marks built agents `image_ready`; the host
+    loop (deployment/spawn_agent_loop.py) — running in submit.sbatch's native Slurm
+    env where `srun` works — pulls /internal/spawn-queue, runs `srun --overlap`,
+    and reports the PID back via /internal/spawned (which calls record_pid).
+
+    So here: spawn() is a no-op; is_alive() polls the agent's /health; stop()
+    queues the PID for the host loop to kill via /internal/stop-queue.
+    """
+
+    def __init__(self) -> None:
+        # agent_id -> (pid, port), reported by the host loop after a successful srun.
+        self._procs: dict[str, tuple[int, int]] = {}
+        # PIDs queued for the host loop to kill (consumed by /internal/stop-queue).
+        self._stop_pids: list[int] = []
+
+    async def spawn(
+        self,
+        agent_id: str,
+        name: str,
+        description: str,
+        handler_type: str,
+        config: AnyConfig,
+        port: int,
+    ) -> None:
+        # No-op: the host spawn loop performs the actual srun. See class docstring.
+        logger.info("cluster_spawn_noop agent_id=%s port=%d (host loop spawns)", agent_id, port)
+
+    def record_pid(self, agent_id: str, pid: int, port: int) -> None:
+        self._procs[agent_id] = (pid, port)
+        logger.info("cluster_pid_recorded agent_id=%s pid=%d port=%d", agent_id, pid, port)
+
+    def pending_stops(self) -> list[int]:
+        out = self._stop_pids[:]
+        self._stop_pids.clear()
+        return out
+
+    async def stop(self, agent_id: str) -> None:
+        rec = self._procs.pop(agent_id, None)
+        if rec:
+            self._stop_pids.append(rec[0])
+            logger.info("cluster_stop_queued agent_id=%s pid=%d", agent_id, rec[0])
+
+    async def is_alive(self, agent_id: str) -> bool:
+        rec = self._procs.get(agent_id)
+        if rec is None:
+            return False
+        _pid, port = rec
+        try:
+            async with httpx.AsyncClient(timeout=2.0) as client:
+                resp = await client.get(f"http://localhost:{port}/health")
+            return resp.status_code < 500
+        except Exception:
+            return False
+
+
+async def _run(cmd: list[str]) -> None:
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+    )
+    out, _ = await proc.communicate()
+    if proc.returncode != 0:
+        tail = (out or b"").decode(errors="replace")[-1500:]
+        raise RuntimeError(f"command failed ({proc.returncode}): {' '.join(cmd)}\n{tail}")
+
+
+def _image_slug(name: str) -> str:
+    return name.lower().replace(" ", "-")
+
+
+def make_backend() -> ContainerBackend:
+    if os.getenv("SPAWN_BACKEND") == "cluster":
+        return ClusterBackend()
+    return SubprocessBackend()

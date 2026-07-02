@@ -155,8 +155,7 @@ as parallel `srun --overlap` steps in `submit.sbatch` on one CPU node, plus a se
 job (`start_vllm.sbatch`) serving `gpt-oss-20b` via vLLM. ADS starts first; each agent's
 `entrypoints/entrypoint-<agent>.sh` waits up to 60 s for it, then `exec`s the agent with an
 absolute conda path (`/opt/conda/envs/<env>/bin/python`). The planner reaches vLLM through
-`OPENAI_BASE_URL`. Full runbook: `deployment/README.md`. (The older single-container
-`deployment/Dockerfile` + `entrypoint.sh` + `supervisord.conf` are superseded leftovers.)
+`OPENAI_BASE_URL`. Full runbook: `deployment/README.md`.
 
 ### Interfacing with the running system
 - **Chat UI:** `http://localhost:8090/`

@@ -354,8 +354,12 @@ def create_app(
         try:
             agents = directory.search_agents()
             agent_count = len(agents)
+            ads_reachable = True
         except Exception:
-            agent_count = 0
+            # Distinguish "ADS unreachable" from a genuine zero-agent directory so
+            # the dashboard doesn't silently report 0 during an ADS blip.
+            agent_count = None
+            ads_reachable = False
 
         today_prefix = _time.strftime("%Y-%m-%d", _time.gmtime())
         today_reqs = [r for r in _request_log if r["timestamp"].startswith(today_prefix)]
@@ -367,6 +371,7 @@ def create_app(
 
         return {
             "agents_connected": agent_count,
+            "ads_reachable": ads_reachable,
             "requests_today": len(today_reqs),
             "last_request_ts": _request_log[0]["timestamp"] if _request_log else None,
             "avg_latency_ms": int(sum(latencies) / len(latencies)) if latencies else 0,
@@ -402,7 +407,13 @@ def create_app(
         }
 
     async def _probe_agent(agent_id: str, endpoint: str) -> None:
-        url = endpoint.rstrip("/") + "/"
+        # Probe the canonical A2A liveness endpoint (the agent card) rather than
+        # GET / — A2A servers only accept POST at "/", so GET / returns 405, which
+        # spams agent logs and is a non-obvious "reachable" signal. The well-known
+        # card path returns 200 when the agent is up. Any HTTP response (<500) still
+        # counts as reachable, so agents on frameworks that don't serve that exact
+        # path aren't falsely marked down.
+        url = endpoint.rstrip("/") + "/.well-known/agent-card.json"
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
                 t0 = _time.monotonic()
@@ -449,8 +460,10 @@ def create_app(
     async def admin_agents_health(request: Request, _: None = Depends(_require_admin)) -> dict[str, Any]:
         try:
             agents = directory.search_agents()
+            ads_reachable = True
         except Exception:
             agents = []
+            ads_reachable = False
         rows = []
         for a in agents:
             h = _agent_health.get(a.agent_id, {"status": "unknown", "avg_latency_ms": 0, "requests_today": 0})
@@ -464,7 +477,7 @@ def create_app(
                 "avg_latency_ms": h["avg_latency_ms"],
                 "requests_today": h["requests_today"],
             })
-        return {"agents": rows}
+        return {"agents": rows, "ads_reachable": ads_reachable}
 
     @app.get("/sessions")
     async def get_sessions(user_id: str = "demo-user") -> dict[str, Any]:

@@ -59,6 +59,24 @@ def main() -> None:
             auth_header=config.get("auth_header"),
             port=port,
         )
+    elif handler_type == "custom":
+        from registration_service.handlers.custom_handler import run
+
+        handler_file_path = os.environ.get("HANDLER_FILE_PATH")
+        if not handler_file_path:
+            logger.error("runner_missing_handler_file HANDLER_FILE_PATH not set")
+            sys.exit(1)
+
+        run(
+            agent_id=agent_id,
+            name=config.get("name", agent_id),
+            description=config.get("description", ""),
+            handler_file_path=handler_file_path,
+            class_name=config["class_name"],
+            extra=config.get("extra", {}),
+            port=port,
+            max_runtime_seconds=float(config.get("max_runtime_seconds", 1800)),
+        )
     else:
         logger.error("runner_unknown_handler_type handler_type=%s", handler_type)
         sys.exit(1)

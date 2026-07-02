@@ -35,11 +35,19 @@ async def assign_port(conn: asyncpg.Connection, agent_id: str) -> int:
 
     Raises RuntimeError if no free port is available.
     Uses SELECT FOR UPDATE SKIP LOCKED to be safe under concurrent requests.
+
+    Also excludes any port already owned by an `agents` row: `agents.port` is
+    UNIQUE and is the real source of truth, while `port_pool.in_use` is a
+    secondary flag that can drift out of sync (e.g. after delete/re-register
+    churn or a restart-time recovery that re-seats rows). Consulting the
+    authoritative table here prevents handing out a port that's actually taken
+    (which would 500 on the UNIQUE(port) constraint).
     """
     row = await conn.fetchrow(
         """
         SELECT port FROM port_pool
         WHERE in_use = false
+          AND port NOT IN (SELECT port FROM agents WHERE port IS NOT NULL)
         ORDER BY port
         LIMIT 1
         FOR UPDATE SKIP LOCKED

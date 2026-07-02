@@ -1,0 +1,12 @@
+# Dedicated PostgreSQL service for ADS ("dir") and registration ("registration").
+# Debian postgresql-15 to stay binary/locale-compatible with the existing data dir
+# that the old registration entrypoint created. Build from repo root:
+#   docker build --platform linux/amd64 -f deployment/dockerfiles/Dockerfile.postgres \
+#       -t amaankhan25/agenticnetwork-postgres:latest .
+FROM debian:12-slim
+RUN apt-get update && apt-get install -y --no-install-recommends postgresql-15 \
+    && rm -rf /var/lib/apt/lists/*
+COPY deployment/entrypoints/entrypoint-postgres.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+EXPOSE 5432
+ENTRYPOINT ["/entrypoint.sh"]
