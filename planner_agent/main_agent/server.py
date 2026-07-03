@@ -34,7 +34,7 @@ from planner_agent.main_agent.config import MainAgentConfig, load_config
 from planner_agent.main_agent.db import close_db, fetch_user_credentials, init_db
 from planner_agent.main_agent.llm_client import LLMClient, OpenAIToolLoopClient
 from planner_agent.main_agent.credential_gate import DbCredentialGate
-from planner_agent.main_agent.runtime import MainAgentRuntime
+from planner_agent.main_agent.runtime import ContextOwnershipError, MainAgentRuntime
 from planner_agent.main_agent import conversation_store
 
 logger = logging.getLogger(__name__)
@@ -247,6 +247,8 @@ def create_app(
                 pass
         except HTTPException:
             raise
+        except ContextOwnershipError as exc:
+            raise HTTPException(status_code=403, detail="You do not own this conversation.") from exc
         except Exception as exc:
             logger.exception("main_agent_message_failed")
             raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -304,6 +306,8 @@ def create_app(
                 except asyncio.CancelledError:
                     await queue.put(("error", {"detail": "Request was cancelled or timed out."}))
                     raise
+                except ContextOwnershipError:
+                    await queue.put(("error", {"detail": "You do not own this conversation."}))
                 except Exception as exc:
                     logger.exception("main_agent_message_stream_failed")
                     await queue.put(("error", {"detail": str(exc)}))

@@ -769,45 +769,132 @@ def test_followup_can_see_prior_assistant_message_in_history() -> None:
     asyncio.run(_followup_sees_prior_assistant_in_history())
 
 
-def test_server_reuses_one_context_for_requests_without_context_id() -> None:
-    asyncio.run(_server_reuses_one_context_without_context_id())
-
-
-async def _server_reuses_one_context_without_context_id() -> None:
-    store = InMemoryStateStore()
+def _final_answers_app(store: InMemoryStateStore, answers: list[str]):
     llm = ScriptedLLMClient(
-        [
-            ToolCall(tool_name="final_answer", arguments={"text": "First answer."}),
-            ToolCall(tool_name="final_answer", arguments={"text": "Second answer."}),
-        ]
+        [ToolCall(tool_name="final_answer", arguments={"text": a}) for a in answers]
     )
-    app = create_app(
+    return create_app(
         config=_config(),
         directory_client=DirectoryClient(fake_ads=True),
         a2a_client=FailA2A(),
         state_store=store,
         llm_client=llm,
     )
+
+
+# H1 — per-user context keying (multi-user hardening). Each of these replaces the
+# retired single-global-context behavior.
+
+def test_requests_without_context_id_get_separate_contexts() -> None:
+    asyncio.run(_requests_without_context_id_get_separate_contexts())
+
+
+async def _requests_without_context_id_get_separate_contexts() -> None:
+    store = InMemoryStateStore()
+    app = _final_answers_app(store, ["First answer.", "Second answer."])
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client:
-        first = await client.post(
-            "/messages",
-            json={"user_id": "u", "channel": "api", "text": "First request."},
-        )
+        first = await client.post("/messages", json={"user_id": "u", "channel": "api", "text": "First request."})
+        second = await client.post("/messages", json={"user_id": "u", "channel": "api", "text": "Second request."})
+
+    # No echoed context_id => two independent contexts, each holding only its own turn.
+    assert first.json()["context_id"] != second.json()["context_id"]
+    assert len(store.contexts) == 2
+    h1 = "\n".join(store.get_context(first.json()["context_id"]).conversation_history)
+    h2 = "\n".join(store.get_context(second.json()["context_id"]).conversation_history)
+    assert "First request." in h1 and "Second request." not in h1
+    assert "Second request." in h2 and "First request." not in h2
+
+
+def test_echoed_context_id_continues_same_context() -> None:
+    asyncio.run(_echoed_context_id_continues_same_context())
+
+
+async def _echoed_context_id_continues_same_context() -> None:
+    store = InMemoryStateStore()
+    app = _final_answers_app(store, ["First answer.", "Second answer."])
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client:
+        first = await client.post("/messages", json={"user_id": "u", "channel": "api", "text": "First request."})
+        cid = first.json()["context_id"]
         second = await client.post(
             "/messages",
-            json={"user_id": "u", "channel": "api", "text": "Second request."},
+            json={"user_id": "u", "channel": "api", "text": "Second request.", "context_id": cid},
         )
 
-    first_payload = first.json()
-    second_payload = second.json()
-    assert first_payload["context_id"] == second_payload["context_id"]
-    assert store.server_context_id == first_payload["context_id"]
-    assert list(store.contexts) == [first_payload["context_id"]]
-    history = "\n".join(store.get_context(first_payload["context_id"]).conversation_history)
-    assert "user: First request." in history
-    assert "assistant: First answer." in history
-    assert "user: Second request." in history
-    assert "assistant: Second answer." in history
+    assert second.json()["context_id"] == cid
+    assert len(store.contexts) == 1
+    history = "\n".join(store.get_context(cid).conversation_history)
+    assert "First request." in history and "Second request." in history
+
+
+def test_two_users_never_share_a_context() -> None:
+    asyncio.run(_two_users_never_share_a_context())
+
+
+async def _two_users_never_share_a_context() -> None:
+    store = InMemoryStateStore()
+    app = _final_answers_app(store, ["A1.", "B1.", "A2."])
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client:
+        a = await client.post(
+            "/messages", json={"channel": "api", "text": "Alice one."}, headers={"mail": "alice@wustl.edu"}
+        )
+        b = await client.post(
+            "/messages", json={"channel": "api", "text": "Bob one."}, headers={"mail": "bob@wustl.edu"}
+        )
+        cid_a = a.json()["context_id"]
+        await client.post(
+            "/messages",
+            json={"channel": "api", "text": "Alice two.", "context_id": cid_a},
+            headers={"mail": "alice@wustl.edu"},
+        )
+
+    assert cid_a != b.json()["context_id"]
+    assert store.get_context(cid_a).user_id == "alice@wustl.edu"
+    alice_hist = "\n".join(store.get_context(cid_a).conversation_history)
+    assert "Bob one." not in alice_hist
+
+
+def test_using_another_users_context_id_is_forbidden() -> None:
+    asyncio.run(_using_another_users_context_id_is_forbidden())
+
+
+async def _using_another_users_context_id_is_forbidden() -> None:
+    store = InMemoryStateStore()
+    app = _final_answers_app(store, ["A1.", "hijack."])
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client:
+        a = await client.post(
+            "/messages", json={"channel": "api", "text": "Alice one."}, headers={"mail": "alice@wustl.edu"}
+        )
+        cid_a = a.json()["context_id"]
+        # Bob presents Alice's context_id.
+        resp = await client.post(
+            "/messages",
+            json={"channel": "api", "text": "Give me Alice's thread.", "context_id": cid_a},
+            headers={"mail": "bob@wustl.edu"},
+        )
+
+    assert resp.status_code == 403, resp.text
+    # Alice's context is untouched by the rejected request.
+    assert "Give me Alice's thread." not in "\n".join(store.get_context(cid_a).conversation_history)
+
+
+def test_unknown_context_id_starts_fresh_owned_context() -> None:
+    asyncio.run(_unknown_context_id_starts_fresh_owned_context())
+
+
+async def _unknown_context_id_starts_fresh_owned_context() -> None:
+    # Simulates a stale id after an in-memory store restart: the id is reused and
+    # bound to the requester rather than 404/403'd.
+    store = InMemoryStateStore()
+    app = _final_answers_app(store, ["answer."])
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client:
+        resp = await client.post(
+            "/messages",
+            json={"channel": "api", "text": "resume please", "context_id": "stale-abc"},
+            headers={"mail": "alice@wustl.edu"},
+        )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["context_id"] == "stale-abc"
+    assert store.get_context("stale-abc").user_id == "alice@wustl.edu"
 
 
 async def _followup_sees_prior_assistant_in_history() -> None:

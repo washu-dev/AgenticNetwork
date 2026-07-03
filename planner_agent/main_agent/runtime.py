@@ -59,6 +59,19 @@ WRITE_SKILL_TOKENS = (
 )
 
 
+class ContextOwnershipError(Exception):
+    """Raised when a request presents a context_id owned by a different user.
+
+    Multi-user hardening (H1): the working context is bound to its creator's
+    user_id; a caller may not read or append to another user's context. The
+    server maps this to HTTP 403.
+    """
+
+    def __init__(self, context_id: str) -> None:
+        super().__init__(f"context {context_id} is not owned by the requester")
+        self.context_id = context_id
+
+
 class TurnResult(BaseModel):
     context_id: str
     state: A2ATaskState
@@ -1052,22 +1065,34 @@ class MainAgentRuntime:
         text: str,
         context_id: str | None,
     ) -> PIContext:
-        context = self.store.get_server_context()
-        if context is None:
-            context = self._new_context(user_id, channel, text)
-            return self.store.save_server_context(context)
+        # H1: honor the caller-supplied context_id and bind each context to its
+        # owner. No global slot — a missing/unknown id starts a fresh, owned context.
+        existing = self.store.contexts.get(context_id) if context_id else None
+        if existing is not None:
+            if existing.user_id != user_id:
+                raise ContextOwnershipError(context_id)  # type: ignore[arg-type]
+            existing.channel = channel
+            existing.current_goal = text
+            existing.updated_at = utc_now()
+            existing.conversation_history.append(f"user: {text}")
+            return self.store.save_context(existing)
 
-        context.user_id = user_id
-        context.channel = channel
-        context.current_goal = text
-        context.updated_at = utc_now()
-        context.conversation_history.append(f"user: {text}")
-        return self.store.save_server_context(context)
+        # Unknown id (e.g. stale after a restart — the store is in-memory) or none:
+        # create a fresh context. Reuse the supplied id when present so the browser's
+        # session stays continuous across restarts.
+        context = self._new_context(user_id, channel, text, context_id=context_id)
+        return self.store.save_context(context)
 
-    def _new_context(self, user_id: str, channel: Channel, text: str) -> PIContext:
+    def _new_context(
+        self,
+        user_id: str,
+        channel: Channel,
+        text: str,
+        context_id: str | None = None,
+    ) -> PIContext:
         msg = UserMessage(channel=channel, sender_id=user_id, text=text)
         return PIContext(
-            context_id=str(uuid4()),
+            context_id=context_id or str(uuid4()),
             user_id=user_id,
             channel=channel,
             original_message_id=msg.id,

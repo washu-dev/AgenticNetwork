@@ -8,20 +8,10 @@ class InMemoryStateStore:
         self.contexts: dict[str, PIContext] = {}
         self.invocations: dict[str, AgentInvocationRecord] = {}
         self.pending_confirmations: dict[str, dict] = {}
-        self.server_context_id: str | None = None
 
     def save_context(self, context: PIContext) -> PIContext:
         self.contexts[context.context_id] = context
         return context
-
-    def save_server_context(self, context: PIContext) -> PIContext:
-        self.server_context_id = context.context_id
-        return self.save_context(context)
-
-    def get_server_context(self) -> PIContext | None:
-        if not self.server_context_id:
-            return None
-        return self.contexts.get(self.server_context_id)
 
     def save_invocation(self, invocation: AgentInvocationRecord) -> AgentInvocationRecord:
         self.invocations[invocation.task_id] = invocation
