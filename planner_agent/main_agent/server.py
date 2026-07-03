@@ -607,12 +607,39 @@ async def _inject_credentials(request: Request, metadata: dict[str, Any]) -> Non
         pass
 
 
-async def _incoming_message_from_request(request: Request) -> IncomingMessage:
-    # Use the Shibboleth-authenticated email as user_id when available.
+def _anon_identity_allowed() -> bool:
+    """Whether an unauthenticated request may fall back to the ``demo-user`` identity.
+
+    Fail-closed once a real deployment DB is configured: with ``REGISTRATION_DB_DSN``
+    set, a missing Shibboleth header is a 401, not a silent collapse to a shared
+    identity. Anonymous is allowed when there is no DB (Tier A/B laptop runs and unit
+    tests) or when the operator explicitly opts in with ``PLANNER_ALLOW_ANON=1`` (local
+    dev against a real DB).
+    """
+    if os.getenv("PLANNER_ALLOW_ANON") == "1":
+        return True
+    return not os.getenv("REGISTRATION_DB_DSN")
+
+
+def _resolve_shib_user_id(request: Request) -> str:
+    """Return the authenticated identity for a request, or fail closed.
+
+    Uses the Shibboleth email when present. When it's missing, returns ``demo-user``
+    only if :func:`_anon_identity_allowed`; otherwise re-raises the 401 from
+    ``get_shib_email`` so anonymous callers can't be silently attributed to a shared
+    identity (multi-user hardening F3).
+    """
     try:
-        shib_user_id = get_shib_email(request)
-    except Exception:
-        shib_user_id = "demo-user"
+        return get_shib_email(request)
+    except HTTPException:
+        if _anon_identity_allowed():
+            return "demo-user"
+        raise
+
+
+async def _incoming_message_from_request(request: Request) -> IncomingMessage:
+    # Use the Shibboleth-authenticated email as user_id (fail-closed when a DB is set).
+    shib_user_id = _resolve_shib_user_id(request)
 
     content_type = request.headers.get("content-type", "").lower()
     if content_type.startswith("multipart/form-data"):

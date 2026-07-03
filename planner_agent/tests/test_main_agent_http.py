@@ -97,3 +97,72 @@ async def _messages_accepts_image_upload() -> None:
     image_parts = [part for part in a2a.requests[0].messages[0].parts if part.kind == "image"]
     assert len(image_parts) == 1
     assert image_parts[0].bytes
+
+
+# ---------------------------------------------------------------------------
+# F3 — fail-closed identity (multi-user hardening)
+# ---------------------------------------------------------------------------
+
+def _final_answer_app():
+    """A minimal app whose scripted LLM replies immediately with a final answer."""
+    return create_app(
+        config=_config(),
+        directory_client=DirectoryClient(fake_ads=True),
+        a2a_client=FailA2A(),
+        llm_client=ScriptedLLMClient(
+            [ToolCall(tool_name="final_answer", arguments={"text": "hi"})]
+        ),
+    )
+
+
+async def _post_message(headers: dict[str, str] | None = None):
+    app = _final_answer_app()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client:
+        return await client.post(
+            "/messages",
+            json={"channel": "api", "text": "hello"},
+            headers=headers or {},
+        )
+
+
+def test_missing_identity_fails_closed_when_db_configured(monkeypatch) -> None:
+    monkeypatch.setenv("REGISTRATION_DB_DSN", "postgres://unused")
+    monkeypatch.delenv("PLANNER_ALLOW_ANON", raising=False)
+    resp = asyncio.run(_post_message())
+    assert resp.status_code == 401, resp.text
+
+
+def test_missing_identity_allowed_without_db(monkeypatch) -> None:
+    monkeypatch.delenv("REGISTRATION_DB_DSN", raising=False)
+    monkeypatch.delenv("PLANNER_ALLOW_ANON", raising=False)
+    resp = asyncio.run(_post_message())
+    assert resp.status_code == 200, resp.text
+
+
+def test_allow_anon_flag_overrides_fail_closed(monkeypatch) -> None:
+    monkeypatch.setenv("REGISTRATION_DB_DSN", "postgres://unused")
+    monkeypatch.setenv("PLANNER_ALLOW_ANON", "1")
+    resp = asyncio.run(_post_message())
+    assert resp.status_code == 200, resp.text
+
+
+def test_shib_header_becomes_user_id(monkeypatch) -> None:
+    # No DB configured, so credential injection is skipped; the header still sets identity.
+    monkeypatch.delenv("REGISTRATION_DB_DSN", raising=False)
+    asyncio.run(_shib_header_becomes_user_id())
+
+
+async def _shib_header_becomes_user_id() -> None:
+    app = _final_answer_app()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client:
+        resp = await client.post(
+            "/messages",
+            json={"channel": "api", "text": "hello"},
+            headers={"mail": "Alice@WUSTL.edu"},
+        )
+        assert resp.status_code == 200, resp.text
+        # The session must be attributed to the (lowercased) Shib email, not demo-user.
+        sessions = await client.get("/sessions", params={"user_id": "alice@wustl.edu"})
+        assert len(sessions.json()["sessions"]) == 1
+        demo = await client.get("/sessions", params={"user_id": "demo-user"})
+        assert len(demo.json()["sessions"]) == 0
