@@ -337,6 +337,26 @@ def _ads_record_name(provider_url: str, agent_id: str) -> str:
     return f"https://example.invalid/agents/{agent_id}"
 
 
+_OASF_TAG_PREFIX = "oasf:"
+
+
+def _oasf_skill_from_tag(tag: str) -> OfficialOASFSkill | None:
+    """Parse a card skill tag of the form 'oasf:<name>:<id>' into a routing skill.
+
+    Lets a card declare its own OASF routing skills (e.g. emitted by the
+    agent_skeleton generator) so it is discoverable WITHOUT a per-agent edit to
+    the maps above. Returns None for any tag that is not an OASF tag."""
+    if not tag.startswith(_OASF_TAG_PREFIX):
+        return None
+    name, sep, id_str = tag[len(_OASF_TAG_PREFIX):].rpartition(":")
+    if not sep or not name:
+        return None
+    try:
+        return OfficialOASFSkill(name=name, id=int(id_str))
+    except ValueError:
+        return None
+
+
 def _ads_routing_skills_for_card(card: AgentCard) -> list[OfficialOASFSkill]:
     official = [
         KNOWN_OASF_SKILLS[skill.id]
@@ -348,6 +368,14 @@ def _ads_routing_skills_for_card(card: AgentCard) -> list[OfficialOASFSkill]:
     deduped: dict[str, OfficialOASFSkill] = {}
     for skill in official:
         deduped[skill.name] = skill
+    # Always honor routing skills declared on the card itself as 'oasf:<name>:<id>'
+    # tags (union with anything matched above — an explicit author tag is never
+    # silently dropped). Backward compatible: existing cards carry no such tags.
+    for skill in card.skills:
+        for tag in (skill.tags or []):
+            parsed = _oasf_skill_from_tag(tag)
+            if parsed is not None:
+                deduped[parsed.name] = parsed
     return list(deduped.values())
 
 

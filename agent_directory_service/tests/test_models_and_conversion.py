@@ -9,6 +9,8 @@ from agent_directory_service.services.common.models import (
     A2ATaskRequest,
 )
 from agent_directory_service.services.directory.card_oasf_converter import (
+    _oasf_skill_from_tag,
+    agent_card_to_ads_record,
     agent_card_to_oasf_record,
     load_agent_card,
     oasf_record_to_agent_card,
@@ -167,3 +169,80 @@ def test_oasf_conversion_keeps_custom_tags_per_agent_card_skill_for_policy() -> 
     assert group_send_capability.action_type == "write"
     assert group_send_capability.risk_level == "medium"
     assert record["policy"]["skill_policies"]["email/group_send"]["confirmation_required"] is True
+
+
+def _card_with_skill_tags(tags: list[str]) -> AgentCard:
+    return AgentCard(
+        name="Weather Bridge Agent",
+        description="Generator-produced wrapper agent.",
+        url="http://127.0.0.1:19111/",
+        provider=AgentProvider(organization="Demo", url="https://example.invalid/agents/weather"),
+        version="0.1.0",
+        protocolVersion="0.3.0",
+        preferredTransport="JSONRPC",
+        capabilities=AgentCapabilities(streaming=False, pushNotifications=False),
+        defaultInputModes=["text/plain"],
+        defaultOutputModes=["application/json"],
+        skills=[
+            AgentSkill(
+                id="weather-bridge-agent/get-forecast",
+                name="Get Forecast",
+                description="Return the forecast for a place.",
+                tags=tags,
+                inputModes=["text/plain"],
+                outputModes=["application/json"],
+            )
+        ],
+    )
+
+
+def test_ads_record_routes_generated_card_via_on_card_oasf_tag() -> None:
+    # A generated wrapper agent declares its own routing skill as an oasf:<name>:<id>
+    # tag; the converter must surface it even though the card has no entry in
+    # KNOWN_OASF_SKILLS or the per-agent routing map.
+    card = _card_with_skill_tags(
+        ["weather", "oasf:natural_language_processing/.../question_answering:10302"]
+    )
+    record = agent_card_to_ads_record(card)
+    assert record["skills"] == [
+        {"name": "natural_language_processing/.../question_answering", "id": 10302}
+    ]
+
+
+def test_ads_record_unions_on_card_tag_with_known_skill() -> None:
+    # An explicit author oasf: tag is unioned with (never silently dropped by) a
+    # KNOWN_OASF_SKILLS match on another skill id.
+    card = _card_with_skill_tags(["oasf:analytical_skills/coding_skills/text_to_code:50201"])
+    card.skills.append(
+        AgentSkill(
+            id="images_computer_vision/image_classification",
+            name="Classify",
+            description="Classify an image.",
+            tags=[],
+        )
+    )
+    record = agent_card_to_ads_record(card)
+    names = {skill["name"] for skill in record["skills"]}
+    assert names == {
+        "analytical_skills/coding_skills/text_to_code",
+        "images_computer_vision/image_classification",
+    }
+
+
+def test_ads_record_backward_compatible_without_oasf_tag() -> None:
+    # Existing cards carry no oasf: tag and an unknown skill id -> no routing skills,
+    # exactly as before the fallback was added.
+    card = _card_with_skill_tags(["weather", "demo-custom"])
+    assert agent_card_to_ads_record(card)["skills"] == []
+
+
+def test_oasf_skill_from_tag_parses_and_rejects() -> None:
+    parsed = _oasf_skill_from_tag("oasf:nlp/retrieval/document_retrieval:60103")
+    assert parsed is not None
+    assert parsed.name == "nlp/retrieval/document_retrieval"
+    assert parsed.id == 60103
+    # Non-oasf tag, missing id, and non-integer id are all ignored.
+    assert _oasf_skill_from_tag("weather/forecast") is None
+    assert _oasf_skill_from_tag("oasf:nlp/no_id") is None
+    assert _oasf_skill_from_tag("oasf:nlp/bad:notanint") is None
+    assert _oasf_skill_from_tag("oasf::123") is None
