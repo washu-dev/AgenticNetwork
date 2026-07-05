@@ -8,9 +8,11 @@ import httpx
 from planner_agent.main_agent.directory.card_oasf_converter import load_agent_card
 from planner_agent.main_agent.directory.client import DirectoryClient
 
+from planner_agent.main_agent import conversation_store
 from planner_agent.main_agent.config import MainAgentConfig
 from planner_agent.main_agent.llm_client import ScriptedLLMClient, ToolCall
 from planner_agent.main_agent.server import create_app
+from planner_agent.main_agent.state.store import InMemoryStateStore
 from planner_agent.tests.test_main_agent_runtime import FailA2A, EMAIL_CARD, SpyA2A, _geospatial_card
 
 
@@ -161,8 +163,112 @@ async def _shib_header_becomes_user_id() -> None:
             headers={"mail": "Alice@WUSTL.edu"},
         )
         assert resp.status_code == 200, resp.text
-        # The session must be attributed to the (lowercased) Shib email, not demo-user.
-        sessions = await client.get("/sessions", params={"user_id": "alice@wustl.edu"})
-        assert len(sessions.json()["sessions"]) == 1
-        demo = await client.get("/sessions", params={"user_id": "demo-user"})
-        assert len(demo.json()["sessions"]) == 0
+        # /sessions derives identity from the request (H2) — the query param is ignored.
+        # Attribution is to the lowercased Shib email.
+        alice = await client.get("/sessions", headers={"mail": "alice@wustl.edu"})
+        assert len(alice.json()["sessions"]) == 1
+        # A different identity sees none of Alice's sessions, even naming her as a param.
+        bob = await client.get(
+            "/sessions", params={"user_id": "alice@wustl.edu"}, headers={"mail": "bob@wustl.edu"}
+        )
+        assert len(bob.json()["sessions"]) == 0
+
+
+# ---------------------------------------------------------------------------
+# H2 — ownership on data endpoints (multi-user hardening)
+# ---------------------------------------------------------------------------
+
+def test_conversation_endpoints_enforce_ownership(monkeypatch) -> None:
+    monkeypatch.delenv("REGISTRATION_DB_DSN", raising=False)
+    asyncio.run(_conversation_endpoints_enforce_ownership())
+
+
+async def _conversation_endpoints_enforce_ownership() -> None:
+    app = _final_answer_app()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client:
+        created = await client.post(
+            "/messages", json={"channel": "api", "text": "alice secret"}, headers={"mail": "alice@wustl.edu"}
+        )
+        cid = created.json()["context_id"]
+
+        # Owner can read.
+        ok = await client.get(f"/conversations/{cid}", headers={"mail": "alice@wustl.edu"})
+        assert ok.status_code == 200, ok.text
+        assert any("alice secret" in m["text"] for m in ok.json()["messages"])
+
+        # Non-owner is forbidden (not 404 — the conversation exists, it's just not theirs).
+        forbidden = await client.get(f"/conversations/{cid}", headers={"mail": "bob@wustl.edu"})
+        assert forbidden.status_code == 403, forbidden.text
+
+        # Unknown id is a 404.
+        missing = await client.get("/conversations/nope", headers={"mail": "alice@wustl.edu"})
+        assert missing.status_code == 404, missing.text
+
+        # Non-owner cannot delete; owner can.
+        del_bob = await client.request(
+            "DELETE", f"/conversations/{cid}", headers={"mail": "bob@wustl.edu"}
+        )
+        assert del_bob.status_code == 403, del_bob.text
+        del_alice = await client.request(
+            "DELETE", f"/conversations/{cid}", headers={"mail": "alice@wustl.edu"}
+        )
+        assert del_alice.status_code == 200, del_alice.text
+        # Now gone.
+        gone = await client.get(f"/conversations/{cid}", headers={"mail": "alice@wustl.edu"})
+        assert gone.status_code == 404, gone.text
+
+
+def test_persisted_context_rehydrates_and_enforces_owner(monkeypatch) -> None:
+    """Simulates a conversation persisted in Postgres that is no longer in memory
+    (post-restart / different process). Rehydration must restore it for the owner and
+    reject a non-owner presenting the id."""
+    # Simulate an active persistence layer without a real DB by stubbing the store.
+    persisted = {"ctx-persist": ("alice@wustl.edu", ["user: earlier turn", "assistant: earlier reply"])}
+
+    async def fake_owner(context_id):
+        entry = persisted.get(context_id)
+        return entry[0] if entry else None
+
+    async def fake_load_history(context_id):
+        entry = persisted.get(context_id)
+        return list(entry[1]) if entry else None
+
+    async def fake_save(context_id, history, owner_email):
+        persisted[context_id] = (owner_email, list(history))
+
+    monkeypatch.setattr(conversation_store, "owner", fake_owner)
+    monkeypatch.setattr(conversation_store, "load_history", fake_load_history)
+    monkeypatch.setattr(conversation_store, "save", fake_save)
+    asyncio.run(_persisted_context_rehydrates_and_enforces_owner())
+
+
+async def _persisted_context_rehydrates_and_enforces_owner() -> None:
+    # A fresh store => the context exists only in the (stubbed) persistence layer.
+    store = InMemoryStateStore()
+    app = create_app(
+        config=_config(),
+        directory_client=DirectoryClient(fake_ads=True),
+        a2a_client=FailA2A(),
+        state_store=store,
+        llm_client=ScriptedLLMClient([ToolCall(tool_name="final_answer", arguments={"text": "ok"})]),
+    )
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client:
+        # Non-owner presenting the persisted id is rejected after rehydration.
+        bob = await client.post(
+            "/messages",
+            json={"channel": "api", "text": "peek", "context_id": "ctx-persist"},
+            headers={"mail": "bob@wustl.edu"},
+        )
+        assert bob.status_code == 403, bob.text
+
+        # Owner resumes: prior history is rehydrated, and the new turn appends to it.
+        alice = await client.post(
+            "/messages",
+            json={"channel": "api", "text": "continue", "context_id": "ctx-persist"},
+            headers={"mail": "alice@wustl.edu"},
+        )
+        assert alice.status_code == 200, alice.text
+        ctx = store.get_context("ctx-persist")
+        assert ctx.user_id == "alice@wustl.edu"
+        history = "\n".join(ctx.conversation_history)
+        assert "earlier turn" in history and "continue" in history

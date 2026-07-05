@@ -47,6 +47,21 @@ CREATE TABLE IF NOT EXISTS agent_credential_grants (
     PRIMARY KEY (user_id, agent_id, cred_type)
 );
 
+-- P4g/H2: conversation history moved off process-local SQLite into Postgres so it
+-- survives restarts and is shared across planner processes. owner_email keys on the
+-- Shib identity (same as the in-memory working context / sessions) rather than a
+-- users(id) FK, so anon/demo-user (no users row) can still persist in dev.
+CREATE TABLE IF NOT EXISTS conversation_messages (
+    context_id   TEXT        NOT NULL,
+    turn_index   INT         NOT NULL,
+    role         TEXT        NOT NULL,
+    text         TEXT        NOT NULL,
+    owner_email  TEXT        NOT NULL,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (context_id, turn_index)
+);
+CREATE INDEX IF NOT EXISTS idx_conv_owner ON conversation_messages(owner_email);
+
 CREATE OR REPLACE FUNCTION planner_update_updated_at()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN

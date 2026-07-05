@@ -34,6 +34,7 @@ from planner_agent.main_agent.directory.client import DirectoryClient
 from planner_agent.main_agent.directory.backends import DirectoryUnavailable
 from planner_agent.main_agent.state.store import InMemoryStateStore
 
+from planner_agent.main_agent import conversation_store
 from planner_agent.main_agent.config import MainAgentConfig
 from planner_agent.main_agent.credential_gate import CredentialGate
 from planner_agent.main_agent.llm_client import LLMClient, ToolCall, TurnState
@@ -155,7 +156,7 @@ class MainAgentRuntime:
             if pending:
                 return self._cancel_confirmation(context_id, pending, user_text=text)
 
-        context = self._open_context(user_id, channel, text, context_id)
+        context = await self._open_context(user_id, channel, text, context_id)
         uploaded_files = _uploaded_files_from_metadata(metadata or {})
         credentials = (metadata or {}).get("credentials") or {}
         auth_user_id = (metadata or {}).get("auth_user_id")
@@ -1058,7 +1059,7 @@ class MainAgentRuntime:
 
     # -------- helpers --------
 
-    def _open_context(
+    async def _open_context(
         self,
         user_id: str,
         channel: Channel,
@@ -1068,6 +1069,10 @@ class MainAgentRuntime:
         # H1: honor the caller-supplied context_id and bind each context to its
         # owner. No global slot — a missing/unknown id starts a fresh, owned context.
         existing = self.store.contexts.get(context_id) if context_id else None
+        # H2: on an in-memory miss, rehydrate from persisted history so a conversation
+        # survives a restart or lands on a different planner process.
+        if existing is None and context_id:
+            existing = await self._rehydrate_context(context_id, channel)
         if existing is not None:
             if existing.user_id != user_id:
                 raise ContextOwnershipError(context_id)  # type: ignore[arg-type]
@@ -1077,10 +1082,31 @@ class MainAgentRuntime:
             existing.conversation_history.append(f"user: {text}")
             return self.store.save_context(existing)
 
-        # Unknown id (e.g. stale after a restart — the store is in-memory) or none:
-        # create a fresh context. Reuse the supplied id when present so the browser's
-        # session stays continuous across restarts.
+        # Unknown id (never persisted) or none: create a fresh context. Reuse the
+        # supplied id when present so the browser's session stays continuous.
         context = self._new_context(user_id, channel, text, context_id=context_id)
+        return self.store.save_context(context)
+
+    async def _rehydrate_context(self, context_id: str, channel: Channel) -> PIContext | None:
+        """Rebuild a working context from persisted history, bound to its true owner.
+
+        Returns None if nothing was persisted for this id. The context is reconstructed
+        with its stored owner_email so the caller's ownership check in _open_context is
+        honest — a non-owner presenting the id is rejected, not silently served.
+        """
+        owner = await conversation_store.owner(context_id)
+        if owner is None:
+            return None
+        history = await conversation_store.load_history(context_id) or []
+        goal = next((h[6:] for h in reversed(history) if h.startswith("user: ")), "")
+        context = PIContext(
+            context_id=context_id,
+            user_id=owner,
+            channel=channel,
+            original_message_id=str(uuid4()),
+            current_goal=goal,
+            conversation_history=history,
+        )
         return self.store.save_context(context)
 
     def _new_context(

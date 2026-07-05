@@ -109,8 +109,6 @@ def create_app(
     _request_log: collections.deque = collections.deque(maxlen=200)
     _feedback_log: collections.deque = collections.deque(maxlen=500)
     _agent_health: dict[str, dict] = {}
-    # user_id → deque of { context_id, title, started_at, last_active_at }
-    _session_index: dict[str, collections.deque] = collections.defaultdict(lambda: collections.deque(maxlen=20))
 
     _ADMIN_TOKEN = os.getenv("MAIN_AGENT_ADMIN_TOKEN", "")
 
@@ -134,12 +132,8 @@ def create_app(
             raise HTTPException(status_code=401, detail="Invalid credentials")
         return {"ok": True, "token": _ADMIN_TOKEN or "open"}
 
-    # Conversation history store (SQLite, always active).
-    _conv_db_path = os.getenv(
-        "MAIN_AGENT_CONVERSATION_DB",
-        "/tmp/planner_agent_conversations.db",
-    )
-    conversation_store.init(_conv_db_path)
+    # Conversation history is persisted in Postgres (table created by init_db);
+    # a no-op without a DB, where the in-memory working context serves the session.
 
     # DB lifecycle (skipped when REGISTRATION_DB_DSN is unset, e.g. in unit tests).
     if os.getenv("REGISTRATION_DB_DSN"):
@@ -228,21 +222,9 @@ def create_app(
                 "latency_ms": latency_ms,
                 "state": result.state,
             })
-            now_ts = _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime())
-            sessions = _session_index[msg.user_id]
-            existing = next((s for s in sessions if s["context_id"] == result.context_id), None)
-            if existing:
-                existing["last_active_at"] = now_ts
-            else:
-                sessions.appendleft({
-                    "context_id": result.context_id,
-                    "title": msg.text[:60],
-                    "started_at": now_ts,
-                    "last_active_at": now_ts,
-                })
             try:
                 ctx = store.get_context(result.context_id)
-                await conversation_store.save(result.context_id, ctx.conversation_history)
+                await conversation_store.save(result.context_id, ctx.conversation_history, ctx.user_id)
             except Exception:
                 pass
         except HTTPException:
@@ -286,20 +268,9 @@ def create_app(
                         "latency_ms": latency_ms,
                         "state": result.state,
                     })
-                    sessions = _session_index[msg.user_id]
-                    existing = next((s for s in sessions if s["context_id"] == result.context_id), None)
-                    if existing:
-                        existing["last_active_at"] = now_ts
-                    else:
-                        sessions.appendleft({
-                            "context_id": result.context_id,
-                            "title": msg.text[:60],
-                            "started_at": now_ts,
-                            "last_active_at": now_ts,
-                        })
                     try:
                         ctx = store.get_context(result.context_id)
-                        await conversation_store.save(result.context_id, ctx.conversation_history)
+                        await conversation_store.save(result.context_id, ctx.conversation_history, ctx.user_id)
                     except Exception:
                         pass
                     await queue.put(("final", result.to_response()))
@@ -502,41 +473,68 @@ def create_app(
             })
         return {"agents": rows, "ads_reachable": ads_reachable}
 
+    async def _conversation_owner(context_id: str) -> str | None:
+        """Owner email of a context — in-memory working context first, else persisted."""
+        ctx = store.contexts.get(context_id)
+        if ctx is not None:
+            return ctx.user_id
+        return await conversation_store.owner(context_id)
+
     @app.get("/sessions")
-    async def get_sessions(user_id: str = "demo-user") -> dict[str, Any]:
-        return {"sessions": list(_session_index.get(user_id, []))}
+    async def get_sessions(request: Request) -> dict[str, Any]:
+        # H2: identity comes from the authenticated principal, never a query param.
+        owner = _resolve_shib_user_id(request)
+        if os.getenv("REGISTRATION_DB_DSN"):
+            return {"sessions": await conversation_store.list_sessions(owner)}
+        # No DB (dev/test): derive the caller's sessions from in-memory contexts.
+        sessions = []
+        for ctx in store.contexts.values():
+            if ctx.user_id != owner:
+                continue
+            title = next(
+                (h[6:] for h in ctx.conversation_history if h.startswith("user: ")),
+                ctx.current_goal or "",
+            )
+            sessions.append({
+                "context_id": ctx.context_id,
+                "title": title[:60],
+                "started_at": ctx.created_at.isoformat(),
+                "last_active_at": ctx.updated_at.isoformat(),
+            })
+        sessions.sort(key=lambda s: s["last_active_at"], reverse=True)
+        return {"sessions": sessions}
 
     @app.delete("/conversations/{context_id}")
-    async def delete_conversation(context_id: str) -> dict[str, bool]:
+    async def delete_conversation(context_id: str, request: Request) -> dict[str, bool]:
+        owner = _resolve_shib_user_id(request)
+        existing = await _conversation_owner(context_id)
+        if existing is None:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        if existing != owner:
+            raise HTTPException(status_code=403, detail="You do not own this conversation.")
         await conversation_store.delete(context_id)
-        _session_index.pop(context_id, None)
-        for sessions in _session_index.values():
-            to_remove = [s for s in sessions if s["context_id"] == context_id]
-            for s in to_remove:
-                sessions.remove(s)
+        store.contexts.pop(context_id, None)
+        store.pending_confirmations.pop(context_id, None)
         return {"ok": True}
 
     @app.get("/conversations/{context_id}")
-    async def get_conversation(context_id: str) -> dict[str, Any]:
-        # Try SQLite first (survives restarts), fall back to in-memory store.
+    async def get_conversation(context_id: str, request: Request) -> dict[str, Any]:
+        owner = _resolve_shib_user_id(request)
+        existing = await _conversation_owner(context_id)
+        if existing is None:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        if existing != owner:
+            raise HTTPException(status_code=403, detail="You do not own this conversation.")
+        # Prefer persisted history (survives restarts); fall back to in-memory.
         messages = await conversation_store.load(context_id)
-        if messages is None:
-            # SQLite not initialised — fall back to in-memory
-            try:
-                ctx = store.get_context(context_id)
-                messages = conversation_store._parse_history(ctx.conversation_history)
-                messages = [{"role": r, "text": t} for r, t in messages]
-            except KeyError:
-                raise HTTPException(status_code=404, detail="Conversation not found")
         if not messages:
-            # SQLite has no rows for this id — check in-memory as fallback
-            try:
-                ctx = store.get_context(context_id)
-                parsed = conversation_store._parse_history(ctx.conversation_history)
-                messages = [{"role": r, "text": t} for r, t in parsed]
-            except KeyError:
-                pass
-        return {"context_id": context_id, "messages": messages}
+            ctx = store.contexts.get(context_id)
+            if ctx is not None:
+                messages = [
+                    {"role": r, "text": t}
+                    for r, t in conversation_store._parse_history(ctx.conversation_history)
+                ]
+        return {"context_id": context_id, "messages": messages or []}
 
     @app.post("/admin/ads/reset")
     async def admin_ads_reset(request: Request, _: None = Depends(_require_admin)) -> dict[str, bool]:
