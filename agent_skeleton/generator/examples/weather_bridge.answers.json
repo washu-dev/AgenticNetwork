@@ -1,0 +1,26 @@
+{
+  "name": "Weather Bridge Agent",
+  "description": "Wraps an external, user-hosted weather forecast API and exposes it to the network as an A2A agent. Translates natural-language weather questions into endpoint calls and returns a concise forecast.",
+  "endpoint_url": "https://api.example-weather.com/v1/forecast",
+  "protocol": "http",
+  "auth_env": "WEATHER_API_TOKEN",
+  "input_description": "A location (city name or 'lat,lon') and optionally a date or day count.",
+  "output_description": "A JSON object with temperature, conditions, and a short summary per day.",
+  "example_request": "3-day forecast for Tokyo",
+  "example_response": "{\"location\": \"Tokyo\", \"days\": [{\"date\": \"2026-07-01\", \"temp_c\": 29, \"conditions\": \"humid, scattered showers\"}]}",
+  "port": 19111,
+  "model": "openai/gpt-oss-120b",
+  "version": "0.1.0",
+  "provider_org": "AgenticNetwork (generated wrapper)",
+  "skills": [
+    {
+      "name": "Get Forecast",
+      "description": "Return a weather forecast for a place and time range by calling the wrapped weather API.",
+      "examples": [
+        "What's the weather in Tokyo for the next 3 days?",
+        "Will it rain in Paris tomorrow?"
+      ],
+      "oasf_key": "nlp/information_retrieval_and_synthesis/question_answering"
+    }
+  ]
+}

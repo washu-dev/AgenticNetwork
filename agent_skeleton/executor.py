@@ -36,6 +36,8 @@ if TYPE_CHECKING:
     from a2a.server.agent_execution import RequestContext
     from a2a.server.events import EventQueue
 
+    from .spec import AgentSpec
+
 
 # --- Reading the request --------------------------------------------------
 
@@ -134,9 +136,12 @@ async def _stop_heartbeat(task: "asyncio.Task[None] | None") -> None:
 class SkeletonAgentExecutor(AgentExecutorBase):
     """A2A AgentExecutor: input via `context`, output via TaskUpdater."""
 
-    def __init__(self, model: str | None = None):
+    def __init__(self, model: str | None = None, spec: "AgentSpec | None" = None):
         require_a2a()
         self.model = model
+        # The AgentSpec selects this agent's prompt + tools. None => the demo
+        # default (see llm_loop.run_agent), preserving the stock behavior.
+        self.spec = spec
 
     async def execute(self, context: "RequestContext", event_queue: "EventQueue") -> None:
         updater = task_updater(event_queue, context.task_id, context.context_id)
@@ -168,7 +173,7 @@ class SkeletonAgentExecutor(AgentExecutorBase):
         try:
             engine_payload = {"prompt": request_text, **{k: v for k, v in payload.items() if k != "prompt"}}
             # run_agent is synchronous/blocking (LLM call); keep the event loop free.
-            result = await asyncio.to_thread(run_agent, engine_payload, model=self.model)
+            result = await asyncio.to_thread(run_agent, engine_payload, spec=self.spec, model=self.model)
             result.update(
                 {
                     "skill_hint": skill_hint,

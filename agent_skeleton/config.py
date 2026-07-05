@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 
 # --- Identity -------------------------------------------------------------
-AGENT_NAME = "Skeleton Agent"
+AGENT_NAME = "Endpoint Wrapper Agent"
 
 # --- Networking -----------------------------------------------------------
 DEFAULT_HOST = "0.0.0.0"          # bind address (listen on all interfaces)
@@ -53,3 +53,24 @@ def env_ads_addr() -> str:
         or os.getenv("ADS_SERVER_ADDRESS")
         or DEFAULT_ADS_SERVER_ADDR
     )
+
+
+# --- Wrapped external endpoint (the API this agent fronts) ----------------
+# The endpoint URL is not a secret (it goes in the public card); the auth TOKEN
+# is read at call time from the env var NAMED by AGENT_ENDPOINT_AUTH_ENV, so no
+# secret is ever stored in code, the card, or the registration record.
+def env_endpoint_url() -> str | None:
+    return os.getenv("AGENT_ENDPOINT_URL")
+
+
+def env_endpoint_protocol() -> str:
+    return os.getenv("AGENT_ENDPOINT_PROTOCOL", "http")  # 'http' | 'a2a'
+
+
+def env_endpoint_method() -> str:
+    return os.getenv("AGENT_ENDPOINT_METHOD", "POST")
+
+
+def env_endpoint_auth_env() -> str | None:
+    # The NAME of the env var holding the token (e.g. "MY_API_TOKEN"), not the token.
+    return os.getenv("AGENT_ENDPOINT_AUTH_ENV")
