@@ -175,6 +175,58 @@ async def _shib_header_becomes_user_id() -> None:
 
 
 # ---------------------------------------------------------------------------
+# P4e — public landing at / , hard-gated chat UI at /app
+# ---------------------------------------------------------------------------
+
+def test_landing_is_public_and_links_to_app(monkeypatch) -> None:
+    # Even with a DB configured (fail-closed identity), / needs no identity.
+    monkeypatch.setenv("REGISTRATION_DB_DSN", "postgres://unused")
+    monkeypatch.delenv("PLANNER_ALLOW_ANON", raising=False)
+    asyncio.run(_landing_is_public())
+
+
+async def _landing_is_public() -> None:
+    app = _final_answer_app()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client:
+        resp = await client.get("/")
+    assert resp.status_code == 200, resp.text
+    assert "Sign in with WashU" in resp.text
+    assert 'href="/app"' in resp.text
+
+
+def test_app_hard_gated_when_db_configured(monkeypatch) -> None:
+    monkeypatch.setenv("REGISTRATION_DB_DSN", "postgres://unused")
+    monkeypatch.delenv("PLANNER_ALLOW_ANON", raising=False)
+    asyncio.run(_app_hard_gated())
+
+
+async def _app_hard_gated() -> None:
+    app = _final_answer_app()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client:
+        # No identity + DB configured → 401 (hard-gate).
+        blocked = await client.get("/app")
+        assert blocked.status_code == 401, blocked.text
+        # With a Shib header → the chat UI is served.
+        ok = await client.get("/app", headers={"mail": "alice@wustl.edu"})
+        assert ok.status_code == 200, ok.text
+        assert "Planner Agent" in ok.text
+
+
+def test_app_served_in_dev_without_db(monkeypatch) -> None:
+    monkeypatch.delenv("REGISTRATION_DB_DSN", raising=False)
+    monkeypatch.delenv("PLANNER_ALLOW_ANON", raising=False)
+    asyncio.run(_app_served_in_dev())
+
+
+async def _app_served_in_dev() -> None:
+    app = _final_answer_app()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client:
+        resp = await client.get("/app")
+    assert resp.status_code == 200, resp.text
+    assert "Planner Agent" in resp.text
+
+
+# ---------------------------------------------------------------------------
 # H2 — ownership on data endpoints (multi-user hardening)
 # ---------------------------------------------------------------------------
 

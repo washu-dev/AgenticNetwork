@@ -176,7 +176,17 @@ def create_app(
                         headers=dict(resp.headers))
 
     @app.get("/", response_class=HTMLResponse)
-    async def chat_ui() -> HTMLResponse:
+    async def landing() -> HTMLResponse:
+        # P4e: public landing page — no identity required. The "Sign in with WashU"
+        # button links to /app, which the SP (and the hard-gate below) protects.
+        return HTMLResponse(_load_landing_html())
+
+    @app.get("/app", response_class=HTMLResponse)
+    async def chat_ui(request: Request) -> HTMLResponse:
+        # P4e: the chat UI is hard-gated at the planner (defense-in-depth alongside the
+        # Apache SP). _resolve_shib_user_id raises 401 when a DB is configured and no
+        # identity is present; in dev/no-DB it falls back to demo-user and serves the UI.
+        _resolve_shib_user_id(request)
         return HTMLResponse(_load_chat_html())
 
     @app.get("/agents")
@@ -746,6 +756,7 @@ def _agent_card_paths(
 
 
 _CHAT_HTML_PATH = Path(__file__).parent / "web" / "index.html"
+_LANDING_HTML_PATH = Path(__file__).parent / "web" / "landing.html"
 
 
 def _load_chat_html() -> str:
@@ -755,6 +766,11 @@ def _load_chat_html() -> str:
     (no server restart). The file is small so disk overhead is fine.
     """
     return _CHAT_HTML_PATH.read_text(encoding="utf-8")
+
+
+def _load_landing_html() -> str:
+    """Read the public landing-page HTML from disk on each request."""
+    return _LANDING_HTML_PATH.read_text(encoding="utf-8")
 
 
 def _sse(event_name: str, payload: dict[str, Any]) -> str:

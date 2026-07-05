@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AgenticNetwork</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --teal: #007D8A;
+    --teal-hover: #006470;
+    --dg: #13322B;
+    --canvas: #F5F4F2;
+    --t2: #5F5E5A;
+    --t3: #888780;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    font-family: 'Roboto', -apple-system, sans-serif;
+    background: var(--canvas);
+    color: var(--dg);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+  }
+  .landing { text-align: center; max-width: 420px; }
+  .logo {
+    width: 52px; height: 52px; border-radius: 13px; background: var(--teal);
+    display: inline-flex; align-items: center; justify-content: center;
+    margin-bottom: 20px;
+  }
+  .logo svg { width: 28px; height: 28px; stroke: #fff; }
+  h1 { font-size: 28px; font-weight: 500; letter-spacing: -0.3px; }
+  .tagline {
+    font-size: 15px; font-weight: 400; color: var(--t2);
+    margin: 12px auto 28px; line-height: 1.6; max-width: 360px;
+  }
+  .signin {
+    display: inline-flex; align-items: center; gap: 9px;
+    background: var(--teal); color: #fff; text-decoration: none;
+    border-radius: 8px; padding: 12px 22px;
+    font-size: 15px; font-weight: 500;
+    transition: background .15s;
+  }
+  .signin:hover { background: var(--teal-hover); }
+  .signin svg { width: 17px; height: 17px; stroke: #fff; }
+  .footer { font-size: 12px; color: var(--t3); margin-top: 24px; }
+</style>
+</head>
+<body>
+  <main class="landing">
+    <div class="logo" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="5" r="2"/><circle cx="5" cy="19" r="2"/><circle cx="19" cy="19" r="2"/>
+        <path d="M12 7v4M12 11l-5 6M12 11l5 6"/>
+      </svg>
+    </div>
+    <h1>AgenticNetwork</h1>
+    <p class="tagline">An internet of agents that discover each other and get work done.</p>
+    <a class="signin" href="/app">
+      <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>
+      </svg>
+      Sign in with WashU
+    </a>
+    <p class="footer">Washington University in St. Louis</p>
+  </main>
+</body>
+</html>
