@@ -2,6 +2,17 @@
 
 A demo of an **"Internet of Agents"**: independent, LLM-powered services that discover each other through a shared directory and collaborate over a standard agent-to-agent protocol. A user talks to one orchestrator (the **planner**); the planner discovers specialist agents at runtime and delegates tasks to them — with no hardcoded knowledge of which agents exist.
 
+## Using the deployed system
+
+The live system is at **https://agenticweb.engr.wustl.edu**.
+
+1. **Sign in.** Open the site and click **Sign in with WashU** — it uses WashU SSO (Shibboleth); there's no separate password.
+2. **Chat.** Describe a task in plain language ("summarize wildfire preparedness," "send an email to…"). The planner figures out which specialist agent(s) can do it and delegates — you don't pick agents yourself.
+3. **Connect your own accounts/keys** in **Settings → Credentials**. Some agents act on *your* resources (e.g. your Google account) or need an API key. Keys are encrypted, and the planner shares a key only with agents **you've granted** it to, only for **your** requests — you're asked to allow an agent the first time it needs one.
+4. **Admins** (WashU emails in the `ADMIN_EMAILS` allowlist) also get a dashboard — agent health, request traces, and approval of uploaded custom agents. Everyone else never sees admin surfaces.
+
+Building or operating the system rather than using it? See the **developer reference** in [`docs/`](docs/README.md).
+
 ## How it works
 
 ```
@@ -40,7 +51,7 @@ Adding a new agent to ADS makes it available to the planner with **zero planner 
 | [`planner_agent/`](planner_agent/) | Orchestrator + chat UI | 8090 | [README](planner_agent/README.md) |
 | [`agent_directory_service/`](agent_directory_service/) | ADS operator tooling (cluster ops) | — | [README](agent_directory_service/README.md) |
 | [`registration_service/`](registration_service/) | Agent self-registration web UI + manager | — | [README](registration_service/README.md) |
-| [`agent_skeleton/`](agent_skeleton/) | Template for building new agents | — | [README](agent_skeleton/CLAUDE.md) |
+| [`agent_skeleton/`](agent_skeleton/) | Agent template + endpoint-wrapper engine + generator | — | [README](agent_skeleton/README.md) |
 | [`deployment/`](deployment/) | ENGR cluster containerized deployment | — | [README](deployment/README.md) |
 
 **[`agent-directory`](https://github.com/washu-dev/agent-directory) repo — specialist agents:**
@@ -111,10 +122,12 @@ The planner uses ADS to discover agents at runtime. In fake-ADS mode for local d
 3. Serve it with `A2AStarletteApplication` + uvicorn.
 4. Publish the card to ADS on startup — the planner discovers it automatically.
 
-See [`CLAUDE.md`](CLAUDE.md) §6 for the full step-by-step guide.
+See [`docs/BUILDING_AGENTS.md`](docs/BUILDING_AGENTS.md) for the full step-by-step guide (and the upload / endpoint-wrapper lanes).
 
 ## Further reading
 
-- [`CLAUDE.md`](CLAUDE.md) — architecture deep-dive, LLM configuration, vLLM self-hosting, known caveats
+- [`docs/`](docs/README.md) — **developer reference**: architecture, auth & credentials, per-subsystem deep-dives, and the decision log
+- [`CLAUDE.md`](CLAUDE.md) — system guide + operating manual (run tiers, LLM/vLLM config, caveats)
+- [`SECURITY.md`](SECURITY.md) — security posture + active hazards
 - [`AGENTS.md`](AGENTS.md) — working rules and validation commands for contributors
 - [`deployment/README.md`](deployment/README.md) — ENGR cluster runbook
