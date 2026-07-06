@@ -152,7 +152,7 @@ Slurm + Pyxis/enroot. As of 2026-06 it is a **multi-container** setup: one Docke
 per service (`deployment/dockerfiles/Dockerfile.<agent>`, built/pushed by
 `deployment/build_and_push.sh` to `amaankhan25/agenticnetwork-<agent>`), launched together
 as parallel `srun --overlap` steps in `submit.sbatch` on one CPU node, plus a separate GPU
-job (`start_vllm.sbatch`) serving `gpt-oss-20b` via vLLM. ADS starts first; each agent's
+job (`start_vllm.sbatch`) serving `gpt-oss-120b` via vLLM. ADS starts first; each agent's
 `entrypoints/entrypoint-<agent>.sh` waits up to 60 s for it, then `exec`s the agent with an
 absolute conda path (`/opt/conda/envs/<env>/bin/python`). The planner reaches vLLM through
 `OPENAI_BASE_URL`. Full runbook: `deployment/README.md`.
@@ -242,9 +242,9 @@ the Responses-API agents, an **API rewrite** to Chat Completions.
 **Update (2026-06):** the **planner is now migrated to Chat Completions**
 (`main_agent/llm_client.py`, commit `c4d8048` "added planner vllm support") and a
 containerized ENGR deployment (`deployment/`, §4 Tier D) wires every agent to vLLM via
-`OPENAI_BASE_URL`. The only agents still on the OpenAI **Responses** API are **email,
-disaster, and geospatial** — so the planner web UI (:8090) now runs against self-hosted
-gpt-oss-20b without a rewrite.
+`OPENAI_BASE_URL`. The only agents still on the OpenAI **Responses** API are **email
+and geospatial** — so the planner web UI (:8090) now runs against self-hosted
+gpt-oss-120b without a rewrite.
 
 | Agent | API today | Endpoint wiring | Rewrite? | Difficulty |
 |---|---|---|---|---|
@@ -253,7 +253,7 @@ gpt-oss-20b without a rewrite.
 | `intelligence_agent` | litellm (Chat) | env `OPENAI_API_BASE` only | No | 🟢 trivial |
 | `planner_agent` | **Chat Completions** ✅ | env `OPENAI_BASE_URL` | **Done** — migrated 2026-06 (`main_agent/llm_client.py`) | 🟢 complete |
 | `email_agent` | **Responses** | edit `_openai_client` in `email_agent.py` | **Yes** (4 call sites + 26 tool schemas) | 🟡 moderate |
-| `disaster_response_agent` | **Responses** | edit `OpenAI()` ctor | **Yes** | 🟡 moderate |
+| `disaster_response_agent` | **Chat Completions** ✅ | env `OPENAI_BASE_URL` | **Done** — migrated 2026-06 (`build_response`) | 🟢 complete |
 | `geoSpatial_agent` + `attack_bundle` | **Responses + Gemini** | edit client ctors | **Yes** + capability gaps | 🔴 hard |
 
 **Easy wins (no rewrite):**
@@ -289,7 +289,7 @@ gpt-oss-20b without a rewrite.
 
 **Hard part — geospatial capability gaps (beyond the API rewrite):**
 1. **Vision:** the geolocation pipeline sends images; a text model like
-   `gpt-oss-20b` can't accept them. Needs a vision-capable served model
+   `gpt-oss-120b` can't accept them. Needs a vision-capable served model
    (Qwen2-VL / Llama-3.2-Vision class) or the image-analysis function is lost.
 2. **Web grounding:** uses OpenAI `web_search_preview` and Gemini `GoogleSearch`,
    neither of which vLLM provides — lost unless you wire in your own search tool.
@@ -326,11 +326,20 @@ via Apache-injected headers (`eppn` / `mail` / `remote-user`); the planner never
 handles passwords directly.
 
 ```
-Browser → Apache (Shibboleth SP)
-  → validates WashU SAML assertion
-  → injects eppn/mail headers
-  → proxies to planner :8090
+Browser → https://agenticweb.engr.wustl.edu   (public DNS — WashU ENGR)
+  → nginx              (TLS termination, client_max_body_size limit)
+  → Apache + mod_shib  (Shibboleth Service Provider)
+      → validates the WashU SAML assertion (campus SSO)
+      → injects eppn / mail / remote-user identity headers
+  → reverse-proxy to the planner :8090
 ```
+
+> The nginx + Apache + Shibboleth **gateway is persistent infrastructure that lives
+> OUTSIDE this repo** — a WashU ENGR host that holds the `agenticweb.engr.wustl.edu`
+> DNS name and the Shibboleth SP registration. It reverse-proxies to the planner,
+> which runs on an **ephemeral Slurm compute node**, so the gateway's upstream must
+> be repointed (or SSH-tunneled) to the current node each run. Stabilizing this is
+> tracked in [`deployment/DOWNSTREAM_CONSIDERATIONS.md`](deployment/DOWNSTREAM_CONSIDERATIONS.md) #3.
 
 **Key files:**
 | File | Role |
@@ -339,7 +348,7 @@ Browser → Apache (Shibboleth SP)
 | `main_agent/auth_router.py` | `/auth/*` endpoints: logout, Google OAuth connect flow |
 | `main_agent/credentials_router.py` | `/me/credentials/*` — store/list/delete per-user API keys |
 | `main_agent/crypto.py` | AES-256-GCM encrypt/decrypt (`CREDENTIALS_ENCRYPTION_KEY` env var) |
-| `main_agent/db.py` | Postgres pool; creates `users`, `sessions`, `user_credentials` tables |
+| `main_agent/db.py` | Postgres pool; creates `users` + `user_credentials` tables (per-conversation history is a separate SQLite store, `conversation_store.py`) |
 
 **Per-user Google OAuth** — users can connect their Google account via
 `GET /auth/google` → Google consent → `GET /auth/google/callback`. The resulting
@@ -421,7 +430,7 @@ agent_directory_service/.venv/bin/python -m agent_directory_service.scripts.prin
 planner_agent/scripts/doctor.sh
 
 # ADS operator commands (wrapper)
-agent_directory_service/run_ads.sh -start | -status | -list | -diag | -repair | -watch | -publish <card>
+agent_directory_service/run_ads.sh -list | -raw-list | -diag | -watch | -repair | -repair-delete | -publish <card> | -remove <cid> | -delete <cid>
 
 # Validate an A2A endpoint without publishing
 python -m agent_directory_service.scripts.validate_agent_endpoint \
@@ -466,7 +475,7 @@ python -m agent_directory_service.scripts.validate_agent_endpoint \
 | `agent_directory_service/services/directory/card_oasf_converter.py` | Agent Card ↔ OASF record |
 | `agent_directory_service/scripts/` | publish / show / diagnose / repair / watch ADS |
 | `agent_directory_service/configs/ads_daemon_fast_routing.yaml` | Fast-routing daemon config |
-| `agent_skeleton/` | Template for building new agents |
+| `agent_skeleton/` | Agent template + spec-driven **endpoint-wrapper engine** (`spec.py`, `system_tools/call_endpoint.py`) + answers→agent **`generator/`** |
 | `deployment/` | ENGR-cluster infra deploy: `dockerfiles/` + `entrypoints/` for planner/ADS/registration, `submit.sbatch`, `build_and_push.sh` |
 | `registration_service/server.py` | FastAPI app — REST API for agent registration + static UI at `/` |
 | `registration_service/db.py` | asyncpg pool + schema migrations; `FAKE_DB=1` swaps in `fake_db.py` |

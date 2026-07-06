@@ -56,3 +56,44 @@ def normalize_result(raw_text: str, tool_log: list[dict[str, Any]]) -> dict[str,
         # The executor uses response_text as the human-readable A2A message.
         "response_text": answer,
     }
+
+
+# --- Endpoint-wrapper prompt (built from the agent card + endpoint answers) ---
+
+def build_wrapper_prompt(
+    *,
+    name: str,
+    description: str = "",
+    endpoint: Any = None,
+    io_criteria: str = "",
+) -> str:
+    """Assemble the system prompt for an LLM-endpoint-wrapper agent.
+
+    The prompt is generated from the same answers the user gives when filling out
+    the agent card (name, description) plus the endpoint protocol and any I/O
+    criteria — so describing the agent IS configuring its behavior. The output
+    contract MUST stay in lockstep with ``normalize_result`` above (answer +
+    tools_used), or the normalized result will silently fall back to raw text."""
+    protocol = getattr(endpoint, "protocol", "http") if endpoint is not None else "http"
+    proto_label = "an A2A agent (JSON-RPC)" if protocol == "a2a" else "an HTTP/JSON API"
+
+    lines = [f"You are '{name}', an agent that wraps an external service."]
+    if description:
+        lines.append(f"Service description: {description}")
+    lines.append(
+        f"The service is reachable ONLY through the `call_endpoint` tool, which calls "
+        f"{proto_label}. You cannot reach it any other way."
+    )
+    lines.append(
+        "To answer a request: (1) translate the user's task into a clear `request` "
+        "string (and optional structured `payload`) for the service; (2) call "
+        "`call_endpoint`; (3) read the response and call again if you need to refine "
+        "or gather more; (4) produce a final answer grounded in what the service returned."
+    )
+    if io_criteria:
+        lines.append(f"Input/output criteria for this service: {io_criteria}")
+    lines.append(
+        "Return ONLY valid JSON with these keys: answer (string), "
+        "tools_used (array of strings). Do not include any prose outside the JSON object."
+    )
+    return "\n".join(lines)

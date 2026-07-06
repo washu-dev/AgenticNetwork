@@ -16,9 +16,14 @@ It exists to make the agent contract legible: the same ~70% of every agent that
 is plumbing is isolated into "copy" files, and the ~30% that is the actual agent
 is isolated into a few "write" files.
 
-It is **not** wired into the repo's build/deploy yet — it's a starting point you
-copy and rename (`agent_skeleton/` → `my_agent/`, `SkeletonAgentExecutor` →
-`MyAgentExecutor`, the skill ids, the card).
+As a **template** you copy and rename it (`agent_skeleton/` → `my_agent/`,
+`SkeletonAgentExecutor` → `MyAgentExecutor`, the skill ids, the card). But it is now
+also a **live engine**, not merely a starting point: it ships a spec-driven
+endpoint-wrapper mode (`spec.py`, `system_tools/call_endpoint.py`) and a `generator/`
+that emits complete deployable agents, and it is **vendored into** the registration
+service's custom-agent images (`container_runner.py`) and the generator's output
+(`wrapper_engine/`). See the repo-root [`../CLAUDE.md`](../CLAUDE.md) and
+[`README.md`](README.md) for the full picture.
 
 ## 2. The three contracts (recap)
 

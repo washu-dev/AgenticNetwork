@@ -24,12 +24,12 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from .config import MAX_TOOL_STEPS, env_model
-from .prompt import SYSTEM_PROMPT, normalize_result
-from .tool_schemas import TOOL_SCHEMAS
-from .tools import run_tool
+
+if TYPE_CHECKING:
+    from .spec import AgentSpec
 
 
 def build_openai_client() -> Any:
@@ -117,17 +117,33 @@ def run_tool_loop(
     return _final_text(response), tool_log
 
 
-# --- High-level engine entry point (wires zones 1, 2, 4 together) --------
+# --- High-level engine entry point (wires the AgentSpec into the loop) ----
 
-def run_agent(user_payload: dict[str, Any], *, model: str | None = None) -> dict[str, Any]:
-    """The agent's 'brain': run the loop with THIS package's prompt + tools,
-    then normalize. The executor (zone 5) calls this and knows nothing about
-    A2A; this function knows nothing about A2A either."""
+def run_agent(
+    user_payload: dict[str, Any],
+    *,
+    spec: "AgentSpec | None" = None,
+    model: str | None = None,
+) -> dict[str, Any]:
+    """The agent's 'brain': run the loop with an AgentSpec's prompt + tools, then
+    normalize. The executor (zone 5) calls this and knows nothing about A2A; this
+    function knows nothing about A2A either.
+
+    The ``spec`` is the seam that lets ONE engine serve many agents/levels without
+    editing this file: it carries the system prompt, tool schemas, tool dispatch,
+    and normalize. When ``spec`` is omitted, ``default_demo_spec()`` reproduces the
+    original skeleton behavior (the demo word_count/reverse_text tools), so callers
+    that predate the spec keep working unchanged. ``run_tool_loop`` above stays
+    frozen and generic — every level flows through it."""
+    from .spec import default_demo_spec
+
+    spec = spec or default_demo_spec()
     final_text, tool_log = run_tool_loop(
-        model=model or env_model(),
-        system_prompt=SYSTEM_PROMPT,
+        model=model or spec.model or env_model(),
+        system_prompt=spec.system_prompt,
         user_payload=user_payload,
-        tool_schemas=TOOL_SCHEMAS,
-        dispatch=run_tool,
+        tool_schemas=spec.tool_schemas,
+        dispatch=spec.dispatch,
+        max_steps=spec.max_steps,
     )
-    return normalize_result(final_text, tool_log)
+    return spec.run_normalize(final_text, tool_log)
