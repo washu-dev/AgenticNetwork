@@ -38,6 +38,9 @@ def test_calculator_rejects_non_numeric_and_names() -> None:
 def test_calculator_guards_huge_exponent() -> None:
     out = calculator(expression="9 ** 100000")
     assert out["ok"] is False and "exponent" in out["error"]
+    # Boundary: magnitude 1000 is rejected (guard is >= 1000).
+    assert calculator(expression="2 ** 1000")["ok"] is False
+    assert calculator(expression="2 ** 999")["ok"] is True
 
 
 def test_current_time_shape() -> None:

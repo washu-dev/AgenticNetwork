@@ -50,6 +50,10 @@ _OPENER = urllib.request.build_opener(_NoRedirectHandler)
 # an error body (the body is surfaced to the model, hence into the trace).
 _SECRET_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"(?i)(bearer)\s+\S+"), r"\1 <redacted>"),
+    # Basic auth (base64 user:pass) — same shape as Bearer. Digest/AWS4-HMAC and
+    # other schemes are not exhaustively covered; this is best-effort masking of
+    # secret-shaped substrings an upstream might echo, not a guarantee.
+    (re.compile(r"(?i)(basic)\s+\S+"), r"\1 <redacted>"),
     (re.compile(r"(?i)(api[_-]?key\s*[:=]\s*)\S+"), r"\1<redacted>"),
     (re.compile(r"(?i)(token\s*[:=]\s*)\S+"), r"\1<redacted>"),
 ]

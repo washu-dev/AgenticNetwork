@@ -52,7 +52,7 @@ def _eval_node(node: ast.AST) -> float:
     if isinstance(node, ast.BinOp) and type(node.op) in _BIN_OPS:
         left = _eval_node(node.left)
         right = _eval_node(node.right)
-        if isinstance(node.op, ast.Pow) and abs(right) > 1000:
+        if isinstance(node.op, ast.Pow) and abs(right) >= 1000:
             raise ValueError("exponent too large")
         return _BIN_OPS[type(node.op)](left, right)
     raise ValueError(f"unsupported expression element: {type(node).__name__}")

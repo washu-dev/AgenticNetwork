@@ -235,7 +235,8 @@ def multi_endpoint_wrapper_spec(
     for index, endpoint in enumerate(endpoints):
         tool_name = endpoint_tool_name(endpoint.name, index)
         if tool_name in seen:  # disambiguate duplicate/empty labels
-            tool_name = f"{tool_name[:60]}_{index}"
+            suffix = f"_{index}"  # keep the result within the 64-char tool-name limit
+            tool_name = f"{tool_name[: 64 - len(suffix)]}{suffix}"
         seen.add(tool_name)
 
         label = endpoint.name or tool_name
