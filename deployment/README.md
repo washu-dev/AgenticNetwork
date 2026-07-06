@@ -234,6 +234,42 @@ Ports 19105–19108 use 5-digit numbers to avoid collisions with other users on 
 
 ---
 
+## Apache / Shibboleth SP (SSO front door)
+
+The planner sits behind an Apache reverse proxy with the Shibboleth SP, which authenticates
+WashU users and injects `mail`/`eppn` headers. That vhost lives **outside this repo** (e.g.
+`~/httpd/conf/agenticweb.engr.conf` on the proxy host).
+
+**P4e (public landing):** the planner serves a public landing at `/` and the chat UI at `/app`.
+For `/` to be reachable without login, the SP must allow it anonymously while still protecting
+everything else. This is an **additive** change to the existing single `<Location "/">` block —
+nothing needs to be removed:
+
+```apache
+# Add this so mod_shib's own endpoints are never proxied to the planner:
+ProxyPass "/Shibboleth.sso" "!"
+
+# Keep the existing protected base block (requireSession 1) exactly as-is, then add
+# this AFTER it. Apache applies the later-matching section, so / and /health become
+# public while /app, /messages, /me/*, /auth/*, /admin/* stay protected by the base.
+<LocationMatch "^/(health)?$">
+    ShibRequestSetting requireSession 0
+    Require all granted
+</LocationMatch>
+```
+
+Verify after reloading Apache:
+```bash
+curl -sI https://agenticweb.engr.wustl.edu:<port>/       # 200 (landing, no redirect)
+curl -sI https://agenticweb.engr.wustl.edu:<port>/app    # 302 → WashU SSO
+```
+If `/` still redirects to SSO (authz didn't fully override), comment out `require valid-user`
++ `require shib-session` in the base `<Location "/">` and instead protect the specific paths
+explicitly. The planner also hard-gates `/app` itself (401 without identity when a DB is
+configured), so identity is enforced at both layers.
+
+---
+
 ## Troubleshooting
 
 **Connection refused on the login node**

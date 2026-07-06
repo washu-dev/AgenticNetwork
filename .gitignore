@@ -45,3 +45,7 @@ ra_dep/google_credentials/
 *.err
 logs/
 ra-logs/
+
+# Development/planning docs — working notes, plans, handoffs, analyses. Only the
+# curated reference set at docs/*.md is source-of-truth and git-tracked.
+docs/dev/

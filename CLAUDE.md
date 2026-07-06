@@ -359,11 +359,11 @@ fetches + decrypts the requesting user's credentials and injects them into the A
 task context. Specialist agents receive credentials in task context and remain
 auth-unaware.
 
-**What's not yet done** (auth model + roadmap: [`docs/CUSTOM_AGENT_LANE_V2_P4_PLAN.md`](docs/CUSTOM_AGENT_LANE_V2_P4_PLAN.md)):
+**What's not yet done** (auth model: [`docs/AUTH.md`](docs/AUTH.md); decisions: [`docs/DECISIONS.md`](docs/DECISIONS.md)):
 - Credential migration: `BRAVE_API_KEY`, `GOOGLE_API_KEY`, `GOOGLE_MAPS_API_KEY`
   are still environment variables; the per-user injection path is built but agents
   don't yet read from context. See also the operator-owned vs per-user reconciliation
-  in [`docs/CREDENTIAL_SOURCING_MODELS.md`](docs/CREDENTIAL_SOURCING_MODELS.md).
+  in [`docs/DECISIONS.md`](docs/DECISIONS.md) (D6).
 - Removing `deployment/google_credentials/` (still used by email agent).
 
 (Google OAuth token refresh **is** implemented — `_refresh_google_token` in `server.py`.)

@@ -3,7 +3,7 @@
 This is the **single source of truth** for the canonical credential namespace
 (Option A, locked 2026-07-02): the planner's per-user credential store will
 mirror these ``type`` strings so that declaration → grant → injection all match
-on the same key. See ``docs/CUSTOM_AGENT_LANE_V2_P4_PLAN.md`` §2.2 / §4.5.
+on the same key. See ``docs/AUTH.md`` §4 and ``docs/DECISIONS.md`` (D4).
 
 Two shapes of ``type`` are accepted on a declaration:
 
