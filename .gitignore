@@ -51,3 +51,8 @@ ra-logs/
 # Development/planning docs — working notes, plans, handoffs, analyses. Only the
 # curated reference set at docs/*.md is source-of-truth and git-tracked.
 docs/dev/
+
+# Cluster runtime dirs (root-anchored — never source): enroot container cache and
+# working data (ADS store / postgres / etc.). Anchored so nested data/ stays trackable.
+/.enroot/
+/data/
