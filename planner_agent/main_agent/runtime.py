@@ -34,7 +34,7 @@ from planner_agent.main_agent.directory.client import DirectoryClient
 from planner_agent.main_agent.directory.backends import DirectoryUnavailable
 from planner_agent.main_agent.state.store import InMemoryStateStore
 
-from planner_agent.main_agent import conversation_store
+from planner_agent.main_agent import conversation_store, pending_store
 from planner_agent.main_agent.config import MainAgentConfig
 from planner_agent.main_agent.credential_gate import CredentialGate
 from planner_agent.main_agent.llm_client import LLMClient, ToolCall, TurnState
@@ -142,7 +142,7 @@ class MainAgentRuntime:
         progress_callback: ProgressCallback | None = None,
     ) -> TurnResult:
         if context_id and self._is_affirmative(text):
-            pending = self.store.get_pending_confirmation(context_id)
+            pending = await self._get_pending(context_id)
             if pending and pending.get("kind") == "credential_consent":
                 return await self._resume_credential_consent(
                     context_id, user_id, channel, metadata or {}, pending, user_text=text,
@@ -152,9 +152,9 @@ class MainAgentRuntime:
                     context_id, user_id, channel, metadata or {}, user_text=text,
                 )
         if context_id and self._is_negative(text):
-            pending = self.store.get_pending_confirmation(context_id)
+            pending = await self._get_pending(context_id)
             if pending:
-                return self._cancel_confirmation(context_id, pending, user_text=text)
+                return await self._cancel_confirmation(context_id, pending, user_text=text)
 
         context = await self._open_context(user_id, channel, text, context_id)
         uploaded_files = _uploaded_files_from_metadata(metadata or {})
@@ -164,7 +164,7 @@ class MainAgentRuntime:
             context_id=context.context_id,
             user_text=text,
             conversation_history=list(context.conversation_history)[-self.config.history_limit :],
-            pending_confirmation=self.store.get_pending_confirmation(context.context_id),
+            pending_confirmation=await self._get_pending(context.context_id),
             uploaded_files=uploaded_files,
         )
 
@@ -630,7 +630,7 @@ class MainAgentRuntime:
                 "confirmation_status": ConfirmationStatus.pending.value,
                 "selected_agent": agent.model_dump(mode="json"),
             }
-            self.store.save_pending_confirmation(context.context_id, pending)
+            await self._save_pending(context.context_id, context.user_id, pending)
             selected_agents.append(
                 {
                     "skill": canonical_hint,
@@ -779,7 +779,7 @@ class MainAgentRuntime:
         # Record the user's confirmation turn so future LLM turns can see it.
         context.conversation_history.append(f"user: {user_text}")
         context.updated_at = utc_now()
-        pending = self.store.get_pending_confirmation(context_id) or {}
+        pending = await self._get_pending(context_id) or {}
         agent_data = pending.get("selected_agent")
         if not agent_data:
             return TurnResult(
@@ -814,7 +814,7 @@ class MainAgentRuntime:
             confirmation_status=ConfirmationStatus.confirmed,
         )
         self._save_invocation(context, agent, skill, result, confirmed_decision)
-        self.store.clear_pending_confirmation(context_id)
+        await self._clear_pending(context_id)
 
         text = _last_text(result) or f"{skill} completed."
         if context.conversation_history is not None:
@@ -846,14 +846,14 @@ class MainAgentRuntime:
             llm_model=self.config.llm_model,
         )
 
-    def _cancel_confirmation(
+    async def _cancel_confirmation(
         self,
         context_id: str,
         pending: dict[str, Any],
         user_text: str = "no",
     ) -> TurnResult:
         skill = str(pending.get("skill") or "pending_action")
-        self.store.clear_pending_confirmation(context_id)
+        await self._clear_pending(context_id)
         text = f"Cancelled. {skill} was not executed."
         try:
             context = self.store.get_context(context_id)
@@ -957,7 +957,7 @@ class MainAgentRuntime:
                 "confirmation_status": ConfirmationStatus.pending.value,
                 "selected_agent": agent.model_dump(mode="json"),
             }
-            self.store.save_pending_confirmation(context.context_id, pending)
+            await self._save_pending(context.context_id, context.user_id, pending)
             labels = ", ".join(f"{r.label} ({r.type})" for r in ungranted)
             obs = {
                 "tool": "call_agent",
@@ -1011,7 +1011,7 @@ class MainAgentRuntime:
         if self.credential_gate is not None and auth_user_id:
             for cred_type in grant_types:
                 await self.credential_gate.add_grant(auth_user_id, agent.agent_id, cred_type)
-        self.store.clear_pending_confirmation(context_id)
+        await self._clear_pending(context_id)
 
         credentials = metadata.get("credentials") or {}
         scoped = await self._scope_credentials(agent, credentials, auth_user_id)
@@ -1086,6 +1086,36 @@ class MainAgentRuntime:
         # supplied id when present so the browser's session stays continuous.
         context = self._new_context(user_id, channel, text, context_id=context_id)
         return self.store.save_context(context)
+
+    # H2b: pending confirmations are write-through cached in the in-memory store and
+    # persisted to Postgres, so a prompt raised on one process can be resumed on another.
+    # The Postgres calls are best-effort: if the DB is unreachable, pending state
+    # degrades to the process-local cache rather than failing the turn.
+    async def _save_pending(self, context_id: str, owner_email: str, pending: dict) -> None:
+        self.store.save_pending_confirmation(context_id, pending)
+        try:
+            await pending_store.save(context_id, owner_email, pending)
+        except Exception:
+            logger.warning("pending_confirmation_persist_failed", exc_info=True)
+
+    async def _get_pending(self, context_id: str) -> dict | None:
+        pending = self.store.get_pending_confirmation(context_id)
+        if pending is None:
+            try:
+                pending = await pending_store.get(context_id)
+            except Exception:
+                logger.warning("pending_confirmation_load_failed", exc_info=True)
+                return None
+            if pending is not None:
+                self.store.save_pending_confirmation(context_id, pending)  # warm the cache
+        return pending
+
+    async def _clear_pending(self, context_id: str) -> None:
+        self.store.clear_pending_confirmation(context_id)
+        try:
+            await pending_store.clear(context_id)
+        except Exception:
+            logger.warning("pending_confirmation_clear_failed", exc_info=True)
 
     async def _rehydrate_context(self, context_id: str, channel: Channel) -> PIContext | None:
         """Rebuild a working context from persisted history, bound to its true owner.

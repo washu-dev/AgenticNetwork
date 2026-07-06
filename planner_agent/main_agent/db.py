@@ -62,6 +62,16 @@ CREATE TABLE IF NOT EXISTS conversation_messages (
 );
 CREATE INDEX IF NOT EXISTS idx_conv_owner ON conversation_messages(owner_email);
 
+-- P4g/H2b: pending write/credential-consent confirmations, keyed by context_id, so a
+-- prompt raised on one planner process can be resumed on another (or after a restart).
+-- payload is the same JSON dict the in-memory store held. Superseded per context.
+CREATE TABLE IF NOT EXISTS pending_confirmations (
+    context_id   TEXT        PRIMARY KEY,
+    owner_email  TEXT        NOT NULL,
+    payload      JSONB       NOT NULL,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE OR REPLACE FUNCTION planner_update_updated_at()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN

@@ -328,9 +328,11 @@ def create_app(
         # auth_user_id as /messages, or a credential-consent resume dispatches
         # with no key and records no grant.
         await _inject_credentials(request, req.metadata)
-        pending = store.get_pending_confirmation(req.context_id) or {}
+        # H2b: read through to Postgres so a confirm can resume a prompt raised on
+        # another process / before a restart.
+        pending = await runtime._get_pending(req.context_id) or {}
         if not req.confirmed:
-            cancel = runtime._cancel_confirmation(req.context_id, pending)
+            cancel = await runtime._cancel_confirmation(req.context_id, pending)
             return cancel.to_response()
         if pending.get("kind") == "credential_consent":
             result = await runtime._resume_credential_consent(
@@ -524,8 +526,8 @@ def create_app(
         if existing != owner:
             raise HTTPException(status_code=403, detail="You do not own this conversation.")
         await conversation_store.delete(context_id)
+        await runtime._clear_pending(context_id)  # in-memory cache + durable
         store.contexts.pop(context_id, None)
-        store.pending_confirmations.pop(context_id, None)
         return {"ok": True}
 
     @app.get("/conversations/{context_id}")

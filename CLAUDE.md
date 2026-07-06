@@ -346,20 +346,27 @@ Browser → Apache (Shibboleth SP)
 `access_token`/`refresh_token` are AES-256-GCM encrypted and stored in
 `user_credentials` under provider `google_oauth`.
 
-**Admin login fallback** — `POST /admin/login` accepts a password from
-`ADMIN_PASSWORD` env var for local development without a Shibboleth SP.
+**Admin access (P4f)** — admin is derived from the SSO identity: a user whose email
+is in the `ADMIN_EMAILS` allowlist (comma-separated). `/admin/*` and the approver
+endpoints use `require_admin` (401 if no identity, 403 if not allowlisted); fail
+closed (empty list → no admins). The old shared `X-Admin-Token`/`MAIN_AGENT_ADMIN_TOKEN`
+and `POST /admin/login` are retired. `/me` returns `is_admin` so the UI hides admin
+surfaces for non-admins. Both the planner and `registration_service` read `ADMIN_EMAILS`
+(dev/test: `registration_service` leaves it open under `FAKE_DB=1`).
 
 **Credential injection** — at the start of each `/messages` request the planner
 fetches + decrypts the requesting user's credentials and injects them into the A2A
 task context. Specialist agents receive credentials in task context and remain
 auth-unaware.
 
-**What's not yet done (see `docs/AUTH_PLAN.md`):**
+**What's not yet done** (auth model + roadmap: [`docs/CUSTOM_AGENT_LANE_V2_P4_PLAN.md`](docs/CUSTOM_AGENT_LANE_V2_P4_PLAN.md)):
 - Credential migration: `BRAVE_API_KEY`, `GOOGLE_API_KEY`, `GOOGLE_MAPS_API_KEY`
   are still environment variables; the per-user injection path is built but agents
-  don't yet read from context.
+  don't yet read from context. See also the operator-owned vs per-user reconciliation
+  in [`docs/CREDENTIAL_SOURCING_MODELS.md`](docs/CREDENTIAL_SOURCING_MODELS.md).
 - Removing `deployment/google_credentials/` (still used by email agent).
-- Google OAuth token refresh (access tokens expire ~1 h).
+
+(Google OAuth token refresh **is** implemented — `_refresh_google_token` in `server.py`.)
 
 ---
 

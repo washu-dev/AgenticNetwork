@@ -159,6 +159,72 @@ def _config(policy: str = "permissive") -> MainAgentConfig:
     )
 
 
+# H2b — pending confirmations persist across planner processes.
+
+def _runtime(store):
+    from planner_agent.main_agent.runtime import MainAgentRuntime
+    return MainAgentRuntime(
+        config=_config(),
+        directory_client=DirectoryClient(fake_ads=True),
+        a2a_client=FailA2A(),
+        state_store=store,
+        llm_client=ScriptedLLMClient([]),
+    )
+
+
+def test_pending_confirmation_survives_across_processes(monkeypatch) -> None:
+    from planner_agent.main_agent import pending_store
+    # Simulate Postgres as a shared dict; a fresh InMemoryStateStore = a second process.
+    shared: dict[str, tuple] = {}
+
+    async def fake_save(cid, owner, payload):
+        shared[cid] = (owner, dict(payload))
+
+    async def fake_get(cid):
+        entry = shared.get(cid)
+        return dict(entry[1]) if entry else None
+
+    async def fake_clear(cid):
+        shared.pop(cid, None)
+
+    monkeypatch.setattr(pending_store, "save", fake_save)
+    monkeypatch.setattr(pending_store, "get", fake_get)
+    monkeypatch.setattr(pending_store, "clear", fake_clear)
+    asyncio.run(_pending_cross_process())
+
+
+async def _pending_cross_process() -> None:
+    from planner_agent.main_agent.state.store import InMemoryStateStore as Store
+    rt_a = _runtime(Store())
+    rt_b = _runtime(Store())  # fresh in-memory cache => different process
+
+    await rt_a._save_pending("ctx1", "alice@wustl.edu", {"kind": "credential_consent", "skill": "x"})
+
+    # Process B's cache is empty, but it recovers the pending state from the durable store.
+    got = await rt_b._get_pending("ctx1")
+    assert got is not None and got["kind"] == "credential_consent"
+    assert rt_b.store.get_pending_confirmation("ctx1") is not None  # cache warmed
+
+    # Clearing on B removes it durably; A (after its stale cache is dropped) sees nothing.
+    await rt_b._clear_pending("ctx1")
+    rt_a.store.clear_pending_confirmation("ctx1")
+    assert await rt_a._get_pending("ctx1") is None
+
+
+def test_pending_confirmation_in_memory_without_db() -> None:
+    # No DB (pending_store is a real no-op): pending stays process-local, no crash.
+    asyncio.run(_pending_no_db())
+
+
+async def _pending_no_db() -> None:
+    from planner_agent.main_agent.state.store import InMemoryStateStore as Store
+    rt = _runtime(Store())
+    await rt._save_pending("ctxN", "alice@wustl.edu", {"skill": "y"})
+    assert (await rt._get_pending("ctxN"))["skill"] == "y"   # same process still works
+    await rt._clear_pending("ctxN")
+    assert await rt._get_pending("ctxN") is None
+
+
 # ---------- tests ----------
 
 
