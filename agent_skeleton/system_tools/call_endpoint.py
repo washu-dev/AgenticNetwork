@@ -73,6 +73,12 @@ class EndpointConfig:
     timeout: float = 120.0
     content_type: str = "application/json"
     max_response_bytes: int = DEFAULT_MAX_RESPONSE_BYTES
+    # For a multi-endpoint "manager" agent: a human label + what this endpoint does
+    # and its I/O. `name` seeds the per-endpoint tool name; `description` is baked
+    # into that tool's schema description so the model routes to the right one.
+    # Unused by the single-endpoint wrapper (it has exactly one `call_endpoint`).
+    name: str = ""
+    description: str = ""
 
     def __post_init__(self) -> None:
         scheme = urlsplit(self.url).scheme.lower()
@@ -80,6 +86,21 @@ class EndpointConfig:
             raise ValueError(
                 f"EndpointConfig.url must be http(s); got scheme {scheme!r} in {self.url!r}."
             )
+
+
+# Tool names the Chat Completions API accepts: ^[a-zA-Z0-9_-]{1,64}$.
+_TOOL_NAME_RE = re.compile(r"[^a-zA-Z0-9_-]+")
+
+
+def endpoint_tool_name(label: str, index: int) -> str:
+    """Derive a valid, readable tool name for one endpoint of a manager agent.
+
+    `label` (the endpoint's ``name``) is slugified into ``call_<slug>``; an empty
+    label falls back to ``call_endpoint_<index>``. Uniqueness across endpoints is
+    the caller's job (the multi-endpoint spec builder dedupes)."""
+    slug = _TOOL_NAME_RE.sub("_", (label or "").strip().lower()).strip("_")
+    base = f"call_{slug}" if slug else f"call_endpoint_{index}"
+    return base[:64]
 
 
 # The schema is fixed (one source of truth); make_call_endpoint returns a copy so
@@ -163,12 +184,20 @@ def _extract_a2a_text(result: Any) -> str:
 
 def make_call_endpoint(
     cfg: EndpointConfig,
+    *,
+    tool_name: str = "call_endpoint",
+    description: str | None = None,
 ) -> tuple[dict[str, Any], Callable[..., dict[str, Any]]]:
     """Return ``(schema, fn)`` for a call_endpoint tool bound to ``cfg``.
 
     The returned fn has signature ``call_endpoint(*, request, payload=None)`` —
     its keyword params match the schema properties, so validate_tool_registry
     accepts it without the **kwargs escape hatch.
+
+    ``tool_name`` / ``description`` override the schema's function name and
+    description. They default to the single-endpoint wrapper's values (so existing
+    callers are unchanged); a multi-endpoint manager passes a distinct name +
+    per-endpoint description so the model can route among several endpoints.
     """
 
     def call_endpoint(*, request: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -223,4 +252,8 @@ def make_call_endpoint(
 
     # Deep copy so a caller mutating the returned schema (e.g. retitling the
     # description) cannot alias the shared template's nested dicts.
-    return copy.deepcopy(CALL_ENDPOINT_SCHEMA_TEMPLATE), call_endpoint
+    schema = copy.deepcopy(CALL_ENDPOINT_SCHEMA_TEMPLATE)
+    schema["function"]["name"] = tool_name
+    if description is not None:
+        schema["function"]["description"] = description
+    return schema, call_endpoint

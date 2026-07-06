@@ -172,9 +172,26 @@ engine. Done + tested (stdlib-only, no LLM needed):
 - **Tests** — `agent_skeleton/tests/test_preset_tools.py` (11 checks). Existing
   `test_wrapper`/`test_generator` and `serve check` still green.
 
+**Feature B (endpoint manager) — engine core done + tested** (D3 = design for N
+endpoints from the start; a single-endpoint list is the degenerate case):
+- **N named endpoint tools** — `EndpointConfig` gains `name` + `description`
+  (`system_tools/call_endpoint.py`); `make_call_endpoint(cfg, tool_name=…,
+  description=…)` now emits a per-endpoint-named tool (default unchanged, so the
+  single-endpoint path is intact); `endpoint_tool_name()` derives a valid
+  `call_<slug>` name.
+- **Manager spec** — `spec.py::multi_endpoint_wrapper_spec(name, endpoints=[…])`
+  registers one bound `call_<name>` tool per endpoint (via the existing seam),
+  dedupes names, and validates. **The frozen loop is unchanged.**
+- **Routing prompt** — `prompt.py::build_manager_prompt` lists each endpoint tool
+  + its I/O so the model routes to the right one. A2A-in (executor dual channel)
+  and A2A-out (`call_endpoint` `protocol="a2a"`) already existed.
+- **Tests** — `agent_skeleton/tests/test_manager.py` (6 checks: naming, per-tool
+  routing to the correct URL via localhost stubs, dedup, validation).
+
 Not yet done (needs the LLM / cluster, or a later decision): the registration UI
-tool-selector; generator `preset_tools` field + catalog vendoring (§5 step 3);
-a live end-to-end run against vLLM; and all of Feature B.
+tool-selector; generator support for `preset_tools` + `endpoints[]` + catalog
+vendoring (§5 steps 3, 5); registration wiring so a creator can pick preset tools
+/ define a multi-endpoint manager from the UI; a live end-to-end run against vLLM.
 
 ## 5. Suggested implementation order (once D1–D4 are settled)
 

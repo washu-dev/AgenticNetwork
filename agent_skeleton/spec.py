@@ -198,3 +198,74 @@ def endpoint_wrapper_spec(
     )
     spec.validate()
     return spec
+
+
+def multi_endpoint_wrapper_spec(
+    *,
+    name: str,
+    endpoints: list["EndpointConfig"],
+    description: str = "",
+    system_prompt: str | None = None,
+    model: str | None = None,
+    max_steps: int = MAX_TOOL_STEPS,
+    extra_schemas: list[dict[str, Any]] | None = None,
+    extra_registry: dict[str, ToolFn] | None = None,
+) -> AgentSpec:
+    """Build a MANAGER spec: one LLM loop fronting several external endpoints.
+
+    Each endpoint becomes its own ``call_<name>`` tool (bound to its URL/protocol/
+    auth), with the endpoint's ``description`` baked into the tool so the model can
+    route a request to the right one. This is the multi-endpoint generalization of
+    ``endpoint_wrapper_spec`` — the frozen loop is unchanged; it already supports
+    selecting among many tools. A single-endpoint list is valid (it just yields one
+    tool). ``extra_*`` add more system tools alongside the endpoint tools.
+
+    Validated before return; raises on an empty endpoint list or a misaligned tool."""
+    from .prompt import build_manager_prompt
+    from .system_tools.call_endpoint import endpoint_tool_name, make_call_endpoint
+
+    if not endpoints:
+        raise ValueError("multi_endpoint_wrapper_spec requires at least one endpoint")
+
+    schemas: list[dict[str, Any]] = []
+    registry: dict[str, ToolFn] = {}
+    tool_meta: list[tuple[str, "EndpointConfig"]] = []
+    seen: set[str] = set()
+
+    for index, endpoint in enumerate(endpoints):
+        tool_name = endpoint_tool_name(endpoint.name, index)
+        if tool_name in seen:  # disambiguate duplicate/empty labels
+            tool_name = f"{tool_name[:60]}_{index}"
+        seen.add(tool_name)
+
+        label = endpoint.name or tool_name
+        parts = [f"Call the '{label}' endpoint."]
+        if endpoint.description:
+            parts.append(endpoint.description)
+        parts.append(
+            "Put the user's request as natural language in `request`; add optional "
+            "structured fields in `payload`."
+        )
+        schema, fn = make_call_endpoint(endpoint, tool_name=tool_name, description=" ".join(parts))
+        schemas.append(schema)
+        registry[tool_name] = fn
+        tool_meta.append((tool_name, endpoint))
+
+    schemas = [*schemas, *(extra_schemas or [])]
+    registry = {**registry, **(extra_registry or {})}
+
+    prompt = system_prompt or build_manager_prompt(
+        name=name, description=description, tools=tool_meta
+    )
+
+    spec = AgentSpec(
+        name=name,
+        system_prompt=prompt,
+        tool_schemas=schemas,
+        tool_registry=registry,
+        model=model,
+        max_steps=max_steps,
+        mode="llm",
+    )
+    spec.validate()
+    return spec
