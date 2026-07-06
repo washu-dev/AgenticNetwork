@@ -276,23 +276,36 @@ async def test_download_single_file_404(client: AsyncClient, monkeypatch, tmp_pa
     assert resp.status_code == 404
 
 
-# ── Admin token enforcement ──────────────────────────────────────────────────────
+# ── Admin allowlist enforcement (P4f) ─────────────────────────────────────────────
 
-async def test_admin_token_enforced(client: AsyncClient, monkeypatch, tmp_path) -> None:
-    monkeypatch.setenv("HANDLER_FILES_DIR", str(tmp_path))
-    monkeypatch.setenv("MAIN_AGENT_ADMIN_TOKEN", "secret")
-    agent = await _register_custom(client)
-    await client.post(f"/agents/{agent['id']}/handler", files=_upload_files())
+class _FakeReq:
+    """Minimal stand-in — _require_admin only reads request.headers.get(...)."""
+    def __init__(self, headers: dict) -> None:
+        self.headers = headers
 
-    # No token → 403
-    resp = await client.post(f"/agents/{agent['id']}/approve")
-    assert resp.status_code == 403
 
-    # Correct token → ok
-    resp = await client.post(
-        f"/agents/{agent['id']}/approve", headers={"X-Admin-Token": "secret"}
-    )
-    assert resp.status_code == 200
+async def test_require_admin_allowlist(monkeypatch) -> None:
+    from fastapi import HTTPException
+    from registration_service.server import _require_admin
+
+    # FAKE_DB=1 is the dev/test escape hatch → admin is open (no Shibboleth locally).
+    monkeypatch.setenv("FAKE_DB", "1")
+    _require_admin(_FakeReq({}))  # no raise
+
+    # Production (no FAKE_DB): enforce ADMIN_EMAILS on the forwarded SSO identity.
+    monkeypatch.delenv("FAKE_DB", raising=False)
+    monkeypatch.setenv("ADMIN_EMAILS", "admin@wustl.edu")
+    _require_admin(_FakeReq({"mail": "admin@wustl.edu"}))          # allowlisted → ok
+
+    for headers in ({"mail": "bob@wustl.edu"}, {}):                # non-admin / no identity
+        with pytest.raises(HTTPException) as ei:
+            _require_admin(_FakeReq(headers))
+        assert ei.value.status_code == 403
+
+    # Empty allowlist → nobody is admin (fail closed).
+    monkeypatch.delenv("ADMIN_EMAILS", raising=False)
+    with pytest.raises(HTTPException):
+        _require_admin(_FakeReq({"mail": "admin@wustl.edu"}))
 
 
 # ── Internal endpoints (host spawn loop) ─────────────────────────────────────────

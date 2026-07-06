@@ -52,15 +52,31 @@ def _is_zip_upload(filename: str | None, raw: bytes) -> bool:
     return raw[:4] in _ZIP_MAGIC
 
 
-def _check_admin_token(request: Request) -> None:
-    """Reject the request unless it carries the configured admin token.
+_SHIB_HEADER_PRIORITY = ("mail", "eppn", "remote-user")
 
-    Mirrors the planner's admin auth: if MAIN_AGENT_ADMIN_TOKEN is unset, access
-    is open (local dev); otherwise the X-Admin-Token header must match.
+
+def _admin_emails() -> set[str]:
+    raw = os.getenv("ADMIN_EMAILS", "")
+    return {e.strip().lower() for e in raw.split(",") if e.strip()}
+
+
+def _require_admin(request: Request) -> None:
+    """Fail-closed admin check on the forwarded SSO identity (P4f).
+
+    The planner proxies the approver's requests through, forwarding the Apache-injected
+    Shibboleth headers. Admin = that identity ∈ ADMIN_EMAILS; an empty allowlist means
+    no admins. Dev/test escape hatch: FAKE_DB=1 leaves it open (no Shibboleth locally).
+    The shared MAIN_AGENT_ADMIN_TOKEN is retired.
     """
-    expected = os.getenv("MAIN_AGENT_ADMIN_TOKEN", "")
-    if expected and request.headers.get("X-Admin-Token", "") != expected:
-        raise HTTPException(status_code=403, detail="Forbidden")
+    if os.getenv("FAKE_DB") == "1":
+        return
+    email = next(
+        (request.headers.get(h, "").strip().lower() for h in _SHIB_HEADER_PRIORITY
+         if request.headers.get(h, "").strip()),
+        None,
+    )
+    if email is None or email not in _admin_emails():
+        raise HTTPException(status_code=403, detail="Admin access required")
 
 logger = logging.getLogger(__name__)
 
@@ -341,7 +357,7 @@ async def get_handler_source(agent_id: str, request: Request) -> dict:
       pointing at the zip (GET .../handler/download), so the whole project can be
       inspected. In both cases advisory ``warnings`` from the entry file are included.
     """
-    _check_admin_token(request)
+    _require_admin(request)
     agent = await db.get_agent(_parse_uuid(agent_id))
     if not agent or agent["handler_type"] != "custom":
         raise HTTPException(status_code=404, detail="Custom agent not found")
@@ -379,7 +395,7 @@ async def get_handler_source(agent_id: str, request: Request) -> dict:
 @app.get("/agents/{agent_id}/handler/download", tags=["custom"])
 async def download_handler_archive(agent_id: str, request: Request) -> Response:
     """Admin-only: download the stored project tree as a zip (multi-file inspection)."""
-    _check_admin_token(request)
+    _require_admin(request)
     agent = await db.get_agent(_parse_uuid(agent_id))
     if not agent or agent["handler_type"] != "custom":
         raise HTTPException(status_code=404, detail="Custom agent not found")
@@ -397,7 +413,7 @@ async def download_handler_archive(agent_id: str, request: Request) -> Response:
 @app.post("/agents/{agent_id}/approve", tags=["custom"])
 async def approve_agent(agent_id: str, request: Request) -> dict:
     """Admin-only: approve a custom agent and start it."""
-    _check_admin_token(request)
+    _require_admin(request)
     agent = await db.get_agent(_parse_uuid(agent_id))
     if not agent or agent["handler_type"] != "custom":
         raise HTTPException(status_code=404, detail="Custom agent not found")
@@ -416,7 +432,7 @@ async def approve_agent(agent_id: str, request: Request) -> dict:
 @app.post("/agents/{agent_id}/reject", tags=["custom"])
 async def reject_agent(agent_id: str, body: RejectRequest, request: Request) -> dict:
     """Admin-only: reject a custom agent (leaves it registered, not approved)."""
-    _check_admin_token(request)
+    _require_admin(request)
     agent = await db.get_agent(_parse_uuid(agent_id))
     if not agent or agent["handler_type"] != "custom":
         raise HTTPException(status_code=404, detail="Custom agent not found")

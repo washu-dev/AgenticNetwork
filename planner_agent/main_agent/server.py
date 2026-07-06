@@ -24,7 +24,7 @@ from planner_agent.main_agent.directory.card_oasf_converter import load_agent_ca
 from planner_agent.main_agent.directory.client import DirectoryClient
 from planner_agent.main_agent.state.store import InMemoryStateStore
 
-from planner_agent.main_agent.auth import get_current_user, get_shib_email
+from planner_agent.main_agent.auth import get_current_user, get_shib_email, is_admin
 from planner_agent.main_agent.auth_router import router as auth_router
 from planner_agent.main_agent.credentials_router import (
     grants_router,
@@ -110,14 +110,13 @@ def create_app(
     _feedback_log: collections.deque = collections.deque(maxlen=500)
     _agent_health: dict[str, dict] = {}
 
-    _ADMIN_TOKEN = os.getenv("MAIN_AGENT_ADMIN_TOKEN", "")
-
     def _require_admin(request: Request) -> None:
-        if not _ADMIN_TOKEN:
-            return
-        token = request.headers.get("X-Admin-Token", "")
-        if token != _ADMIN_TOKEN:
-            raise HTTPException(status_code=401, detail="Admin token required")
+        # P4f: admin is the SSO identity ∈ ADMIN_EMAILS — no shared token, fail closed.
+        # _resolve_shib_user_id raises 401 when identity is missing (DB configured);
+        # a non-allowlisted authenticated user gets 403.
+        email = _resolve_shib_user_id(request)
+        if not is_admin(email):
+            raise HTTPException(status_code=403, detail="Admin access required")
 
     app = FastAPI(title="Planner Agent", version="0.1.0")
     app.state.config = cfg
@@ -125,12 +124,6 @@ def create_app(
     app.state.directory = directory
     app.state.a2a = a2a
     app.state.store = store
-
-    @app.post("/admin/login")
-    async def admin_login(payload: dict[str, str]) -> dict[str, Any]:
-        if _ADMIN_TOKEN and payload.get("password") != _ADMIN_TOKEN:
-            raise HTTPException(status_code=401, detail="Invalid credentials")
-        return {"ok": True, "token": _ADMIN_TOKEN or "open"}
 
     # Conversation history is persisted in Postgres (table created by init_db);
     # a no-op without a DB, where the in-memory working context serves the session.
@@ -153,7 +146,8 @@ def create_app(
 
     @app.get("/me")
     async def me(user: Annotated[dict, Depends(get_current_user)]) -> dict[str, Any]:
-        return {"email": user["email"]}
+        # P4f: the UI shows/hides admin surfaces based on is_admin.
+        return {"email": user["email"], "is_admin": is_admin(user["email"])}
 
     @app.get("/health")
     async def health() -> dict[str, str]:
@@ -162,9 +156,16 @@ def create_app(
     _reg_base = os.getenv("REGISTRATION_SERVICE_URL", "http://localhost:8091")
     _reg_client = httpx.AsyncClient(base_url=_reg_base, timeout=30.0)
 
+    # Admin-only registration subpaths (the approver's trust-boundary actions).
+    _ADMIN_REG_SUFFIXES = ("/approve", "/reject", "/handler", "/handler/download")
+
     @app.api_route("/register/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
     async def proxy_registration(path: str, request: Request) -> Response:
         url = f"/{path}"
+        # P4f: enforce admin at the SSO front door for the approver actions before
+        # forwarding. registration_service enforces the same allowlist as defense-in-depth.
+        if any(url.endswith(suffix) for suffix in _ADMIN_REG_SUFFIXES):
+            _require_admin(request)
         body = await request.body()
         headers = {k: v for k, v in request.headers.items()
                    if k.lower() not in ("host", "content-length")}

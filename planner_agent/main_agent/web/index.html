@@ -757,27 +757,8 @@ body {
 </head>
 <body>
 
-<!-- Auth Modal -->
-<div class="modal-overlay hidden" id="auth-modal">
-  <div class="modal">
-    <div class="modal-eyebrow">Planner Agent</div>
-    <div class="modal-title">Admin access</div>
-    <div id="auth-modal-gated">
-      <div class="modal-sub">Sign in with your admin password, or continue as a guest to browse in read-only mode.</div>
-      <div class="modal-field">
-        <label class="modal-label">Password</label>
-        <input class="modal-input" type="password" placeholder="••••••••" autocomplete="current-password">
-      </div>
-      <button type="button" class="btn-modal-p" onclick="enterAdmin(false)">Sign in</button>
-      <div class="modal-divider"><span>or</span></div>
-      <button type="button" class="btn-modal-g" onclick="enterAdmin(true)">Continue as guest</button>
-    </div>
-    <div id="auth-modal-open" style="display:none">
-      <div class="modal-sub">No admin password is configured — running in open mode. Set <code>MAIN_AGENT_ADMIN_TOKEN</code> in your environment to enable password protection.</div>
-      <button type="button" class="btn-modal-p" onclick="enterAdmin(false)">Enter admin</button>
-    </div>
-  </div>
-</div>
+<!-- P4f: admin access is derived from the SSO identity (ADMIN_EMAILS), not a
+     password modal. The Admin entry point is shown only when /me reports is_admin. -->
 
 <!-- Settings Drawer (user view) -->
 <div class="settings-overlay" id="settings-overlay" onclick="closeSettings()"></div>
@@ -964,7 +945,7 @@ body {
         </div>
         <div class="uv-float-right">
           <button type="button" class="uv-float-btn uv-float-btn-icon" onclick="openSettings()"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg> Settings</button>
-          <button type="button" class="uv-float-btn" onclick="showAuthModal()">Admin</button>
+          <button type="button" class="uv-float-btn" id="uv-admin-btn" style="display:none" onclick="enterAdmin()">Admin</button>
         </div>
       </div>
 
@@ -1295,67 +1276,17 @@ function switchView(v) {
   document.getElementById('user-view').classList.toggle('active', v==='user');
   document.getElementById('admin-view').classList.toggle('active', v==='admin');
 }
-async function showAuthModal() {
-  // Check whether a token is configured by sending an empty password.
-  // If the server returns ok:true, no gate is set — show open-mode notice.
-  try {
-    const res = await fetch('/admin/login', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ password: '' }),
-    });
-    const gated = !res.ok;
-    document.getElementById('auth-modal-gated').style.display = gated ? '' : 'none';
-    document.getElementById('auth-modal-open').style.display = gated ? 'none' : '';
-  } catch(e) {
-    // Can't reach server — show gated form as safe default
-    document.getElementById('auth-modal-gated').style.display = '';
-    document.getElementById('auth-modal-open').style.display = 'none';
-  }
-  document.getElementById('auth-modal').classList.remove('hidden');
-}
-async function enterAdmin(isGuest) {
-  document.getElementById('auth-modal').classList.add('hidden');
-  const badge = document.getElementById('av-badge');
-  const avatar = document.getElementById('av-avatar');
-  const meta = document.getElementById('av-meta');
-  if (isGuest) {
-    window._adminToken = null;
-    window._adminGuest = true;
-    badge.textContent = 'Guest'; badge.className = 'av-badge guest';
-    avatar.textContent = '?'; avatar.style.background = 'var(--border-s)';
-    meta.textContent = 'guest mode · read-only';
-  } else {
-    const pw = document.querySelector('#auth-modal input[type=password]')?.value || '';
-    try {
-      const res = await fetch('/admin/login', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ password: pw }),
-      });
-      if (!res.ok) { alert('Invalid credentials'); document.getElementById('auth-modal').classList.remove('hidden'); return; }
-      const { token } = await res.json();
-      window._adminToken = token;
-      window._adminGuest = false;
-    } catch (e) {
-      window._adminToken = null;
-      window._adminGuest = false;
-    }
-    badge.textContent = 'Admin'; badge.className = 'av-badge';
-    avatar.textContent = 'AD'; avatar.style.background = '';
-    meta.textContent = 'admin';
-  }
-  // Pending Approvals is admin-only.
-  const navAppr = document.getElementById('nav-approvals');
-  if (navAppr) navAppr.style.display = isGuest ? 'none' : '';
-
+// P4f: admin-ness comes from the SSO identity (/me.is_admin), enforced server-side.
+// The Admin button only appears for admins; there's no password step and no guest mode.
+function enterAdmin() {
+  if (!window._me || !window._me.is_admin) return;
   switchView('admin');
   loadAdminView();
 }
 
+// The admin API is session-authenticated (Apache injects the identity); no token header.
 function adminFetch(url, opts = {}) {
-  const headers = { ...(opts.headers || {}), 'X-Admin-Token': window._adminToken || '' };
-  return fetch(url, { ...opts, headers });
+  return fetch(url, opts);
 }
 
 // ── Pending Approvals (custom uploaded agents) ──
@@ -1363,7 +1294,6 @@ let _approvalsTimer = null;
 let _approvalsSig = null;
 
 async function loadApprovals() {
-  if (window._adminGuest) return;  // approvals are admin-only
   try {
     const agents = await adminFetch('/register/agents').then(r => r.ok ? r.json() : []);
     // Only surface custom agents that have actually uploaded a handler — a failed
@@ -1515,6 +1445,7 @@ async function loadUserInfo() {
   try {
     const me = await fetch('/me').then(r => r.ok ? r.json() : null);
     if (!me || !me.email) return;
+    window._me = me;
     const name = me.email.split('@')[0];
     const initials = me.email.slice(0, 2).toUpperCase();
     const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
@@ -1523,6 +1454,15 @@ async function loadUserInfo() {
     set('sidebar-avatar', initials);
     set('sidebar-name', name);
     set('sidebar-email', me.email);
+    // P4f: reveal the admin entry + populate the admin topbar identity only for admins.
+    const adminBtn = document.getElementById('uv-admin-btn');
+    if (adminBtn) adminBtn.style.display = me.is_admin ? '' : 'none';
+    if (me.is_admin) {
+      set('av-avatar', initials);
+      set('av-meta', me.email);
+      const badge = document.getElementById('av-badge');
+      if (badge) { badge.textContent = 'Admin'; badge.className = 'av-badge'; }
+    }
   } catch (e) {}
 }
 
@@ -1767,7 +1707,7 @@ async function loadAdminView() {
   loadAgentHealth();
   loadApprovals();
   if (_approvalsTimer) clearInterval(_approvalsTimer);
-  if (!window._adminGuest) _approvalsTimer = setInterval(loadApprovals, 10_000);
+  _approvalsTimer = setInterval(loadApprovals, 10_000);
 }
 
 async function loadAdminStats() {

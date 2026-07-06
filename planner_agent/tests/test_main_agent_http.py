@@ -175,6 +175,68 @@ async def _shib_header_becomes_user_id() -> None:
 
 
 # ---------------------------------------------------------------------------
+# P4f — admin via ADMIN_EMAILS allowlist (SSO identity, no shared token)
+# ---------------------------------------------------------------------------
+
+def test_is_admin_helper(monkeypatch) -> None:
+    from planner_agent.main_agent import auth
+    monkeypatch.setenv("ADMIN_EMAILS", "Admin@WUSTL.edu, boss@wustl.edu")
+    assert auth.is_admin("admin@wustl.edu")            # case-insensitive
+    assert auth.is_admin("boss@wustl.edu")
+    assert not auth.is_admin("nobody@wustl.edu")
+    assert not auth.is_admin(None)
+    monkeypatch.delenv("ADMIN_EMAILS", raising=False)
+    assert not auth.is_admin("admin@wustl.edu")        # empty allowlist → no admins
+
+
+async def _get(app, path, headers=None):
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client:
+        return await client.get(path, headers=headers or {})
+
+
+def test_admin_route_allows_allowlisted(monkeypatch) -> None:
+    monkeypatch.setenv("ADMIN_EMAILS", "admin@wustl.edu")
+    resp = asyncio.run(_get(_final_answer_app(), "/admin/stats", {"mail": "admin@wustl.edu"}))
+    assert resp.status_code == 200, resp.text
+
+
+def test_admin_route_forbids_non_allowlisted(monkeypatch) -> None:
+    monkeypatch.setenv("ADMIN_EMAILS", "admin@wustl.edu")
+    resp = asyncio.run(_get(_final_answer_app(), "/admin/stats", {"mail": "bob@wustl.edu"}))
+    assert resp.status_code == 403, resp.text
+
+
+def test_admin_empty_allowlist_forbids_everyone(monkeypatch) -> None:
+    monkeypatch.delenv("ADMIN_EMAILS", raising=False)
+    resp = asyncio.run(_get(_final_answer_app(), "/admin/stats", {"mail": "admin@wustl.edu"}))
+    assert resp.status_code == 403, resp.text
+
+
+def test_admin_route_401_without_identity_when_db(monkeypatch) -> None:
+    monkeypatch.setenv("REGISTRATION_DB_DSN", "postgres://unused")
+    monkeypatch.delenv("PLANNER_ALLOW_ANON", raising=False)
+    monkeypatch.setenv("ADMIN_EMAILS", "admin@wustl.edu")
+    resp = asyncio.run(_get(_final_answer_app(), "/admin/stats"))
+    assert resp.status_code == 401, resp.text
+
+
+def test_admin_register_proxy_blocks_non_admin(monkeypatch) -> None:
+    monkeypatch.setenv("ADMIN_EMAILS", "admin@wustl.edu")
+    asyncio.run(_admin_register_proxy_blocks_non_admin())
+
+
+async def _admin_register_proxy_blocks_non_admin() -> None:
+    app = _final_answer_app()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client:
+        # The proxy must reject an approver action from a non-admin BEFORE forwarding
+        # to the registration service (so no upstream call is made).
+        resp = await client.post(
+            "/register/agents/some-id/approve", headers={"mail": "bob@wustl.edu"}
+        )
+    assert resp.status_code == 403, resp.text
+
+
+# ---------------------------------------------------------------------------
 # P4e — public landing at / , hard-gated chat UI at /app
 # ---------------------------------------------------------------------------
 
