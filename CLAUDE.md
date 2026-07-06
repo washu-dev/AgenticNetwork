@@ -348,7 +348,7 @@ Browser → https://agenticweb.engr.wustl.edu   (public DNS — WashU ENGR)
 | `main_agent/auth_router.py` | `/auth/*` endpoints: logout, Google OAuth connect flow |
 | `main_agent/credentials_router.py` | `/me/credentials/*` — store/list/delete per-user API keys |
 | `main_agent/crypto.py` | AES-256-GCM encrypt/decrypt (`CREDENTIALS_ENCRYPTION_KEY` env var) |
-| `main_agent/db.py` | Postgres pool; creates `users` + `user_credentials` tables (per-conversation history is a separate SQLite store, `conversation_store.py`) |
+| `main_agent/db.py` | Postgres pool + schema: `users`, `user_credentials`, `agent_credential_grants`, `conversation_messages`, `pending_confirmations` (conversation history + pending confirmations moved off SQLite to Postgres — H2/H2b) |
 
 **Per-user Google OAuth** — users can connect their Google account via
 `GET /auth/google` → Google consent → `GET /auth/google/callback`. The resulting

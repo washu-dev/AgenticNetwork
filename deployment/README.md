@@ -413,8 +413,12 @@ planner :8090      ← trusts those headers as the user id       ← ephemeral S
   (re)deploy the gateway's upstream must be repointed to the current node (or an SSH
   tunnel bridged to it). There is **no stable gateway↔node wiring yet**
   (`DOWNSTREAM_CONSIDERATIONS.md` #3).
-- **Local shortcut:** an `ADMIN_PASSWORD` + `POST /admin/login` fallback lets you use
-  the planner without Shibboleth for local dev (`auth.py`).
+- **Local dev without Shibboleth:** set `PLANNER_ALLOW_ANON=1` so a request with no
+  identity header falls back to `demo-user` instead of a 401 (`auth.py`); put your dev
+  identity (e.g. `demo-user`) in `ADMIN_EMAILS` to get admin locally. The old
+  `ADMIN_PASSWORD`/`POST /admin/login` bypass is retired (see [`docs/AUTH.md`](../docs/AUTH.md)).
+- **Configuring the SP for the public landing:** the "Apache / Shibboleth SP" section above has
+  the exact vhost carve-out that makes `/` anonymous while protecting `/app` and the APIs (P4e).
 
 ---
 

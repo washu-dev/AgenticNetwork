@@ -14,10 +14,10 @@ caveats) and [`deployment/DOWNSTREAM_CONSIDERATIONS.md`](deployment/DOWNSTREAM_C
 | Surface | Auth today | Notes |
 |---|---|---|
 | Public URL `agenticweb.engr.wustl.edu` | **WashU Shibboleth SSO** (Apache `mod_shib`) | The one authenticated front door. TLS at nginx. |
-| Planner `:8090` | **None of its own** — trusts Apache-injected `eppn`/`mail`/`remote-user` headers (`main_agent/auth.py`) | Safe **only** behind the Shib proxy. Reached raw (or via an SSH tunnel), auth is bypassed. |
-| Planner `POST /admin/login` | `ADMIN_PASSWORD` env var | A deliberate Shibboleth **bypass** for local dev — keep it unset/strong in any shared deploy. |
+| Planner `:8090` | **None of its own** — trusts Apache-injected `eppn`/`mail`/`remote-user` headers (`main_agent/auth.py`), fail-closed (401) when a DB is configured | Safe **only** behind the Shib proxy. Reached raw (or via an SSH tunnel) with a spoofed identity header, auth is bypassed. |
+| Planner admin (`/admin/*`) | **SSO identity ∈ `ADMIN_EMAILS`** (`require_admin`); fail-closed (empty list → no admins) | The shared `X-Admin-Token`/`MAIN_AGENT_ADMIN_TOKEN` + `POST /admin/login` are retired. See [`docs/AUTH.md`](docs/AUTH.md) §2. |
 | Specialist ports (9103, 9104, 19105–19108) | **None** — empty `securitySchemes`, bind `0.0.0.0` | Any process on the node's localhost can drive Gmail send, calendar/file writes, code execution, geolocation **directly**, skipping the planner's policy. |
-| Registration service `:8091` | Admin endpoints gated by `MAIN_AGENT_ADMIN_TOKEN` (open if unset); `/internal/*` localhost-only | Approval is the trust boundary for uploaded code (see §2). |
+| Registration service `:8091` | Admin endpoints fail-closed on `ADMIN_EMAILS` (dev-open under `FAKE_DB=1`); `/internal/*` localhost-only | Approval is the trust boundary for uploaded code (see §2). |
 | ADS `:8888` / vLLM `:8100` | **None** | Trusted-LAN assumption. |
 
 **Takeaway:** the security model is *"one authenticated gateway in front of a fully
@@ -39,14 +39,15 @@ trusted node."* Everything inside the node trusts everything else.
 - **`geoSpatial_agent/attack_bundle/` is an offensive research tool** (DoxBench-style
   image geolocation / re-identification) doubling as the production location engine.
   Be aware of its doxxing power.
-- **Per-user secrets are decrypted and handed to unauthenticated specialists.** Keys
+- **Per-user secrets are decrypted and injected into unauthenticated specialists.** Keys
   are AES-256-GCM encrypted at rest (`main_agent/crypto.py`, `CREDENTIALS_ENCRYPTION_KEY`)
   — good — but at request time the planner **decrypts** them and injects them into the
   A2A task context in plaintext (`server.py::_inject_credentials` → task `metadata`).
-  Since specialist ports are unauthenticated, a rogue local process could receive user
-  creds. (Mitigations already present: `agent_skeleton/system_tools/call_endpoint.py`
-  reads its token from an env var at call time — never storing it — and redacts
-  secret-shaped strings from error bodies.)
+  Injection is now **scoped** to the creds a user *granted* the target agent (not the whole
+  bundle — `runtime.py::_scope_credentials`), but specialist ports remain unauthenticated, so
+  a rogue local process could still receive whatever was injected for a given call. (Mitigations
+  present: `agent_skeleton/system_tools/call_endpoint.py` reads its token from an env var at
+  call time — never storing it — and redacts secret-shaped strings from error bodies.)
 - **Email agent's Google OAuth creds are baked into the image** (`Dockerfile.email`
   `COPY deployment/google_credentials/`). Move to a mounted secret / Workload Identity
   (TODO already noted in that Dockerfile).
@@ -54,10 +55,6 @@ trusted node."* Everything inside the node trusts everything else.
   even in `strict`, `runtime.py::_evaluate_policy` only gates a write skill when a precise
   skill hint is present — no hint ⇒ no confirmation. Set `strict` and close the no-hint
   gap for any shared deployment.
-- **Planner multi-user context bleed.** In memory the planner keeps a **single shared
-  server context** across all conversations (`state/store.py`, `runtime.py::_open_context`);
-  per-conversation isolation only exists in the SQLite conversation store. A correctness +
-  potential info-leak hazard once more than one user is active.
 - **`.env`-based secrets, no secret manager.** API keys / OAuth web-client secrets /
   `CREDENTIALS_ENCRYPTION_KEY` live in `deployment/.env` (and some are baked). Fine on a
   trusted node; externalize before scaling.
@@ -93,8 +90,10 @@ Tracked in detail in [`deployment/DOWNSTREAM_CONSIDERATIONS.md`](deployment/DOWN
    gVisor / per-request pod, not a scratch dir.
 3. **Externalize secrets** — secret manager / mounted secrets / Workload Identity; no baked
    Google creds, no env-only shared keys; rotate `CREDENTIALS_ENCRYPTION_KEY`.
-4. **Per-conversation isolation** in the planner (drop the shared server context) before
-   multi-user; set a non-permissive `policy_mode` and close the no-hint write-gate gap.
+4. **Per-conversation isolation — DONE.** The shared server context was dropped: contexts are
+   per-user-keyed with ownership checks, identity fails closed, and history + pending state moved
+   to Postgres (see [`docs/AUTH.md`](docs/AUTH.md) §5). Still open here: set a non-permissive
+   `policy_mode` and close the no-hint write-gate gap.
 5. **Stable gateway + service DNS/auth** in front of the ephemeral node; unify the two
    directories (dirctl `:8888` vs scout's gRPC `:8889`).
 6. **Converge the duplicated converter/A2A stack** so security/policy logic has one source
