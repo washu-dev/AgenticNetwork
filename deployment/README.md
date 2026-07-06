@@ -23,7 +23,7 @@ the vLLM inference server on a GPU node.
 
 [GPU node — start_vllm.sbatch]
   enroot container (vllm/vllm-openai:latest)
-    └── vLLM serving openai/gpt-oss-20b   :8100
+    └── vLLM serving openai/gpt-oss-120b   :8100
 ```
 
 All containers communicate over `localhost` on the same compute node.
@@ -42,9 +42,9 @@ so registered agents survive job restarts.
 
 | File | Purpose |
 |---|---|
-| `submit.sbatch` | Main Slurm job — launches all 9 containers in parallel |
+| `submit.sbatch` | Main Slurm job — launches all service containers (postgres, ADS, registration, planner + 6 specialists) in parallel |
 | `start_vllm.sbatch` | GPU Slurm job — starts the vLLM inference server |
-| `build_and_push.sh` | Builds and pushes all Docker images to DockerHub |
+| `build_and_push.sh` | Builds/pushes the **4 infra images** (planner, ads, postgres, registration); the 6 specialist images build in the `agent-directory` repo |
 | `dockerfiles/` | One `Dockerfile.<agent>` per service |
 | `entrypoints/` | One `entrypoint-<agent>.sh` per service (postgres init + ADS wait + exec) |
 | `ads_daemon.yaml` | dirctl daemon config (listen address, data paths) |
@@ -93,7 +93,9 @@ your actual PI's account name (find it with `sacctmgr show user $USER`).
 Run from the repo root on your local machine:
 
 ```bash
-# Build and push all 9 images
+# Build and push the 4 infra images (planner, ads, postgres, registration).
+# NOTE: the 6 specialist agent images are built in the agent-directory repo,
+# not here (agent-directory/build_and_push.sh).
 bash deployment/build_and_push.sh
 
 # Build a single image (e.g. after changing only the planner)
@@ -161,7 +163,7 @@ ssh <compute-node>   # e.g. ssh amd128-2204
 
 ```bash
 curl http://localhost:8090/health
-# Expected: {"status":"ok","fake_ads":"False","model":"openai/gpt-oss-20b"}
+# Expected: {"status":"ok","fake_ads":"False","model":"openai/gpt-oss-120b"}
 ```
 
 ### Registration service
@@ -268,3 +270,102 @@ the image reference in `submit.sbatch` to force a fresh pull.
 **Port conflict with another user's job**
 Change the conflicting port via the corresponding env var in `.env`
 (e.g. `DISASTER_AGENT_A2A_PORT=29107`). No rebuild needed.
+
+---
+
+## Running the network from your laptop (SSH tunnel to cluster vLLM)
+
+You don't have to run the whole stack on the cluster. A common dev loop is: **keep
+heavy LLM inference on the cluster GPU (vLLM), run the lightweight planner (and,
+optionally, specialists) on your laptop**, bridging to vLLM over an SSH tunnel.
+
+1. **Start vLLM on the cluster** and note its GPU node:
+   ```bash
+   ssh <you>@<login-node>
+   sbatch deployment/start_vllm.sbatch
+   squeue -u $USER            # note NODELIST, e.g. gpu123
+   ```
+2. **Open an SSH tunnel** so your laptop's `localhost:8100` reaches the GPU node's vLLM:
+   ```bash
+   ssh -N -L 8100:gpu123:8100 <you>@<login-node>
+   # leave running; if gpu123 isn't reachable from the login node, add a jump:
+   #   ssh -N -L 8100:gpu123:8100 -J <you>@<login-node> <you>@gpu123
+   ```
+3. **Run the planner locally, pointed at the tunnel** (Tier A — fake directory, no `dirctl`):
+   ```bash
+   python3 -m venv planner_agent/.venv
+   planner_agent/.venv/bin/pip install -r planner_agent/requirements.txt
+   cp planner_agent/.env.example planner_agent/.env.local
+   # in .env.local:
+   #   OPENAI_BASE_URL=http://localhost:8100/v1
+   #   OPENAI_API_KEY=dummy                     # vLLM ignores it, but it must be non-empty
+   #   MAIN_AGENT_LLM_MODEL=openai/gpt-oss-120b
+   planner_agent/scripts/start.sh --fake-ads \
+     --card ../agent-directory/email_agent/email_agent.card.json \
+     --card ../agent-directory/coding_agent/coding_agent.card.json
+   ```
+   Open **http://localhost:8090/**. Agents are *discovered* from the `--card` files;
+   each only *executes* if that specialist is actually running/reachable.
+4. **(Optional) full local network** — instead of `--fake-ads`, install `dirctl`, run a
+   real ADS daemon on `:8888`, and launch each specialist locally pointing at it
+   (the one vLLM tunnel serves them all). See repo-root `CLAUDE.md` §4 Tier B.
+
+**The inverse** (network on the cluster, browser on your laptop) is just another tunnel
+to the planner — this bypasses Shibboleth and hits the planner directly:
+```bash
+ssh -N -L 8090:<compute-node>:8090 <you>@<login-node>
+# then open http://localhost:8090/
+```
+
+---
+
+## How the public demo link works (`agenticweb.engr.wustl.edu`)
+
+The "click a link and the demo just works" experience is **not** the cluster job
+talking to your browser directly — the cluster binds every port to `localhost` on an
+ephemeral compute node. A persistent **gateway** in front turns it into a stable,
+authenticated URL:
+
+```
+Your browser
+  │  https://agenticweb.engr.wustl.edu
+  ▼
+nginx              ← TLS termination, request-size limits    ┐
+  │                                                          │  persistent WashU ENGR
+Apache + mod_shib  ← Shibboleth SP: WashU SSO login,         │  gateway host
+  │                  injects eppn/mail/remote-user headers   │  (NOT in this repo)
+  ▼                                                          ┘
+planner :8090      ← trusts those headers as the user id       ← ephemeral Slurm node
+  │
+  ├─ ADS (dirctl :8888) ...... "who can do X?"  (discovery)
+  └─ A2A (HTTP/JSON-RPC) ...... calls the chosen specialist agent
+```
+
+- **Where the network runs:** on one Slurm **compute node** (`submit.sbatch`) — ADS,
+  planner, registration, and the six specialists all talk over `localhost` on that
+  node; vLLM runs on a separate GPU node. None of it is internet-reachable.
+- **How the browser reaches it:** the gateway host terminates TLS (nginx), runs the
+  WashU Shibboleth login (Apache + `mod_shib`), and reverse-proxies to the planner's
+  `:8090`. The planner's only "auth" is trusting the identity headers Apache injects
+  (`planner_agent/main_agent/auth.py`) — so it must **only** be reached through that
+  proxy, never exposed raw.
+- **Where the link comes from:** `agenticweb.engr.wustl.edu` is a WashU-registered DNS
+  name pointing at the gateway host; the Shibboleth SP on it is registered with WashU's
+  identity provider (a one-time WashU-IT/ENGR setup owned by the maintainer —
+  `amaan@wustl.edu`). **The gateway's nginx/Apache/Shibboleth config is not in this
+  repo** — only the *contract* (the injected headers) lives here, in `auth.py`.
+- **Why the link can break:** the planner runs on an ephemeral compute node whose
+  hostname changes every Slurm run, while the gateway is persistent — so after each
+  (re)deploy the gateway's upstream must be repointed to the current node (or an SSH
+  tunnel bridged to it). There is **no stable gateway↔node wiring yet**
+  (`DOWNSTREAM_CONSIDERATIONS.md` #3).
+- **Local shortcut:** an `ADMIN_PASSWORD` + `POST /admin/login` fallback lets you use
+  the planner without Shibboleth for local dev (`auth.py`).
+
+---
+
+## Security & hazards
+
+See [`../SECURITY.md`](../SECURITY.md) for the current security posture, known
+hazards, and the hardening checklist (no auth on specialist ports, the uploaded-code
+trust boundary, `coding_agent` YOLO bash, credential handling, stored-but-not-routed).

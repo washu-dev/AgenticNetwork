@@ -81,6 +81,41 @@ python -m agent_directory_service.scripts.publish_agents --card agent_skeleton/a
 
 ---
 
+## Two more ways to use this: endpoint-wrapper mode + the generator
+
+Beyond the copy-to-start template above, `agent_skeleton` now also provides a
+**spec-driven engine** so you can stand up agents *without writing tool code*:
+
+- **Endpoint-wrapper mode (no code).** Wrap an external HTTP/JSON (or A2A) endpoint
+  in an LLM loop — the model decides *what* to send; a config fixes *where/how/auth*.
+  The only tool is `call_endpoint` (`system_tools/call_endpoint.py`: env-var auth read
+  at call time, secret redaction, 2 MB response cap, no-redirect). Supply a card +
+  endpoint env vars:
+  ```bash
+  AGENT_ENDPOINT_URL=https://api.example.com/run \
+  AGENT_ENDPOINT_AUTH_ENV=EXAMPLE_TOKEN \
+  python -m agent_skeleton.serve serve-wrapper --card my.card.json
+  ```
+  Under the hood `spec.py`'s `AgentSpec` selects prompt+tools as *data*, so one frozen
+  `run_tool_loop` serves any configuration (`run_agent(spec=...)`).
+
+- **Generator (`generator/`).** Turn an `answers.json` describing an endpoint into a
+  complete, deployable agent folder (card + server + Dockerfile + entrypoint + vendored
+  `wrapper_engine/` + README) that self-publishes to ADS — stamping an `oasf:<name>:<id>`
+  routing tag so it's discoverable:
+  ```bash
+  python -m agent_skeleton.generator \
+    --answers agent_skeleton/generator/examples/weather_bridge.answers.json \
+    --dest ../agent-directory
+  ```
+  (`agent-directory/weather-bridge-agent/` is a worked output.)
+
+- **Uploaded-code path.** For arbitrary user code, subclass `AgentHandler` (`base.py`)
+  and implement `handle_structured()`; `HandlerExecutor` / `container_runner.py` run it
+  — this is the lane the registration service's `custom` handler uses.
+
+---
+
 ## How to build *your* agent (the only steps that matter)
 
 1. **Card** (`agent.card.json`): set `name`, `url`, `version`, and a `skills[]`
