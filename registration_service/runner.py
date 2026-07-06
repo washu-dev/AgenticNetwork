@@ -47,6 +47,7 @@ def main() -> None:
             system_prompt=config["system_prompt"],
             model=config.get("model", "openai/gpt-oss-120b"),
             port=port,
+            preset_tools=config.get("preset_tools", []),
         )
     elif handler_type == "api_proxy":
         from registration_service.handlers.api_proxy_handler import run

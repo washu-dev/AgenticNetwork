@@ -152,6 +152,30 @@ editing the frozen loop.
 
 ---
 
+## 4b. Implemented on this branch so far (Feature A, D1 = option i)
+
+Decision **D1 = (i)**: the existing `llm` handler_type now runs through the shared
+engine. Done + tested (stdlib-only, no LLM needed):
+- **Preset-tool catalog** — `agent_skeleton/system_tools/preset_tools.py`: a
+  `PRESET_TOOLS` index + `resolve_preset_tools(names) -> (schemas, registry)`,
+  with two pure, safe starter tools (`calculator` via a safe AST evaluator,
+  `current_time`). Network/secret tools deferred to D2.
+- **Spec builder** — `agent_skeleton/spec.py::llm_wrapper_spec(...)`: creator's
+  own prompt + optional preset tools; validates before returning; no tools ⇒
+  prompt-only turn.
+- **Routed `llm` through the engine** — `registration_service/handlers/llm_handler.py`
+  now builds an `llm_wrapper_spec` and runs `agent_skeleton.llm_loop.run_agent`
+  off-thread (dual-channel DataPart+text), replacing the single-turn call. The
+  spec is built at startup so bad tool names fail fast.
+- **Config + runner** — `LLMConfig.preset_tools: list[str]`
+  (`registration_service/models.py`) threaded through `runner.py`.
+- **Tests** — `agent_skeleton/tests/test_preset_tools.py` (11 checks). Existing
+  `test_wrapper`/`test_generator` and `serve check` still green.
+
+Not yet done (needs the LLM / cluster, or a later decision): the registration UI
+tool-selector; generator `preset_tools` field + catalog vendoring (§5 step 3);
+a live end-to-end run against vLLM; and all of Feature B.
+
 ## 5. Suggested implementation order (once D1–D4 are settled)
 
 1. Catalog scaffolding + 2–3 preset tools + unit tests (`agent_skeleton/tests`),

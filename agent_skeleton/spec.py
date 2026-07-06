@@ -97,6 +97,59 @@ def default_demo_spec() -> AgentSpec:
     )
 
 
+def llm_wrapper_spec(
+    *,
+    name: str,
+    system_prompt: str,
+    preset_tools: list[str] | None = None,
+    model: str | None = None,
+    max_steps: int = MAX_TOOL_STEPS,
+    extra_schemas: list[dict[str, Any]] | None = None,
+    extra_registry: dict[str, ToolFn] | None = None,
+) -> AgentSpec:
+    """Build a plain LLM-wrapper spec: the creator's OWN system prompt, optionally
+    armed with PRESET TOOLS chosen by name from the built-in catalog
+    (``system_tools/preset_tools``).
+
+    This is the "LLM Agent" creation option, routed through the same frozen engine
+    as everything else. With no tools it is a single LLM turn; with tools the loop
+    lets the model call them and then answer. Unlike ``endpoint_wrapper_spec`` the
+    prompt is free-form (the creator defines the persona/task), so we do NOT impose
+    the endpoint wrapper's strict JSON contract — ``normalize_result`` falls back to
+    the model's raw text as ``answer`` when it doesn't emit JSON, so any creator
+    prompt keeps working. ``extra_*`` allow adding more system tools alongside the
+    presets (same seam as ``endpoint_wrapper_spec``).
+
+    Validated before return, so an unknown preset-tool name or a misaligned schema
+    fails here rather than at serve time."""
+    from .system_tools.preset_tools import resolve_preset_tools
+
+    schemas, registry = resolve_preset_tools(preset_tools or [])
+    schemas = [*schemas, *(extra_schemas or [])]
+    registry = {**registry, **(extra_registry or {})}
+
+    prompt = system_prompt
+    if schemas:
+        # Nudge the model to use the tools without hijacking the creator's prompt.
+        prompt = (
+            f"{system_prompt}\n\n"
+            "You have tools available. Call them when they help you answer, then "
+            "give your final answer."
+        )
+
+    spec = AgentSpec(
+        name=name,
+        system_prompt=prompt,
+        tool_schemas=schemas,
+        tool_registry=registry,
+        model=model,
+        max_steps=max_steps,
+        mode="llm",
+    )
+    spec.validate()
+    return spec
+
+
 def endpoint_wrapper_spec(
     *,
     name: str,

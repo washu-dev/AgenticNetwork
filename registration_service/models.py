@@ -46,6 +46,11 @@ class CredentialRequirement(BaseModel):
 class LLMConfig(BaseModel):
     system_prompt: str
     model: str = "openai/gpt-oss-120b"
+    # Preset tools chosen by name from agent_skeleton.system_tools.preset_tools
+    # (e.g. ["calculator", "current_time"]). Empty => a prompt-only LLM turn.
+    preset_tools: list[str] = Field(default_factory=list)
+    # Reserved for future user-supplied raw tool schemas (not yet wired; see
+    # docs/WRAPPER_PRESETS_AND_ENDPOINT_MANAGER_PLAN.md, decision D2).
     tools: list[dict[str, Any]] = Field(default_factory=list)
 
 
