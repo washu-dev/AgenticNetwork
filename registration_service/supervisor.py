@@ -491,13 +491,23 @@ class Supervisor:
 def _vendored_skeleton_files() -> dict[str, str]:
     """Collect agent_skeleton's package files (all *.py + pyproject.toml) for vendoring.
 
-    Keys are paths relative to the agent_skeleton/ dir; values are file contents.
+    Keys are paths relative to the agent_skeleton/ dir (POSIX, with subdirs
+    preserved, e.g. "system_tools/call_endpoint.py"); values are file contents.
     These are committed under registered_agents/{slug}/agent_skeleton/ so the
     generated image can `pip install ./agent_skeleton` with no external access.
+
+    Must recurse: `agent_skeleton/__init__.py` imports `.system_tools.call_endpoint`
+    at import time, so the subpackages have to be in the build context or every
+    built image crashes on start. Skip test/build trees — they aren't installed
+    (see pyproject `packages`) and only bloat the committed context.
     """
+    _SKIP_DIRS = {"tests", "build", "dist", "__pycache__"}
     out: dict[str, str] = {}
-    for path in sorted(_AGENT_SKELETON_DIR.glob("*.py")):
-        out[path.name] = path.read_text()
+    for path in sorted(_AGENT_SKELETON_DIR.rglob("*.py")):
+        rel = path.relative_to(_AGENT_SKELETON_DIR)
+        if any(part in _SKIP_DIRS or part.endswith(".egg-info") for part in rel.parts):
+            continue
+        out[rel.as_posix()] = path.read_text()
     pyproject = _AGENT_SKELETON_DIR / "pyproject.toml"
     if pyproject.exists():
         out["pyproject.toml"] = pyproject.read_text()
