@@ -14,9 +14,11 @@ decisions, and rationale.
 
 | Doc | Read it when you need to… |
 |---|---|
+| [ONBOARDING.md](ONBOARDING.md) | **start here as a contributor** — how changes actually reach the running system, the right way to add an agent or a credential, and the common pitfalls (repo ≠ running, card file ≠ published, env-var vs per-user creds). |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | understand how the pieces fit — the three contracts (Agent Card / ADS / A2A), the end-to-end request lifecycle, and the load-bearing "stored vs. routed" ADS subtlety. |
 | [AUTH.md](AUTH.md) | understand identity (Shibboleth), admin (`ADMIN_EMAILS`), per-user credentials, the two credential-sourcing models, and multi-user isolation. |
 | [DECISIONS.md](DECISIONS.md) | know *why* something is the way it is — the durable architectural decisions and their rationale (ADR log). |
+| [MULTI_CONTRIBUTOR.md](MULTI_CONTRIBUTOR.md) | understand why the build/deploy/test workflow doesn't yet support multiple contributors, and the proposed plan to de-personalize the shared instance + add an isolated test lane (proposal, not yet decided). |
 | [PLANNER.md](PLANNER.md) | work on the orchestrator — the tool loop, ADS/A2A dispatch, policy gating, context/session persistence. |
 | [REGISTRATION_SERVICE.md](REGISTRATION_SERVICE.md) | work on agent registration, the custom-agent upload lanes, or the approval flow. |
 | [AGENT_DIRECTORY.md](AGENT_DIRECTORY.md) | operate or debug ADS — publishing, the routing index, repair tooling. |

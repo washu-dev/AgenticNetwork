@@ -1,0 +1,239 @@
+# Multi-Contributor Workflow — Problem & Plan
+
+> **Status: implemented on `refactor/multi-contributor`, pending cluster validation.** The
+> diagnosis and approach are settled; most of the plan is coded (see ✅ items) but **not yet
+> exercised on ENGR** — see the Pre-merge validation checklist at the bottom. Remaining work is
+> gated on the group registry / CI (⏳). It is *not* a DECISIONS.md entry — once this merges,
+> record the durable choices there and link back here.
+
+## The problem, precisely
+
+The build + deploy + test workflow models exactly **one thing: a single shared production
+instance, operated by one person.** There is no separate notion of "a contributor's own
+instance." So the workflow breaks for a team in two distinct ways:
+
+1. **Identity lock-in** — parts of the critical path are tied to *one person's* accounts, so
+   another contributor can't build, deploy, or operate without going through them.
+2. **Shared mutable state** — the one instance's Postgres volume, ports, ADS, and `.env` are
+   singletons with no coordination, so a second contributor's run collides with (or corrupts)
+   the first's.
+
+The intended future is **not** N parallel production stacks. It is: **one canonical shared
+instance that belongs to the *group*, not a person — plus a safe, isolated lane for
+contributors to test changes before they reach it.**
+
+## Guiding principle: the Slurm account is the model
+
+The Slurm allocation (`-A engr-lab-di2`, `-p condo-di2` in `deployment/submit.sbatch` and
+`start_vllm.sbatch`) is already **group-owned** — nobody thinks of it as any one person's, and
+it works for the whole team. The coupling problem isn't that shared identity exists; it's that
+*some* identities are group-owned (Slurm ✅) and others are still *personal* (❌). **The fix is
+to make the personal ones group-owned, exactly like Slurm already is.**
+
+## What's already fine (do not touch)
+
+- **Slurm account/partition** — group-owned. This is the template, not a problem.
+- **Google OAuth _client_** (`GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`/`GOOGLE_REDIRECT_URI`,
+  `auth_router.py`) — the "agentic-web" app lives in a **shared (non-personal) Google Cloud
+  project**. Confirmed group-owned. Leave it.
+- **Per-user Google tokens** — the access/refresh tokens for each user's connected Google
+  account are per-user by design, AES-256-GCM encrypted in `user_credentials`. Correct as-is.
+- **`ADMIN_EMAILS`** — already a comma-separated allowlist (see DECISIONS.md D8). Correct.
+
+## Coupling inventory (the evidence)
+
+### A. Identity lock-in — still personal, should be group-owned
+
+| What | Where | Why it blocks a contributor |
+|---|---|---|
+| DockerHub namespace `amaankhan25` — **build script** | `deployment/build_and_push.sh:17` (`REGISTRY=amaankhan25`) | A second contributor can't push without creds for that personal account. |
+| DockerHub namespace — **submit** | `deployment/submit.sbatch` (10× `--container-image=amaankhan25/agenticnetwork-*`) | The cluster only ever pulls from the personal account. |
+| DockerHub namespace — **application code** ⚠️ | `registration_service/backend.py:96`, `registration_service/supervisor.py:263,368` (`amaankhan25/agenticnetwork-custom-*`) | The trap: a contributor's *running* instance builds/pulls custom-agent images into the personal account. Not an env knob — it's a code literal. |
+| Image tags — `:latest` everywhere (+ ADS manually pinned `:v4`) | `deployment/submit.sbatch`, `deployment/README.md` | Any two builds clobber each other; ADS tag drifts and must be hand-bumped. |
+
+### B. Shared mutable state — singletons with no coordination
+
+| What | Where | Failure mode |
+|---|---|---|
+| **One Postgres data volume** | `deployment/submit.sbatch` (mount) + `deployment/entrypoints/entrypoint-postgres.sh:6-7` | Holds **real encrypted user credentials** (see below). `--dependency=singleton` is **per-user**, so two *different* contributors submitting double-mount the volume: the PID guard hard-fails the second job, and `DROP DATABASE dir` on startup wipes ADS state. |
+| **One shared `deployment/.env`** on `/engrfs` | `deployment/submit.sbatch` sources it | Last editor wins; `OPENAI_BASE_URL` (ephemeral vLLM node) churns; secrets sit in plaintext readable by everyone with repo access. |
+| **Fixed ports** (8090/8091/8888/9103/19105-8) | `deployment/submit.sbatch`, entrypoints | Bind unconditionally → same-node concurrency fails. The "5-digit ports avoid collisions" note is aspirational — they're hardcoded constants, not per-run-derived. |
+| **Shared `registration` DB + port pool** | `registration_service/port_pool.py:11-12` (19200-19299) | Two contributors on one Postgres share one `agents` table and one port pool → `UNIQUE(port)` violations, cross-contaminated `/agents` lists. |
+
+### The hard constraint: prod Postgres holds real secrets
+
+The planner writes to the **`registration`** database (`planner_agent/main_agent/db.py:104`,
+`REGISTRATION_DB_DSN`), which is the **persistent** DB on the shared `/engrfs` volume. It
+contains **AES-256-GCM-encrypted Google OAuth refresh tokens**, users' OpenAI/Anthropic/Brave/
+Google API keys (`user_credentials`), credential grants, and chat history. Therefore:
+
+> **A contributor's test run must be provably incapable of touching the prod Postgres.** This
+> means a *physically separate* test database instance — not just a different DB name on the
+> same server.
+
+## Proposed plan
+
+Sequenced around the fact that **there is no CI yet** (confirmed: no `.github/`, no other CI
+config anywhere). Each phase stands alone and delivers value without the next.
+
+### Phase 0 — Prep for a group registry (no new infra, no CI) — ✅ parameterized
+
+Goal: the day IT confirms a group registry, adoption is a one-line change instead of a hunt.
+
+- ✅ Every `amaankhan25` literal now reads a single `IMAGE_REGISTRY` variable across **all
+  three layers**: `deployment/build_and_push.sh` (`REGISTRY="${IMAGE_REGISTRY:-amaankhan25}"`),
+  `deployment/submit.sbatch` (all 10 `--container-image` refs), and the code literals in
+  `registration_service/backend.py` (`_image_registry()` helper) + `supervisor.py` (imports it).
+  Documented in `deployment/.env.example` and `deployment/README.md`.
+- ✅ Defaults to `amaankhan25` so nothing changes until the switch is intentional.
+- ⏳ Remaining: flip `IMAGE_REGISTRY` to the group registry once IT confirms which one
+  (existing DockerHub org, a new one, or GHCR under `washu-dev`). One-line change now.
+
+### Phase 1 — De-personalize the shared instance's config
+
+- ✅ **vLLM endpoint auto-discovery** — `submit.sbatch` finds the running vLLM job (by the
+  stable job name `agenticnetwork-vllm`, set in `start_vllm.sbatch`) and builds
+  `OPENAI_BASE_URL` from its node, instead of a human hand-editing the shared `.env` each run.
+  Prefers your own vLLM job, else any user's (a test instance can share prod's vLLM); falls
+  back to the `.env` value if none is running; `VLLM_AUTODISCOVER=0` opts out. Port via
+  `VLLM_PORT` (default 8100), kept in sync on both sides.
+- ✅ **Secrets out of the shared `.env`** — the three real secrets
+  (`CREDENTIALS_ENCRYPTION_KEY`, `GITHUB_TOKEN`, `GOOGLE_CLIENT_SECRET`) no longer live in the
+  world-readable `deployment/.env`. They move to a restricted **secrets file** that
+  `submit.sbatch` sources after `.env` (so it overrides): prod reads a shared operator-owned
+  `/engrfs/project/di2/secrets/agenticnetwork.env` (group-readable, not world — keeps
+  `CREDENTIALS_ENCRYPTION_KEY` stable), test reads a per-user `~/.config/agenticnetwork/secrets.env`;
+  `SECRETS_FILE` overrides the path. Template + setup: `deployment/secrets.env.example`;
+  gitignored via `secrets.env`. Non-secrets (`GOOGLE_CLIENT_ID`, `ADMIN_EMAILS`, dummy
+  `OPENAI_API_KEY`) stay in `.env`.
+  - ⏳ Follow-up: a real secret manager is the durable target (a group-readable file is the
+    "at minimum" step). The `/workspace/.hf_token` (vLLM's HuggingFace token on `/engrfs`)
+    `chmod 600` guidance is now documented in `start_vllm.sbatch` + `deployment/README.md`; the
+    operator still has to apply it.
+
+### Phase 2 — Instance modes: prod vs isolated test — ✅ cluster lane done
+
+Give contributors a way to validate a change *while prod is live*, with a hard guarantee it
+can't touch prod. A deployment now runs as one of two **instances**, selected by `deploy.sh`:
+
+- ✅ **`deployment/deploy.sh` wrapper** — `deploy.sh` (prod) / `deploy.sh test`. Sets the Slurm
+  `--job-name` (`agenticnetwork-prod` / `agenticnetwork-test`) and exports `DEPLOY_ENV` +
+  `PORT_OFFSET` into `submit.sbatch`.
+- ✅ **prod** — the canonical instance: `/engrfs` Postgres (real, credential-bearing state),
+  base ports, committed `ads_daemon.yaml`.
+- ✅ **test** — an isolated copy that may run **beside** prod: all ports offset by **+10000**
+  (`submit.sbatch` instance-mode block), Postgres data dir on **node-local `/scratch/$USER`**
+  (never `/engrfs`, so it *structurally cannot* reach prod's data), and an ADS config generated
+  from `ads_daemon.yaml` with the offset server/routing/PG ports. Wired via `ADS_SERVER_ADDR` /
+  `PGPORT` / `REGISTRATION_DB_DSN` exports that the entrypoints already honor. Also fixed a
+  latent bug: `entrypoint-postgres.sh` now starts the server on `PGPORT` (was always 5432).
+- ✅ **Per-service image tags** — isolation also covers *which image* runs, so a dev can test a
+  candidate build without clobbering the prod-facing `:latest`. Each service's tag resolves as
+  `<SERVICE>_IMAGE_TAG` → `IMAGE_TAG` (instance-wide default; the future CI SHA tag) → the
+  service default (`latest`, or `v4` for ads), via the `image_ref` helper in `submit.sbatch`.
+  Workflow: `IMAGE_TAG=dev-alice bash deployment/build_and_push.sh planner` (publishes
+  `…/agenticnetwork-planner:dev-alice`, leaving `:latest` alone), then launch the test instance
+  with `PLANNER_IMAGE_TAG=dev-alice` — only the planner runs the candidate; every other service
+  stays on `:latest`. `build_and_push.sh` honors `IMAGE_TAG` for the build side.
+
+The cluster `test` instance is the single pre-ship validation path. (A laptop-local "Tier B"
+tier was considered and **dropped** — not worth maintaining a second story.)
+
+- ✅ **Custom-agent dynamic port pool** — `registration_service/port_pool.py` (and `fake_db.py`)
+  read the range from `CUSTOM_AGENT_PORT_START`/`_END` (default 19200–19299); `submit.sbatch`
+  offsets it for test (→ 29200–29299), so a test instance's spawned custom agents can't collide
+  with prod's on a shared node. Test uses a separate Postgres, so the pool *counter* was already
+  isolated — this closes the remaining collision on the actual bound host ports.
+
+**Known gaps (documented, not yet solved):**
+- **ADS gossipsub cross-peering** (`ads_daemon.yaml` libp2p routing) — two ADS daemons on one
+  node use different routing ports and *separate* Postgres `dir` DBs, but it is **unverified**
+  whether gossipsub auto-peers them (e.g. via mDNS) and leaks live routing between prod and
+  test. Verify empirically; if it does, disable mDNS / set a distinct rendezvous for test.
+
+### Phase 3 — CI (GitHub Actions)
+
+- ✅ **Interim deploy lock** — `submit.sbatch` preflights `squeue` across *all* users and
+  refuses to start if another job of the **same name** (i.e. same instance) is already live.
+  Prod and test differ by name, so they coexist; two prods (or two tests) do not — closing the
+  shared-`/engrfs`-Postgres corruption path that per-user `--dependency=singleton` misses.
+- ⏳ CI builds + pushes all images on merge to `main`, tagged by **commit SHA** (+ a moving
+  `main` tag) → kills both the `:latest` clobbering and the "who has push creds" question.
+- ⏳ Deploy becomes a **single serialized GitHub Actions job** using a concurrency group
+  (`concurrency: { group: deploy, cancel-in-progress: false }`) — simultaneously *how* CI
+  deploys and *the global lock*, so nobody deploys from a laptop. (The `squeue` preflight above
+  remains the belt-and-suspenders guard even once CI exists.)
+
+## Decisions so far
+
+- ✅ **Test-lane namespace token** — per **`$USER`**.
+- ✅ **Test Postgres** — cluster node-local-scratch (`/scratch/$USER`), physically separate from
+  prod by construction. A shared always-on test host and a laptop-local tier were both rejected.
+- ✅ **CI platform** — **GitHub Actions**.
+- ✅ **Deploy trigger + lock** — a concurrency-grouped GitHub Actions deploy job (same
+  mechanism serves as both the deploy path and the global lock); `squeue` preflight check as
+  the pre-CI interim.
+
+## Still open
+
+1. ⏳ **Registry** — which org registry (IT conversation in progress). Everything else in
+   Phase 0 can be staged behind an `IMAGE_REGISTRY` var regardless.
+2. **GitHub Actions runner reach** — do the runners need to reach the registry only, or also
+   trigger the cluster deploy (self-hosted runner on-cluster vs. an SSH/`sbatch` step from a
+   hosted runner)? Resolve when Phase 3 starts.
+
+---
+
+## Pre-merge validation (run before merging `refactor/multi-contributor` to `main`)
+
+Everything above was authored but **not yet exercised on the cluster** — these changes touch
+cluster-only paths (Slurm, enroot, `/engrfs`, vLLM) that can't be tested off-cluster. Work
+through this on ENGR first. Treat a ❌ as a merge blocker.
+
+### Setup (one-time)
+- [ ] **Registry.** Once IT confirms the group registry, set `IMAGE_REGISTRY` in
+      `deployment/.env` and build + push every image: `bash deployment/build_and_push.sh` (infra),
+      plus the specialist agents from the `agent-directory` repo. Note the ADS image is still
+      pinned `:v4` in `submit.sbatch` — push that tag or update it.
+- [ ] **Secrets.** Create the prod secrets file `/engrfs/project/di2/secrets/agenticnetwork.env`
+      (`chmod 0640`, group-owned) with the real `CREDENTIALS_ENCRYPTION_KEY` (**the existing prod
+      key** — a new one makes stored creds undecryptable), `GITHUB_TOKEN`, `GOOGLE_CLIENT_SECRET`.
+      Confirm they are **removed** from `deployment/.env`. `chmod 0600 /engrfs/project/di2/AgenticNetwork/.hf_token`.
+- [ ] **Test scratch.** Confirm `/scratch/$USER` exists and is writable on the target node.
+
+### Prod baseline (prod behavior must be unchanged)
+- [ ] `deployment/deploy.sh` → tail the log. Confirm: `Instance : prod (port offset 0)`,
+      `Loaded secrets from …`, vLLM auto-discovered (`vLLM discovered: http://…`), Postgres on
+      `:5432` mounting `/engrfs/project/di2/postgres_data`, ADS on `:8888`, all agents up.
+- [ ] Planner reachable at `:8090`; log in via SSO; **confirm an existing user's stored Google
+      connection still works** (proves `CREDENTIALS_ENCRYPTION_KEY` is the right one).
+
+### Deploy lock
+- [ ] With prod live, run `deployment/deploy.sh` again → the job must **refuse** with
+      "another 'agenticnetwork-prod' deployment is already live". (Test from a *second* user too,
+      to confirm it's cross-user, not just per-user `singleton`.)
+
+### Test instance beside live prod
+- [ ] With prod still live, `deployment/deploy.sh test`. Confirm: `Instance : test (port offset
+      10000)`, ports offset (planner `:18090`, ADS `:18888`, Postgres `:15432`), Postgres data on
+      `/scratch/$USER/agn-test/...` (**not** `/engrfs`), a generated `ads_daemon.test.yaml`.
+- [ ] Planner reachable at `:18090`; **prod at `:8090` unaffected** throughout.
+- [ ] **Isolation proof:** the test `registration` DB is empty/fresh; prod's data is intact and
+      untouched. A second test deploy is refused ("agenticnetwork-test already live").
+- [ ] **Candidate image:** `IMAGE_TAG=dev-$USER bash deployment/build_and_push.sh planner`, then
+      `PLANNER_IMAGE_TAG=dev-$USER deployment/deploy.sh test` (deploy.sh propagates it via
+      `--export=ALL`). Confirm the banner's `Img tags:` line shows the override, the test planner
+      runs the candidate, and prod's `:latest` planner is untouched.
+
+### Known-gap checks (may become follow-up tickets, not necessarily blockers)
+- [ ] **Gossipsub cross-peering:** with prod + test ADS both up, confirm prod's directory does
+      **not** list test agents and vice versa (`dirctl` routing list against each). If it leaks,
+      disable mDNS / set a distinct rendezvous for test before relying on concurrent test.
+- [ ] **Custom-agent ports:** spawn a custom agent in the test instance and confirm it lands in
+      `29200–29299` (offset), not prod's `19200–19299`.
+- [ ] **vLLM fallback:** confirm `VLLM_AUTODISCOVER=0` uses the `.env` value verbatim.
+
+### Teardown & merge
+- [ ] `scancel` the test job; confirm prod stays healthy; confirm `/scratch/$USER/agn-test` is
+      cleaned up.
+- [ ] Update this doc's ⏳/✅ statuses with what actually held, then merge to `main`.

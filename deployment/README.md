@@ -69,19 +69,48 @@ mkdir -p /engrfs/project/di2/postgres_data   # persistent postgres storage for r
 cp deployment/.env.example deployment/.env
 ```
 
-Edit `.env` and fill in:
+Edit `.env` — the values you may actually change (most have working defaults):
 
 | Variable | Description |
 |---|---|
-| `OPENAI_BASE_URL` | Set after starting vLLM — e.g. `http://gpu123:8100/v1` |
-| `BRAVE_API_KEY` | Brave Search API key for Scout |
-| `EMAIL_AGENT_EMAIL` | Gmail address for the Email agent |
-| `GOOGLE_CALENDAR_ID` | Google Calendar ID |
-| `GOOGLE_CALENDAR_TOKEN` | Path to `token.json` inside the container |
-| `GOOGLE_CALENDAR_CREDENTIALS` | Path to `credentials.json` inside the container |
-| `GOOGLE_API_KEY` / `GOOGLE_MAPS_API_KEY` | For the GeoSpatial agent |
-| `PGDATABASE` | Postgres database name for the registration service (default: `registration`) |
-| `REGISTRATION_SERVICE_PORT` | Port for the registration service (default: `8091`) |
+| `ADMIN_EMAILS` | Comma-separated allowlist of admin emails, matched against SSO identity |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_REDIRECT_URI` | OAuth web-client (non-secret half; the secret is in the secrets file, Step 3) |
+| `GITHUB_REPO` | Repo for the custom-agent build pipeline (default `washu-dev/agent-directory`) |
+| `IMAGE_REGISTRY` | Image namespace (default `amaankhan25`; see [`../docs/MULTI_CONTRIBUTOR.md`](../docs/MULTI_CONTRIBUTOR.md)) |
+| `PGDATABASE` | Registration DB name (default `registration`) |
+
+> `.env` holds **non-secret config only** — it is shared and world-readable on `/engrfs`.
+>
+> **You no longer set these by hand:** `OPENAI_BASE_URL` is auto-discovered (Step 1); real
+> secrets go in the secrets file (Step 3); and per-user credentials — `BRAVE_API_KEY`,
+> `GOOGLE_API_KEY`/`GOOGLE_MAPS_API_KEY`, the Email agent's Gmail/Calendar tokens — are stored
+> **per user** via the app's credential flow (the Google OAuth connect + `/me/credentials`),
+> not in env. Ports are derived by `submit.sbatch` (offset for a test instance).
+
+### 3. Create your secrets file
+
+Real secrets (`CREDENTIALS_ENCRYPTION_KEY`, `GITHUB_TOKEN`, `GOOGLE_CLIENT_SECRET`) live in a
+restricted file, **not** `.env`. `submit.sbatch` sources it after `.env`. Copy the template and
+set restrictive permissions:
+
+```bash
+# prod (shared among authorized operators; not world-readable):
+install -d -m 0750 /engrfs/project/di2/secrets
+cp deployment/secrets.env.example /engrfs/project/di2/secrets/agenticnetwork.env
+chmod 0640 /engrfs/project/di2/secrets/agenticnetwork.env    # then fill in real values
+
+# test (per-user, private):
+mkdir -p ~/.config/agenticnetwork && chmod 0700 ~/.config/agenticnetwork
+cp deployment/secrets.env.example ~/.config/agenticnetwork/secrets.env
+chmod 0600 ~/.config/agenticnetwork/secrets.env
+```
+
+Override the path with `SECRETS_FILE=/path/to/secrets.env`. See `secrets.env.example` for details.
+
+The vLLM HuggingFace token lives in a separate file (`/workspace/.hf_token`, read by
+`start_vllm.sbatch`) — it's also a secret on shared storage, so `chmod 600` it.
+
+### 4. Set your Slurm account
 
 Edit `submit.sbatch` and `start_vllm.sbatch` — replace `engr-lab-<piname>` with
 your actual PI's account name (find it with `sacctmgr show user $USER`).
@@ -102,7 +131,11 @@ bash deployment/build_and_push.sh
 bash deployment/build_and_push.sh planner
 ```
 
-Images are published to `amaankhan25/agenticnetwork-<agent>:latest` on DockerHub.
+Images are published to `<IMAGE_REGISTRY>/agenticnetwork-<agent>:latest`, where
+`IMAGE_REGISTRY` defaults to `amaankhan25` and is overridable via the `IMAGE_REGISTRY`
+env var (set it in `deployment/.env`) — `build_and_push.sh`, `submit.sbatch`, and the
+registration service's custom-agent build all read it. Moving this off a personal
+account is tracked in [`../docs/MULTI_CONTRIBUTOR.md`](../docs/MULTI_CONTRIBUTOR.md).
 Pyxis caches images by tag — use a new tag (`:v2`, `:v3`, etc.) if you need to
 force a fresh pull on the cluster after pushing a fix to the same tag.
 
@@ -119,11 +152,14 @@ force a fresh pull on the cluster after pushing a fix to the same tag.
 sbatch deployment/start_vllm.sbatch
 ```
 
-Find the GPU node hostname and update `.env`:
+The job runs as `agenticnetwork-vllm`. **You no longer hand-edit `OPENAI_BASE_URL`** —
+`submit.sbatch` auto-discovers the vLLM node by that job name at launch and sets the URL
+(preferring your own job, else any user's, so a test instance can share prod's vLLM). It
+falls back to the `.env` value if no vLLM job is running; force that with
+`VLLM_AUTODISCOVER=0`. Just confirm the job is `RUNNING` before Step 2:
 
 ```bash
-squeue -u $USER   # note NODELIST, e.g. gpu123
-# Then set: OPENAI_BASE_URL=http://gpu123:8100/v1
+squeue -u $USER -n agenticnetwork-vllm   # wait for state R (and note NODELIST for the check below)
 ```
 
 Verify vLLM is ready (from a compute node, not the login node):
@@ -135,9 +171,21 @@ curl http://gpu123:8100/health
 
 ### Step 2 — Submit the main job
 
+Use the `deploy.sh` wrapper, which selects the instance:
+
 ```bash
-sbatch deployment/submit.sbatch
+deployment/deploy.sh          # prod — the canonical instance (default)
+deployment/deploy.sh test     # an isolated test instance that can run BESIDE prod
 ```
+
+**prod vs test.** prod is the one canonical deployment: base ports and the persistent
+`/engrfs` Postgres holding real, encrypted user credentials. A `test` instance offsets every
+port by **+10000** and puts its Postgres data on **node-local `/scratch/$USER`**, so it can run
+concurrently with a live prod without colliding on ports and *cannot touch prod's data*. A
+second deploy of the same instance (two prods, or two tests) is refused across all users by a
+`squeue` preflight in `submit.sbatch`. Details + known gaps: [`../docs/MULTI_CONTRIBUTOR.md`](../docs/MULTI_CONTRIBUTOR.md).
+
+> Submitting `sbatch deployment/submit.sbatch` directly still works and defaults to prod.
 
 Watch startup:
 
