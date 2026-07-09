@@ -93,7 +93,7 @@ def cluster_srun_argv(
     AGENT_CONFIG_JSON is passed via env (not --export) to avoid comma/quote breakage;
     --export=ALL then propagates it (and the host's OPENAI_* etc.) into the container.
     """
-    image = f"amaankhan25/agenticnetwork-custom-{_image_slug(name)}:latest"
+    image = f"{_image_registry()}/agenticnetwork-custom-{_image_slug(name)}:latest"
     mounts = os.environ.get(
         "CLUSTER_WORKSPACE_MOUNT", "/engrfs/project/di2/AgenticNetwork:/workspace"
     )
@@ -355,6 +355,15 @@ async def _run(cmd: list[str]) -> None:
 
 def _image_slug(name: str) -> str:
     return name.lower().replace(" ", "-")
+
+
+def _image_registry() -> str:
+    """The registry namespace custom-agent images are built/pushed/pulled under.
+
+    Group-owned rather than tied to a personal account; override via IMAGE_REGISTRY.
+    See docs/MULTI_CONTRIBUTOR.md.
+    """
+    return os.environ.get("IMAGE_REGISTRY", "amaankhan25")
 
 
 def make_backend() -> ContainerBackend:

@@ -24,6 +24,7 @@ from registration_service.backend import (
     _AGENT_SKELETON_DIR,
     ClusterBackend,
     ContainerBackend,
+    _image_registry,
     _image_slug,
     cluster_srun_argv,
     make_backend,
@@ -260,7 +261,7 @@ class Supervisor:
                 row["handler_type"] == "custom"
                 and _cluster_build_enabled()
                 and await _image_exists_on_dockerhub(
-                    f"amaankhan25/agenticnetwork-custom-{_image_slug(row['name'])}",
+                    f"{_image_registry()}/agenticnetwork-custom-{_image_slug(row['name'])}",
                     row["updated_at"],
                 )
             )
@@ -365,7 +366,7 @@ class Supervisor:
         building = await list_agents_by_status("building")
         for agent in building:
             slug = _image_slug(agent["name"])
-            image = f"amaankhan25/agenticnetwork-custom-{slug}"
+            image = f"{_image_registry()}/agenticnetwork-custom-{slug}"
             if await _image_exists_on_dockerhub(image, agent.get("updated_at")):
                 # Hand off to the host spawn loop: it polls /internal/spawn-queue for
                 # image_ready agents, runs srun, and calls finalize_spawned (Note #8).

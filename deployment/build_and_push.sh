@@ -9,13 +9,21 @@
 # To build a single image:
 #   bash deployment/build_and_push.sh planner
 #
+# To build a candidate under a personal tag WITHOUT clobbering :latest (for testing a
+# change against a `deploy.sh test` instance — set the matching <SERVICE>_IMAGE_TAG there):
+#   IMAGE_TAG=dev-alice bash deployment/build_and_push.sh planner
+#
 # To build specialist agents, run from the agent-directory repo root:
 #   bash deployment/build_and_push.sh  (once that repo has its own copy of this script)
 
 set -euo pipefail
 
-REGISTRY=amaankhan25
-TAG=latest
+# Registry namespace images are built/pushed under. Group-owned rather than tied
+# to a personal account; override via IMAGE_REGISTRY. See docs/MULTI_CONTRIBUTOR.md.
+REGISTRY="${IMAGE_REGISTRY:-amaankhan25}"
+# Tag to build/push under. Defaults to latest; set IMAGE_TAG=dev-<you> to publish a
+# candidate for a test instance without overwriting the prod-facing :latest.
+TAG="${IMAGE_TAG:-latest}"
 PLATFORM=linux/amd64
 
 AGENTS=(postgres ads planner registration)
