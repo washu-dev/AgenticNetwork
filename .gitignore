@@ -13,6 +13,11 @@ uploaded_handlers/
 .env
 .env.local
 .env.*.local
+# Real secrets file (CREDENTIALS_ENCRYPTION_KEY, GITHUB_TOKEN, GOOGLE_CLIENT_SECRET).
+# Kept out of the shared, world-readable .env — see deployment/secrets.env.example.
+# The .example template stays tracked; a real secrets.env must never be committed.
+secrets.env
+**/secrets.env
 agent_directory_service/.runtime/
 .venv/
 .claude/
