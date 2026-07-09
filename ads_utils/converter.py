@@ -1,8 +1,15 @@
-"""Canonical Agent Card → OASF/ADS record converter.
+"""Agent Card → OASF/ADS record converter.
 
-Single source of truth for all agents. Drawn from
-agent_directory_service/services/directory/card_oasf_converter.py — if that
-file changes, update this one to match.
+Used by ads_utils/publisher.py and, through it, by registration_service for
+agents registered via the UI (registration_service/supervisor.py populates
+_AGENT_OASF_ROUTING_SKILLS below at spawn time). The legacy specialist agents
+(coding, email, intelligence, disaster-response, geospatial) do NOT import
+this module for publishing — each vendors its own standalone copy of this
+conversion logic so it stays deployable without a shared dependency.
+
+Mirrors agent_directory_service/services/directory/card_oasf_converter.py,
+the more actively maintained copy — port changes from there, especially the
+'oasf:<name>:<id>' skill-tag mechanism below.
 
 Only stdlib + a2a.types dependencies so this module installs into any agent
 environment without extra packages.
@@ -31,54 +38,44 @@ class OfficialOASFSkill:
 # Full path = directory path under schema/skills/ + the "name" field in each JSON file.
 # IDs follow the pattern: parent_category_id * 100 + skill uid.
 
-EMAIL_ADS_ROUTING_SKILLS: list[OfficialOASFSkill] = [
-    OfficialOASFSkill(
-        name="natural_language_processing/information_retrieval_synthesis/information_retrieval_synthesis_search",
-        id=10306,
-    ),
-    OfficialOASFSkill(
-        name="natural_language_processing/natural_language_generation/summarization",
-        id=10202,
-    ),
-    OfficialOASFSkill(
-        name="retrieval_augmented_generation/retrieval_of_information/document_retrieval",
-        id=60103,
-    ),
-]
+_OASF_TAG_PREFIX = "oasf:"
 
-# Official OASF routing skills per agent, keyed by lowercased hyphenated card name.
-# Used when the card's skill IDs have no entry in KNOWN_OASF_SKILLS.
-_AGENT_OASF_ROUTING_SKILLS: dict[str, list[OfficialOASFSkill]] = {
-    "coding-agent": [
-        OfficialOASFSkill(name="analytical_skills/coding_skills/text_to_code", id=50201),
-        OfficialOASFSkill(name="analytical_skills/coding_skills/code_optimization", id=50204),
-    ],
-    "intelligence-agent": [
-        OfficialOASFSkill(
-            name="natural_language_processing/information_retrieval_synthesis/knowledge_synthesis",
-            id=10303,
-        ),
-        OfficialOASFSkill(
-            name="natural_language_processing/information_retrieval_synthesis/information_retrieval_synthesis_search",
-            id=10306,
-        ),
-        OfficialOASFSkill(
-            name="natural_language_processing/natural_language_generation/summarization",
-            id=10202,
-        ),
-    ],
-    "disaster-response-agent": [
-        OfficialOASFSkill(name="advanced_reasoning_planning/strategic_planning", id=1501),
-        OfficialOASFSkill(
-            name="natural_language_processing/information_retrieval_synthesis/knowledge_synthesis",
-            id=10303,
-        ),
-    ],
-    "geospatial-agent": [
-        OfficialOASFSkill(name="images_computer_vision/image_classification", id=203),
-        OfficialOASFSkill(name="images_computer_vision/object_detection", id=204),
-    ],
-}
+
+def oasf_skill_tag(name: str, id: int) -> str:
+    """Build an 'oasf:<name>:<id>' skill tag — the inverse of _oasf_skill_from_tag.
+
+    Callers that build an AgentCard (e.g. registration_service) should stamp
+    this onto a skill's tags instead of registering an _AGENT_OASF_ROUTING_SKILLS
+    entry, so the card is discoverable without touching this module."""
+    return f"{_OASF_TAG_PREFIX}{name}:{id}"
+
+
+def _oasf_skill_from_tag(tag: str) -> OfficialOASFSkill | None:
+    """Parse a card skill tag of the form 'oasf:<name>:<id>' into a routing skill.
+
+    Lets a card declare its own OASF routing skill (e.g. emitted by the
+    agent_skeleton generator) so it is discoverable WITHOUT a per-agent entry
+    in _AGENT_OASF_ROUTING_SKILLS below. Returns None for any tag that is not
+    an OASF tag."""
+    if not tag.startswith(_OASF_TAG_PREFIX):
+        return None
+    name, sep, id_str = tag[len(_OASF_TAG_PREFIX):].rpartition(":")
+    if not sep or not name:
+        return None
+    try:
+        return OfficialOASFSkill(name=name, id=int(id_str))
+    except ValueError:
+        return None
+
+
+# Official OASF routing skills per agent, keyed by lowercased hyphenated card
+# name. Used only as a fallback for cards with no 'oasf:<name>:<id>' skill
+# tag. Empty by default — registration_service/supervisor.py populates this
+# at spawn time for agents registered through the UI (see
+# _register_oasf_routing_skills). The legacy specialist agents each vendor
+# their own converter copy instead of calling into this module, so they never
+# need an entry here.
+_AGENT_OASF_ROUTING_SKILLS: dict[str, list[OfficialOASFSkill]] = {}
 
 WRITE_SKILL_IDS: set[str] = {
     "email/send",
@@ -256,23 +253,25 @@ def _looks_like_write(skill: Any) -> bool:
 
 
 def _ads_routing_skills(card: AgentCard) -> list[OfficialOASFSkill]:
-    official: list[OfficialOASFSkill] = []
-    if card.name.lower().replace(" ", "-") == "email-agent":
-        official.extend(EMAIL_ADS_ROUTING_SKILLS)
+    # Routing skills are only for ADS discoverability; the planner matches
+    # agents by reading the full card stored in annotations.
     deduped: dict[str, OfficialOASFSkill] = {}
-    for s in official:
+    agent_key = card.name.lower().replace(" ", "-")
+    for s in _AGENT_OASF_ROUTING_SKILLS.get(agent_key, []):
         deduped[s.name] = s
-    # If no official OASF taxonomy entry matched the card's skill IDs, use the
-    # per-agent routing skill map. Routing skills are only for ADS discoverability;
-    # the planner matches agents by reading the full card stored in annotations.
-    if not deduped:
-        agent_key = card.name.lower().replace(" ", "-")
-        for s in _AGENT_OASF_ROUTING_SKILLS.get(agent_key, []):
-            deduped[s.name] = s
+    # A card can always self-describe its own OASF routing skill via an
+    # 'oasf:<name>:<id>' tag on any of its skills — an explicit author tag is
+    # never dropped, even if the per-agent map above already matched.
+    for skill in card.skills:
+        for tag in skill.tags or []:
+            parsed = _oasf_skill_from_tag(tag)
+            if parsed is not None:
+                deduped[parsed.name] = parsed
     if not deduped:
         raise ValueError(
-            f"No OASF routing skills found for agent '{card.name}'. "
-            "Add an entry to _AGENT_OASF_ROUTING_SKILLS in ads_utils/converter.py."
+            f"No OASF routing skills found for agent '{card.name}'. Add an "
+            "'oasf:<name>:<id>' tag to one of its skills, or an entry to "
+            "_AGENT_OASF_ROUTING_SKILLS in ads_utils/converter.py."
         )
     return list(deduped.values())
 
