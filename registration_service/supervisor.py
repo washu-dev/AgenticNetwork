@@ -13,7 +13,7 @@ from typing import Any
 
 import httpx
 
-from ads_utils.converter import OfficialOASFSkill, _AGENT_OASF_ROUTING_SKILLS
+from ads_utils.converter import oasf_skill_tag
 from ads_utils.publisher import DirectoryPublisher, DirectoryUnavailable
 from a2a.types import AgentCard, AgentCapabilities, AgentSkill
 
@@ -105,8 +105,6 @@ class Supervisor:
             await _set_status(agent_id, "building")
             logger.info("custom_build_started agent_id=%s name=%s", agent_id, name)
             return
-
-        _register_oasf_routing_skills(name, oasf_skills)
 
         try:
             await self._backend.spawn(
@@ -408,7 +406,6 @@ class Supervisor:
 
         if isinstance(self._backend, ClusterBackend):
             self._backend.record_pid(agent_id, pid, port)
-        _register_oasf_routing_skills(agent["name"], oasf_skills)
         await self._publish_and_set_live(
             agent_id, agent["name"], agent["description"], oasf_skills, port,
             _declared_credentials(_deserialize_config(agent)),
@@ -694,7 +691,14 @@ def _build_agent_card(
             id=s.get("key") or s["name"],   # prefer canonical key; fall back to name
             name=s["name"].split("/")[-1],
             description=description,
-            tags=[],
+            # Self-describe the ADS routing skill via an 'oasf:<name>:<id>' tag
+            # so the card is discoverable without a per-agent entry in
+            # ads_utils.converter's routing map.
+            tags=(
+                [oasf_skill_tag(s.get("key") or s["name"], s["id"])]
+                if s.get("id") is not None
+                else []
+            ),
         )
         for s in oasf_skills
     ]
@@ -716,17 +720,6 @@ def _build_agent_card(
         default_input_modes=["text"],
         default_output_modes=["text"],
     )
-
-
-def _register_oasf_routing_skills(
-    name: str, oasf_skills: list[dict[str, Any]]
-) -> None:
-    """Add the agent's OASF skills to the converter's routing map so dirctl publish works."""
-    agent_key = name.lower().replace(" ", "-")
-    _AGENT_OASF_ROUTING_SKILLS[agent_key] = [
-        OfficialOASFSkill(name=s.get("key") or s["name"], id=s.get("id"))
-        for s in oasf_skills
-    ]
 
 
 async def _set_status(
