@@ -53,7 +53,7 @@ if [ -f "$PGDATA/postmaster.pid" ]; then
     rm -f "$PGDATA/postmaster.pid"
 fi
 if ! "$PGBIN/pg_ctl" start -D "$PGDATA" -l "$PGDATA/postgres.log" -w -t 30 \
-    -o "-c unix_socket_directories=$PGSOCKET -c listen_addresses='localhost'"; then
+    -o "-c unix_socket_directories=$PGSOCKET -c listen_addresses='localhost' -c port=$PGPORT"; then
     echo "[postgres] ERROR: pg_ctl could not start the server. PG_VERSION=$(cat "$PGDATA/PG_VERSION" 2>/dev/null || echo '?'). Server log:"
     cat "$PGDATA/postgres.log" 2>/dev/null || echo "[postgres] (no $PGDATA/postgres.log written)"
     exit 1

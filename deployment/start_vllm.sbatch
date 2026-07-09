@@ -1,4 +1,5 @@
 #!/bin/bash
+#SBATCH --job-name=agenticnetwork-vllm
 #SBATCH --partition=general-gpu
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
@@ -19,8 +20,12 @@ export MODEL=openai/gpt-oss-120b
 export NUM_GPUS=1
 export HF_HUB_CACHE=/workspace/hf_cache
 export HOME=/workspace
+# HuggingFace token — read from /workspace/.hf_token (gitignored). It is a secret on
+# shared /engrfs: keep it `chmod 600` so it is not world-readable. (Tracked as a Phase 1
+# follow-up in docs/MULTI_CONTRIBUTOR.md.)
 export HF_TOKEN=$(cat /workspace/.hf_token 2>/dev/null || echo "${HF_TOKEN}")
-CHAT_PORT=8100
+# Served port. Keep in sync with submit.sbatch's vLLM auto-discovery (VLLM_PORT).
+CHAT_PORT="${VLLM_PORT:-8100}"
 
 mkdir -p /workspace/hf_cache /workspace/logs
 
@@ -29,6 +34,7 @@ echo " vLLM starting on $(hostname)"
 echo " Job ID: ${SLURM_JOB_ID}"
 echo " Model : ${MODEL}"
 echo " OpenAI-compatible endpoint: http://$(hostname):${CHAT_PORT}/v1/"
+echo " (submit.sbatch auto-discovers this node via job name 'agenticnetwork-vllm')"
 echo "======================================================"
 
 vllm serve "$MODEL" \

@@ -10,15 +10,21 @@
 #   2. Fill in deployment/.env (copy from deployment/.env.example).
 #      Make sure OPENAI_BASE_URL points to your running vLLM job's node.
 #
-#   3. Submit from the repo root on the cluster:
-#        sbatch deployment/submit.sbatch
+#   3. Submit from the repo root on the cluster via the deploy.sh wrapper:
+#        deployment/deploy.sh            # prod (canonical instance)
+#        deployment/deploy.sh test       # isolated test instance (may run beside prod)
+#
+#      deploy.sh sets --job-name + DEPLOY_ENV/PORT_OFFSET. Submitting this file
+#      directly still works and defaults to prod. See docs/MULTI_CONTRIBUTOR.md.
 # ─────────────────────────────────────────────────────────────────────────────
 
-#SBATCH --job-name=agenticnetwork
-# singleton: only one agenticnetwork job per user runs at a time — a second
-# submission QUEUES until the first finishes instead of starting concurrently.
-# This prevents an accidental double-submit from running two Postgres containers
-# on the shared /engrfs postgres_data volume and corrupting the cluster.
+#SBATCH --job-name=agenticnetwork-prod
+# singleton: only one job with THIS name runs per user at a time — a second
+# submission QUEUES until the first finishes. Combined with the cross-user preflight
+# below (which covers OTHER users' jobs of the same name), this prevents two prod
+# deployments sharing the /engrfs postgres_data volume and corrupting it. Prod and
+# test carry different names (set by deploy.sh), so an isolated test instance may
+# run alongside prod. See docs/MULTI_CONTRIBUTOR.md.
 #SBATCH --dependency=singleton
 #SBATCH -p condo-di2
 #SBATCH --nodes=1
@@ -41,10 +47,146 @@ set -a
 source "$ENV_FILE"
 set +a
 
+# Registry namespace all images are pulled from. Group-owned rather than tied to a
+# personal account; override via IMAGE_REGISTRY (e.g. in .env). See docs/MULTI_CONTRIBUTOR.md.
+IMAGE_REGISTRY="${IMAGE_REGISTRY:-amaankhan25}"
+
+# Image tag resolution. Each service's tag is chosen in order:
+#   1. <SERVICE>_IMAGE_TAG  (per-service override, e.g. PLANNER_IMAGE_TAG=dev-alice)
+#   2. IMAGE_TAG            (instance-wide default; unset for prod, a SHA under CI later)
+#   3. the service's own default (latest; v4 for ads)
+# So a dev rebuilds ONLY the service(s) they changed under a personal tag (see
+# build_and_push.sh) and everything else stays on :latest. See docs/MULTI_CONTRIBUTOR.md.
+image_ref() {
+    local svc="$1" default_tag="$2" var tag
+    var="$(printf '%s' "$svc" | tr '[:lower:]' '[:upper:]')_IMAGE_TAG"
+    tag="${!var:-${IMAGE_TAG:-$default_tag}}"
+    printf '%s/agenticnetwork-%s:%s' "$IMAGE_REGISTRY" "$svc" "$tag"
+}
+
+# ── Instance mode: prod (canonical, shared state) vs test (isolated) ───────────
+# Set by deploy.sh. prod is the one canonical deployment; test is an isolated copy
+# (offset ports + node-local Postgres) that may run beside prod. See docs/MULTI_CONTRIBUTOR.md.
+DEPLOY_ENV="${DEPLOY_ENV:-prod}"
+PORT_OFFSET="${PORT_OFFSET:-0}"
+case "$DEPLOY_ENV" in
+    prod|test) : ;;
+    *) echo "[submit] ERROR: DEPLOY_ENV must be 'prod' or 'test' (got '$DEPLOY_ENV')"; exit 2 ;;
+esac
+
+# ── Secrets — kept OUT of the shared, world-readable .env ──────────────────────
+# Real secrets (CREDENTIALS_ENCRYPTION_KEY, GITHUB_TOKEN, GOOGLE_CLIENT_SECRET) live
+# in a restricted file, sourced AFTER .env so they override. prod reads a shared
+# operator-owned file; test reads a per-user one. Override with SECRETS_FILE.
+# See docs/MULTI_CONTRIBUTOR.md and deployment/secrets.env.example.
+if [ "$DEPLOY_ENV" = "prod" ]; then
+    SECRETS_FILE="${SECRETS_FILE:-/engrfs/project/di2/secrets/agenticnetwork.env}"
+else
+    SECRETS_FILE="${SECRETS_FILE:-$HOME/.config/agenticnetwork/secrets.env}"
+fi
+if [ -f "$SECRETS_FILE" ]; then
+    set -a; source "$SECRETS_FILE"; set +a
+    echo "[submit] Loaded secrets from $SECRETS_FILE"
+else
+    echo "[submit] WARN: secrets file not found ($SECRETS_FILE)."
+    echo "[submit]       CREDENTIALS_ENCRYPTION_KEY and other secrets will be missing —"
+    echo "[submit]       set SECRETS_FILE or create it (see deployment/secrets.env.example)."
+fi
+
+# Cross-user singleton per instance: refuse to start if ANOTHER job with the same
+# name (this instance) is already live. Prod and test have different names, so they
+# coexist; two prods (or two tests) do not — even across users, which the per-user
+# --dependency=singleton above cannot see. This is the guardrail against a second
+# deploy colliding on ports or the shared Postgres.
+DUP="$(squeue -h -o '%A %j' -t RUNNING,PENDING 2>/dev/null \
+        | awk -v n="$SLURM_JOB_NAME" -v self="$SLURM_JOB_ID" '$2==n && $1!=self {print $1}')"
+if [ -n "$DUP" ]; then
+    echo "[submit] ERROR: another '$SLURM_JOB_NAME' deployment is already live (job(s): ${DUP//$'\n'/ })."
+    echo "[submit]        Refusing to start a second — it would collide on ports and Postgres."
+    echo "[submit]        Cancel it first (scancel <jobid>), or run an isolated test: deployment/deploy.sh test"
+    exit 1
+fi
+
+# Ports — offset by PORT_OFFSET so a test instance can run beside prod on one node.
+# Single source of truth: each agent entrypoint reads its own *_PORT env var.
+export MAIN_AGENT_PORT=$((8090 + PORT_OFFSET))
+export REGISTRATION_SERVICE_PORT=$((8091 + PORT_OFFSET))
+export EMAIL_AGENT_A2A_PORT=$((9103 + PORT_OFFSET))
+export SCOUT_HTTP_PORT=$((9104 + PORT_OFFSET))
+export GEOSPATIAL_AGENT_A2A_PORT=$((19105 + PORT_OFFSET))
+export CODING_AGENT_A2A_PORT=$((19106 + PORT_OFFSET))
+export INTEL_AGENT_A2A_PORT=$((19107 + PORT_OFFSET))
+export DISASTER_AGENT_A2A_PORT=$((19108 + PORT_OFFSET))
+ADS_PORT=$((8888 + PORT_OFFSET))
+ADS_ROUTING_PORT=$((8999 + PORT_OFFSET))
+PG_PORT=$((5432 + PORT_OFFSET))
+# Repoint clients (agents, planner, registration) at THIS instance's ADS + Postgres.
+# Only for an offset (test) instance — prod keeps whatever .env / the entrypoint
+# defaults provide, so prod behavior is unchanged by this block.
+if [ "$PORT_OFFSET" -ne 0 ]; then
+    export ADS_SERVER_ADDR="localhost:${ADS_PORT}"
+    export PGPORT="$PG_PORT"
+    export REGISTRATION_DB_DSN="postgresql://postgres@localhost:${PG_PORT}/registration"
+    # Offset the registration service's dynamic custom-agent port pool too, so a test
+    # instance's spawned custom agents don't collide with prod's on a shared node.
+    export CUSTOM_AGENT_PORT_START=$((19200 + PORT_OFFSET))
+    export CUSTOM_AGENT_PORT_END=$((19299 + PORT_OFFSET))
+fi
+
+# Postgres data dir: prod uses the persistent /engrfs volume (real, credential-bearing
+# state); test uses node-local per-user scratch so it CANNOT touch prod's data.
+if [ "$DEPLOY_ENV" = "prod" ]; then
+    PG_DATA_HOSTDIR=/engrfs/project/di2/postgres_data
+else
+    PG_DATA_HOSTDIR="${TEST_PG_HOSTDIR:-/scratch/$USER/agn-test}/postgres_data"
+    mkdir -p "$PG_DATA_HOSTDIR"
+fi
+
+# ADS daemon config: prod uses the committed yaml unchanged; test generates a copy
+# with the offset server/routing/PG ports so it doesn't collide with prod on one node.
+if [ "$PORT_OFFSET" -eq 0 ]; then
+    ADS_CONFIG=/workspace/deployment/ads_daemon.yaml
+else
+    sed -e "s|0.0.0.0:8888|0.0.0.0:${ADS_PORT}|" \
+        -e "s|tcp/8999|tcp/${ADS_ROUTING_PORT}|" \
+        -e "s|port: 5432|port: ${PG_PORT}|" \
+        "$REPO/deployment/ads_daemon.yaml" > "$LOGS/ads_daemon.${DEPLOY_ENV}.yaml"
+    ADS_CONFIG="/workspace/logs/$(basename "$LOGS")/ads_daemon.${DEPLOY_ENV}.yaml"
+fi
+
+# ── vLLM endpoint auto-discovery ──────────────────────────────────────────────
+# The vLLM job lands on a different GPU node each run, so its hostname isn't stable.
+# Rather than hand-edit OPENAI_BASE_URL in .env every time, find the running vLLM job
+# by name and build the URL from its node. Prefer your own job; else any user's (a
+# test instance can share prod's vLLM — inference is stateless). Falls back to the
+# .env value if none is found. Set VLLM_AUTODISCOVER=0 to always use .env verbatim.
+VLLM_PORT="${VLLM_PORT:-8100}"
+VLLM_JOB_NAME="${VLLM_JOB_NAME:-agenticnetwork-vllm}"
+if [ "${VLLM_AUTODISCOVER:-1}" != "0" ]; then
+    VLLM_NODE="$(squeue -h -u "$USER" -n "$VLLM_JOB_NAME" -t RUNNING -o '%N' 2>/dev/null | head -n1)"
+    [ -z "$VLLM_NODE" ] && VLLM_NODE="$(squeue -h -n "$VLLM_JOB_NAME" -t RUNNING -o '%N' 2>/dev/null | head -n1)"
+    if [ -n "$VLLM_NODE" ]; then
+        export OPENAI_BASE_URL="http://${VLLM_NODE}:${VLLM_PORT}/v1"
+        echo "[submit] vLLM discovered: ${OPENAI_BASE_URL} (job '${VLLM_JOB_NAME}' on ${VLLM_NODE})"
+    else
+        echo "[submit] WARN: no running '${VLLM_JOB_NAME}' job found — using OPENAI_BASE_URL from .env: ${OPENAI_BASE_URL:-<unset>}"
+    fi
+fi
+
 echo "======================================================"
 echo " AgenticNetwork starting on $(hostname)"
-echo " Job ID   : ${SLURM_JOB_ID}"
+echo " Instance : ${DEPLOY_ENV} (port offset ${PORT_OFFSET})"
+echo " Job ID   : ${SLURM_JOB_ID}  (${SLURM_JOB_NAME})"
+echo " Postgres : ${PG_DATA_HOSTDIR} on :${PG_PORT}"
+echo " ADS      : :${ADS_PORT} (routing :${ADS_ROUTING_PORT})"
 echo " vLLM node: ${OPENAI_BASE_URL}"
+echo " Registry : ${IMAGE_REGISTRY}  (default tag: ${IMAGE_TAG:-latest})"
+_TAG_OVERRIDES=""
+for _svc in POSTGRES ADS REGISTRATION PLANNER SCOUT EMAIL CODING INTELLIGENCE DISASTER GEOSPATIAL; do
+    _var="${_svc}_IMAGE_TAG"
+    [ -n "${!_var:-}" ] && _TAG_OVERRIDES="${_TAG_OVERRIDES} $(printf '%s' "$_svc" | tr '[:upper:]' '[:lower:]')=${!_var}"
+done
+[ -n "$_TAG_OVERRIDES" ] && echo " Img tags :${_TAG_OVERRIDES}"
 echo "======================================================"
 
 # ── PostgreSQL (shared: registration "dir" + ADS "dir") ───────────────────────
@@ -56,15 +198,15 @@ PG_READY_CONTAINER="/workspace/logs/$(basename "$LOGS")/postgres_ready"  # same 
 rm -f "$PG_READY_HOST" 2>/dev/null || true
 
 srun --ntasks=1 --overlap \
-     --container-image=amaankhan25/agenticnetwork-postgres:latest \
-     --container-mounts="$MOUNTS,/engrfs/project/di2/postgres_data:/var/lib/postgresql/data" \
+     --container-image="$(image_ref postgres latest)" \
+     --container-mounts="$MOUNTS,${PG_DATA_HOSTDIR}:/var/lib/postgresql/data" \
      --container-writable \
-     --export=ALL,POSTGRES_READY_FILE="$PG_READY_CONTAINER" \
+     --export=ALL,POSTGRES_READY_FILE="$PG_READY_CONTAINER",PGPORT="$PG_PORT" \
      /entrypoint.sh >> "$LOGS/postgres.log" 2>&1 &
 
 echo "[submit] Waiting for PostgreSQL (registration + dir) ..."
 for i in $(seq 1 60); do
-    if [ -f "$PG_READY_HOST" ] && python3 -c "import socket; socket.create_connection(('localhost',5432),timeout=1).close()" 2>/dev/null; then
+    if [ -f "$PG_READY_HOST" ] && python3 -c "import socket; socket.create_connection(('localhost',${PG_PORT}),timeout=1).close()" 2>/dev/null; then
         echo "[submit] PostgreSQL ready (${i}s)."
         break
     fi
@@ -77,16 +219,16 @@ done
 
 # ── ADS daemon ────────────────────────────────────────────────────────────────
 srun --ntasks=1 --overlap \
-     --container-image=amaankhan25/agenticnetwork-ads:v4 \
+     --container-image="$(image_ref ads v4)" \
      --container-mounts="$MOUNTS" \
      --container-writable \
-     /usr/local/bin/dirctl daemon start --config /workspace/deployment/ads_daemon.yaml \
+     /usr/local/bin/dirctl daemon start --config "$ADS_CONFIG" \
      >> "$LOGS/ads.log" 2>&1 &
 
 # ── Wait for ADS (coarse poll — agent entrypoints also retry for up to 60s) ──
-echo "[submit] Waiting for ADS on port 8888..."
+echo "[submit] Waiting for ADS on port ${ADS_PORT}..."
 for i in $(seq 1 30); do
-    if python3 -c "import socket; socket.create_connection(('localhost', 8888), timeout=1).close()" 2>/dev/null; then
+    if python3 -c "import socket; socket.create_connection(('localhost', ${ADS_PORT}), timeout=1).close()" 2>/dev/null; then
         echo "[submit] ADS ready (${i}s)."
         break
     fi
@@ -97,17 +239,9 @@ for i in $(seq 1 30); do
     sleep 1
 done
 
-# ── Port assignments (single source of truth — entrypoints read these env vars) ─
-# Each variable name matches what the agent's entrypoint.sh reads.
-# Exported so Slurm propagates them into every container automatically.
-export MAIN_AGENT_PORT=8090
-export REGISTRATION_SERVICE_PORT=8091
-export EMAIL_AGENT_A2A_PORT=9103
-export SCOUT_HTTP_PORT=9104
-export GEOSPATIAL_AGENT_A2A_PORT=19105
-export CODING_AGENT_A2A_PORT=19106
-export INTEL_AGENT_A2A_PORT=19107
-export DISASTER_AGENT_A2A_PORT=19108
+# Port assignments (MAIN_AGENT_PORT, *_A2A_PORT, etc.) are exported in the instance-mode
+# block near the top of this script, offset by PORT_OFFSET. Slurm propagates them into
+# every container automatically.
 
 # ── Custom agent spawning (registration service) ─────────────────────────────
 # ClusterBackend + GitHub→DockerHub build pipeline for approved custom agents.
@@ -122,7 +256,7 @@ export HANDLER_FILES_DIR="${HANDLER_FILES_DIR:-/workspace/registration_service/u
 STAGGER="${AGENT_START_STAGGER_SECONDS:-4}"
 
 srun --ntasks=1 --overlap \
-     --container-image=amaankhan25/agenticnetwork-registration:latest \
+     --container-image="$(image_ref registration latest)" \
      --container-mounts="$MOUNTS" \
      --container-writable \
      /entrypoint.sh \
@@ -130,7 +264,7 @@ srun --ntasks=1 --overlap \
 sleep "$STAGGER"
 
 srun --ntasks=1 --overlap \
-     --container-image=amaankhan25/agenticnetwork-planner:latest \
+     --container-image="$(image_ref planner latest)" \
      --container-mounts="$MOUNTS" \
      --container-writable \
      /entrypoint.sh \
@@ -138,7 +272,7 @@ srun --ntasks=1 --overlap \
 sleep "$STAGGER"
 
 srun --ntasks=1 --overlap \
-     --container-image=amaankhan25/agenticnetwork-scout:latest \
+     --container-image="$(image_ref scout latest)" \
      --container-mounts="$MOUNTS" \
      --container-writable \
      /entrypoint.sh \
@@ -146,7 +280,7 @@ srun --ntasks=1 --overlap \
 sleep "$STAGGER"
 
 srun --ntasks=1 --overlap \
-     --container-image=amaankhan25/agenticnetwork-email:latest \
+     --container-image="$(image_ref email latest)" \
      --container-mounts="$MOUNTS" \
      --container-writable \
      /entrypoint.sh \
@@ -154,7 +288,7 @@ srun --ntasks=1 --overlap \
 sleep "$STAGGER"
 
 srun --ntasks=1 --overlap \
-     --container-image=amaankhan25/agenticnetwork-coding:latest \
+     --container-image="$(image_ref coding latest)" \
      --container-mounts="$MOUNTS" \
      --container-writable \
      /entrypoint.sh \
@@ -162,7 +296,7 @@ srun --ntasks=1 --overlap \
 sleep "$STAGGER"
 
 srun --ntasks=1 --overlap \
-     --container-image=amaankhan25/agenticnetwork-intelligence:latest \
+     --container-image="$(image_ref intelligence latest)" \
      --container-mounts="$MOUNTS" \
      --container-writable \
      /entrypoint.sh \
@@ -170,7 +304,7 @@ srun --ntasks=1 --overlap \
 sleep "$STAGGER"
 
 srun --ntasks=1 --overlap \
-     --container-image=amaankhan25/agenticnetwork-disaster:latest \
+     --container-image="$(image_ref disaster latest)" \
      --container-mounts="$MOUNTS" \
      --container-writable \
      /entrypoint.sh \
@@ -178,7 +312,7 @@ srun --ntasks=1 --overlap \
 sleep "$STAGGER"
 
 srun --ntasks=1 --overlap \
-     --container-image=amaankhan25/agenticnetwork-geospatial:latest \
+     --container-image="$(image_ref geospatial latest)" \
      --container-mounts="$MOUNTS" \
      --container-writable \
      /entrypoint.sh \
