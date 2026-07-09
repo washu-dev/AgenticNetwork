@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import logging
+import os
 
 import asyncpg
 
 logger = logging.getLogger(__name__)
 
-_PORT_RANGE_START = 19200
-_PORT_RANGE_END = 19299
+# Dynamic port range for spawned custom agents. Configurable so an isolated test
+# instance can offset its range and not collide with prod's on a shared node —
+# submit.sbatch sets CUSTOM_AGENT_PORT_START/END for test. See docs/MULTI_CONTRIBUTOR.md.
+_PORT_RANGE_START = int(os.getenv("CUSTOM_AGENT_PORT_START", "19200"))
+_PORT_RANGE_END = int(os.getenv("CUSTOM_AGENT_PORT_END", "19299"))
 
 
 async def seed_ports(

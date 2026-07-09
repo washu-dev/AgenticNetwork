@@ -7,13 +7,16 @@ registration service actually calls.  No real DB, no network, no migration.
 from __future__ import annotations
 
 import json
+import os
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any
 
-_PORT_RANGE_START = 19200
-_PORT_RANGE_END = 19299
+# Kept in sync with port_pool.py — env-configurable so a test instance can offset
+# its custom-agent port range. See docs/MULTI_CONTRIBUTOR.md.
+_PORT_RANGE_START = int(os.getenv("CUSTOM_AGENT_PORT_START", "19200"))
+_PORT_RANGE_END = int(os.getenv("CUSTOM_AGENT_PORT_END", "19299"))
 
 
 def _now() -> datetime:
