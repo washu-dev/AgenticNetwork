@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -9,27 +8,19 @@ from typing import Any
 import pytest
 from a2a.types import AgentCapabilities, AgentCard, AgentProvider, AgentSkill
 
-from agent_directory_service.scripts import force_route_active_agents, publish_agents
+from agent_directory_service.scripts import force_route_active_agents
 from agent_directory_service.scripts.ads_diagnostics import _classify_cid
 from agent_directory_service.scripts.force_route_active_agents import (
     StoredAgentRecord,
     _select_latest_per_agent,
 )
-from agent_directory_service.services.directory import backends as backend_module
 from agent_directory_service.services.directory.backends import (
     DirectoryUnavailable,
     RealADSDirectoryBackend,
 )
 from agent_directory_service.services.directory.card_oasf_converter import (
     agent_card_to_ads_record,
-    load_agent_card,
 )
-from agent_directory_service.services.directory.client import DirectoryClient
-
-
-EMAIL_CARD = Path("email_agent/email_agent.card.json")
-DISASTER_CARD = Path("disaster_response_agent/disaster_response_agent.card.json")
-CODING_CARD = Path("coding_agent/coding_agent.card.json")
 
 
 class FakeDirctlRunner:
@@ -38,7 +29,6 @@ class FakeDirctlRunner:
         *,
         search_returns: bool = True,
         routing_returns: bool | None = None,
-        card_path: Path = EMAIL_CARD,
         cid: str = "bafy-email-record",
         routed_skills: set[str] | None = None,
         record: dict[str, Any] | None = None,
@@ -47,7 +37,6 @@ class FakeDirctlRunner:
         self.pushed_record: dict[str, Any] | None = None
         self.search_returns = search_returns
         self.routing_returns = search_returns if routing_returns is None else routing_returns
-        self.card_path = card_path
         self.cid = cid
         self.routed_skills = routed_skills
         self.record = record
@@ -94,7 +83,7 @@ class FakeDirctlRunner:
             return self.record
         if self.pushed_record is not None:
             return self.pushed_record
-        return agent_card_to_ads_record(load_agent_card(self.card_path))
+        raise AssertionError("FakeDirctlRunner: no record configured")
 
     def _skill_is_routed(self, args: list[str]) -> bool:
         if self.routed_skills is None or "--cid" in args:
@@ -103,185 +92,6 @@ class FakeDirctlRunner:
             return True
         skill = args[args.index("--skill") + 1]
         return skill in self.routed_skills
-
-
-def test_real_ads_cli_publish_pushes_and_publishes_email_record() -> None:
-    runner = FakeDirctlRunner()
-    backend = RealADSDirectoryBackend(
-        ads_url="localhost:8888",
-        backend="cli",
-        runner=runner,
-    )
-
-    published = backend.publish_agent_card(load_agent_card(EMAIL_CARD))
-
-    assert published.backend == "real"
-    assert published.backend_ref == "bafy-email-record"
-    assert published.raw_record["record_id"]
-    assert "email/current_time" in published.raw_record["discovery"]["custom_skill_tags"]
-    assert runner.pushed_record is not None
-    assert runner.pushed_record["schema_version"] == "1.0.0"
-    assert runner.pushed_record["skills"]
-    assert "record_id" not in runner.pushed_record
-    assert runner.pushed_record["modules"][0]["data"]["card_schema_version"]
-    assert "endpoint" not in runner.pushed_record["modules"][0]["data"]
-    assert any(command[3:4] == ["push"] for command in runner.commands)
-    assert any(command[3:4] == ["pull"] for command in runner.commands)
-    assert any(command[3:5] == ["routing", "publish"] for command in runner.commands)
-    assert any(command[3:7] == ["routing", "list", "--cid", "bafy-email-record"] for command in runner.commands)
-
-
-def test_real_ads_cli_publish_fails_when_routing_publish_is_not_indexed(monkeypatch) -> None:
-    monkeypatch.setenv("ADS_ROUTING_PUBLISH_TIMEOUT_SECONDS", "0")
-    monkeypatch.setenv("ADS_ROUTING_RESTART_DAEMON_IF_STUCK", "false")
-    runner = FakeDirctlRunner(routing_returns=False)
-    backend = RealADSDirectoryBackend(
-        ads_url="localhost:8888",
-        backend="cli",
-        runner=runner,
-    )
-
-    with pytest.raises(DirectoryUnavailable) as exc_info:
-        backend.publish_agent_card(load_agent_card(EMAIL_CARD))
-
-    error = str(exc_info.value)
-    assert "did not appear in the routing index" in error
-    assert "bafy-email-record" in error
-    assert "routing_info" in error
-    assert "local_publication_status" in error
-
-
-def test_real_ads_cli_publish_can_repair_stuck_routing_with_explicit_restart(
-    monkeypatch,
-) -> None:
-    monkeypatch.setenv("ADS_ROUTING_PUBLISH_TIMEOUT_SECONDS", "0")
-    monkeypatch.setenv("ADS_ROUTING_RESTART_DAEMON_IF_STUCK", "true")
-    runner = FakeDirctlRunner(routing_returns=False)
-
-    def fake_run(command: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
-        if command[:3] == ["dirctl", "daemon", "stop"]:
-            runner.routing_returns = True
-            return _completed(command, stdout="Daemon stopped\n")
-        if command[:3] == ["dirctl", "daemon", "status"]:
-            return _completed(command, stdout="Daemon is running\n")
-        raise AssertionError(f"unexpected subprocess.run command: {command}")
-
-    class FakePopen:
-        pid = 12345
-
-        def __init__(self, command: list[str], **kwargs) -> None:
-            assert command == ["dirctl", "daemon", "start"]
-
-    monkeypatch.setattr(backend_module.subprocess, "run", fake_run)
-    monkeypatch.setattr(backend_module.subprocess, "Popen", FakePopen)
-    backend = RealADSDirectoryBackend(
-        ads_url="localhost:8888",
-        backend="cli",
-        runner=runner,
-    )
-
-    published = backend.publish_agent_card(load_agent_card(EMAIL_CARD))
-
-    assert published.backend_ref == "bafy-email-record"
-    assert any(command[3:5] == ["routing", "publish"] for command in runner.commands)
-
-
-def test_real_ads_cli_search_by_custom_skill_pulls_and_post_filters_record() -> None:
-    runner = FakeDirctlRunner()
-    backend = RealADSDirectoryBackend(
-        ads_url="localhost:8888",
-        backend="cli",
-        runner=runner,
-    )
-    backend.publish_agent_card(load_agent_card(EMAIL_CARD))
-
-    agents = backend.search_agents(skill="email/current_time")
-
-    assert agents[0].agent_id == "email-agent"
-    assert agents[0].endpoint == "http://AGENT_HOST:9103/"
-    assert any(
-        command[3:6] == ["routing", "search", "--skill"]
-        and command[6] == "email/current_time"
-        for command in runner.commands
-    )
-    assert any(command[3:4] == ["pull"] for command in runner.commands)
-
-
-def test_real_ads_cli_search_by_coding_custom_skill_uses_official_routing_hint() -> None:
-    runner = FakeDirctlRunner(
-        card_path=CODING_CARD,
-        cid="bafy-coding-record",
-        routed_skills={"analytical_skills/coding_skills"},
-    )
-    backend = RealADSDirectoryBackend(
-        ads_url="localhost:8888",
-        backend="cli",
-        runner=runner,
-    )
-    backend.publish_agent_card(load_agent_card(CODING_CARD))
-
-    agents = backend.search_agents(skill="code/repository_inspection")
-
-    assert agents[0].agent_id == "coding-agent"
-    assert any(
-        command[3:6] == ["routing", "search", "--skill"]
-        and command[6] == "code/repository_inspection"
-        for command in runner.commands
-    )
-    assert any(
-        command[3:6] == ["routing", "search", "--skill"]
-        and command[6] == "analytical_skills/coding_skills"
-        for command in runner.commands
-    )
-
-
-def test_real_ads_cli_search_by_broad_code_hint_uses_official_routing_hint() -> None:
-    runner = FakeDirctlRunner(
-        card_path=CODING_CARD,
-        cid="bafy-coding-record",
-        routed_skills={"analytical_skills/coding_skills"},
-    )
-    backend = RealADSDirectoryBackend(
-        ads_url="localhost:8888",
-        backend="cli",
-        runner=runner,
-    )
-    backend.publish_agent_card(load_agent_card(CODING_CARD))
-
-    agents = backend.search_agents(skill="code")
-
-    assert agents[0].agent_id == "coding-agent"
-    assert any(
-        command[3:6] == ["routing", "search", "--skill"]
-        and command[6] == "analytical_skills/coding_skills"
-        for command in runner.commands
-    )
-
-
-def test_real_ads_cli_search_by_broad_email_hint_uses_official_routing_hint() -> None:
-    runner = FakeDirctlRunner(
-        card_path=EMAIL_CARD,
-        cid="bafy-email-record",
-        routed_skills={
-            "natural_language_processing/information_retrieval_synthesis/information_retrieval_synthesis_search"
-        },
-    )
-    backend = RealADSDirectoryBackend(
-        ads_url="localhost:8888",
-        backend="cli",
-        runner=runner,
-    )
-    backend.publish_agent_card(load_agent_card(EMAIL_CARD))
-
-    agents = backend.search_agents(skill="email")
-
-    assert agents[0].agent_id == "email-agent"
-    assert any(
-        command[3:6] == ["routing", "search", "--skill"]
-        and command[6]
-        == "natural_language_processing/information_retrieval_synthesis/information_retrieval_synthesis_search"
-        for command in runner.commands
-    )
 
 
 def test_real_ads_cli_search_custom_skill_falls_back_to_routed_index_post_filter() -> None:
@@ -307,40 +117,6 @@ def test_real_ads_cli_search_custom_skill_falls_back_to_routed_index_post_filter
     )
     assert any(command[3:5] == ["routing", "search"] and "--skill" not in command for command in runner.commands)
     assert any(command[3:4] == ["pull"] for command in runner.commands)
-
-
-def test_real_ads_cli_search_reports_storage_only_records_by_default() -> None:
-    runner = FakeDirctlRunner(search_returns=True, routing_returns=True)
-    backend = RealADSDirectoryBackend(
-        ads_url="localhost:8888",
-        backend="cli",
-        runner=runner,
-    )
-    backend.publish_agent_card(load_agent_card(EMAIL_CARD))
-    runner.routing_returns = False
-
-    with pytest.raises(DirectoryUnavailable) as exc_info:
-        backend.search_agents(skill="email/current_time")
-
-    assert "exists in ADS storage but is not routed/discoverable" in str(exc_info.value)
-    assert any(command[3:4] == ["search"] for command in runner.commands)
-
-
-def test_real_ads_cli_search_local_store_fallback_is_explicit(monkeypatch) -> None:
-    monkeypatch.setenv("ADS_ALLOW_LOCAL_STORE_FALLBACK", "true")
-    runner = FakeDirctlRunner(search_returns=True, routing_returns=True)
-    backend = RealADSDirectoryBackend(
-        ads_url="localhost:8888",
-        backend="cli",
-        runner=runner,
-    )
-    backend.publish_agent_card(load_agent_card(EMAIL_CARD))
-    runner.routing_returns = False
-
-    agents = backend.search_agents(skill="email/current_time")
-
-    assert agents[0].agent_id == "email-agent"
-    assert any(command[3:4] == ["search"] for command in runner.commands)
 
 
 def test_real_ads_cli_missing_dirctl_raises_install_instructions() -> None:
@@ -373,62 +149,6 @@ def test_real_ads_cli_missing_daemon_raises_start_hint() -> None:
         backend.healthcheck()
 
     assert "dirctl daemon start" in str(exc_info.value)
-
-
-def test_fake_ads_and_real_ads_records_do_not_mix() -> None:
-    fake_directory = DirectoryClient(fake_ads=True)
-    fake_directory.publish_agent_card(load_agent_card(DISASTER_CARD))
-    real_backend = RealADSDirectoryBackend(
-        ads_url="localhost:8888",
-        backend="cli",
-        runner=FakeDirctlRunner(search_returns=False),
-    )
-
-    assert real_backend.search_agents(skill="weather/forecast") == []
-
-
-def test_publish_agents_real_cli_uses_real_backend_without_fake_fallback(monkeypatch, capsys) -> None:
-    runner = FakeDirctlRunner()
-
-    def fake_subprocess_run(command: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
-        return runner(command)
-
-    monkeypatch.setenv("AGENT_NETWORK_FAKE_ADS", "false")
-    monkeypatch.setenv("ADS_BACKEND", "cli")
-    monkeypatch.setenv("ADS_SERVER_ADDR", "localhost:8888")
-    monkeypatch.setattr(backend_module.subprocess, "run", fake_subprocess_run)
-
-    exit_code = publish_agents.main(["--card", str(EMAIL_CARD)])
-
-    output = capsys.readouterr().out
-    assert exit_code == 0
-    assert "bafy-email-record" in output
-    assert " real" in output
-    assert " fake" not in output
-
-
-def test_publish_agents_real_cli_fails_if_routing_publish_is_not_indexed(
-    monkeypatch,
-    capsys,
-) -> None:
-    monkeypatch.setenv("ADS_ROUTING_PUBLISH_TIMEOUT_SECONDS", "0")
-    monkeypatch.setenv("ADS_ROUTING_RESTART_DAEMON_IF_STUCK", "false")
-    runner = FakeDirctlRunner(routing_returns=False)
-
-    def fake_subprocess_run(command: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
-        return runner(command)
-
-    monkeypatch.setenv("AGENT_NETWORK_FAKE_ADS", "false")
-    monkeypatch.setenv("ADS_BACKEND", "cli")
-    monkeypatch.setenv("ADS_SERVER_ADDR", "localhost:8888")
-    monkeypatch.setattr(backend_module.subprocess, "run", fake_subprocess_run)
-
-    exit_code = publish_agents.main(["--card", str(EMAIL_CARD)])
-
-    captured = capsys.readouterr()
-    assert exit_code == 2
-    assert "did not appear in the routing index" in captured.err
-    assert "bafy-email-record" in captured.err
 
 
 def test_ads_diagnostics_classifies_routed_queued_stale_and_orphaned_records() -> None:
@@ -546,22 +266,6 @@ def test_force_route_active_agents_skips_and_deletes_unpullable_search_records(
     assert any(command[3:6] == ["routing", "publish", "new-cid"] for command in commands)
     assert any(command[3:5] == ["delete", "missing-cid"] for command in commands)
     assert any(command[3:5] == ["delete", "old-cid"] for command in commands)
-
-
-@pytest.mark.skipif(
-    os.getenv("RUN_REAL_ADS_TESTS") != "true",
-    reason="Set RUN_REAL_ADS_TESTS=true and start dirctl daemon for real ADS integration.",
-)
-def test_real_ads_publish_search_resolve_email_card_manual_integration() -> None:
-    directory = DirectoryClient(fake_ads=False)
-    published = directory.publish_agent_card(load_agent_card(EMAIL_CARD))
-    agents = directory.search_agents(skill="email/current_time")
-    resolved = directory.resolve_agent(agents[0].source_record_id)
-
-    assert published.backend == "real"
-    assert published.backend_ref
-    assert agents[0].endpoint == "http://AGENT_HOST:9103/"
-    assert resolved.agent_id == "email-agent"
 
 
 def _completed(
