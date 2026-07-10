@@ -8,7 +8,6 @@ from a2a.types import AgentCard
 from planner_agent.main_agent.models import DiscoveredAgent, PublishedRecord
 from planner_agent.main_agent.directory.backends import (
     DirectoryBackend,
-    DirectoryUnavailable,
     FakeDirectoryBackend,
     RealADSDirectoryBackend,
 )

@@ -198,21 +198,6 @@ class PolicyDecision(BaseModel):
     confirmation_status: ConfirmationStatus = ConfirmationStatus.not_required
 
 
-class AgentInvocationRecord(BaseModel):
-    context_id: str
-    task_id: str
-    agent_id: str
-    skill: str
-    request_summary: str
-    status: A2ATaskState
-    artifacts: list[A2AArtifact] = Field(default_factory=list)
-    policy_decision: PolicyDecision
-    selected_agent: DiscoveredAgent
-    started_at: datetime = Field(default_factory=utc_now)
-    completed_at: datetime | None = None
-    error: str | None = None
-
-
 class PublishedRecord(BaseModel):
     record_id: str
     agent_id: str
