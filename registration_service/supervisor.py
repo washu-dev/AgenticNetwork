@@ -106,6 +106,22 @@ class Supervisor:
             logger.info("custom_build_started agent_id=%s name=%s", agent_id, name)
             return
 
+        # The cluster backend only has a spawn path for 'custom' agents (per-agent
+        # image built via the GitHub→Docker Hub flow). 'llm'/'api_proxy' have no
+        # cluster spawn path: ClusterBackend.spawn() is a no-op and the host srun
+        # loop only launches 'image_ready' (custom) agents. Without this guard such
+        # an agent would be published to ADS and marked 'live' with no process
+        # behind it (a ghost-live row the planner would then dispatch to). Fail
+        # loudly instead of creating that phantom.
+        if isinstance(self._backend, ClusterBackend) and handler_type != "custom":
+            await _set_status(agent_id, "failed")
+            raise RuntimeError(
+                f"handler_type={handler_type!r} is not supported on the cluster "
+                "backend — only 'custom' agents have a cluster spawn path. "
+                "Register it with the local subprocess backend, or use a 'custom' "
+                "handler."
+            )
+
         try:
             await self._backend.spawn(
                 agent_id=agent_id,
@@ -648,12 +664,6 @@ def get_supervisor() -> Supervisor:
         else:
             _supervisor = Supervisor()
     return _supervisor
-
-
-def set_supervisor(sup: Any) -> None:
-    """Override the supervisor singleton — used in tests."""
-    global _supervisor
-    _supervisor = sup
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────

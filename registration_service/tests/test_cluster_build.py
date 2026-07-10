@@ -87,6 +87,33 @@ async def test_cluster_approve_commits_and_defers(monkeypatch):
     await db.close_db()
 
 
+async def test_cluster_rejects_non_custom_handler(monkeypatch):
+    """A non-custom agent on the cluster backend must NOT go ghost-live.
+
+    ClusterBackend has no spawn path for llm/api_proxy, so spawn_and_publish must
+    fail loudly and mark the agent 'failed' rather than publishing it to ADS and
+    marking it 'live' with no process behind it.
+    """
+    _cluster_env(monkeypatch)
+    await _fresh_db()
+    agent = await db.create_agent(
+        name="Chatty",
+        description="An LLM agent",
+        handler_type="llm",
+        oasf_skills=[{"name": "nlp/text-summarization", "id": 1}],
+        config={"system_prompt": "You are helpful."},
+        approved=True,
+    )
+
+    sup = Supervisor(backend=ClusterBackend(), publisher=_FakePublisher())
+    with pytest.raises(RuntimeError, match="not supported on the cluster"):
+        await sup.spawn_and_publish(str(agent["id"]))
+
+    got = await db.get_agent(agent["id"])
+    assert got["status"] == "failed"
+    await db.close_db()
+
+
 # ── Build poll → image_ready (NOT live; host loop does the spawn) ─────────────────
 
 async def test_build_poll_marks_image_ready(monkeypatch):
