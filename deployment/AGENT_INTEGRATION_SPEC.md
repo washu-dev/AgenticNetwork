@@ -330,10 +330,10 @@ The first three are the durable core; the rest are scaffolding.
   but `build_and_push.sh` builds/pushes everything with `TAG=latest`. The `ads:v4`
   tag the launcher references is **not produced by the build script**. The 7 agent
   steps use `:latest`.
-- **ADS bring-up does *not* use `entrypoint-ads.sh`:** `submit.sbatch` overrides the
-  command to `dirctl daemon start --config /workspace/deployment/ads_daemon.yaml`
-  against the mounted config. `entrypoint-ads.sh` exists (the Dockerfile default) but
-  uses `/tmp/ads` paths that contradict `Dockerfile.ads`'s own "avoid /tmp" comment.
+- **ADS bring-up runs `dirctl` directly (no entrypoint script):** `submit.sbatch`
+  starts ADS with `dirctl daemon start --config /workspace/deployment/ads_daemon.yaml`
+  against the mounted config. `Dockerfile.ads` bakes the same command as its default
+  `ENTRYPOINT`; unlike the other services, ADS has no `entrypoint-*.sh` wrapper.
 - **Two poll timeouts, not one:** the `submit.sbatch` coarse poll waits **30 s**;
   each agent's `entrypoint-*.sh` retries up to **60 s**. (CLAUDE.md §4's "60 s" is the
   entrypoint figure.)
