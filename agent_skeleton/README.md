@@ -2,8 +2,9 @@
 
 A minimal, **copy-to-start template** for building an agent that plugs into
 **AgenticNetwork** (the "Internet of Agents"). It is a faithful, trimmed-down
-distillation of [`disaster_response_agent.py`](../disaster_response_agent/disaster_response_agent.py)
-(the repo's designated reference agent, 2,456 lines) split into small, labeled
+distillation of the reference agent `disaster_response_agent.py` (~2,456 lines;
+now in the separate [`agent-directory`](https://github.com/washu-dev/agent-directory)
+repo alongside the other specialist agents) split into small, labeled
 files — so you can see, at a glance, the few pieces you actually write versus the
 plumbing you just keep.
 
@@ -218,10 +219,10 @@ for the even-stronger option (generate schemas *from* typed functions).
 
 ## Reference
 
-Every zone maps back to the reference implementation:
-[`disaster_response_agent.py`](../disaster_response_agent/disaster_response_agent.py)
-— tool schemas L288-367; loop `_call_model` L580-677; dispatch `_run_tool`
-L679-718; executor `execute` L763-906; serve `create_disaster_a2a_app` L934-953;
-ADS publish L1061-1138; `uvicorn.run` L2440. Background contracts:
+Every zone maps back to the reference implementation, `disaster_response_agent.py`
+— its tool schemas, `_call_model` loop, `_run_tool` dispatch, `execute` executor,
+`create_disaster_a2a_app` serve, and ADS publish helpers. That agent now lives in
+the separate [`agent-directory`](https://github.com/washu-dev/agent-directory) repo
+(the specialist agents were extracted there). Background contracts:
 [`../deployment/AGENT_INTEGRATION_SPEC.md`](../deployment/AGENT_INTEGRATION_SPEC.md)
 and [`../CLAUDE.md`](../CLAUDE.md).
