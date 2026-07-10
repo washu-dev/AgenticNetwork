@@ -25,9 +25,9 @@ later, and what already exists in the repo to help.* Keep the problem statement 
 - **Scope:** `deployment/submit.sbatch`, every agent's `serve-*` startup path, ADS publishing
 
 **Problem.** The current deployment activates *every* agent container for the full
-duration of the Slurm job — `submit.sbatch` launches all 8 containers (ADS,
-planner, and 6 specialists) in parallel and holds them up for the whole 4-hour
-allocation. That is the right shape for a 6-agent demo on a single node, but it
+duration of the Slurm job — `submit.sbatch` launches all 10 containers (Postgres,
+ADS, registration, planner, and 6 specialists) in parallel and holds them up for the
+whole 4-hour allocation. That is the right shape for a 6-agent demo on a single node, but it
 does not scale: with dozens or hundreds of agents we pay to keep idle services
 (and their compute) running even when no request will ever reach them. The
 natural target is **scale-to-zero** — keep the directory advertising every agent,
@@ -177,7 +177,7 @@ agents on the OpenAI *Responses* API (or Gemini) need a code rewrite.
     `geospatial_agent.py` — otherwise it routes to the non-OpenAI google-genai SDK.
     **Vision gap:** base64 `input_image` parts need a vision-capable served model
     (Qwen2-VL / Llama-3.2-Vision class) — likely a **separate GPU-served vision
-    tier**; a text-only `gpt-oss-20b` loses image analysis entirely. **Web-grounding
+    tier**; a text-only `gpt-oss-120b` loses image analysis entirely. **Web-grounding
     gap:** `web_search_preview` and Gemini `GoogleSearch` are not provided by vLLM —
     wire in a self-hosted search tool or lose grounding. Add a model env var (it has
     **none** in `.env.example`) and externalize `GOOGLE_API_KEY` / `GOOGLE_MAPS_API_KEY`.
