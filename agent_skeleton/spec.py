@@ -56,7 +56,7 @@ class AgentSpec:
 
     def dispatch(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         """The dispatcher handed to ``run_tool_loop`` — a dict lookup over this
-        spec's registry. Mirrors ``tools.run_tool`` but scoped to the spec."""
+        spec's registry (replaces disaster's if/elif tool chain)."""
         fn = self.tool_registry.get(name)
         if fn is None:
             return {"ok": False, "error": f"Unknown tool: {name}"}
