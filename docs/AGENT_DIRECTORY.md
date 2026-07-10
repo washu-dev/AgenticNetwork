@@ -78,7 +78,7 @@ The bridge between an A2A `AgentCard` and a `dir` record:
 | `-remove <cid>` / `-delete <cid>` | unpublish from routing (and delete from storage) |
 
 The `scripts/` suite backs these: `publish_agents.py`, `show_ads_routes.py`, `ads_diagnostics.py`,
-`watch_ads_routing.py`, `force_route_active_agents.py` / `repair_ads_routing.py`, plus
+`watch_ads_routing.py`, `force_route_active_agents.py`, plus
 `validate_agent_endpoint.py` (test an A2A endpoint without publishing) and `print_versions.py`.
 
 The **fast-routing daemon config** (`configs/ads_daemon_fast_routing.yaml`) tightens the
