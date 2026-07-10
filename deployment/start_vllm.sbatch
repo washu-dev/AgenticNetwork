@@ -42,4 +42,4 @@ vllm serve "$MODEL" \
   --gpu-memory-utilization 0.85 \
   --max-model-len 32768 \
   --max-num-batched-tokens 10240 \
-  --max-num-seqs 128 \
+  --max-num-seqs 128
