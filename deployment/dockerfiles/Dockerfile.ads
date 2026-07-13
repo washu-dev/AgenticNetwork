@@ -2,7 +2,7 @@
 # so Pyxis/enroot has a shell to launch the container.
 # Build from repo root:
 #   docker build --platform linux/amd64 -f deployment/dockerfiles/Dockerfile.ads \
-#       -t amaankhan25/agenticnetwork-ads:latest .
+#       -t di2washu/agenticnetwork-ads:latest .
 FROM ghcr.io/agntcy/dir-ctl:v1.2.0 AS dirctl-src
 
 FROM debian:12-slim

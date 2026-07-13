@@ -11,15 +11,15 @@ the vLLM inference server on a GPU node.
 
 ```
 [CPU node — submit.sbatch]
-  srun step: amaankhan25/agenticnetwork-ads:v4              :8888
-  srun step: amaankhan25/agenticnetwork-registration:latest :8091  (+ postgres)
-  srun step: amaankhan25/agenticnetwork-planner:latest      :8090
-  srun step: amaankhan25/agenticnetwork-scout:latest        :9104
-  srun step: amaankhan25/agenticnetwork-email:latest        :9103
-  srun step: amaankhan25/agenticnetwork-coding:latest       :19106
-  srun step: amaankhan25/agenticnetwork-intelligence:latest :19107
-  srun step: amaankhan25/agenticnetwork-disaster:latest     :19108
-  srun step: amaankhan25/agenticnetwork-geospatial:latest   :19105
+  srun step: di2washu/agenticnetwork-ads:v4              :8888
+  srun step: di2washu/agenticnetwork-registration:latest :8091  (+ postgres)
+  srun step: di2washu/agenticnetwork-planner:latest      :8090
+  srun step: di2washu/agenticnetwork-scout:latest        :9104
+  srun step: di2washu/agenticnetwork-email:latest        :9103
+  srun step: di2washu/agenticnetwork-coding:latest       :19106
+  srun step: di2washu/agenticnetwork-intelligence:latest :19107
+  srun step: di2washu/agenticnetwork-disaster:latest     :19108
+  srun step: di2washu/agenticnetwork-geospatial:latest   :19105
 
 [GPU node — start_vllm.sbatch]
   enroot container (vllm/vllm-openai:latest)
@@ -76,7 +76,7 @@ Edit `.env` — the values you may actually change (most have working defaults):
 | `ADMIN_EMAILS` | Comma-separated allowlist of admin emails, matched against SSO identity |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_REDIRECT_URI` | OAuth web-client (non-secret half; the secret is in the secrets file, Step 3) |
 | `GITHUB_REPO` | Repo for the custom-agent build pipeline (default `washu-dev/agent-directory`) |
-| `IMAGE_REGISTRY` | Image namespace (default `amaankhan25`; see [`../docs/MULTI_CONTRIBUTOR.md`](../docs/MULTI_CONTRIBUTOR.md)) |
+| `IMAGE_REGISTRY` | Image namespace (default `di2washu`; see [`../docs/MULTI_CONTRIBUTOR.md`](../docs/MULTI_CONTRIBUTOR.md)) |
 | `PGDATABASE` | Registration DB name (default `registration`) |
 
 > `.env` holds **non-secret config only** — it is shared and world-readable on `/engrfs`.
@@ -132,7 +132,7 @@ bash deployment/build_and_push.sh planner
 ```
 
 Images are published to `<IMAGE_REGISTRY>/agenticnetwork-<agent>:latest`, where
-`IMAGE_REGISTRY` defaults to `amaankhan25` and is overridable via the `IMAGE_REGISTRY`
+`IMAGE_REGISTRY` defaults to `di2washu` and is overridable via the `IMAGE_REGISTRY`
 env var (set it in `deployment/.env`) — `build_and_push.sh`, `submit.sbatch`, and the
 registration service's custom-agent build all read it. Moving this off a personal
 account is tracked in [`../docs/MULTI_CONTRIBUTOR.md`](../docs/MULTI_CONTRIBUTOR.md).

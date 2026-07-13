@@ -20,7 +20,7 @@ set -euo pipefail
 
 # Registry namespace images are built/pushed under. Group-owned rather than tied
 # to a personal account; override via IMAGE_REGISTRY. See docs/MULTI_CONTRIBUTOR.md.
-REGISTRY="${IMAGE_REGISTRY:-amaankhan25}"
+REGISTRY="${IMAGE_REGISTRY:-di2washu}"
 # Tag to build/push under. Defaults to latest; set IMAGE_TAG=dev-<you> to publish a
 # candidate for a test instance without overwriting the prod-facing :latest.
 TAG="${IMAGE_TAG:-latest}"

@@ -150,7 +150,7 @@ full local testing or Tier D for cluster deployment.
 `deployment/` runs the whole system on the WashU **Engineering (ENGR)** cluster via
 Slurm + Pyxis/enroot. As of 2026-06 it is a **multi-container** setup: one Docker image
 per service (`deployment/dockerfiles/Dockerfile.<agent>`, built/pushed by
-`deployment/build_and_push.sh` to `amaankhan25/agenticnetwork-<agent>`), launched together
+`deployment/build_and_push.sh` to `di2washu/agenticnetwork-<agent>`), launched together
 as parallel `srun --overlap` steps in `submit.sbatch` on one CPU node, plus a separate GPU
 job (`start_vllm.sbatch`) serving `gpt-oss-120b` via vLLM. ADS starts first; each agent's
 `entrypoints/entrypoint-<agent>.sh` waits up to 60 s for it, then `exec`s the agent with an

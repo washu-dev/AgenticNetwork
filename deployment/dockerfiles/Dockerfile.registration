@@ -1,7 +1,7 @@
 # Registration service — port 8091, spawns agent subprocesses on 19200-19299
 # Build from repo root:
 #   docker build --platform linux/amd64 -f deployment/dockerfiles/Dockerfile.registration \
-#       -t amaankhan25/agenticnetwork-registration:latest .
+#       -t di2washu/agenticnetwork-registration:latest .
 FROM ghcr.io/agntcy/dir-ctl:v1.2.0 AS dirctl-src
 
 FROM python:3.11-slim-bookworm

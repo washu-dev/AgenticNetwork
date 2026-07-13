@@ -210,11 +210,11 @@ async def test_image_exists_true(monkeypatch):
         sup_mod.httpx, "AsyncClient",
         lambda *a, **k: _FakeClient(_Resp(200, {"last_updated": "2099-01-01T00:00:00Z"})),
     )
-    assert await _image_exists_on_dockerhub("amaankhan25/agenticnetwork-custom-x") is True
+    assert await _image_exists_on_dockerhub("di2washu/agenticnetwork-custom-x") is True
 
 
 async def test_image_exists_false_on_404(monkeypatch):
     monkeypatch.setattr(
         sup_mod.httpx, "AsyncClient", lambda *a, **k: _FakeClient(_Resp(404)),
     )
-    assert await _image_exists_on_dockerhub("amaankhan25/agenticnetwork-custom-x") is False
+    assert await _image_exists_on_dockerhub("di2washu/agenticnetwork-custom-x") is False

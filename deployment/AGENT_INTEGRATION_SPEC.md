@@ -326,7 +326,7 @@ The first three are the durable core; the rest are scaffolding.
 > ports — a live inconsistency.
 
 **Checklist gotchas (verified):**
-- **Image-tag mismatch:** `submit.sbatch` pins `amaankhan25/agenticnetwork-ads:v4`,
+- **Image-tag mismatch:** `submit.sbatch` pins `di2washu/agenticnetwork-ads:v4`,
   but `build_and_push.sh` builds/pushes everything with `TAG=latest`. The `ads:v4`
   tag the launcher references is **not produced by the build script**. The 7 agent
   steps use `:latest`.
@@ -357,7 +357,7 @@ The first three are the durable core; the rest are scaffolding.
 scaffolding (5–10).
 
 **Build** → `build_and_push.sh` builds one image per agent (`AGENTS=(ads planner
-scout email coding intelligence disaster geospatial)` → `amaankhan25/
+scout email coding intelligence disaster geospatial)` → `di2washu/
 agenticnetwork-<agent>`) and pushes to DockerHub. ADS = `debian:12-slim` + `dirctl`.
 
 **Start vLLM** (separate GPU job) → `start_vllm.sbatch` serves `gpt-oss-20b` on

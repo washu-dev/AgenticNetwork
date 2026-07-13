@@ -49,7 +49,7 @@ set +a
 
 # Registry namespace all images are pulled from. Group-owned rather than tied to a
 # personal account; override via IMAGE_REGISTRY (e.g. in .env). See docs/MULTI_CONTRIBUTOR.md.
-IMAGE_REGISTRY="${IMAGE_REGISTRY:-amaankhan25}"
+IMAGE_REGISTRY="${IMAGE_REGISTRY:-di2washu}"
 
 # Image tag resolution. Each service's tag is chosen in order:
 #   1. <SERVICE>_IMAGE_TAG  (per-service override, e.g. PLANNER_IMAGE_TAG=dev-alice)

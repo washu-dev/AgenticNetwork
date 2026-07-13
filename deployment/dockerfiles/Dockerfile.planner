@@ -1,7 +1,7 @@
 # Planner agent (orchestrator + chat UI) — port 8090
 # Build from repo root:
 #   docker build --platform linux/amd64 -f deployment/dockerfiles/Dockerfile.planner \
-#       -t amaankhan25/agenticnetwork-planner:latest .
+#       -t di2washu/agenticnetwork-planner:latest .
 FROM ghcr.io/agntcy/dir-ctl:v1.2.0 AS dirctl-src
 
 FROM continuumio/miniconda3:24.9.2-0

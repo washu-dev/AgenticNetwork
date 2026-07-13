@@ -76,18 +76,23 @@ Google API keys (`user_credentials`), credential grants, and chat history. There
 Sequenced around the fact that **there is no CI yet** (confirmed: no `.github/`, no other CI
 config anywhere). Each phase stands alone and delivers value without the next.
 
-### Phase 0 — Prep for a group registry (no new infra, no CI) — ✅ parameterized
+### Phase 0 — Group registry — ✅ done
 
-Goal: the day IT confirms a group registry, adoption is a one-line change instead of a hunt.
+The original coupling (evidence in the inventory above) was the personal `amaankhan25` DockerHub
+account hardcoded across the build script, submit job, and application code.
 
-- ✅ Every `amaankhan25` literal now reads a single `IMAGE_REGISTRY` variable across **all
-  three layers**: `deployment/build_and_push.sh` (`REGISTRY="${IMAGE_REGISTRY:-amaankhan25}"`),
-  `deployment/submit.sbatch` (all 10 `--container-image` refs), and the code literals in
-  `registration_service/backend.py` (`_image_registry()` helper) + `supervisor.py` (imports it).
-  Documented in `deployment/.env.example` and `deployment/README.md`.
-- ✅ Defaults to `amaankhan25` so nothing changes until the switch is intentional.
-- ⏳ Remaining: flip `IMAGE_REGISTRY` to the group registry once IT confirms which one
-  (existing DockerHub org, a new one, or GHCR under `washu-dev`). One-line change now.
+- ✅ Every reference reads a single `IMAGE_REGISTRY` variable across **all three layers**:
+  `deployment/build_and_push.sh`, `deployment/submit.sbatch` (all 10 `--container-image` refs via
+  the `image_ref` resolver), and the code literals in `registration_service/backend.py`
+  (`_image_registry()` helper) + `supervisor.py` (imports it). Also `IMAGE_TAG` / per-service
+  `<SVC>_IMAGE_TAG` for candidate images. Documented in `deployment/.env.example` + README.
+- ✅ **Committed default flipped to the group registry `di2washu`.** All 10 images
+  (infra `:latest` + `ads:v4` + the 6 specialists) were pushed there first, then the default was
+  swapped — so a fresh checkout deploys from `di2washu` with no override, and the personal account
+  is out of the path. Override still available via `IMAGE_REGISTRY` for a personal build.
+  - Note: `di2washu` is a shared DockerHub **user** account (whoever holds its creds can push); a
+    DockerHub **org** would be cleaner group ownership later. If its repos are private, the cluster
+    node needs pull credentials.
 
 ### Phase 1 — De-personalize the shared instance's config
 

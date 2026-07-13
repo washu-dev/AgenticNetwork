@@ -363,7 +363,7 @@ def _image_registry() -> str:
     Group-owned rather than tied to a personal account; override via IMAGE_REGISTRY.
     See docs/MULTI_CONTRIBUTOR.md.
     """
-    return os.environ.get("IMAGE_REGISTRY", "amaankhan25")
+    return os.environ.get("IMAGE_REGISTRY", "di2washu")
 
 
 def make_backend() -> ContainerBackend:
