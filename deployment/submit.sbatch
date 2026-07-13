@@ -175,6 +175,7 @@ if [ "${VLLM_AUTODISCOVER:-1}" != "0" ]; then
     [ -z "$VLLM_NODE" ] && VLLM_NODE="$(squeue -h -n "$VLLM_JOB_NAME" -t RUNNING -o '%N' 2>/dev/null | head -n1)"
     if [ -n "$VLLM_NODE" ]; then
         export OPENAI_BASE_URL="http://${VLLM_NODE}:${VLLM_PORT}/v1"
+        export OPENAI_API_BASE="$OPENAI_BASE_URL"   # litellm agents (coding, intelligence) read this
         echo "[submit] vLLM discovered: ${OPENAI_BASE_URL} (job '${VLLM_JOB_NAME}' on ${VLLM_NODE})"
     else
         echo "[submit] WARN: no running '${VLLM_JOB_NAME}' job found — using OPENAI_BASE_URL from .env: ${OPENAI_BASE_URL:-<unset>}"
