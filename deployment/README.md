@@ -199,6 +199,45 @@ ADS should be ready within ~10 seconds; all agents should be running within ~60 
 The registration container takes a few extra seconds on first run to initialise the
 postgres data directory.
 
+### Accessing a test instance (SSH tunnel)
+
+A **prod** instance is reached at the public URL (`https://agenticweb.engr.wustl.edu`) via the
+Apache + Shibboleth gateway. A **test** instance has **no public front door** — the gateway only
+ever proxies to prod. You reach a test instance by tunnelling to its planner port
+(`8090 + 10000 = 18090`) through the login node. All of this runs in **your laptop's terminal**,
+not a shell already on the cluster.
+
+**1. Find the test node** (in your normal cluster session):
+```bash
+squeue -u $USER -n agenticnetwork-test -h -o '%N'    # e.g. c2-gpu-013  → this is <test-node>
+```
+
+**2. Open the tunnel from your laptop** (two-hop: jump through the login node, SSH into the test
+node, forward its local `:18090`). Use the same login host you always use for the cluster:
+```bash
+ssh -J <wustlkey>@<login-host> <wustlkey>@<test-node> -L 18090:localhost:18090
+```
+Approve the usual WashU password + DUO prompt. **Leave this SSH session open** — the tunnel lives
+only while it's connected.
+
+**3. Browse** `http://localhost:18090`. You land in the test UI as an anon/demo user
+(`PLANNER_ALLOW_ANON=1` is set for `test` only; prod always keeps the SSO gate).
+
+Notes:
+- The test node **changes every deploy** — re-run step 1 and update `<test-node>` each time.
+- If laptop port `18090` is busy, use a different left-side port: `-L 9000:localhost:18090`, then
+  browse `localhost:9000`.
+- **Google-connect won't complete in test** — `GOOGLE_REDIRECT_URI` points at the prod public URL,
+  so that OAuth flow bounces back to prod. Core chat + non-Google agents work fine.
+- Optional `~/.ssh/config` shortcut (then just `ssh agn-test` + browse `localhost:18090`):
+  ```
+  Host agn-test
+      HostName <test-node>          # update when the node changes each deploy
+      User <wustlkey>
+      ProxyJump <wustlkey>@<login-host>
+      LocalForward 18090 localhost:18090
+  ```
+
 ---
 
 ## Testing

@@ -148,8 +148,14 @@ tier was considered and **dropped** — not worth maintaining a second story.)
 (`agenticweb.engr.wustl.edu`) proxies to exactly **one** upstream — the prod planner at
 `<prod-node>:8090`, repointed by hand each prod deploy (`DOWNSTREAM #3`). It has no knowledge of
 a test instance, so a test deploy **cannot** be reached at the public URL and **cannot** disturb
-prod's front door — whichever node it lands on. Reach a test instance out-of-band instead:
-`ssh -L 18090:<test-node>:18090 <login-host>` then browse `http://localhost:18090`.
+prod's front door — whichever node it lands on. Reach a test instance out-of-band by tunnelling
+to its planner port (`18090`) through the login node, then browsing `http://localhost:18090`:
+```
+squeue -u $USER -n agenticnetwork-test -h -o '%N'                      # find <test-node>
+ssh -J <wustlkey>@<login-host> <wustlkey>@<test-node> -L 18090:localhost:18090
+```
+(Two-hop — jump through the login node, SSH into the test node, forward its local `:18090`. Keep
+the session open. Full step-by-step + `~/.ssh/config` shortcut in `deployment/README.md`.)
 - Because that path bypasses Apache, there are **no Shibboleth identity headers**, so the planner
   would 401 every `/app`/`/messages` request. Therefore `submit.sbatch` sets
   **`PLANNER_ALLOW_ANON=1` for `DEPLOY_ENV=test` only** (prod always keeps the SSO gate;
