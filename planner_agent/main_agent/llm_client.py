@@ -209,10 +209,6 @@ def _extract_tool_call_from_message(message: Any) -> ToolCall:
     return ToolCall(tool_name="final_answer", arguments={"text": text})
 
 
-def _response_usage(response: Any) -> Any | None:
-    return getattr(response, "usage", None)
-
-
 def _usage_to_dict(usage: Any) -> dict[str, Any] | None:
     if not usage:
         return None

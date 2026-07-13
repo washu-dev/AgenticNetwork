@@ -30,8 +30,8 @@ Do not reintroduce the old prototype, milestone demo agents, or PI runtime under
 - Do not hardcode specialized-agent endpoints into ADS logic. ADS should read
   Agent Cards and records.
 - Preserve real ADS behavior when cleaning tests or examples: `publish_agents`,
-  `show_ads_routes`, `ads_diagnostics`, `watch_ads_routing`, `repair_ads_routing`,
-  and `force_route_active_agents` are core operator tools.
+  `show_ads_routes`, `ads_diagnostics`, `watch_ads_routing`, and
+  `force_route_active_agents` are core operator tools.
 - When validating ADS changes, run the ADS package tests and at least one import
   smoke test from the repository root.
 

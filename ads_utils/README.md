@@ -7,7 +7,7 @@ Shared package for publishing and unpublishing agent cards to the AgenticNetwork
 | File | Purpose |
 |---|---|
 | `publisher.py` | `DirectoryPublisher` — wraps `dirctl push` + `dirctl routing publish`, polls until the record appears in the routing index |
-| `converter.py` | Converts an A2A `AgentCard` to an ADS/OASF record; maintains the per-agent OASF routing skill map |
+| `converter.py` | Converts an A2A `AgentCard` to an ADS/OASF record; resolves the ADS routing skill from an `oasf:<name>:<id>` card tag, falling back to a per-agent map |
 
 ## Usage
 
@@ -25,9 +25,9 @@ pub.unpublish(record.backend_ref)
 
 ## Adding a new agent's OASF routing skills
 
-`converter.py` maintains `_AGENT_OASF_ROUTING_SKILLS`, a dict keyed by lowercased hyphenated agent name (e.g. `"email-agent"`). Add an entry there for any new agent whose skill IDs don't already appear in `KNOWN_OASF_SKILLS`. Without a matching entry `DirectoryPublisher.publish()` will raise `ValueError`.
+Preferred: stamp an `oasf:<name>:<id>` tag (build it with `oasf_skill_tag(name, id)`) onto one of the card's skills before publishing — the card then self-describes its routing skill and `converter.py` needs no per-agent edit. This is what `registration_service` does: `_build_agent_card()` in `supervisor.py` and `generate_card_json()` in `builder.py` both stamp this tag from the agent's chosen `oasf_skills`.
 
-The registration service populates this map at runtime for dynamically registered agents via `_register_oasf_routing_skills()` in `supervisor.py`.
+Fallback: `converter.py` also maintains `_AGENT_OASF_ROUTING_SKILLS`, a dict keyed by lowercased hyphenated agent name (e.g. `"email-agent"`), for cards that carry no `oasf:` tag. Without a matching tag *or* map entry, `DirectoryPublisher.publish()` raises `ValueError`.
 
 ## Deployment
 

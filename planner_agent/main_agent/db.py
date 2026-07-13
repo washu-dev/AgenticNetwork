@@ -106,7 +106,6 @@ def _dsn() -> str:
 
 
 async def get_pool() -> asyncpg.Pool:
-    global _pool
     if _pool is None:
         raise RuntimeError("Database pool not initialised — call init_db() first")
     return _pool  # type: ignore[return-value]

@@ -124,8 +124,8 @@ behavior):**
 **Advertise-url vs listen-bind (a real, live distinction):** agents *bind*
 `0.0.0.0:<port>` but *advertise* a different `url` in their card. Some support an
 override (e.g. email's `EMAIL_AGENT_A2A_URL` / `--advertise-url`). Today these
-disagree: the cards advertise `9103/9104/9105`, but the deploy binds disaster on
-`19107` and geospatial on `19108` (§5). The advertised URL is what the planner
+disagree: the cards advertise `9104/9105`, but the deploy binds disaster on
+`19108` and geospatial on `19105` (§5). The advertised URL is what the planner
 dials — get it wrong and dispatch fails even though the agent is up.
 
 ### 3b. Capabilities — the `skills[]` list
@@ -279,7 +279,7 @@ k8s/containers), **scale-to-zero** (cold/on-demand agents), and **N replicas**
 
 **Cross-layer mappings worth calling out explicitly:**
 - **`inputModes: image` → served-model capability.** An agent that accepts images
-  *requires* a vision-capable served model. Under the shared `gpt-oss-20b` vLLM this
+  *requires* a vision-capable served model. Under the shared `gpt-oss-120b` vLLM this
   capability is **lost** (geospatial). This is a dependency from an *agent info item*
   to the *LLM tier* — not expressible as a single class.
 - **self-publish hook → `survives-scale-to-zero = NO` for every agent.** This is the
@@ -314,26 +314,27 @@ The first three are the durable core; the rest are scaffolding.
 
 | Service | Port | | Service | Port |
 |---|---|---|---|---|
-| ADS dir | 8888 (routing 8999) | | coding | 9106 |
-| vLLM | 8100 | | intelligence | 9105 |
-| planner | 8090 | | disaster | **19107** (5-digit) |
-| scout | 9104 | | geospatial | **19108** (5-digit) |
+| ADS dir | 8888 (routing 8999) | | coding | 19106 |
+| vLLM | 8100 | | intelligence | 19107 |
+| planner | 8090 | | disaster | **19108** (5-digit) |
+| scout | 9104 | | geospatial | **19105** (5-digit) |
 | email | 9103 | | | |
 
 > Disaster's card says `9104` (collides with scout) and geospatial's says `9105`
-> (collides with intelligence); the deploy re-maps them to 5-digit `19107`/`19108`
-> to avoid collisions on the shared single node. Cards still advertise the old
-> ports — a live inconsistency.
+> (collides with intelligence); the deploy re-maps them to 5-digit ports
+> (`submit.sbatch` is authoritative: geospatial `19105`, coding `19106`,
+> intelligence `19107`, disaster `19108`) to avoid collisions on the shared single
+> node. Cards still advertise the old ports — a live inconsistency.
 
 **Checklist gotchas (verified):**
 - **Image-tag mismatch:** `submit.sbatch` pins `di2washu/agenticnetwork-ads:v4`,
   but `build_and_push.sh` builds/pushes everything with `TAG=latest`. The `ads:v4`
-  tag the launcher references is **not produced by the build script**. The 7 agent
-  steps use `:latest`.
-- **ADS bring-up does *not* use `entrypoint-ads.sh`:** `submit.sbatch` overrides the
-  command to `dirctl daemon start --config /workspace/deployment/ads_daemon.yaml`
-  against the mounted config. `entrypoint-ads.sh` exists (the Dockerfile default) but
-  uses `/tmp/ads` paths that contradict `Dockerfile.ads`'s own "avoid /tmp" comment.
+  tag the launcher references is **not produced by the build script**. Every other
+  `srun` step (postgres, registration, planner + 6 specialists) uses `:latest`.
+- **ADS bring-up runs `dirctl` directly (no entrypoint script):** `submit.sbatch`
+  starts ADS with `dirctl daemon start --config /workspace/deployment/ads_daemon.yaml`
+  against the mounted config. `Dockerfile.ads` bakes the same command as its default
+  `ENTRYPOINT`; unlike the other services, ADS has no `entrypoint-*.sh` wrapper.
 - **Two poll timeouts, not one:** the `submit.sbatch` coarse poll waits **30 s**;
   each agent's `entrypoint-*.sh` retries up to **60 s**. (CLAUDE.md §4's "60 s" is the
   entrypoint figure.)
@@ -344,9 +345,9 @@ The first three are the durable core; the rest are scaffolding.
   `KNOWN_OASF_SKILLS`), or stay a custom tag (relies on post-filter matching)?
 - **Advertise-url rewrite:** set the card `url` (or `--advertise-url`) to the address
   callers actually reach, not just the bind address.
-- **Superseded artifacts — do not copy them:** `deployment/supervisord.conf`, the
-  single-container `deployment/Dockerfile`, and `deployment/entrypoint.sh` are
-  leftovers from the old single-container deploy. Use only `dockerfiles/` +
+- **Multi-container deploy only:** the old single-container artifacts
+  (`supervisord.conf`, a top-level `deployment/Dockerfile`, `deployment/entrypoint.sh`)
+  have been removed. The canonical deploy is `dockerfiles/` (one per infra service) +
   `entrypoints/` + `submit.sbatch`.
 
 ---
@@ -356,20 +357,25 @@ The first three are the durable core; the rest are scaffolding.
 **Create** → write card (1) + executor (2) + server (3) + self-publish hook (4) +
 scaffolding (5–10).
 
-**Build** → `build_and_push.sh` builds one image per agent (`AGENTS=(ads planner
-scout email coding intelligence disaster geospatial)` → `di2washu/
-agenticnetwork-<agent>`) and pushes to DockerHub. ADS = `debian:12-slim` + `dirctl`.
+**Build** → `build_and_push.sh` builds the **4 infra images**
+(`AGENTS=(postgres ads planner registration)` → `di2washu/agenticnetwork-<name>`)
+and pushes to DockerHub. ADS = `debian:12-slim` + `dirctl`. The 6 specialist agent
+images (scout, email, coding, intelligence, disaster, geospatial) build from the
+separate `agent-directory` repo.
 
-**Start vLLM** (separate GPU job) → `start_vllm.sbatch` serves `gpt-oss-20b` on
+**Start vLLM** (separate GPU job) → `start_vllm.sbatch` serves `gpt-oss-120b` on
 `:8100` with `--enable-auto-tool-choice --tool-call-parser openai
 --reasoning-parser openai_gptoss`. The GPU node hostname is **ephemeral** → paste it
 into `.env` (`OPENAI_BASE_URL` **and** `OPENAI_API_BASE`).
 
 **Start the network** (`submit.sbatch`, one CPU node) →
 1. `source .env` (with `set -a` so vars propagate to every `srun` step).
-2. Start ADS first (`dirctl daemon start` against the mounted `ads_daemon.yaml`);
-   poll `localhost:8888` up to **30 s**.
-3. Launch all 7 agents as backgrounded `srun --overlap` steps running `/entrypoint.sh`.
+2. Start **Postgres first** (registration + `dir` DBs); block until it accepts
+   connections. Then start ADS (`dirctl daemon start` against the mounted
+   `ads_daemon.yaml`, which uses the Postgres `dir` DB); poll `localhost:8888` up
+   to **30 s**.
+3. Launch registration, planner, and the 6 specialists as backgrounded
+   `srun --overlap` steps running `/entrypoint.sh`.
 4. Each entrypoint waits up to **60 s** for ADS, then `exec`s its server with an
    absolute conda path; the server **publishes its card on boot**.
 5. `wait` — the job lives as long as the containers (4 h walltime).

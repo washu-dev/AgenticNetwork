@@ -20,7 +20,6 @@ from planner_agent.main_agent.models import (
     A2ATaskResult,
     A2ATaskState,
     AgentCapability,
-    AgentInvocationRecord,
     Channel,
     ConfirmationStatus,
     DiscoveredAgent,
@@ -682,7 +681,7 @@ class MainAgentRuntime:
         result = await self._send_task(agent, request, progress_callback=remote_progress_callback)
         chosen_skill = _chosen_skill_from_result(result, requested_skill=canonical_hint or requested_skill)
         record_skill = chosen_skill or canonical_hint or requested_skill or "agent/autonomous"
-        self._save_invocation(context, agent, record_skill, result, decision)
+        self._track_task(context, result)
         selected_agents.append(
             {
                 "skill": record_skill,
@@ -813,7 +812,7 @@ class MainAgentRuntime:
             reason=f"User confirmed {skill}.",
             confirmation_status=ConfirmationStatus.confirmed,
         )
-        self._save_invocation(context, agent, skill, result, confirmed_decision)
+        self._track_task(context, result)
         await self._clear_pending(context_id)
 
         text = _last_text(result) or f"{skill} completed."
@@ -1033,7 +1032,7 @@ class MainAgentRuntime:
             reason=f"User granted credentials to {agent.agent_id}.",
             confirmation_status=ConfirmationStatus.confirmed,
         )
-        self._save_invocation(context, agent, skill or "agent/autonomous", result, confirmed_decision)
+        self._track_task(context, result)
 
         text = _last_text(result) or f"{skill or 'The request'} completed."
         context.conversation_history.append(f"assistant: {text}")
@@ -1280,29 +1279,11 @@ class MainAgentRuntime:
                 error=text,
             )
 
-    def _save_invocation(
+    def _track_task(
         self,
         context: PIContext,
-        agent: DiscoveredAgent,
-        skill: str,
         result: A2ATaskResult,
-        decision: PolicyDecision,
     ) -> None:
-        self.store.save_invocation(
-            AgentInvocationRecord(
-                context_id=context.context_id,
-                task_id=result.task_id,
-                agent_id=agent.agent_id,
-                skill=skill,
-                request_summary=context.current_goal,
-                status=result.state,
-                artifacts=result.artifacts,
-                policy_decision=decision,
-                selected_agent=agent,
-                completed_at=result.messages[-1].created_at if result.messages else None,
-                error=result.error,
-            )
-        )
         context.active_tasks.append(result.task_id)
         self.store.save_context(context)
 
@@ -1516,20 +1497,6 @@ def _is_write_skill(skill: str) -> bool:
 
 def _is_email_skill(skill: str) -> bool:
     return skill.startswith("email/")
-
-
-def _is_geospatial_agent(agent: DiscoveredAgent, skill: str | None) -> bool:
-    advertised = _advertised_skills(agent)
-    haystack = " ".join(
-        [
-            agent.agent_id,
-            agent.name,
-            agent.description,
-            skill or "",
-            *advertised,
-        ]
-    ).lower()
-    return "geospatial" in haystack or "geo-spatial" in haystack
 
 
 def _uploaded_files_from_metadata(metadata: dict[str, Any]) -> list[dict[str, Any]]:

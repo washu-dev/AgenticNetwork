@@ -96,9 +96,12 @@ async def _messages_accepts_image_upload() -> None:
         )
     assert resp.status_code == 200, resp.text
     assert a2a.calls == [("geospatial-agent", "geospatial/analyze_image")]
-    image_parts = [part for part in a2a.requests[0].messages[0].parts if part.kind == "image"]
-    assert len(image_parts) == 1
-    assert image_parts[0].bytes
+    # Uploaded images are carried as A2A "file" parts (image/jpeg), matching
+    # test_main_agent_runtime.py's image-upload assertion.
+    file_parts = [part for part in a2a.requests[0].messages[0].parts if part.kind == "file"]
+    assert len(file_parts) == 1
+    assert file_parts[0].content_type == "image/jpeg"
+    assert file_parts[0].bytes
 
 
 # ---------------------------------------------------------------------------

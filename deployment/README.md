@@ -11,8 +11,9 @@ the vLLM inference server on a GPU node.
 
 ```
 [CPU node — submit.sbatch]
+  srun step: di2washu/agenticnetwork-postgres:latest     :5432
   srun step: di2washu/agenticnetwork-ads:v4              :8888
-  srun step: di2washu/agenticnetwork-registration:latest :8091  (+ postgres)
+  srun step: di2washu/agenticnetwork-registration:latest :8091
   srun step: di2washu/agenticnetwork-planner:latest      :8090
   srun step: di2washu/agenticnetwork-scout:latest        :9104
   srun step: di2washu/agenticnetwork-email:latest        :9103
@@ -29,12 +30,16 @@ the vLLM inference server on a GPU node.
 All containers communicate over `localhost` on the same compute node.
 The planner reaches vLLM via `OPENAI_BASE_URL=http://<gpu-node>:8100/v1`.
 
-ADS starts first; all agent containers wait up to 60 seconds for it to be
-reachable before publishing their cards and starting their A2A servers.
+Postgres starts first (ADS and the registration service both depend on it),
+then ADS; all agent containers wait up to 60 seconds for ADS to be reachable
+before publishing their cards and starting their A2A servers.
 
-The registration container also runs a PostgreSQL 15 instance internally.
-Its data directory is bind-mounted from `/engrfs/project/di2/postgres_data`
-so registered agents survive job restarts.
+PostgreSQL runs in its own dedicated container (`Dockerfile.postgres` /
+`entrypoint-postgres.sh`), serving two databases on `localhost:5432`: the
+persistent `registration` DB — bind-mounted from
+`/engrfs/project/di2/postgres_data` so registered agents survive job restarts —
+and the ephemeral `dir` DB that ADS uses (dropped + recreated each run). The
+registration and ADS containers are pure DB clients.
 
 ---
 
@@ -45,10 +50,9 @@ so registered agents survive job restarts.
 | `submit.sbatch` | Main Slurm job — launches all service containers (postgres, ADS, registration, planner + 6 specialists) in parallel |
 | `start_vllm.sbatch` | GPU Slurm job — starts the vLLM inference server |
 | `build_and_push.sh` | Builds/pushes the **4 infra images** (planner, ads, postgres, registration); the 6 specialist images build in the `agent-directory` repo |
-| `dockerfiles/` | One `Dockerfile.<agent>` per service |
-| `entrypoints/` | One `entrypoint-<agent>.sh` per service (postgres init + ADS wait + exec) |
-| `ads_daemon.yaml` | dirctl daemon config (listen address, data paths) |
-| `google_credentials/` | OAuth credentials for the Email agent |
+| `dockerfiles/` | One `Dockerfile.<agent>` per infra service (ADS runs `dirctl` directly, no Dockerfile-side entrypoint script) |
+| `entrypoints/` | `entrypoint-{postgres,registration,planner}.sh` (postgres init / DB + ADS wait / exec); ADS has none — it runs `dirctl daemon start` directly from `submit.sbatch` |
+| `ads_daemon.yaml` | dirctl daemon config (listen address, Postgres backend, data paths) |
 | `AGENT_INTEGRATION_SPEC.md` | Reference for adding a new agent: what fields are required and why |
 | `DOWNSTREAM_CONSIDERATIONS.md` | Forward-looking architecture & scaling decisions (deferred-by-design) |
 
@@ -293,8 +297,9 @@ after the job exits. The main job log is `agenticnetwork-<jobid>.log`.
 | File | Contents |
 |---|---|
 | `agenticnetwork-<jobid>.log` | Job-level startup and ADS readiness output |
+| `postgres.log` | Dedicated PostgreSQL container (registration + dir DBs) |
 | `ads.log` / `ads.err` | ADS (dirctl) daemon |
-| `registration.log` / `registration.err` | Registration service + embedded postgres |
+| `registration.log` / `registration.err` | Registration service |
 | `planner.log` / `planner.err` | Planner agent |
 | `scout.log` / `scout.err` | Scout agent |
 | `email.log` / `email.err` | Email agent |

@@ -25,7 +25,6 @@ class MainAgentConfig(BaseModel):
 
     fake_ads: bool = False
     ads_server_addr: str | None = None
-    ads_backend: str = "cli"
 
     policy_mode: str = "permissive"
     history_limit: int = Field(20, gt=0)
@@ -42,7 +41,6 @@ def load_config(env: Mapping[str, str] | None = None) -> MainAgentConfig:
         max_steps=_int(values.get("MAIN_AGENT_MAX_STEPS"), default=10),
         fake_ads=_bool(values.get("AGENT_NETWORK_FAKE_ADS"), default=False),
         ads_server_addr=_optional(values.get("ADS_SERVER_ADDR") or values.get("ADS_URL")),
-        ads_backend=values.get("ADS_BACKEND", "cli").strip().lower(),
         policy_mode=values.get("MAIN_AGENT_POLICY_MODE", "permissive").strip().lower(),
         history_limit=_int(values.get("MAIN_AGENT_HISTORY_LIMIT"), default=20),
     )

@@ -10,8 +10,9 @@ system see the repo-root [`../CLAUDE.md`](../CLAUDE.md) and
 ## 1. What this is
 
 A small, faithful template for an AgenticNetwork **A2A agent**, distilled from
-the reference agent
-[`../disaster_response_agent/disaster_response_agent.py`](../disaster_response_agent/disaster_response_agent.py).
+the reference agent `disaster_response_agent.py` (now in the separate
+[`agent-directory`](https://github.com/washu-dev/agent-directory) repo, where the
+specialist agents live).
 It exists to make the agent contract legible: the same ~70% of every agent that
 is plumbing is isolated into "copy" files, and the ~30% that is the actual agent
 is isolated into a few "write" files.
@@ -35,6 +36,12 @@ service's custom-agent images (`container_runner.py`) and the generator's output
 
 ## 3. File map — where to edit, where not to
 
+The package serves **three lanes**; the tables below cover each. Most authors
+only touch lane A.
+
+**Lane A — copy-to-start template** (also the spec-driven engine vendored as
+`wrapper_engine/` by the generator):
+
 | Zone | File | Status | Notes |
 |---|---|---|---|
 | 1 | `tool_schemas.py` | **WRITE** | `TOOL_SCHEMAS`: Chat Completions shape |
@@ -43,9 +50,24 @@ service's custom-agent images (`container_runner.py`) and the generator's output
 | 4 | `tools.py` | **WRITE bodies** | tool fns + `TOOL_REGISTRY` + `validate_tool_registry()` |
 | 5 | `executor.py` | copy | `SkeletonAgentExecutor.execute()` + A2A I/O |
 | 6 | `serve.py` | copy | `create_app`, ADS publish, CLI/uvicorn |
+| — | `spec.py` | copy | `AgentSpec` seam: prompt+tools as data; `dispatch()`, `endpoint_wrapper_spec()` |
+| — | `system_tools/call_endpoint.py` | copy | the `call_endpoint` tool used by endpoint-wrapper mode |
 | — | `config.py` | edit defaults | name, host/port, model, ADS addr |
 | — | `a2a_runtime.py` | copy | SDK import guard + `data_part`/`text_part`/`task_updater` |
 | — | `agent.card.json` | **WRITE** | skills, url, version |
+
+**Lane B — uploaded-code / custom-handler path** (what `registration_service`
+runs; the only lane the deployed system exercises):
+
+| File | Status | Notes |
+|---|---|---|
+| `base.py` | copy | `AgentHandler` (subclass + `handle_structured()`) + `FileInput` |
+| `handler_executor.py` | copy | `HandlerExecutor` — wraps any `AgentHandler` in the A2A executor (heartbeat, runtime cap, credential context) |
+| `container_runner.py` | copy | `python -m agent_skeleton.container_runner` — per-agent Docker entrypoint (loads handler, serves A2A) |
+
+**Lane C — generator** (`generator/`): turns an `answers.json` into a complete
+deployable wrapper-agent folder (card + server + Dockerfile + vendored
+`wrapper_engine/`). Standalone CLI: `python -m agent_skeleton.generator`.
 
 **Separation of concerns to preserve:** `executor.py` is the *only* file that
 knows about A2A; `llm_loop.py` + `tools.py` + `prompt.py` are the "engine" and

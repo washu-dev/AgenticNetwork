@@ -31,7 +31,6 @@ from planner_agent.main_agent.models import (
     A2ATaskRequest,
     A2ATaskResult,
     A2ATaskState,
-    AgentCapability,
     DiscoveredAgent,
 )
 from planner_agent.main_agent.directory.card_oasf_converter import (

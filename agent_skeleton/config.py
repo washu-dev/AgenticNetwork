@@ -14,7 +14,6 @@ AGENT_NAME = "Endpoint Wrapper Agent"
 # --- Networking -----------------------------------------------------------
 DEFAULT_HOST = "0.0.0.0"          # bind address (listen on all interfaces)
 DEFAULT_PORT = 9110               # pick a free port (parent repo uses 9103-9106)
-DEFAULT_AGENT_URL = "http://127.0.0.1:9110/"  # the URL advertised in the card
 
 # --- LLM ------------------------------------------------------------------
 DEFAULT_MODEL = "gpt-4o-mini"     # hosted model name, or your vLLM --served-model-name

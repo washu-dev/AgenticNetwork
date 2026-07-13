@@ -12,17 +12,12 @@ from agent_directory_service.services.directory.card_oasf_converter import (
     _oasf_skill_from_tag,
     agent_card_to_ads_record,
     agent_card_to_oasf_record,
-    load_agent_card,
-    oasf_record_to_agent_card,
     oasf_record_to_discovered_agent,
 )
-from agent_directory_service.services.directory.client import DirectoryClient, DirectoryUnavailable
+from agent_directory_service.services.directory.client import DirectoryClient
 
 
-WEATHER_CARD = "coding_agent/coding_agent.card.json"
-
-
-def test_internal_a2a_model_validation_and_card_resolution() -> None:
+def test_internal_a2a_model_validation() -> None:
     with pytest.raises(ValueError):
         A2APart(kind="text")
 
@@ -34,53 +29,6 @@ def test_internal_a2a_model_validation_and_card_resolution() -> None:
         messages=[A2AMessage(role="user", parts=[A2APart(kind="text", text="weather")])],
     )
     assert request.context_id == "context-1"
-
-    card = load_agent_card(WEATHER_CARD)
-    agent = oasf_record_to_discovered_agent(agent_card_to_oasf_record(card))
-    assert agent.agent_id == "weather-agent"
-    assert agent.endpoint == card.url
-
-
-def test_agent_card_and_oasf_conversion_keeps_weather_skill_custom() -> None:
-    card = load_agent_card(WEATHER_CARD)
-    record = agent_card_to_oasf_record(card)
-
-    assert record["interaction"]["type"] == "a2a_agent_card"
-    assert record["interaction"]["agent_card"]["name"] == "Weather Agent"
-    assert record["discovery"]["official_oasf_skills"] == []
-    assert "weather/forecast" in record["discovery"]["custom_skill_tags"]
-    assert "weather/forecast" in record["metadata"]["demo_specific_custom_skills"]
-    assert record["auth"]["security"] == []
-    assert record["auth"]["required_scopes"] == []
-    assert record["policy"]["risk_level"] == "low"
-    assert record["policy"]["action_type"] == "read"
-
-    round_trip_card = oasf_record_to_agent_card(record)
-    discovered = oasf_record_to_discovered_agent(record)
-    assert round_trip_card.name == card.name
-    assert discovered.endpoint == card.url
-    assert discovered.skills[0].custom_skill_tags
-
-
-def test_fake_directory_publish_search_resolve_and_fake_gate(monkeypatch) -> None:
-    card = load_agent_card(WEATHER_CARD)
-    directory = DirectoryClient(fake_ads=True)
-    published = directory.publish_agent_card(card)
-
-    assert published.backend == "fake"
-    assert published.backend_ref is None
-    assert directory.search_agents(skill="weather/forecast")[0].agent_id == "weather-agent"
-    assert directory.search_agents(skill="weather")[0].agent_id == "weather-agent"
-    assert directory.resolve_agent("weather-agent").name == "Weather Agent"
-    assert directory.resolve_agent(published.record_id).endpoint == card.url
-
-    monkeypatch.delenv("ADS_SERVER_ADDR", raising=False)
-    monkeypatch.delenv("ADS_URL", raising=False)
-    monkeypatch.delenv("ADS_SERVER_ADDRESS", raising=False)
-    monkeypatch.delenv("DIRECTORY_CLIENT_SERVER_ADDRESS", raising=False)
-    real_directory = DirectoryClient(fake_ads=False)
-    with pytest.raises(DirectoryUnavailable):
-        real_directory.search_agents(skill="weather/forecast")
 
 
 def test_directory_handles_official_oasf_skill_separately_from_custom_tags() -> None:

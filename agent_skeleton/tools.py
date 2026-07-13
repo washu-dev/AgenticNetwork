@@ -5,8 +5,8 @@
   its schema `properties` and returns a JSON-able dict.
 - TOOL_REGISTRY: the {name: function} map. This REPLACES the hand-written
   if/elif chain in disaster_response_agent.py:679-718. Adding a tool = write a
-  function + add one registry entry + add one schema in tool_schemas.py.
-- run_tool(): the generic dispatcher the LLM loop calls (a dict lookup).
+  function + add one registry entry + add one schema in tool_schemas.py. The LLM
+  loop dispatches over this registry via ``AgentSpec.dispatch`` (see spec.py).
 - validate_tool_registry(): the startup alignment check the disaster agent
   never had. It fails fast if a schema and its function disagree, instead of
   failing silently at runtime as `{"ok": False, "error": ...}`.
@@ -38,20 +38,6 @@ TOOL_REGISTRY: dict[str, Callable[..., dict[str, Any]]] = {
     "word_count": word_count,
     "reverse_text": reverse_text,
 }
-
-
-# --- Dispatch (copy; rarely edit) ----------------------------------------
-
-def run_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    """Look up `name` and call it with the model-supplied arguments.
-
-    Replaces disaster's if/elif chain with a dict lookup. Exceptions are caught
-    by the caller (llm_loop) and turned into {"ok": False, "error": ...}.
-    """
-    fn = TOOL_REGISTRY.get(name)
-    if fn is None:
-        return {"ok": False, "error": f"Unknown tool: {name}"}
-    return fn(**arguments)
 
 
 # --- The alignment check (the gap disaster never closed) -----------------

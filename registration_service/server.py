@@ -504,7 +504,6 @@ def _row_to_response(row: asyncpg.Record) -> AgentResponse:
 
 if __name__ == "__main__":
     import uvicorn
-    import os
 
     logging.basicConfig(
         level=logging.INFO,

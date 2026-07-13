@@ -427,7 +427,7 @@ class RealADSDirectoryBackend:
             f"skill={skill!r}; storage_cids={storage_cids!r}; matching_agents={agent_ids!r}. "
             "Live discovery uses the routing index, not plain dirctl search. "
             "Run agent_directory_service.scripts.ads_diagnostics or repair routing with "
-            "agent_directory_service.scripts.repair_ads_routing."
+            "agent_directory_service.scripts.force_route_active_agents."
         )
 
     def _resolve_agent_cli(self, agent_id_or_record_id: str) -> DiscoveredAgent:

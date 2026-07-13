@@ -19,9 +19,18 @@ dependencies = [
 
 # pyproject.toml lives *inside* the package directory, so map the
 # `agent_skeleton` import package to "." (this directory) rather than
-# auto-discovering a subdirectory that does not exist.
+# auto-discovering a subdirectory that does not exist. Subpackages must be
+# listed explicitly: with package-dir mapped to ".", setuptools find-discovery
+# would treat system_tools/ and generator/ as *top-level* packages, so we name
+# them here instead. Omitting them installs only the top-level .py files, and
+# `agent_skeleton/__init__.py` imports `.system_tools.call_endpoint`
+# unconditionally — a missing subpackage crashes every built agent image on start.
 [tool.setuptools]
-packages = ["agent_skeleton"]
+packages = [
+    "agent_skeleton",
+    "agent_skeleton.system_tools",
+    "agent_skeleton.generator",
+]
 
 [tool.setuptools.package-dir]
 agent_skeleton = "."

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ads_utils.converter import oasf_skill_tag
 from registration_service.models import CustomConfig
 
 
@@ -100,7 +101,11 @@ def generate_card_json(agent: dict[str, Any]) -> dict[str, Any]:
                 "id": s.get("key") or s.get("name", ""),
                 "name": (s.get("name", "").split("/")[-1]),
                 "description": description,
-                "tags": [],
+                "tags": (
+                    [oasf_skill_tag(s.get("key") or s.get("name", ""), s["id"])]
+                    if s.get("id") is not None
+                    else []
+                ),
             }
             for s in skills
         ],

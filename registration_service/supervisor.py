@@ -13,7 +13,7 @@ from typing import Any
 
 import httpx
 
-from ads_utils.converter import OfficialOASFSkill, _AGENT_OASF_ROUTING_SKILLS
+from ads_utils.converter import oasf_skill_tag
 from ads_utils.publisher import DirectoryPublisher, DirectoryUnavailable
 from a2a.types import AgentCard, AgentCapabilities, AgentSkill
 
@@ -107,7 +107,21 @@ class Supervisor:
             logger.info("custom_build_started agent_id=%s name=%s", agent_id, name)
             return
 
-        _register_oasf_routing_skills(name, oasf_skills)
+        # The cluster backend only has a spawn path for 'custom' agents (per-agent
+        # image built via the GitHub→Docker Hub flow). 'llm'/'api_proxy' have no
+        # cluster spawn path: ClusterBackend.spawn() is a no-op and the host srun
+        # loop only launches 'image_ready' (custom) agents. Without this guard such
+        # an agent would be published to ADS and marked 'live' with no process
+        # behind it (a ghost-live row the planner would then dispatch to). Fail
+        # loudly instead of creating that phantom.
+        if isinstance(self._backend, ClusterBackend) and handler_type != "custom":
+            await _set_status(agent_id, "failed")
+            raise RuntimeError(
+                f"handler_type={handler_type!r} is not supported on the cluster "
+                "backend — only 'custom' agents have a cluster spawn path. "
+                "Register it with the local subprocess backend, or use a 'custom' "
+                "handler."
+            )
 
         try:
             await self._backend.spawn(
@@ -409,7 +423,6 @@ class Supervisor:
 
         if isinstance(self._backend, ClusterBackend):
             self._backend.record_pid(agent_id, pid, port)
-        _register_oasf_routing_skills(agent["name"], oasf_skills)
         await self._publish_and_set_live(
             agent_id, agent["name"], agent["description"], oasf_skills, port,
             _declared_credentials(_deserialize_config(agent)),
@@ -492,13 +505,23 @@ class Supervisor:
 def _vendored_skeleton_files() -> dict[str, str]:
     """Collect agent_skeleton's package files (all *.py + pyproject.toml) for vendoring.
 
-    Keys are paths relative to the agent_skeleton/ dir; values are file contents.
+    Keys are paths relative to the agent_skeleton/ dir (POSIX, with subdirs
+    preserved, e.g. "system_tools/call_endpoint.py"); values are file contents.
     These are committed under registered_agents/{slug}/agent_skeleton/ so the
     generated image can `pip install ./agent_skeleton` with no external access.
+
+    Must recurse: `agent_skeleton/__init__.py` imports `.system_tools.call_endpoint`
+    at import time, so the subpackages have to be in the build context or every
+    built image crashes on start. Skip test/build trees — they aren't installed
+    (see pyproject `packages`) and only bloat the committed context.
     """
+    _SKIP_DIRS = {"tests", "build", "dist", "__pycache__"}
     out: dict[str, str] = {}
-    for path in sorted(_AGENT_SKELETON_DIR.glob("*.py")):
-        out[path.name] = path.read_text()
+    for path in sorted(_AGENT_SKELETON_DIR.rglob("*.py")):
+        rel = path.relative_to(_AGENT_SKELETON_DIR)
+        if any(part in _SKIP_DIRS or part.endswith(".egg-info") for part in rel.parts):
+            continue
+        out[rel.as_posix()] = path.read_text()
     pyproject = _AGENT_SKELETON_DIR / "pyproject.toml"
     if pyproject.exists():
         out["pyproject.toml"] = pyproject.read_text()
@@ -644,12 +667,6 @@ def get_supervisor() -> Supervisor:
     return _supervisor
 
 
-def set_supervisor(sup: Any) -> None:
-    """Override the supervisor singleton — used in tests."""
-    global _supervisor
-    _supervisor = sup
-
-
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 def _declared_credentials(
@@ -685,7 +702,14 @@ def _build_agent_card(
             id=s.get("key") or s["name"],   # prefer canonical key; fall back to name
             name=s["name"].split("/")[-1],
             description=description,
-            tags=[],
+            # Self-describe the ADS routing skill via an 'oasf:<name>:<id>' tag
+            # so the card is discoverable without a per-agent entry in
+            # ads_utils.converter's routing map.
+            tags=(
+                [oasf_skill_tag(s.get("key") or s["name"], s["id"])]
+                if s.get("id") is not None
+                else []
+            ),
         )
         for s in oasf_skills
     ]
@@ -707,17 +731,6 @@ def _build_agent_card(
         default_input_modes=["text"],
         default_output_modes=["text"],
     )
-
-
-def _register_oasf_routing_skills(
-    name: str, oasf_skills: list[dict[str, Any]]
-) -> None:
-    """Add the agent's OASF skills to the converter's routing map so dirctl publish works."""
-    agent_key = name.lower().replace(" ", "-")
-    _AGENT_OASF_ROUTING_SKILLS[agent_key] = [
-        OfficialOASFSkill(name=s.get("key") or s["name"], id=s.get("id"))
-        for s in oasf_skills
-    ]
 
 
 async def _set_status(

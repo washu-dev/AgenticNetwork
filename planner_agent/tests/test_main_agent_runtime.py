@@ -28,7 +28,7 @@ from planner_agent.main_agent.server import create_app
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 EMAIL_CARD = REPO_ROOT / "planner_agent" / "configs" / "agent_cards" / "email_agent.card.json"
-WEATHER_CARD = REPO_ROOT / "planner_agent" / "configs" / "agent_cards" / "coding_agent.card.json"
+WEATHER_CARD = REPO_ROOT / "planner_agent" / "configs" / "agent_cards" / "weather_agent.card.json"
 CODING_CARD = REPO_ROOT / "planner_agent" / "configs" / "agent_cards" / "coding_agent.card.json"
 
 
@@ -535,11 +535,11 @@ async def _uploaded_image_is_attached_to_geospatial_a2a_call(image_path: Path, i
     assert request.metadata["file_transfer"] == "a2a_file_bytes"
 
 
-def test_compound_workflow_skips_second_main_agent_dispatch() -> None:
-    asyncio.run(_compound_workflow_skips_second_dispatch())
+def test_compound_workflow_dispatches_multiple_agents() -> None:
+    asyncio.run(_compound_workflow_dispatches_multiple_agents())
 
 
-async def _compound_workflow_skips_second_dispatch() -> None:
+async def _compound_workflow_dispatches_multiple_agents() -> None:
     directory = SpyDirectory(fake_ads=True)
     directory.publish_agent_card(load_agent_card(CODING_CARD))
     directory.publish_agent_card(load_agent_card(EMAIL_CARD))
@@ -592,11 +592,12 @@ async def _compound_workflow_skips_second_dispatch() -> None:
     assert resp.status_code == 200, resp.text
     payload = resp.json()
     assert payload["state"] == "completed"
-    assert a2a.calls == [("coding-agent", None)]
+    # Chained calls to multiple *different* agents are allowed (runtime dedup only
+    # skips a re-dispatch to the SAME agent) — both the coding and email dispatches run.
+    assert a2a.calls == [("coding-agent", None), ("email-agent", "email/send")]
     call_traces = [t for t in payload["tool_trace"] if t["tool"] == "call_agent"]
     assert [t["content"]["agent_id"] for t in call_traces] == ["coding-agent", "email-agent"]
-    assert [t["status"] for t in call_traces] == ["completed", "skipped"]
-    assert "already dispatched" in call_traces[1]["content"]["reason"]
+    assert [t["status"] for t in call_traces] == ["completed", "completed"]
 
 
 def test_failed_peer_handoff_allows_remaining_agent_dispatch() -> None:

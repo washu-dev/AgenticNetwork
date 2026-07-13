@@ -69,12 +69,21 @@ planner_agent/
 │   ├── models.py           # planner-local A2A, ADS, policy, and state models
 │   ├── a2a/                # planner-local A2A client, adapters, HTTP transport
 │   ├── directory/          # planner-local fake/real ADS client + card converter
-│   ├── state/              # planner-local in-memory state store
+│   ├── state/              # planner-local in-memory per-request state store
 │   ├── tools.py            # 5 tool schemas + system prompt
-│   ├── llm_client.py       # OpenAI Responses client + ScriptedLLMClient
+│   ├── llm_client.py       # OpenAI Chat Completions client + ScriptedLLMClient
 │   ├── runtime.py          # tool loop, ADS, A2A, memory, policy, dedup
-│   ├── server.py           # FastAPI: /messages /confirmations /agents /health /
-│   └── web/index.html      # chat UI (sidebar + tool-trace + reasoning blocks)
+│   ├── server.py           # FastAPI: /messages /confirmations /agents /health /me /
+│   ├── auth.py             # Shibboleth SSO identity + get_current_user dependency
+│   ├── auth_router.py      # /auth/* — logout + Google OAuth connect flow
+│   ├── credentials_router.py  # /me/credentials/* — per-user API-key store/list/delete
+│   ├── credential_catalog.py  # canonical credential-type catalog
+│   ├── credential_gate.py  # per-agent credential-grant enforcement
+│   ├── crypto.py           # AES-256-GCM encrypt/decrypt for stored credentials
+│   ├── db.py               # Postgres pool + schema (users, credentials, conversations, pending)
+│   ├── conversation_store.py  # Postgres-backed conversation history
+│   ├── pending_store.py    # Postgres-backed pending confirmations
+│   └── web/                # index.html (chat UI) + landing.html (pre-login page)
 ├── scripts/
 │   ├── start.sh            # auto-loads .env.local, starts uvicorn
 │   ├── doctor.sh           # one-shot self-check (env, dirctl, ADS, server, OpenAI, tests)
@@ -198,7 +207,7 @@ through `dirctl` instead of the in-process fake.
 | `OPENAI_API_KEY`               | —             | Required when LLM enabled                                     |
 | `MAIN_AGENT_LLM_ENABLED`       | `true`        | Set false for purely scripted (test) runs                     |
 | `MAIN_AGENT_LLM_PROVIDER`      | `openai`      | Only `openai` is supported today                              |
-| `MAIN_AGENT_LLM_MODEL`         | `gpt-4o-mini` | OpenAI model id (we ship `.env.example` with `gpt-5.1`)       |
+| `MAIN_AGENT_LLM_MODEL`         | `gpt-4o-mini` | OpenAI model id, or your vLLM `--served-model-name`           |
 | `MAIN_AGENT_MAX_OUTPUT_TOKENS` | `1500`        | Per-turn output cap. Bump to ≥4000 for reasoning models       |
 | `MAIN_AGENT_MAX_STEPS`         | `10`          | Max tool-loop iterations per user message                     |
 | `MAIN_AGENT_TIMEOUT_SECONDS`   | `60`          | OpenAI call timeout                                           |
@@ -209,6 +218,10 @@ through `dirctl` instead of the in-process fake.
 | `ADS_SERVER_ADDR`              | —             | e.g. `localhost:8888`                                         |
 | `MAIN_AGENT_PORT`              | `8090`        | HTTP port (avoids collision with v2's 8080)                   |
 | `PYTHON_BIN`                   | auto-detected | Optional interpreter override for wrapper scripts             |
+| `REGISTRATION_DB_DSN`          | —             | Postgres DSN for conversation history + credentials + pending confirmations |
+| `CREDENTIALS_ENCRYPTION_KEY`   | —             | 32-byte base64 key for AES-256-GCM credential encryption      |
+| `ADMIN_EMAILS`                 | —             | Comma-separated admin allowlist (matched against SSO identity); fail-closed |
+| `GOOGLE_CLIENT_ID` / `_SECRET` / `_REDIRECT_URI` | — | Google OAuth web client for per-user Google connect |
 
 ## Confirmation flow (when `policy_mode=strict`)
 
@@ -247,9 +260,10 @@ doesn't break the demo:
   and emits `final_answer({})`, the runtime falls back to the most recent
   `call_agent` text so the user sees the agent's actual reply, not
   `(empty)`.
-- **Per-turn OpenAI chain ids** — `previous_response_id` and `last_call_id`
-  live on `TurnState`, not on the client instance, so concurrent
-  `/messages` requests can't interleave each other's response chains.
+- **Per-turn tool-call state** — the tool-loop state (e.g. `last_call_id`, the
+  Chat Completions `tool_call_id` the next tool result is attached to) lives on a
+  per-turn `state` object, not on the client instance, so concurrent `/messages`
+  requests can't interleave each other's tool-call chains.
 
 ## What is NOT included
 
@@ -260,8 +274,10 @@ doesn't break the demo:
 - No deterministic keyword router (v2's `router.py`). The LLM picks the
   agent.
 - No legacy planner mode. Tool loop only.
-- No persistence. `InMemoryStateStore` resets on restart. Add SQLite if you
-  need it.
+- No in-memory persistence of working state: `InMemoryStateStore` holds only
+  per-request context and resets on restart. Conversation history and pending
+  confirmations **do** persist — to Postgres (`conversation_store` /
+  `pending_store` → `db.py`), keyed by SSO identity.
 
 If a future user prompt needs a domain-specific renderer (a chart, a map,
 etc.), add a renderer in the front-end on top of `structured_outputs` —

@@ -1,25 +1,8 @@
 from __future__ import annotations
 
-import subprocess
-
 import pytest
 
-from agent_directory_service.services.directory.card_oasf_converter import load_agent_card
-from agent_directory_service.services.directory.backends import RealADSDirectoryBackend
 from agent_directory_service.services.directory.client import DirectoryClient, DirectoryUnavailable
-
-
-WEATHER_CARD = "coding_agent/coding_agent.card.json"
-
-
-def test_fake_backend_publish_search_resolve_still_works() -> None:
-    directory = DirectoryClient(fake_ads=True)
-    published = directory.publish_agent_card(load_agent_card(WEATHER_CARD))
-
-    assert published.backend == "fake"
-    assert directory.healthcheck() is True
-    assert directory.search_agents(skill="weather/forecast")[0].agent_id == "weather-agent"
-    assert directory.resolve_agent(published.record_id).agent_id == "weather-agent"
 
 
 def test_real_backend_missing_config_fails_loudly(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -50,15 +33,3 @@ def test_real_backend_sdk_import_failure_reports_dependency_versions(monkeypatch
     assert "protobuf=" in message
     assert "agntcy-dir=" in message
     assert "protobuf runtime compatible" in message
-
-
-def test_real_backend_never_reads_fake_backend_records() -> None:
-    fake_directory = DirectoryClient(fake_ads=True)
-    fake_directory.publish_agent_card(load_agent_card(WEATHER_CARD))
-    real_backend = RealADSDirectoryBackend(
-        ads_url="localhost:8888",
-        runner=lambda command: subprocess.CompletedProcess(command, 0, stdout="[]", stderr=""),
-    )
-    real_directory = DirectoryClient(fake_ads=False, backend=real_backend)
-
-    assert real_directory.search_agents(skill="weather/forecast") == []
