@@ -133,6 +133,14 @@ if [ "$PORT_OFFSET" -ne 0 ]; then
     export CUSTOM_AGENT_PORT_END=$((19299 + PORT_OFFSET))
 fi
 
+# A test instance sits behind NO Shibboleth SP — it's reached by SSH tunnel to its
+# planner port, not the public agenticweb URL — so relax the planner's auth gate, or
+# every /app and /messages request 401s (no identity headers). Scoped strictly to test;
+# prod ALWAYS keeps the SSO gate. Override with PLANNER_ALLOW_ANON=0 to keep it on in test.
+if [ "$DEPLOY_ENV" = "test" ]; then
+    export PLANNER_ALLOW_ANON="${PLANNER_ALLOW_ANON:-1}"
+fi
+
 # Postgres data dir: prod uses the persistent /engrfs volume (real, credential-bearing
 # state); test uses node-local per-user scratch so it CANNOT touch prod's data.
 if [ "$DEPLOY_ENV" = "prod" ]; then

@@ -144,6 +144,23 @@ can't touch prod. A deployment now runs as one of two **instances**, selected by
 The cluster `test` instance is the single pre-ship validation path. (A laptop-local "Tier B"
 tier was considered and **dropped** — not worth maintaining a second story.)
 
+**Reaching a test instance (no public URL).** The Apache + Shibboleth gateway
+(`agenticweb.engr.wustl.edu`) proxies to exactly **one** upstream — the prod planner at
+`<prod-node>:8090`, repointed by hand each prod deploy (`DOWNSTREAM #3`). It has no knowledge of
+a test instance, so a test deploy **cannot** be reached at the public URL and **cannot** disturb
+prod's front door — whichever node it lands on. Reach a test instance out-of-band instead:
+`ssh -L 18090:<test-node>:18090 <login-host>` then browse `http://localhost:18090`.
+- Because that path bypasses Apache, there are **no Shibboleth identity headers**, so the planner
+  would 401 every `/app`/`/messages` request. Therefore `submit.sbatch` sets
+  **`PLANNER_ALLOW_ANON=1` for `DEPLOY_ENV=test` only** (prod always keeps the SSO gate;
+  override with `PLANNER_ALLOW_ANON=0`). With that, the tunneled UI is usable as an anon/demo user.
+- **Google-OAuth features don't complete in test:** `GOOGLE_REDIRECT_URI` points at the prod
+  public URL, so "connect Google" bounces back to prod, not the test instance. Core chat + agents
+  that don't need per-user Google creds work; the Google-connect flow doesn't.
+- **Repoint footgun:** whoever updates Apache's upstream after a prod redeploy must target **prod
+  specifically** (the `agenticnetwork-prod` job / port `8090`), not "whatever planner is up" —
+  now that a second planner (test, `:18090`) can exist.
+
 - ✅ **Custom-agent dynamic port pool** — `registration_service/port_pool.py` (and `fake_db.py`)
   read the range from `CUSTOM_AGENT_PORT_START`/`_END` (default 19200–19299); `submit.sbatch`
   offsets it for test (→ 29200–29299), so a test instance's spawned custom agents can't collide
@@ -158,10 +175,14 @@ tier was considered and **dropped** — not worth maintaining a second story.)
 
 ### Phase 3 — CI (GitHub Actions)
 
-- ✅ **Interim deploy lock** — `submit.sbatch` preflights `squeue` across *all* users and
-  refuses to start if another job of the **same name** (i.e. same instance) is already live.
-  Prod and test differ by name, so they coexist; two prods (or two tests) do not — closing the
-  shared-`/engrfs`-Postgres corruption path that per-user `--dependency=singleton` misses.
+- ✅ **Interim deploy lock** — `deploy.sh` preflights `squeue` across *all* users **before
+  calling `sbatch`** and refuses to submit if another job of the **same name** (i.e. same
+  instance) is already running or queued. Prod and test differ by name, so they coexist; two
+  prods (or two tests) do not — closing the shared-`/engrfs`-Postgres corruption path that
+  per-user `--dependency=singleton` misses. Doing the check at submit time (not in the job body)
+  gives an immediate refusal instead of a second job stuck `PENDING(Dependency)`. The in-job
+  `squeue` preflight in `submit.sbatch` and the `--dependency=singleton` directive remain as
+  backstops for anyone who bypasses `deploy.sh` and runs `sbatch` directly.
 - ⏳ CI builds + pushes all images on merge to `main`, tagged by **commit SHA** (+ a moving
   `main` tag) → kills both the `:latest` clobbering and the "who has push creds" question.
 - ⏳ Deploy becomes a **single serialized GitHub Actions job** using a concurrency group
@@ -214,9 +235,10 @@ through this on ENGR first. Treat a ❌ as a merge blocker.
       connection still works** (proves `CREDENTIALS_ENCRYPTION_KEY` is the right one).
 
 ### Deploy lock
-- [ ] With prod live, run `deployment/deploy.sh` again → the job must **refuse** with
-      "another 'agenticnetwork-prod' deployment is already live". (Test from a *second* user too,
-      to confirm it's cross-user, not just per-user `singleton`.)
+- [ ] With prod live, run `deployment/deploy.sh` again → it must **refuse immediately at submit
+      time** ("a 'agenticnetwork-prod' deployment is already live or queued") and **not submit a
+      job** (no leftover `PENDING` job to clean up). Test from a *second* user too, to confirm
+      it's cross-user, not just the per-user `--dependency=singleton` backstop.
 
 ### Test instance beside live prod
 - [ ] With prod still live, `deployment/deploy.sh test`. Confirm: `Instance : test (port offset

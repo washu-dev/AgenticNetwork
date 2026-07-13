@@ -183,7 +183,9 @@ deployment/deploy.sh test     # an isolated test instance that can run BESIDE pr
 port by **+10000** and puts its Postgres data on **node-local `/scratch/$USER`**, so it can run
 concurrently with a live prod without colliding on ports and *cannot touch prod's data*. A
 second deploy of the same instance (two prods, or two tests) is refused across all users by a
-`squeue` preflight in `submit.sbatch`. Details + known gaps: [`../docs/MULTI_CONTRIBUTOR.md`](../docs/MULTI_CONTRIBUTOR.md).
+`squeue` preflight in `deploy.sh` (at submit time, so you get an immediate message and no job
+stuck `PENDING`); an in-job preflight and `--dependency=singleton` back it up if you bypass the
+wrapper. Details + known gaps: [`../docs/MULTI_CONTRIBUTOR.md`](../docs/MULTI_CONTRIBUTOR.md).
 
 > Submitting `sbatch deployment/submit.sbatch` directly still works and defaults to prod.
 
