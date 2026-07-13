@@ -1,10 +1,11 @@
 # Multi-Contributor Workflow — Problem & Plan
 
-> **Status: implemented on `refactor/multi-contributor`, pending cluster validation.** The
-> diagnosis and approach are settled; most of the plan is coded (see ✅ items) but **not yet
-> exercised on ENGR** — see the Pre-merge validation checklist at the bottom. Remaining work is
-> gated on the group registry / CI (⏳). It is *not* a DECISIONS.md entry — once this merges,
-> record the durable choices there and link back here.
+> **Status: validated on ENGR; merging to `main`.** The core is implemented and exercised on the
+> cluster: group registry (`di2washu`) live, prod baseline healthy, prod/test instance modes with
+> offset ports + node-local test Postgres, the submit-time deploy lock refusing duplicates, and
+> ADS gossipsub isolation verified clean (test directory shows only test agents). Remaining work is
+> CI (⏳ — build/push half unblocked by the registry; deploy half hinges on runner reach). Once
+> this merges, promote the durable decisions into `DECISIONS.md` and link back here.
 
 ## The problem, precisely
 
@@ -173,11 +174,13 @@ the session open. Full step-by-step + `~/.ssh/config` shortcut in `deployment/RE
   with prod's on a shared node. Test uses a separate Postgres, so the pool *counter* was already
   isolated — this closes the remaining collision on the actual bound host ports.
 
-**Known gaps (documented, not yet solved):**
-- **ADS gossipsub cross-peering** (`ads_daemon.yaml` libp2p routing) — two ADS daemons on one
-  node use different routing ports and *separate* Postgres `dir` DBs, but it is **unverified**
-  whether gossipsub auto-peers them (e.g. via mDNS) and leaks live routing between prod and
-  test. Verify empirically; if it does, disable mDNS / set a distinct rendezvous for test.
+**Isolation notes:**
+- ✅ **ADS gossipsub cross-peering — verified clean on ENGR.** Two ADS daemons on one node use
+  different routing ports and *separate* Postgres `dir` DBs; the concern was whether gossipsub
+  auto-peers them (e.g. via mDNS) and leaks routing between prod and test. Confirmed empirically:
+  with prod + test both live, the test planner's `/agents` listed **only** test-port agents
+  (`:19103`, `:29105–29108`) — no prod-port entries — so the directories do not cross-peer.
+  (If this ever regresses, disable mDNS / set a distinct libp2p rendezvous for the test config.)
 
 ### Phase 3 — CI (GitHub Actions)
 
@@ -216,11 +219,13 @@ the session open. Full step-by-step + `~/.ssh/config` shortcut in `deployment/RE
 
 ---
 
-## Pre-merge validation (run before merging `refactor/multi-contributor` to `main`)
+## Pre-merge validation
 
-Everything above was authored but **not yet exercised on the cluster** — these changes touch
-cluster-only paths (Slurm, enroot, `/engrfs`, vLLM) that can't be tested off-cluster. Work
-through this on ENGR first. Treat a ❌ as a merge blocker.
+**Validated on ENGR ✅** — the gates below were exercised on the cluster and passed: group
+registry (`di2washu`) pulls, **prod baseline** healthy, **deploy lock** refuses a duplicate at
+submit time, **test-beside-prod** isolation (offset ports + node-local Postgres), and **gossipsub
+isolation** (test `/agents` shows only test-port agents). The checklist is retained as the
+repeatable runbook for future changes. Optional spot-checks not exercised are noted below.
 
 ### Setup (one-time)
 - [ ] **Registry.** Once IT confirms the group registry, set `IMAGE_REGISTRY` in
