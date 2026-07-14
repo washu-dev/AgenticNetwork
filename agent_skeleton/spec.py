@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING, Any, Callable
 from .config import MAX_TOOL_STEPS
 
 if TYPE_CHECKING:
-    from .system_tools.call_endpoint import EndpointConfig
+    from .system_tools.call_endpoint import EndpointConfig, OperationConfig
 
 # A tool body: keyword args named exactly like its schema properties -> JSON-able dict.
 ToolFn = Callable[..., dict[str, Any]]
@@ -256,6 +256,75 @@ def multi_endpoint_wrapper_spec(
     registry = {**registry, **(extra_registry or {})}
 
     prompt = system_prompt or build_manager_prompt(
+        name=name, description=description, tools=tool_meta
+    )
+
+    spec = AgentSpec(
+        name=name,
+        system_prompt=prompt,
+        tool_schemas=schemas,
+        tool_registry=registry,
+        model=model,
+        max_steps=max_steps,
+        mode="llm",
+    )
+    spec.validate()
+    return spec
+
+
+def operation_wrapper_spec(
+    *,
+    name: str,
+    base: "EndpointConfig",
+    operations: list["OperationConfig"],
+    description: str = "",
+    system_prompt: str | None = None,
+    model: str | None = None,
+    max_steps: int = MAX_TOOL_STEPS,
+    extra_schemas: list[dict[str, Any]] | None = None,
+    extra_registry: dict[str, ToolFn] | None = None,
+) -> AgentSpec:
+    """Build a TYPED per-operation wrapper spec: one LLM loop over an API whose
+    every operation is its own typed tool.
+
+    Unlike ``endpoint_wrapper_spec`` / ``multi_endpoint_wrapper_spec`` (one generic
+    ``call_endpoint`` taking a free-text ``request``), each operation becomes a
+    distinct Chat Completions function tool whose ``parameters`` are the operation's
+    real typed arguments — so the model emits structured, validated calls instead of
+    guessing a request shape. ``base`` (an ``EndpointConfig``) carries the shared
+    connection concerns (base URL, auth, timeout); each ``OperationConfig`` carries
+    the method, path, and typed params. The frozen loop is unchanged — this is just
+    more, finer, typed tools flowing through the SAME seam as
+    ``multi_endpoint_wrapper_spec``.
+
+    Validated before return; raises on an empty operations list or a misaligned tool."""
+    from .prompt import build_operations_prompt
+    from .system_tools.call_endpoint import make_operation_tool
+
+    if not operations:
+        raise ValueError("operation_wrapper_spec requires at least one operation")
+
+    schemas: list[dict[str, Any]] = []
+    registry: dict[str, ToolFn] = {}
+    tool_meta: list[tuple[str, "OperationConfig"]] = []
+    seen: set[str] = set()
+
+    for index, operation in enumerate(operations):
+        schema, fn = make_operation_tool(base, operation, index=index)
+        tool_name = schema["function"]["name"]
+        if tool_name in seen:  # disambiguate, staying within the 64-char tool-name limit
+            suffix = f"_{index}"
+            tool_name = f"{tool_name[: 64 - len(suffix)]}{suffix}"
+            schema["function"]["name"] = tool_name
+        seen.add(tool_name)
+        schemas.append(schema)
+        registry[tool_name] = fn
+        tool_meta.append((tool_name, operation))
+
+    schemas = [*schemas, *(extra_schemas or [])]
+    registry = {**registry, **(extra_registry or {})}
+
+    prompt = system_prompt or build_operations_prompt(
         name=name, description=description, tools=tool_meta
     )
 
