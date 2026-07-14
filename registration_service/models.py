@@ -59,6 +59,56 @@ class APIProxyConfig(BaseModel):
     auth_header: str | None = None
 
 
+class OperationSpec(BaseModel):
+    """One API operation exposed to the model as a typed tool (Feature B).
+
+    Maps 1:1 to ``agent_skeleton.system_tools.call_endpoint.OperationConfig``.
+    ``params`` is a JSON-Schema ``properties`` dict; a param named ``{x}`` in
+    ``path`` is a path parameter, otherwise ``param_in`` routes it to query/body/
+    header (defaulting to query for GET/DELETE/HEAD, body otherwise)."""
+
+    name: str = Field(..., min_length=1)
+    method: str = "GET"
+    path: str = "/"
+    description: str = ""
+    params: dict[str, Any] = Field(default_factory=dict)     # JSON-Schema properties
+    required: list[str] = Field(default_factory=list)
+    param_in: dict[str, str] = Field(default_factory=dict)   # name -> query|body|header
+
+    @field_validator("method")
+    @classmethod
+    def _known_method(cls, v: str) -> str:
+        m = v.strip().upper()
+        if m not in ("GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"):
+            raise ValueError(f"Unsupported HTTP method: {v!r}")
+        return m
+
+
+class EndpointOpsConfig(BaseModel):
+    """A typed per-operation endpoint-wrapper agent (Feature B): an LLM loop over an
+    external API where each operation is its own typed tool. ``base_url`` + ``auth_env``
+    are the shared connection concerns; ``operations`` are the typed tools the model
+    calls. The token is read at call time from the env var NAMED by ``auth_env`` —
+    the value is never stored here."""
+
+    base_url: str
+    operations: list[OperationSpec] = Field(..., min_length=1)
+    auth_env: str | None = None      # NAME of the env var holding the token (never the token)
+    auth_scheme: str = "Bearer"      # 'Bearer' | 'raw'
+    system_prompt: str | None = None  # optional override; otherwise a routing prompt is generated
+    model: str = "openai/gpt-oss-120b"
+
+    @field_validator("base_url")
+    @classmethod
+    def _http_base(cls, v: str) -> str:
+        from urllib.parse import urlsplit
+
+        scheme = urlsplit(v).scheme.lower()
+        if scheme not in ("http", "https"):
+            raise ValueError(f"base_url must be http(s); got {v!r}")
+        return v
+
+
 HARD_MAX_RUNTIME_SECONDS = 3600   # ceiling for a single agent request (D11)
 
 # apt package tokens permitted in system_packages. Debian names are lowercase
@@ -106,7 +156,10 @@ class CustomConfig(BaseModel):
         return cleaned
 
 
-def parse_config(handler_type: str, raw: dict) -> LLMConfig | APIProxyConfig | CustomConfig:
+AnyConfig = LLMConfig | APIProxyConfig | CustomConfig | EndpointOpsConfig
+
+
+def parse_config(handler_type: str, raw: dict) -> AnyConfig:
     """Build the typed config model for a handler_type from a raw dict."""
     if handler_type == "llm":
         return LLMConfig(**raw)
@@ -114,26 +167,33 @@ def parse_config(handler_type: str, raw: dict) -> LLMConfig | APIProxyConfig | C
         return APIProxyConfig(**raw)
     if handler_type == "custom":
         return CustomConfig(**raw)
+    if handler_type == "endpoint_ops":
+        return EndpointOpsConfig(**raw)
     raise ValueError(f"Unknown handler_type: {handler_type}")
 
 
 class RegisterRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=128)
     description: str = Field(..., min_length=1)
-    handler_type: Literal["llm", "api_proxy", "custom"]
+    handler_type: Literal["llm", "api_proxy", "custom", "endpoint_ops"]
     oasf_skills: list[OASFSkill] = Field(..., min_length=1)
-    config: LLMConfig | APIProxyConfig | CustomConfig
+    config: AnyConfig
 
     @field_validator("config", mode="before")
     @classmethod
     def validate_config(cls, v: Any, info: Any) -> Any:
-        # Pydantic will attempt each model; let it discriminate by required fields.
-        # If already a model instance, pass through.
-        if isinstance(v, (LLMConfig, APIProxyConfig, CustomConfig)):
+        # Discriminate the config by handler_type (declared before this field, so
+        # available in info.data) rather than by pydantic's structural union match.
+        # This is robust when configs share optional fields (e.g. an endpoint_ops
+        # config with a system_prompt could otherwise be mis-coerced to LLMConfig).
+        if isinstance(v, (LLMConfig, APIProxyConfig, CustomConfig, EndpointOpsConfig)):
             return v
+        handler_type = info.data.get("handler_type")
+        if handler_type and isinstance(v, dict):
+            return parse_config(handler_type, v)
         return v
 
-    def typed_config(self) -> LLMConfig | APIProxyConfig | CustomConfig:
+    def typed_config(self) -> AnyConfig:
         raw = self.config if isinstance(self.config, dict) else self.config.model_dump()
         return parse_config(self.handler_type, raw)
 

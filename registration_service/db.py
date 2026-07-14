@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS agents (
     id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name              TEXT NOT NULL,
     description       TEXT NOT NULL,
-    handler_type      TEXT NOT NULL CHECK (handler_type IN ('llm', 'api_proxy', 'custom')),
+    handler_type      TEXT NOT NULL CHECK (handler_type IN ('llm', 'api_proxy', 'custom', 'endpoint_ops')),
     oasf_skills       JSONB NOT NULL,
     config            JSONB NOT NULL,
     port              INT UNIQUE,
@@ -38,7 +38,7 @@ ALTER TABLE agents ADD COLUMN IF NOT EXISTS approved BOOLEAN NOT NULL DEFAULT TR
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS is_archive BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE agents DROP CONSTRAINT IF EXISTS agents_handler_type_check;
 ALTER TABLE agents ADD CONSTRAINT agents_handler_type_check
-    CHECK (handler_type IN ('llm', 'api_proxy', 'custom'));
+    CHECK (handler_type IN ('llm', 'api_proxy', 'custom', 'endpoint_ops'));
 ALTER TABLE agents DROP CONSTRAINT IF EXISTS agents_status_check;
 ALTER TABLE agents ADD CONSTRAINT agents_status_check
     CHECK (status IN ('registered', 'live', 'failed', 'stopped', 'building', 'image_ready'));
