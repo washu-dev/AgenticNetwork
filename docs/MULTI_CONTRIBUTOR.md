@@ -107,7 +107,7 @@ account hardcoded across the build script, submit job, and application code.
   (`CREDENTIALS_ENCRYPTION_KEY`, `GITHUB_TOKEN`, `GOOGLE_CLIENT_SECRET`) no longer live in the
   world-readable `deployment/.env`. They move to a restricted **secrets file** that
   `submit.sbatch` sources after `.env` (so it overrides): prod reads a shared operator-owned
-  `/engrfs/project/di2/secrets/agenticnetwork.env` (group-readable, not world — keeps
+  `<repo>/deployment/secrets.env` (group-readable, not world — keeps
   `CREDENTIALS_ENCRYPTION_KEY` stable), test reads a per-user `~/.config/agenticnetwork/secrets.env`;
   `SECRETS_FILE` overrides the path. Template + setup: `deployment/secrets.env.example`;
   gitignored via `secrets.env`. Non-secrets (`GOOGLE_CLIENT_ID`, `ADMIN_EMAILS`, dummy
@@ -232,9 +232,9 @@ repeatable runbook for future changes. Optional spot-checks not exercised are no
       `deployment/.env` and build + push every image: `bash deployment/build_and_push.sh` (infra),
       plus the specialist agents from the `agent-directory` repo. Note the ADS image is still
       pinned `:v4` in `submit.sbatch` — push that tag or update it.
-- [ ] **Secrets.** Create the prod secrets file `/engrfs/project/di2/secrets/agenticnetwork.env`
+- [ ] **Secrets.** Create the prod secrets file `/engrfs/project/di2/AgenticNetwork/deployment/secrets.env`
       (`chmod 0640`, group-owned) with the real `CREDENTIALS_ENCRYPTION_KEY` (**the existing prod
-      key** — a new one makes stored creds undecryptable), `GITHUB_TOKEN`, `GOOGLE_CLIENT_SECRET`.
+      key** — a new one makes stored creds undecryptable), `GITHUB_TOKEN`, `GITHUB_ISSUES_TOKEN`, `GOOGLE_CLIENT_SECRET`.
       Confirm they are **removed** from `deployment/.env`. `chmod 0600 /engrfs/project/di2/AgenticNetwork/.hf_token`.
 - [ ] **Test scratch.** Confirm `/scratch/$USER` exists and is writable on the target node.
 

@@ -98,10 +98,9 @@ Real secrets (`CREDENTIALS_ENCRYPTION_KEY`, `GITHUB_TOKEN`, `GITHUB_ISSUES_TOKEN
 after `.env`. Copy the template and set restrictive permissions:
 
 ```bash
-# prod (shared among authorized operators; not world-readable):
-install -d -m 0750 /engrfs/project/di2/secrets
-cp deployment/secrets.env.example /engrfs/project/di2/secrets/agenticnetwork.env
-chmod 0640 /engrfs/project/di2/secrets/agenticnetwork.env    # then fill in real values
+# prod (shared among authorized operators; lives beside the .example, gitignored as secrets.env):
+cp deployment/secrets.env.example /engrfs/project/di2/AgenticNetwork/deployment/secrets.env
+chmod 0640 /engrfs/project/di2/AgenticNetwork/deployment/secrets.env    # then fill in real values
 
 # test (per-user, private):
 mkdir -p ~/.config/agenticnetwork && chmod 0700 ~/.config/agenticnetwork
@@ -110,6 +109,8 @@ chmod 0600 ~/.config/agenticnetwork/secrets.env
 ```
 
 Override the path with `SECRETS_FILE=/path/to/secrets.env`. See `secrets.env.example` for details.
+The prod file **must** be named `secrets.env` — that name is gitignored (`**/secrets.env`), so it
+is never committed even though it sits inside the repo tree.
 
 > **Bug reporting & feedback:** `GITHUB_ISSUES_TOKEN` (secret) + `GITHUB_ISSUES_REPO` (non-secret,
 > in `.env`, default `washu-dev/AgenticNetwork`) power the planner's `POST /issues`, which backs

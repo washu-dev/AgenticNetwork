@@ -80,7 +80,7 @@ esac
 # prod reads a shared operator-owned file; test reads a per-user one. Override with SECRETS_FILE.
 # See docs/MULTI_CONTRIBUTOR.md and deployment/secrets.env.example.
 if [ "$DEPLOY_ENV" = "prod" ]; then
-    SECRETS_FILE="${SECRETS_FILE:-/engrfs/project/di2/secrets/agenticnetwork.env}"
+    SECRETS_FILE="${SECRETS_FILE:-$REPO/deployment/secrets.env}"
 else
     SECRETS_FILE="${SECRETS_FILE:-$HOME/.config/agenticnetwork/secrets.env}"
 fi
