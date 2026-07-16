@@ -253,7 +253,7 @@ and `http://localhost:8090/register/` (creation feedback, needs the registration
 ### Stage C — prod
 Only after Stage B is green:
 1. Add `GITHUB_ISSUES_TOKEN` to the **shared** prod secrets file
-   (`/engrfs/project/di2/secrets/agenticnetwork.env`, mode 0640) and `GITHUB_ISSUES_REPO` to prod `.env`.
+   (`/engrfs/project/di2/AgenticNetwork/deployment/secrets.env`, mode 0640) and `GITHUB_ISSUES_REPO` to prod `.env`.
 2. Redeploy prod (`deployment/deploy.sh` / normal submit path).
 3. Post-deploy smoke: file one bug via the live UI, confirm the issue, then close it.
 
