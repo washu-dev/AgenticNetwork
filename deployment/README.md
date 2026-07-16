@@ -93,9 +93,9 @@ Edit `.env` — the values you may actually change (most have working defaults):
 
 ### 3. Create your secrets file
 
-Real secrets (`CREDENTIALS_ENCRYPTION_KEY`, `GITHUB_TOKEN`, `GOOGLE_CLIENT_SECRET`) live in a
-restricted file, **not** `.env`. `submit.sbatch` sources it after `.env`. Copy the template and
-set restrictive permissions:
+Real secrets (`CREDENTIALS_ENCRYPTION_KEY`, `GITHUB_TOKEN`, `GITHUB_ISSUES_TOKEN`,
+`GOOGLE_CLIENT_SECRET`) live in a restricted file, **not** `.env`. `submit.sbatch` sources it
+after `.env`. Copy the template and set restrictive permissions:
 
 ```bash
 # prod (shared among authorized operators; not world-readable):
@@ -110,6 +110,14 @@ chmod 0600 ~/.config/agenticnetwork/secrets.env
 ```
 
 Override the path with `SECRETS_FILE=/path/to/secrets.env`. See `secrets.env.example` for details.
+
+> **Bug reporting & feedback:** `GITHUB_ISSUES_TOKEN` (secret) + `GITHUB_ISSUES_REPO` (non-secret,
+> in `.env`, default `washu-dev/AgenticNetwork`) power the planner's `POST /issues`, which backs
+> the in-app "Report a bug" button and the agent-creation feedback form. Both file GitHub issues
+> labeled `user-submitted` + `bug-report`/`agent-creation-feedback`. If the token is unset the
+> forms fail loud (HTTP 502) — they never silently drop a report. The registration UI's feedback
+> form reaches this endpoint only when served **through the planner** (`/register/…`), which is
+> the deployed path.
 
 The vLLM HuggingFace token lives in a separate file (`/workspace/.hf_token`, read by
 `start_vllm.sbatch`) — it's also a secret on shared storage, so `chmod 600` it.

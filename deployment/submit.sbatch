@@ -75,9 +75,9 @@ case "$DEPLOY_ENV" in
 esac
 
 # ── Secrets — kept OUT of the shared, world-readable .env ──────────────────────
-# Real secrets (CREDENTIALS_ENCRYPTION_KEY, GITHUB_TOKEN, GOOGLE_CLIENT_SECRET) live
-# in a restricted file, sourced AFTER .env so they override. prod reads a shared
-# operator-owned file; test reads a per-user one. Override with SECRETS_FILE.
+# Real secrets (CREDENTIALS_ENCRYPTION_KEY, GITHUB_TOKEN, GITHUB_ISSUES_TOKEN,
+# GOOGLE_CLIENT_SECRET) live in a restricted file, sourced AFTER .env so they override.
+# prod reads a shared operator-owned file; test reads a per-user one. Override with SECRETS_FILE.
 # See docs/MULTI_CONTRIBUTOR.md and deployment/secrets.env.example.
 if [ "$DEPLOY_ENV" = "prod" ]; then
     SECRETS_FILE="${SECRETS_FILE:-/engrfs/project/di2/secrets/agenticnetwork.env}"
