@@ -35,9 +35,75 @@ from planner_agent.main_agent.db import close_db, fetch_user_credentials, init_d
 from planner_agent.main_agent.llm_client import LLMClient, OpenAIToolLoopClient
 from planner_agent.main_agent.credential_gate import DbCredentialGate
 from planner_agent.main_agent.runtime import ContextOwnershipError, MainAgentRuntime
-from planner_agent.main_agent import conversation_store
+from planner_agent.main_agent import conversation_store, github_issues
 
 logger = logging.getLogger(__name__)
+
+# Bug-report auto-context caps: keep issues readable and avoid dumping large
+# conversation bodies (even into a private repo).
+_MAX_TRACE_ROWS = 10
+_MAX_FIELD_LEN = 200
+
+
+def _truncate(text: str | None, limit: int = _MAX_FIELD_LEN) -> str:
+    text = (text or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit] + " …(truncated)"
+
+
+def build_issue_payload(
+    req: "IssueRequest",
+    *,
+    reporter_email: str,
+    timestamp: str,
+    trace_rows: list[dict[str, Any]] | None = None,
+    agent_versions: list[str] | None = None,
+) -> tuple[str, str, list[str]]:
+    """Assemble the (title, body, labels) for a user-submitted issue.
+
+    Pure function so it can be unit-tested without GitHub or a running app.
+    """
+    is_bug = req.kind == "bug"
+    labels = ["user-submitted", "bug-report" if is_bug else "agent-creation-feedback"]
+
+    title = (req.summary or "").strip() or _truncate(req.description, 60) or "(no summary)"
+
+    lines: list[str] = [(req.description or "").strip(), ""]
+    ctx: list[str] = [
+        "<details><summary>Auto-captured context</summary>",
+        "",
+        f"- Reporter: {reporter_email}",
+        f"- Time (UTC): {timestamp}",
+        f"- Kind: {req.kind}",
+    ]
+    if is_bug:
+        if req.context_id:
+            ctx.append(f"- context_id: `{req.context_id}`")
+        if agent_versions:
+            ctx.append(f"- Agents: {', '.join(agent_versions)}")
+        if trace_rows:
+            ctx += [
+                "",
+                "Recent trace:",
+                "",
+                "| time | prompt | routed_to | latency_ms | state |",
+                "| --- | --- | --- | --- | --- |",
+            ]
+            for r in trace_rows[:_MAX_TRACE_ROWS]:
+                ctx.append(
+                    f"| {r.get('timestamp','')} | {_truncate(r.get('prompt',''), 80)} "
+                    f"| {r.get('routed_to','')} | {r.get('latency_ms','')} | {r.get('state','')} |"
+                )
+    else:
+        if req.step:
+            ctx.append(f"- Step: {req.step}")
+        if req.agent_id:
+            ctx.append(f"- Draft agent_id: `{req.agent_id}`")
+    ctx += ["", "</details>"]
+
+    body = "\n".join(lines + ctx)
+    return title, body, labels
 
 class IncomingMessage(BaseModel):
     user_id: str = Field(default="demo-user")
@@ -62,6 +128,18 @@ class FeedbackRequest(BaseModel):
     agent_id: str | None = None
     skill: str | None = None
     prompt_text: str | None = None
+
+
+class IssueRequest(BaseModel):
+    """A user-submitted bug report or agent-creation feedback -> GitHub issue."""
+    kind: str                     # "bug" | "agent_creation_feedback"
+    summary: str
+    description: str
+    # bug context (optional)
+    context_id: str | None = None
+    # agent-creation feedback context (optional)
+    step: str | None = None       # draft|validate|submit|approved|rejected
+    agent_id: str | None = None
 
 
 def create_app(
@@ -241,6 +319,7 @@ def create_app(
                 "routed_to": result.selected_agents[-1]["agent_id"] if result.selected_agents else "planner",
                 "latency_ms": latency_ms,
                 "state": result.state,
+                "context_id": result.context_id,
             })
             try:
                 ctx = store.get_context(result.context_id)
@@ -287,6 +366,7 @@ def create_app(
                         "routed_to": result.selected_agents[-1]["agent_id"] if result.selected_agents else "planner",
                         "latency_ms": latency_ms,
                         "state": result.state,
+                        "context_id": result.context_id,
                     })
                     try:
                         ctx = store.get_context(result.context_id)
@@ -364,6 +444,45 @@ def create_app(
             "prompt_text": req.prompt_text or "",
         })
         return {"ok": True}
+
+    @app.post("/issues")
+    async def post_issue(req: IssueRequest, request: Request) -> dict[str, Any]:
+        """File a user-submitted bug report or agent-creation feedback as a GitHub issue."""
+        if req.kind not in ("bug", "agent_creation_feedback"):
+            raise HTTPException(status_code=422, detail="kind must be 'bug' or 'agent_creation_feedback'")
+
+        reporter_email = _resolve_shib_user_id(request)
+        timestamp = _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime())
+
+        trace_rows: list[dict[str, Any]] = []
+        agent_versions: list[str] = []
+        if req.kind == "bug":
+            if req.context_id:
+                trace_rows = [e for e in _request_log if e.get("context_id") == req.context_id]
+            try:
+                agent_versions = sorted(a.name for a in directory.search_agents())
+            except Exception:
+                # A directory blip must not block filing a report.
+                agent_versions = []
+
+        title, body, labels = build_issue_payload(
+            req,
+            reporter_email=reporter_email,
+            timestamp=timestamp,
+            trace_rows=trace_rows,
+            agent_versions=agent_versions,
+        )
+
+        try:
+            issue_url = await github_issues.create_issue(title, body, labels)
+        except github_issues.GitHubIssueError as exc:
+            logger.error("issue_submission_failed kind=%s: %s", req.kind, exc)
+            raise HTTPException(
+                status_code=502,
+                detail="Couldn't file your report — please try again or contact an admin.",
+            ) from exc
+
+        return {"ok": True, "issue_url": issue_url}
 
     @app.get("/admin/stats")
     async def admin_stats(request: Request, _: None = Depends(_require_admin)) -> dict[str, Any]:
