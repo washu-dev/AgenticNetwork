@@ -50,6 +50,7 @@ to make the personal ones group-owned, exactly like Slurm already is.**
 | DockerHub namespace `amaankhan25` — **build script** | `deployment/build_and_push.sh:17` (`REGISTRY=amaankhan25`) | A second contributor can't push without creds for that personal account. |
 | DockerHub namespace — **submit** | `deployment/submit.sbatch` (10× `--container-image=amaankhan25/agenticnetwork-*`) | The cluster only ever pulls from the personal account. |
 | DockerHub namespace — **application code** ⚠️ | `registration_service/backend.py:96`, `registration_service/supervisor.py:263,368` (`amaankhan25/agenticnetwork-custom-*`) | The trap: a contributor's *running* instance builds/pulls custom-agent images into the personal account. Not an env knob — it's a code literal. |
+| GitHub write identity — **personal PAT** ⏳ | `registration_service/supervisor.py` (`GITHUB_TOKEN` in `_github_commit_files`/`_delete_from_github`; no `author`/`committer` set) + `deployment/secrets.env` | Every `registered_agents/…` commit is authored by the PAT owner, and the triggered "Build custom agent image" Actions run (`agent-directory/.github/workflows/build-custom-agent.yml`) lists them as actor — so the whole custom-agent build/push flow reads as one person. Plan: replace with a GitHub App (see Future work). |
 | Image tags — `:latest` everywhere (+ ADS manually pinned `:v4`) | `deployment/submit.sbatch`, `deployment/README.md` | Any two builds clobber each other; ADS tag drifts and must be hand-bumped. |
 
 ### B. Shared mutable state — singletons with no coordination
@@ -216,6 +217,71 @@ the session open. Full step-by-step + `~/.ssh/config` shortcut in `deployment/RE
 2. **GitHub Actions runner reach** — do the runners need to reach the registry only, or also
    trigger the cluster deploy (self-hosted runner on-cluster vs. an SSH/`sbatch` step from a
    hosted runner)? Resolve when Phase 3 starts.
+
+---
+
+## Future work — de-personalize the GitHub write identity (GitHub App)
+
+> **Status: planned, not started (2026-07-16).** The DockerHub side is already group-owned
+> (`di2washu`, Phase 0). The remaining personal coupling is the **GitHub PAT** the registration
+> service uses to commit build contexts to `agent-directory` — see the "GitHub write identity"
+> row in the coupling inventory above. This section captures the agreed plan so we can pick it up
+> later; no code has changed.
+
+**The three identity surfaces, and what each fix reaches:**
+
+| Surface | Where it lives | Fixed by |
+|---|---|---|
+| Commit author on `registered_agents/…` | `supervisor.py` `_github_commit_files` (no `author`/`committer` → inherits the token owner) | replacing the token |
+| Triggering **actor** of the build workflow | bound to whoever's token pushed (follows the commit token) | replacing the token |
+| DockerHub push account | `agent-directory` workflow secrets (`DOCKERHUB_USERNAME/TOKEN`) | ✅ already `di2washu` (shared) |
+
+The first two collapse into one decision: **replace the personal PAT with a GitHub App.** A
+lightweight "keep the PAT, just set an explicit bot `author`/`committer`" was considered and
+rejected — it relabels the commit but leaves the Actions **actor** as the person, so it does not
+fully decouple. An App does: commits *and* the run actor both become `agenticnetwork-bot[bot]`
+natively (the Git Data API attributes commits made with an installation token to the app bot, so
+no `author` override is needed).
+
+**Chosen approach — GitHub App (`agenticnetwork-bot`):**
+
+*Setup (org owner, one-time — cannot be done from the repo):*
+- Create a GitHub App on the `washu-dev` org: webhook **off**, single permission **Contents:
+  Read and write** (Metadata: Read is auto), installable "only on this account."
+- Note the **App ID**, generate a **private key** (`.pem`), and **install** the App scoped to
+  **`agent-directory` only** (note the Installation ID, or let the code auto-discover it via
+  `GET /repos/{repo}/installation`).
+
+*Deployment wiring (secrets travel as env vars — `submit.sbatch` sources the secrets file):*
+- Add to the prod secrets file: `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY_B64`
+  (`base64 -i key.pem | tr -d '\n'` — base64 avoids multiline/quoting pain across
+  `source` → `srun`), optional `GITHUB_APP_INSTALLATION_ID`. `GITHUB_REPO` stays in `.env`.
+- After verification, remove the personal `GITHUB_TOKEN`. (`GITHUB_ISSUES_TOKEN`, used for the
+  bug-report → Issues flow, is a **separate** token — migrating it to the App is a later follow-up.)
+
+*Code changes (registration_service):*
+- `requirements.txt`: add `PyJWT>=2.8.0` + `cryptography>=42.0` (RS256).
+- `supervisor.py`: add a cached installation-token minter (App JWT `iss=APP_ID`, `iat-60`,
+  `exp+540`; `POST /app/installations/{id}/access_tokens`; cache until ~60s before the ~1h
+  expiry). `_github_commit_files` and `_delete_from_github` fetch the token from it instead of
+  `os.environ["GITHUB_TOKEN"]`.
+- `_cluster_build_enabled()`: accept **App creds OR `GITHUB_TOKEN`** so the change can land inert
+  (PAT keeps working until the App secrets are populated — a clean, reversible cutover).
+- Update `deployment/secrets.env.example` + this doc.
+
+*Verify:* register a test agent → the `registered_agents/…` commit and the "Build custom agent
+image" run both attribute to `agenticnetwork-bot[bot]`, nothing reads a personal handle.
+
+**Gotchas noted for later:**
+- The external push still triggers the workflow — the "`GITHUB_TOKEN` pushes don't cascade" rule
+  only applies to the *in-Actions* ephemeral token, not an App installation token used by the
+  (external) registration service.
+- Installation tokens expire ~1h → the minter must cache-with-refresh so a long-lived
+  registration process never sends a stale token.
+- **Durable end state:** post-GCP-migration, DockerHub → Artifact Registry with GitHub OIDC /
+  Workload Identity Federation removes the last long-lived push secret entirely (see
+  `deployment/GCP_MIGRATION_PLAN.md`). App (GitHub) + OIDC (registry) = zero personal credentials
+  in the path.
 
 ---
 
