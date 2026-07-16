@@ -4,6 +4,7 @@ import asyncio
 from pathlib import Path
 
 import httpx
+import pytest
 
 from planner_agent.main_agent.directory.card_oasf_converter import load_agent_card
 from planner_agent.main_agent.directory.client import DirectoryClient
@@ -237,6 +238,43 @@ async def _admin_register_proxy_blocks_non_admin() -> None:
             "/register/agents/some-id/approve", headers={"mail": "bob@wustl.edu"}
         )
     assert resp.status_code == 403, resp.text
+
+
+def test_register_proxy_blocks_non_admin_handler_review(monkeypatch) -> None:
+    # GET /agents/{id}/handler is the approver's source-review action — admin-only.
+    monkeypatch.setenv("ADMIN_EMAILS", "admin@wustl.edu")
+    asyncio.run(_register_proxy_blocks_non_admin_handler_review())
+
+
+async def _register_proxy_blocks_non_admin_handler_review() -> None:
+    app = _final_answer_app()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client:
+        resp = await client.get(
+            "/register/agents/some-id/handler", headers={"mail": "bob@wustl.edu"}
+        )
+    assert resp.status_code == 403, resp.text
+
+
+def test_register_proxy_allows_non_admin_handler_upload(monkeypatch) -> None:
+    # POST /agents/{id}/handler is the (open) code-upload step — a non-admin must
+    # NOT be blocked at the gate. It shares its path with the admin-only GET review,
+    # so a method-agnostic suffix match wrongly returned 403 here (the reported bug).
+    monkeypatch.setenv("ADMIN_EMAILS", "admin@wustl.edu")
+    # Dead upstream: the proxy forwarding the request (rather than rejecting it)
+    # is what proves the request cleared the admin gate.
+    monkeypatch.setenv("REGISTRATION_SERVICE_URL", "http://127.0.0.1:9")
+    asyncio.run(_register_proxy_allows_non_admin_handler_upload())
+
+
+async def _register_proxy_allows_non_admin_handler_upload() -> None:
+    app = _final_answer_app()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client:
+        with pytest.raises(httpx.TransportError):
+            await client.post(
+                "/register/agents/some-id/handler",
+                headers={"mail": "bob@wustl.edu"},
+                content=b"code",
+            )
 
 
 # ---------------------------------------------------------------------------

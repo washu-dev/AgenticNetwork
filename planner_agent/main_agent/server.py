@@ -156,15 +156,24 @@ def create_app(
     _reg_base = os.getenv("REGISTRATION_SERVICE_URL", "http://localhost:8091")
     _reg_client = httpx.AsyncClient(base_url=_reg_base, timeout=30.0)
 
-    # Admin-only registration subpaths (the approver's trust-boundary actions).
-    _ADMIN_REG_SUFFIXES = ("/approve", "/reject", "/handler", "/handler/download")
+    def _is_admin_reg_action(method: str, url: str) -> bool:
+        # P4f: the approver's trust-boundary actions are admin-only. Gate by
+        # method+path, NOT path alone — POST /agents/{id}/handler is the (open)
+        # code-upload step any authenticated user performs, and shares its path
+        # with GET /agents/{id}/handler (the admin-only source review). Matching
+        # the "/handler" suffix regardless of method wrongly blocked uploads.
+        if method == "GET":
+            return url.endswith("/handler") or url.endswith("/handler/download")
+        if method == "POST":
+            return url.endswith("/approve") or url.endswith("/reject")
+        return False
 
     @app.api_route("/register/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
     async def proxy_registration(path: str, request: Request) -> Response:
         url = f"/{path}"
         # P4f: enforce admin at the SSO front door for the approver actions before
         # forwarding. registration_service enforces the same allowlist as defense-in-depth.
-        if any(url.endswith(suffix) for suffix in _ADMIN_REG_SUFFIXES):
+        if _is_admin_reg_action(request.method, url):
             _require_admin(request)
         body = await request.body()
         headers = {k: v for k, v in request.headers.items()
