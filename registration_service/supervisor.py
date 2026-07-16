@@ -271,12 +271,20 @@ class Supervisor:
         stopped = 0
         for row in rows:
             agent_id = str(row["id"])
+            # NB: do NOT pass row["updated_at"] as `since` here. `updated_at` is
+            # bumped to now() on every status change (see _set_status), including
+            # when the agent went 'live' — which always happens *after* the image
+            # was built and pushed. So a freshness check would compare the image's
+            # build time against the (later) go-live time and always fail, wrongly
+            # marking every recoverable agent 'stopped'. On recovery we only need to
+            # know the image still exists; the `since` guard belongs in the
+            # build-poll path (_check_building_agents), where updated_at really is
+            # the approval time and a newer image is what we're waiting for.
             redeployable = (
                 row["handler_type"] == "custom"
                 and _cluster_build_enabled()
                 and await _image_exists_on_dockerhub(
                     f"{_image_registry()}/agenticnetwork-custom-{_image_slug(row['name'])}",
-                    row["updated_at"],
                 )
             )
             async with pool.acquire() as conn:

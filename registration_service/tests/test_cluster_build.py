@@ -245,3 +245,41 @@ async def test_image_exists_false_on_404(monkeypatch):
         sup_mod.httpx, "AsyncClient", lambda *a, **k: _FakeClient(_Resp(404)),
     )
     assert await _image_exists_on_dockerhub("di2washu/agenticnetwork-custom-x") is False
+
+
+# ── Recovery on redeploy: a live custom agent is re-queued, not lost ──────────────
+
+async def test_recover_live_agent_requeues_not_stops(monkeypatch):
+    """Regression: recover_live_agents must NOT pass row['updated_at'] as the
+    Docker Hub freshness bound. `updated_at` is bumped on go-live, which is always
+    *after* the image was built, so a `since` check would always fail and wrongly
+    mark the agent 'stopped'. With the fix, a live custom agent whose image still
+    exists is re-queued to 'image_ready' for the host spawn loop.
+    """
+    _cluster_env(monkeypatch)
+    await _fresh_db()
+    agent = await _make_custom(approved=True)
+    # Simulate a prior deploy that took the agent all the way live (bumps updated_at
+    # to "now", i.e. after any image build time).
+    await db.update_agent(agent["id"], status="live", port=19200)
+
+    seen_since = []
+
+    async def exists(image, since=None):
+        # Mirror the real contract: if a `since` bound is (wrongly) passed, an image
+        # built before go-live would be rejected — which is exactly the bug.
+        seen_since.append(since)
+        return since is None
+
+    monkeypatch.setattr(sup_mod, "_image_exists_on_dockerhub", exists)
+    sup = Supervisor(backend=ClusterBackend(), publisher=_FakePublisher())
+    await sup.recover_live_agents()
+
+    got = await db.get_agent(agent["id"])
+    assert got["status"] == "image_ready", "live custom agent should be re-queued"
+    assert seen_since == [None], "recovery must not gate on updated_at freshness"
+
+    # And it surfaces to the host spawn loop.
+    queue = await sup.spawn_queue()
+    assert [e["agent_id"] for e in queue] == [str(agent["id"])]
+    await db.close_db()

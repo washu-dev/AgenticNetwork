@@ -258,6 +258,20 @@ done
 export SPAWN_BACKEND="${SPAWN_BACKEND:-cluster}"
 export HANDLER_FILES_DIR="${HANDLER_FILES_DIR:-/workspace/registration_service/uploaded_handlers}"
 
+# The cluster build pipeline — and the recover-live-agents-on-redeploy path that
+# depends on it — is a no-op without a GitHub PAT and target repo. If they're
+# missing, custom agents will NOT be rebuilt or restarted on redeploy; they'll be
+# reconciled to 'stopped' and then purged. Surface this loudly rather than let it
+# fail silently (see supervisor._cluster_build_enabled / recover_live_agents).
+if [ "$SPAWN_BACKEND" = "cluster" ]; then
+    if [ -z "${GITHUB_TOKEN:-}" ] || [ -z "${GITHUB_REPO:-}" ]; then
+        echo "[submit] WARN: SPAWN_BACKEND=cluster but GITHUB_TOKEN/GITHUB_REPO are unset."
+        echo "[submit]       Custom-agent build + restart-on-redeploy is DISABLED;"
+        echo "[submit]       registered custom agents will not come back after a redeploy."
+        echo "[submit]       Set them in $SECRETS_FILE (GITHUB_TOKEN) and .env (GITHUB_REPO)."
+    fi
+fi
+
 # ── Agent containers ─────────────────────────────────────────────────────────
 # Launched with a stagger: all agents publish to the ADS routing index (SQLite)
 # shortly after start, and simultaneous writes cause "database is locked

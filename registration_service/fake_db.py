@@ -111,6 +111,16 @@ class FakeConnection:
                     a["ads_cid"] = ads_cid
                 a["updated_at"] = _now()
 
+        elif "set status = 'image_ready'" in s:
+            # recover_live_agents (cluster): re-queue a ghost 'live' row for the
+            # host spawn loop — UPDATE agents SET status='image_ready', ads_cid=NULL ...
+            uid = args[0]
+            a = self._s.agents.get(_coerce_uuid(uid))
+            if a:
+                a["status"] = "image_ready"
+                a["ads_cid"] = None
+                a["updated_at"] = _now()
+
         elif "set status = 'stopped'" in s:
             # supervisor stop_and_unpublish: UPDATE agents SET status='stopped', ads_cid=NULL ...
             uid = args[0]
@@ -184,6 +194,20 @@ class FakeConnection:
 
         if "select id from agents where status" in s and "'live'" in s:
             return [FakeRecord({"id": v["id"]}) for v in self._s.agents.values() if v["status"] == "live"]
+
+        # recover_live_agents (cluster): SELECT id, name, handler_type, port, updated_at ...
+        if "from agents where status = 'live'" in s:
+            return [
+                FakeRecord({
+                    "id": v["id"],
+                    "name": v["name"],
+                    "handler_type": v["handler_type"],
+                    "port": v["port"],
+                    "updated_at": v["updated_at"],
+                })
+                for v in self._s.agents.values()
+                if v["status"] == "live"
+            ]
 
         return []
 
