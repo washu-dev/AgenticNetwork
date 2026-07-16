@@ -918,6 +918,10 @@ body {
         </div>
       </div>
       <div class="uv-sidebar-footer">
+        <button type="button" class="uv-footer-btn" onclick="openBugReport()">
+          <svg class="uv-footer-gear" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="6" width="8" height="14" rx="4"/><path d="M12 20v-9M19 8l-2 1M5 8l2 1M19 16l-2-1M5 16l2-1M15 4l-1.5 2M9 4l1.5 2"/></svg>
+          Report a bug
+        </button>
         <button type="button" class="uv-footer-btn" onclick="openSettings()">
           <svg class="uv-footer-gear" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
           Settings
@@ -1260,6 +1264,26 @@ body {
     <button type="button" class="panel-close" onclick="closeDetail()">&times;</button>
   </div>
   <div class="panel-body" id="panel-body"></div>
+</div>
+
+<!-- Report a bug modal -->
+<div class="modal-overlay hidden" id="bug-overlay">
+  <div class="modal">
+    <div class="modal-eyebrow">Report a bug</div>
+    <div class="modal-title">Something not working?</div>
+    <div class="modal-sub">This files a GitHub issue for the team. Your current conversation and recent activity are attached automatically to help us debug — you don't need to include them.</div>
+    <div class="modal-field">
+      <label class="modal-label" for="bug-summary">Summary</label>
+      <input class="modal-input" id="bug-summary" type="text" placeholder="e.g. Chat spins forever after asking to send email" maxlength="140">
+    </div>
+    <div class="modal-field">
+      <label class="modal-label" for="bug-desc">What happened?</label>
+      <textarea class="modal-input" id="bug-desc" rows="5" placeholder="Describe what you did and what went wrong."></textarea>
+    </div>
+    <div class="modal-sub" id="bug-status" style="display:none"></div>
+    <button type="button" class="btn-modal-p" id="bug-submit" onclick="submitBugReport()">Submit report</button>
+    <button type="button" class="btn-modal-g" onclick="closeBugReport()">Cancel</button>
+  </div>
 </div>
 
 <script>
@@ -2318,6 +2342,65 @@ function uvNewConversation() {
   contextId = null;
   uvClearChat();
   document.getElementById('uv-chat-input')?.focus();
+}
+
+// ── Report a bug ──
+function openBugReport() {
+  document.getElementById('bug-summary').value = '';
+  document.getElementById('bug-desc').value = '';
+  const status = document.getElementById('bug-status');
+  status.style.display = 'none';
+  status.innerHTML = '';
+  const btn = document.getElementById('bug-submit');
+  btn.disabled = false;
+  btn.textContent = 'Submit report';
+  document.getElementById('bug-overlay').classList.remove('hidden');
+  document.getElementById('bug-summary').focus();
+}
+function closeBugReport() {
+  document.getElementById('bug-overlay').classList.add('hidden');
+}
+async function submitBugReport() {
+  const summary = document.getElementById('bug-summary').value.trim();
+  const description = document.getElementById('bug-desc').value.trim();
+  const status = document.getElementById('bug-status');
+  if (!description) {
+    status.style.display = '';
+    status.style.color = 'var(--dr)';
+    status.textContent = 'Please describe what happened.';
+    return;
+  }
+  const btn = document.getElementById('bug-submit');
+  btn.disabled = true;
+  btn.textContent = 'Submitting…';
+  status.style.display = 'none';
+  try {
+    const r = await fetch('/issues', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind: 'bug', summary, description, context_id: contextId }),
+    });
+    const data = await r.json().catch(() => ({}));
+    status.style.display = '';
+    if (r.ok && data.ok) {
+      status.style.color = 'var(--t3)';
+      status.innerHTML = data.issue_url
+        ? `Thanks — filed as <a href="${uvEsc(data.issue_url)}" target="_blank" rel="noopener">this issue</a>.`
+        : 'Thanks — your report was filed.';
+      btn.textContent = 'Submitted';
+    } else {
+      status.style.color = 'var(--dr)';
+      status.textContent = data.detail || 'Couldn’t file your report — please try again.';
+      btn.disabled = false;
+      btn.textContent = 'Submit report';
+    }
+  } catch (e) {
+    status.style.display = '';
+    status.style.color = 'var(--dr)';
+    status.textContent = 'Couldn’t reach the server — please try again.';
+    btn.disabled = false;
+    btn.textContent = 'Submit report';
+  }
 }
 
 // ── Page init ──
