@@ -154,6 +154,18 @@
       <p class="section-title">Register a new agent</p>
       <div id="reg-alert" style="display:none"></div>
 
+      <!-- Agent-creation feedback (shown after a registration attempt) -->
+      <div id="reg-feedback" style="display:none; border:1px dashed var(--border); border-radius:var(--radius); padding:16px; margin-bottom:16px">
+        <p class="section-title" style="margin-top:0">How was creating this agent?</p>
+        <p style="font-size:.8rem;color:var(--muted);margin:-6px 0 10px">Optional — your feedback goes to the team as a GitHub issue to help improve the agent creation flow.</p>
+        <textarea id="reg-feedback-text" rows="3" placeholder="What went well or was confusing? Anything that tripped you up?"></textarea>
+        <div id="reg-feedback-status" style="font-size:.8rem;margin:8px 0;display:none"></div>
+        <div style="display:flex;gap:8px;margin-top:10px">
+          <button class="btn btn-primary btn-sm" id="reg-feedback-btn" onclick="submitCreationFeedback()">Send feedback</button>
+          <button class="btn btn-outline btn-sm" onclick="dismissCreationFeedback()">Dismiss</button>
+        </div>
+      </div>
+
       <div class="form-group">
         <label class="field-label">Handler type</label>
         <div class="radio-group">
@@ -571,6 +583,11 @@ async function submitRegistration() {
   btn.disabled = true;
   btn.textContent = 'Registering…';
 
+  // Track which stage we reach so creation feedback can report where the flow
+  // ended up (validate = the POST /agents step; submit = handler upload / done).
+  let stage = 'validate';
+  let createdId = null;
+
   try {
     const res = await fetch(`${API_PREFIX}/agents`, {
       method: 'POST',
@@ -582,6 +599,8 @@ async function submitRegistration() {
       throw new Error(fmtDetail(body.detail) || `HTTP ${res.status}`);
     }
     const agent = await res.json();
+    stage = 'submit';
+    createdId = agent.id;
 
     if (handler_type === 'custom') {
       // Step 2: upload the handler — a single .py blob or the chosen .zip project.
@@ -610,8 +629,10 @@ async function submitRegistration() {
         `"${agent.name}" registered! Status: ${agent.status}. Port: ${agent.port}.`);
     }
     resetForm();
+    showCreationFeedback('submit', createdId);
   } catch (e) {
     showAlert('error', String(e.message || e));
+    showCreationFeedback(stage, createdId);
   } finally {
     btn.disabled = false;
     btn.textContent = 'Register Agent';
@@ -732,6 +753,73 @@ async function deleteAgent(id, name) {
 }
 
 // ── Alerts ────────────────────────────────────────────────────────────────────
+// ── Agent-creation feedback ─────────────────────────────────────────────────
+let _regFeedbackCtx = { step: null, agentId: null };
+function showCreationFeedback(step, agentId) {
+  _regFeedbackCtx = { step: step || null, agentId: agentId || null };
+  document.getElementById('reg-feedback-text').value = '';
+  const st = document.getElementById('reg-feedback-status');
+  st.style.display = 'none';
+  st.textContent = '';
+  const btn = document.getElementById('reg-feedback-btn');
+  btn.disabled = false;
+  btn.textContent = 'Send feedback';
+  document.getElementById('reg-feedback').style.display = '';
+}
+function dismissCreationFeedback() {
+  document.getElementById('reg-feedback').style.display = 'none';
+}
+async function submitCreationFeedback() {
+  const description = document.getElementById('reg-feedback-text').value.trim();
+  const st = document.getElementById('reg-feedback-status');
+  if (!description) {
+    st.style.display = '';
+    st.style.color = 'var(--danger)';
+    st.textContent = 'Please enter some feedback first.';
+    return;
+  }
+  const btn = document.getElementById('reg-feedback-btn');
+  btn.disabled = true;
+  btn.textContent = 'Sending…';
+  st.style.display = 'none';
+  try {
+    // The planner owns POST /issues. When this UI is proxied at /register the
+    // planner is the same origin, so an absolute /issues reaches it. Standalone
+    // on :8091 there is no planner, so this fails gracefully with a message.
+    const r = await fetch('/issues', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        kind: 'agent_creation_feedback',
+        summary: 'Agent creation feedback',
+        description,
+        step: _regFeedbackCtx.step,
+        agent_id: _regFeedbackCtx.agentId,
+      }),
+    });
+    const data = await r.json().catch(() => ({}));
+    st.style.display = '';
+    if (r.ok && data.ok) {
+      st.style.color = 'var(--muted)';
+      st.innerHTML = data.issue_url
+        ? `Thanks — filed as <a href="${esc(data.issue_url)}" target="_blank" rel="noopener">this issue</a>.`
+        : 'Thanks for the feedback!';
+      btn.textContent = 'Sent';
+    } else {
+      st.style.color = 'var(--danger)';
+      st.textContent = data.detail || 'Couldn’t send feedback — please try again.';
+      btn.disabled = false;
+      btn.textContent = 'Send feedback';
+    }
+  } catch (e) {
+    st.style.display = '';
+    st.style.color = 'var(--danger)';
+    st.textContent = 'Couldn’t reach the server — please try again.';
+    btn.disabled = false;
+    btn.textContent = 'Send feedback';
+  }
+}
+
 function showAlert(type, msg) {
   const el = document.getElementById('reg-alert');
   el.className = `alert alert-${type}`;
