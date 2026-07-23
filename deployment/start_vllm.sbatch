@@ -5,7 +5,7 @@
 #SBATCH --mem=32G
 #SBATCH --gres=gpu:h100:1
 #SBATCH -A engr-lab-di2
-#SBATCH --time=04:00:00
+#SBATCH --time=12:00:00
 #SBATCH --container-image=vllm/vllm-openai:latest
 #SBATCH --container-mounts=/engrfs/project/di2/AgenticNetwork:/workspace
 #SBATCH --container-writable
@@ -37,6 +37,8 @@ echo " OpenAI-compatible endpoint: http://$(hostname):${CHAT_PORT}/v1/"
 echo " (submit.sbatch auto-discovers this node via job name 'agenticnetwork-vllm')"
 echo "======================================================"
 
+set -a; source /workspace/deployment/secrets.env; set +a
+
 vllm serve "$MODEL" \
   --served-model-name openai/gpt-oss-120b \
   --reasoning-parser openai_gptoss \
@@ -48,4 +50,5 @@ vllm serve "$MODEL" \
   --gpu-memory-utilization 0.85 \
   --max-model-len 32768 \
   --max-num-batched-tokens 10240 \
-  --max-num-seqs 128
+  --max-num-seqs 128 \
+  --api-key "$VLLM_API_KEY"
