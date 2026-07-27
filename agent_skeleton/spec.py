@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING, Any, Callable
 from .config import MAX_TOOL_STEPS
 
 if TYPE_CHECKING:
-    from .system_tools.call_endpoint import EndpointConfig
+    from .system_tools.call_endpoint import EndpointConfig, OperationConfig
 
 # A tool body: keyword args named exactly like its schema properties -> JSON-able dict.
 ToolFn = Callable[..., dict[str, Any]]
@@ -97,6 +97,59 @@ def default_demo_spec() -> AgentSpec:
     )
 
 
+def llm_wrapper_spec(
+    *,
+    name: str,
+    system_prompt: str,
+    preset_tools: list[str] | None = None,
+    model: str | None = None,
+    max_steps: int = MAX_TOOL_STEPS,
+    extra_schemas: list[dict[str, Any]] | None = None,
+    extra_registry: dict[str, ToolFn] | None = None,
+) -> AgentSpec:
+    """Build a plain LLM-wrapper spec: the creator's OWN system prompt, optionally
+    armed with PRESET TOOLS chosen by name from the built-in catalog
+    (``system_tools/preset_tools``).
+
+    This is the "LLM Agent" creation option, routed through the same frozen engine
+    as everything else. With no tools it is a single LLM turn; with tools the loop
+    lets the model call them and then answer. Unlike ``endpoint_wrapper_spec`` the
+    prompt is free-form (the creator defines the persona/task), so we do NOT impose
+    the endpoint wrapper's strict JSON contract — ``normalize_result`` falls back to
+    the model's raw text as ``answer`` when it doesn't emit JSON, so any creator
+    prompt keeps working. ``extra_*`` allow adding more system tools alongside the
+    presets (same seam as ``endpoint_wrapper_spec``).
+
+    Validated before return, so an unknown preset-tool name or a misaligned schema
+    fails here rather than at serve time."""
+    from .system_tools.preset_tools import resolve_preset_tools
+
+    schemas, registry = resolve_preset_tools(preset_tools or [])
+    schemas = [*schemas, *(extra_schemas or [])]
+    registry = {**registry, **(extra_registry or {})}
+
+    prompt = system_prompt
+    if schemas:
+        # Nudge the model to use the tools without hijacking the creator's prompt.
+        prompt = (
+            f"{system_prompt}\n\n"
+            "You have tools available. Call them when they help you answer, then "
+            "give your final answer."
+        )
+
+    spec = AgentSpec(
+        name=name,
+        system_prompt=prompt,
+        tool_schemas=schemas,
+        tool_registry=registry,
+        model=model,
+        max_steps=max_steps,
+        mode="llm",
+    )
+    spec.validate()
+    return spec
+
+
 def endpoint_wrapper_spec(
     *,
     name: str,
@@ -132,6 +185,147 @@ def endpoint_wrapper_spec(
         description=description,
         endpoint=endpoint,
         io_criteria=io_criteria,
+    )
+
+    spec = AgentSpec(
+        name=name,
+        system_prompt=prompt,
+        tool_schemas=schemas,
+        tool_registry=registry,
+        model=model,
+        max_steps=max_steps,
+        mode="llm",
+    )
+    spec.validate()
+    return spec
+
+
+def multi_endpoint_wrapper_spec(
+    *,
+    name: str,
+    endpoints: list["EndpointConfig"],
+    description: str = "",
+    system_prompt: str | None = None,
+    model: str | None = None,
+    max_steps: int = MAX_TOOL_STEPS,
+    extra_schemas: list[dict[str, Any]] | None = None,
+    extra_registry: dict[str, ToolFn] | None = None,
+) -> AgentSpec:
+    """Build a MANAGER spec: one LLM loop fronting several external endpoints.
+
+    Each endpoint becomes its own ``call_<name>`` tool (bound to its URL/protocol/
+    auth), with the endpoint's ``description`` baked into the tool so the model can
+    route a request to the right one. This is the multi-endpoint generalization of
+    ``endpoint_wrapper_spec`` — the frozen loop is unchanged; it already supports
+    selecting among many tools. A single-endpoint list is valid (it just yields one
+    tool). ``extra_*`` add more system tools alongside the endpoint tools.
+
+    Validated before return; raises on an empty endpoint list or a misaligned tool."""
+    from .prompt import build_manager_prompt
+    from .system_tools.call_endpoint import endpoint_tool_name, make_call_endpoint
+
+    if not endpoints:
+        raise ValueError("multi_endpoint_wrapper_spec requires at least one endpoint")
+
+    schemas: list[dict[str, Any]] = []
+    registry: dict[str, ToolFn] = {}
+    tool_meta: list[tuple[str, "EndpointConfig"]] = []
+    seen: set[str] = set()
+
+    for index, endpoint in enumerate(endpoints):
+        tool_name = endpoint_tool_name(endpoint.name, index)
+        if tool_name in seen:  # disambiguate duplicate/empty labels
+            suffix = f"_{index}"  # keep the result within the 64-char tool-name limit
+            tool_name = f"{tool_name[: 64 - len(suffix)]}{suffix}"
+        seen.add(tool_name)
+
+        label = endpoint.name or tool_name
+        parts = [f"Call the '{label}' endpoint."]
+        if endpoint.description:
+            parts.append(endpoint.description)
+        parts.append(
+            "Put the user's request as natural language in `request`; add optional "
+            "structured fields in `payload`."
+        )
+        schema, fn = make_call_endpoint(endpoint, tool_name=tool_name, description=" ".join(parts))
+        schemas.append(schema)
+        registry[tool_name] = fn
+        tool_meta.append((tool_name, endpoint))
+
+    schemas = [*schemas, *(extra_schemas or [])]
+    registry = {**registry, **(extra_registry or {})}
+
+    prompt = system_prompt or build_manager_prompt(
+        name=name, description=description, tools=tool_meta
+    )
+
+    spec = AgentSpec(
+        name=name,
+        system_prompt=prompt,
+        tool_schemas=schemas,
+        tool_registry=registry,
+        model=model,
+        max_steps=max_steps,
+        mode="llm",
+    )
+    spec.validate()
+    return spec
+
+
+def operation_wrapper_spec(
+    *,
+    name: str,
+    base: "EndpointConfig",
+    operations: list["OperationConfig"],
+    description: str = "",
+    system_prompt: str | None = None,
+    model: str | None = None,
+    max_steps: int = MAX_TOOL_STEPS,
+    extra_schemas: list[dict[str, Any]] | None = None,
+    extra_registry: dict[str, ToolFn] | None = None,
+) -> AgentSpec:
+    """Build a TYPED per-operation wrapper spec: one LLM loop over an API whose
+    every operation is its own typed tool.
+
+    Unlike ``endpoint_wrapper_spec`` / ``multi_endpoint_wrapper_spec`` (one generic
+    ``call_endpoint`` taking a free-text ``request``), each operation becomes a
+    distinct Chat Completions function tool whose ``parameters`` are the operation's
+    real typed arguments — so the model emits structured, validated calls instead of
+    guessing a request shape. ``base`` (an ``EndpointConfig``) carries the shared
+    connection concerns (base URL, auth, timeout); each ``OperationConfig`` carries
+    the method, path, and typed params. The frozen loop is unchanged — this is just
+    more, finer, typed tools flowing through the SAME seam as
+    ``multi_endpoint_wrapper_spec``.
+
+    Validated before return; raises on an empty operations list or a misaligned tool."""
+    from .prompt import build_operations_prompt
+    from .system_tools.call_endpoint import make_operation_tool
+
+    if not operations:
+        raise ValueError("operation_wrapper_spec requires at least one operation")
+
+    schemas: list[dict[str, Any]] = []
+    registry: dict[str, ToolFn] = {}
+    tool_meta: list[tuple[str, "OperationConfig"]] = []
+    seen: set[str] = set()
+
+    for index, operation in enumerate(operations):
+        schema, fn = make_operation_tool(base, operation, index=index)
+        tool_name = schema["function"]["name"]
+        if tool_name in seen:  # disambiguate, staying within the 64-char tool-name limit
+            suffix = f"_{index}"
+            tool_name = f"{tool_name[: 64 - len(suffix)]}{suffix}"
+            schema["function"]["name"] = tool_name
+        seen.add(tool_name)
+        schemas.append(schema)
+        registry[tool_name] = fn
+        tool_meta.append((tool_name, operation))
+
+    schemas = [*schemas, *(extra_schemas or [])]
+    registry = {**registry, **(extra_registry or {})}
+
+    prompt = system_prompt or build_operations_prompt(
+        name=name, description=description, tools=tool_meta
     )
 
     spec = AgentSpec(

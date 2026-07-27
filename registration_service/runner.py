@@ -47,6 +47,7 @@ def main() -> None:
             system_prompt=config["system_prompt"],
             model=config.get("model", "openai/gpt-oss-120b"),
             port=port,
+            preset_tools=config.get("preset_tools", []),
         )
     elif handler_type == "api_proxy":
         from registration_service.handlers.api_proxy_handler import run
@@ -57,6 +58,21 @@ def main() -> None:
             description=config.get("description", ""),
             upstream_url=config["upstream_url"],
             auth_header=config.get("auth_header"),
+            port=port,
+        )
+    elif handler_type == "endpoint_ops":
+        from registration_service.handlers.operation_handler import run
+
+        run(
+            agent_id=agent_id,
+            name=config.get("name", agent_id),
+            description=config.get("description", ""),
+            base_url=config["base_url"],
+            operations=config.get("operations", []),
+            auth_env=config.get("auth_env"),
+            auth_scheme=config.get("auth_scheme", "Bearer"),
+            system_prompt=config.get("system_prompt"),
+            model=config.get("model", "openai/gpt-oss-120b"),
             port=port,
         )
     elif handler_type == "custom":

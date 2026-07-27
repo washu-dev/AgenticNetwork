@@ -97,3 +97,92 @@ def build_wrapper_prompt(
         "tools_used (array of strings). Do not include any prose outside the JSON object."
     )
     return "\n".join(lines)
+
+
+def build_operations_prompt(
+    *,
+    name: str,
+    description: str = "",
+    tools: list[tuple[str, Any]] | None = None,
+) -> str:
+    """Assemble the system prompt for a TYPED per-operation wrapper agent.
+
+    ``tools`` is a list of ``(tool_name, OperationConfig)`` — one per API operation.
+    Each is listed with its HTTP method + path + description so the model picks the
+    right operation and fills its TYPED arguments (each tool's schema declares them).
+    The output contract stays identical to ``build_wrapper_prompt`` so
+    ``normalize_result`` reads it the same way."""
+    tools = tools or []
+    lines = [
+        f"You are '{name}', an agent that wraps an external API by exposing each of "
+        "its operations as a separate tool."
+    ]
+    if description:
+        lines.append(f"Overall description: {description}")
+    lines.append(
+        "Call the operation whose description best matches the request, filling in "
+        "its typed arguments. You may call several, or the same one repeatedly to "
+        "refine. Available operations:"
+    )
+    for tool_name, op in tools:
+        method = getattr(op, "method", "GET")
+        path = getattr(op, "path", "")
+        detail = getattr(op, "description", "") or "(no description provided)"
+        lines.append(f"  - `{tool_name}` — {method} {path}: {detail}")
+    lines.append(
+        "To answer a request: (1) choose the right operation tool(s); (2) fill in "
+        "its typed arguments from the user's task; (3) call it; (4) read the response "
+        "and call again if you need to refine or gather more; (5) produce a final "
+        "answer grounded in what the API returned."
+    )
+    lines.append(
+        "Return ONLY valid JSON with these keys: answer (string), "
+        "tools_used (array of strings). Do not include any prose outside the JSON object."
+    )
+    return "\n".join(lines)
+
+
+def build_manager_prompt(
+    *,
+    name: str,
+    description: str = "",
+    tools: list[tuple[str, Any]] | None = None,
+) -> str:
+    """Assemble the system prompt for a multi-endpoint MANAGER agent.
+
+    ``tools`` is a list of ``(tool_name, EndpointConfig)`` — one per wrapped
+    endpoint. The prompt lists each endpoint tool with its protocol and
+    description so the model can ROUTE a request to the right endpoint (it may
+    call more than one, or the same one repeatedly to refine). The output
+    contract stays identical to ``build_wrapper_prompt`` so ``normalize_result``
+    reads it the same way."""
+    tools = tools or []
+    lines = [
+        f"You are '{name}', a manager agent that routes each request to the most "
+        "appropriate external service among the ones you wrap."
+    ]
+    if description:
+        lines.append(f"Overall description: {description}")
+    lines.append(
+        "You can reach these services ONLY through the tools below. Pick the tool "
+        "whose description best matches the request; you may call several, or the "
+        "same one repeatedly to refine. Available endpoint tools:"
+    )
+    for tool_name, cfg in tools:
+        protocol = getattr(cfg, "protocol", "http")
+        proto_label = "A2A/JSON-RPC" if protocol == "a2a" else "HTTP/JSON"
+        label = getattr(cfg, "name", "") or tool_name
+        detail = getattr(cfg, "description", "") or "(no description provided)"
+        lines.append(f"  - `{tool_name}` — {label} [{proto_label}]: {detail}")
+    lines.append(
+        "To answer a request: (1) choose the right endpoint tool(s); (2) translate "
+        "the user's task into a clear `request` string (and optional structured "
+        "`payload`); (3) call the tool; (4) read the response and call again (any "
+        "tool) if you need to refine or gather more; (5) produce a final answer "
+        "grounded in what the services returned."
+    )
+    lines.append(
+        "Return ONLY valid JSON with these keys: answer (string), "
+        "tools_used (array of strings). Do not include any prose outside the JSON object."
+    )
+    return "\n".join(lines)

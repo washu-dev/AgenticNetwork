@@ -140,6 +140,9 @@ def test_error_body_redacts_secrets():
     from agent_skeleton.system_tools.call_endpoint import _redact
     masked = _redact("oops Authorization: Bearer sk-12345 and api_key=abcdef")
     assert "sk-12345" not in masked and "abcdef" not in masked and "<redacted>" in masked
+    # Basic auth credentials are masked too (multi-endpoint managers may use them).
+    basic = _redact("401 Authorization: Basic dXNlcjpwYXNzd29yZA==")
+    assert "dXNlcjpwYXNzd29yZA==" not in basic and "<redacted>" in basic
 
 
 def test_wrapper_spec_validates_and_dispatches():

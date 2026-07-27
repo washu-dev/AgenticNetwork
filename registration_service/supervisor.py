@@ -30,7 +30,13 @@ from registration_service.backend import (
     make_backend,
 )
 from registration_service.db import get_pool, list_agents_by_status
-from registration_service.models import APIProxyConfig, CustomConfig, LLMConfig
+from registration_service.models import (
+    AnyConfig,
+    APIProxyConfig,
+    CustomConfig,
+    EndpointOpsConfig,
+    LLMConfig,
+)
 from registration_service.port_pool import release_port
 
 logger = logging.getLogger(__name__)
@@ -677,16 +683,14 @@ def get_supervisor() -> Supervisor:
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
-def _declared_credentials(
-    config: LLMConfig | APIProxyConfig | CustomConfig,
-) -> list[dict[str, Any]]:
+def _declared_credentials(config: AnyConfig) -> list[dict[str, Any]]:
     """Declared user credentials (P4a) — only custom agents can declare them."""
     if isinstance(config, CustomConfig):
         return [c.model_dump() for c in config.credentials]
     return []
 
 
-def _deserialize_config(agent: dict[str, Any]) -> LLMConfig | APIProxyConfig | CustomConfig:
+def _deserialize_config(agent: dict[str, Any]) -> AnyConfig:
     handler_type: str = agent["handler_type"]
     raw = agent["config"]
     config_data: dict = raw if isinstance(raw, dict) else json.loads(raw)
@@ -694,6 +698,8 @@ def _deserialize_config(agent: dict[str, Any]) -> LLMConfig | APIProxyConfig | C
         return LLMConfig.model_validate(config_data)
     if handler_type == "custom":
         return CustomConfig.model_validate(config_data)
+    if handler_type == "endpoint_ops":
+        return EndpointOpsConfig.model_validate(config_data)
     return APIProxyConfig.model_validate(config_data)
 
 

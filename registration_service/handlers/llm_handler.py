@@ -1,7 +1,17 @@
-"""LLM handler — minimal A2A server backed by a single-turn Chat Completions call."""
+"""LLM handler — A2A server backed by the shared agent_skeleton tool-loop engine.
+
+The registration "llm" agent type is routed through the spec engine
+(``agent_skeleton.llm_loop.run_agent`` + ``spec.llm_wrapper_spec``) rather than a
+bespoke single-turn call. That gives the "LLM Agent" option optional PRESET TOOLS
+(chosen by name from ``agent_skeleton.system_tools.preset_tools``): with no tools
+it is a single LLM turn as before; with tools the frozen loop lets the model call
+them and then answer. Only the spec differs — the engine loop is shared with the
+endpoint-wrapper and demo agents.
+"""
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -19,15 +29,18 @@ from a2a.types import (
     TextPart,
 )
 
+from agent_skeleton.llm_loop import run_agent
+from agent_skeleton.spec import AgentSpec, llm_wrapper_spec
+
 logger = logging.getLogger(__name__)
 
 
 class LLMAgentExecutor(AgentExecutor):
-    """Single-turn LLM executor: system prompt from config, user text from A2A task."""
+    """LLM executor backed by the shared tool-loop engine + a prebuilt AgentSpec."""
 
-    def __init__(self, agent_id: str, system_prompt: str, model: str) -> None:
+    def __init__(self, agent_id: str, spec: AgentSpec, model: str) -> None:
         self._agent_id = agent_id
-        self._system_prompt = system_prompt
+        self._spec = spec
         self._model = model
 
     async def execute(self, context: Any, event_queue: Any) -> None:
@@ -46,7 +59,10 @@ class LLMAgentExecutor(AgentExecutor):
             return
 
         try:
-            reply = await _call_llm(self._system_prompt, self._model, user_text)
+            # run_agent is a blocking (sync OpenAI) tool loop; keep the loop free.
+            result = await asyncio.to_thread(
+                run_agent, {"prompt": user_text}, spec=self._spec, model=self._model
+            )
         except Exception as exc:
             logger.exception("llm_handler_failed agent_id=%s", self._agent_id)
             await updater.complete(
@@ -56,7 +72,11 @@ class LLMAgentExecutor(AgentExecutor):
             )
             return
 
-        output = {"agent_id": self._agent_id, "response": reply}
+        reply = str(result.get("response_text") or result.get("answer") or "").strip()
+        if not reply:
+            reply = "(no answer produced)"
+        # Dual channel: structured DataPart (full engine result) + human text.
+        output = {"agent_id": self._agent_id, **result}
         await updater.add_artifact(
             [Part(root=DataPart(data=output))],
             artifact_id=f"{self._agent_id}-response",
@@ -68,22 +88,6 @@ class LLMAgentExecutor(AgentExecutor):
 
     async def cancel(self, context: Any, event_queue: Any) -> None:
         pass
-
-
-async def _call_llm(system_prompt: str, model: str, user_text: str) -> str:
-    from openai import AsyncOpenAI
-
-    client = AsyncOpenAI()  # reads OPENAI_API_KEY / OPENAI_BASE_URL from env
-    response = await client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_text},
-        ],
-        max_tokens=2048,
-    )
-    message = response.choices[0].message
-    return str(message.content or "").strip()
 
 
 def _get_user_text(context: Any) -> str:
@@ -113,9 +117,25 @@ def build_agent_card(agent_id: str, name: str, description: str, port: int) -> A
     )
 
 
-def run(agent_id: str, name: str, description: str, system_prompt: str, model: str, port: int) -> None:
+def run(
+    agent_id: str,
+    name: str,
+    description: str,
+    system_prompt: str,
+    model: str,
+    port: int,
+    preset_tools: list[str] | None = None,
+) -> None:
+    # Build the spec once at startup so an unknown preset-tool name or a misaligned
+    # schema fails fast here (before serving) instead of on the first request.
+    spec = llm_wrapper_spec(
+        name=name,
+        system_prompt=system_prompt,
+        preset_tools=preset_tools or [],
+        model=model,
+    )
     card = build_agent_card(agent_id, name, description, port)
-    executor = LLMAgentExecutor(agent_id, system_prompt, model)
+    executor = LLMAgentExecutor(agent_id, spec, model)
     request_handler = DefaultRequestHandler(
         agent_executor=executor,
         task_store=InMemoryTaskStore(),
@@ -124,5 +144,11 @@ def run(agent_id: str, name: str, description: str, system_prompt: str, model: s
         agent_card=card,
         http_handler=request_handler,
     ).build()
-    logger.info("llm_handler_starting agent_id=%s port=%d model=%s", agent_id, port, model)
+    logger.info(
+        "llm_handler_starting agent_id=%s port=%d model=%s preset_tools=%s",
+        agent_id,
+        port,
+        model,
+        preset_tools or [],
+    )
     uvicorn.run(app, host="0.0.0.0", port=port, log_level="warning")
