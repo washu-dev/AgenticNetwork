@@ -27,6 +27,16 @@ export HF_TOKEN=$(cat /workspace/.hf_token 2>/dev/null || echo "${HF_TOKEN}")
 # Served port. Keep in sync with submit.sbatch's vLLM auto-discovery (VLLM_PORT).
 CHAT_PORT="${VLLM_PORT:-8100}"
 
+# torch.compile / Triton / inductor caches MUST live on node-local disk, NOT on the
+# /engrfs (/workspace) NFS mount. Triton's cache writer does os.replace(temp, final),
+# an atomic rename NFS can't honour — it fails with "[Errno 16] Device or resource
+# busy" during inductor autotuning and crashes engine startup. HOME=/workspace above
+# would otherwise put ~/.cache/vllm on NFS, so redirect every compile cache to /tmp.
+export VLLM_CACHE_ROOT="/tmp/vllm_cache_${SLURM_JOB_ID}"
+export TORCHINDUCTOR_CACHE_DIR="/tmp/torchinductor_${SLURM_JOB_ID}"
+export TRITON_CACHE_DIR="/tmp/triton_${SLURM_JOB_ID}"
+mkdir -p "$VLLM_CACHE_ROOT" "$TORCHINDUCTOR_CACHE_DIR" "$TRITON_CACHE_DIR"
+
 mkdir -p /workspace/hf_cache /workspace/logs
 
 echo "======================================================"
