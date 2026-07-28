@@ -29,6 +29,53 @@ from planner_agent.main_agent.models import A2ATaskRequest, A2ATaskResult, Disco
 logger = logging.getLogger(__name__)
 ProgressCallback = Callable[[dict[str, Any]], Awaitable[None] | None]
 
+# Cached Google OIDC identity tokens, keyed by audience → (token, monotonic-expiry).
+_RUN_ID_TOKEN_CACHE: dict[str, tuple[str, float]] = {}
+
+
+def _run_id_token(audience: str) -> str | None:
+    """Mint (and cache ~50 min) a Google-signed OIDC identity token for a Cloud Run
+    audience, using the runtime service account's ADC. Returns None if unavailable."""
+    import time
+
+    now = time.monotonic()
+    cached = _RUN_ID_TOKEN_CACHE.get(audience)
+    if cached and cached[1] > now:
+        return cached[0]
+    try:
+        import google.auth.transport.requests
+        from google.oauth2 import id_token as google_id_token
+    except Exception as exc:  # pragma: no cover - import guard
+        logger.warning("a2a_run_auth_google_import_failed err=%s", exc)
+        return None
+    try:
+        token = google_id_token.fetch_id_token(
+            google.auth.transport.requests.Request(), audience
+        )
+    except Exception as exc:
+        logger.warning("a2a_run_auth_token_fetch_failed audience=%s err=%s", audience, exc)
+        return None
+    _RUN_ID_TOKEN_CACHE[audience] = (token, now + 3000)
+    return token
+
+
+class CloudRunIdTokenAuth(httpx.Auth):
+    """Attach a Google OIDC identity token when calling a private Cloud Run
+    (``*.run.app``) agent, so the request passes Cloud Run's IAM invoker check.
+
+    A no-op for every other host (localhost, LAN cluster, non-GCP endpoints), so the
+    transport stays platform-agnostic — GCP auth is applied only where it's needed.
+    """
+
+    def auth_flow(self, request):
+        host = request.url.host or ""
+        if host.endswith(".run.app"):
+            audience = f"{request.url.scheme}://{host}"
+            token = _run_id_token(audience)
+            if token:
+                request.headers["Authorization"] = f"Bearer {token}"
+        yield request
+
 
 class A2ATransport(ABC):
     @abstractmethod
@@ -75,7 +122,9 @@ class HTTPA2ATransport(A2ATransport):
             sdk_client = SdkA2AClient(httpx_client=injected_client, agent_card=card)
             sdk_response = await self._send(sdk_client, sdk_request, card, agent, progress_callback)
         else:
-            async with httpx.AsyncClient(timeout=self.timeout_seconds) as http_client:
+            async with httpx.AsyncClient(
+                timeout=self.timeout_seconds, auth=CloudRunIdTokenAuth()
+            ) as http_client:
                 sdk_client = SdkA2AClient(httpx_client=http_client, agent_card=card)
                 sdk_response = await self._send(sdk_client, sdk_request, card, agent, progress_callback)
         result = a2a_response_to_internal_task_result(sdk_response)

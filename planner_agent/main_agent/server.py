@@ -548,9 +548,13 @@ def create_app(
         # card path returns 200 when the agent is up. Any HTTP response (<500) still
         # counts as reachable, so agents on frameworks that don't serve that exact
         # path aren't falsely marked down.
+        # Authenticate the probe for private Cloud Run (*.run.app) agents — same
+        # gated ID-token auth used for A2A calls; a no-op for other hosts.
+        from planner_agent.main_agent.a2a.transport import CloudRunIdTokenAuth
+
         url = endpoint.rstrip("/") + "/.well-known/agent-card.json"
         try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
+            async with httpx.AsyncClient(timeout=5.0, auth=CloudRunIdTokenAuth()) as client:
                 t0 = _time.monotonic()
                 r = await client.get(url)
                 latency_ms = (_time.monotonic() - t0) * 1000
