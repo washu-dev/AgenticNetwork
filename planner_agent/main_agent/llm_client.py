@@ -67,8 +67,6 @@ class OpenAIToolLoopClient:
         self._client = openai_client
 
     async def next_tool_call(self, state: TurnState) -> ToolCall:
-        client = self._client or _default_openai_client(self.config)
-
         if not state.messages:
             # First step: initialise the conversation history.
             state.messages = [
@@ -87,7 +85,6 @@ class OpenAIToolLoopClient:
             })
 
         kwargs: dict[str, Any] = {
-            "model": self.config.llm_model,
             "messages": state.messages,
             "tools": _cached_tool_schemas(),
             "tool_choice": "required",
@@ -96,7 +93,7 @@ class OpenAIToolLoopClient:
 
         for attempt in range(3):
             try:
-                response = await client.chat.completions.create(**kwargs)
+                response = await self._create_with_failover(kwargs)
             except Exception as exc:
                 logger.exception("main_agent_openai_failed model=%s", self.config.llm_model)
                 raise RuntimeError(f"OpenAI request failed: {type(exc).__name__}: {exc}") from exc
@@ -121,7 +118,7 @@ class OpenAIToolLoopClient:
         logger.info(
             "main_agent_openai_response context_id=%s model=%s finish_reason=%s usage=%s",
             state.context_id,
-            self.config.llm_model,
+            getattr(response, "model", self.config.llm_model),
             finish_reason,
             usage,
         )
@@ -130,6 +127,52 @@ class OpenAIToolLoopClient:
         if call.call_id:
             state.last_call_id = call.call_id
         return call
+
+    async def _create_with_failover(self, base_kwargs: dict[str, Any]) -> Any:
+        """Call the primary provider; on an availability error, retry on the fallback.
+
+        Failover is per-request, so it also *recovers* automatically: every request
+        tries the primary first, so once the primary is healthy again it's used again
+        with no intervention. Only availability errors (connection/timeout/5xx) trigger
+        failover — a 401 or a bad-request would fail on both and is surfaced as-is.
+        """
+        # An injected client (tests) is used verbatim, no failover.
+        if self._client is not None:
+            return await self._client.chat.completions.create(
+                **{**base_kwargs, "model": self.config.llm_model}
+            )
+
+        has_fallback = bool(self.config.llm_fallback_provider)
+        primary = _make_client(
+            self.config.llm_provider,
+            base_url=None,  # primary base_url/api_key come from the environment
+            timeout=(
+                self.config.llm_primary_timeout_seconds
+                if has_fallback
+                else self.config.timeout_seconds
+            ),
+        )
+        try:
+            return await primary.chat.completions.create(
+                **{**base_kwargs, "model": self.config.llm_model}
+            )
+        except Exception as exc:
+            if not has_fallback or not _is_availability_error(exc):
+                raise
+            logger.warning(
+                "main_agent_llm_failover primary=%s err=%s -> fallback=%s",
+                self.config.llm_provider,
+                type(exc).__name__,
+                self.config.llm_fallback_provider,
+            )
+            fallback = _make_client(
+                self.config.llm_fallback_provider or "",
+                base_url=self.config.llm_fallback_base_url,
+                timeout=self.config.timeout_seconds,
+            )
+            return await fallback.chat.completions.create(
+                **{**base_kwargs, "model": self.config.llm_fallback_model or self.config.llm_model}
+            )
 
 
 def _initial_payload(state: TurnState) -> dict[str, Any]:
@@ -242,12 +285,62 @@ def _jsonable_usage_value(value: Any) -> Any:
     return value
 
 
-def _default_openai_client(config: MainAgentConfig) -> Any:
+def _make_client(provider: str, *, base_url: str | None, timeout: float) -> Any:
+    """Build an AsyncOpenAI client for a provider.
+
+    For ``vertex`` the api_key is a freshly-minted, short-lived (~1h) OAuth token from
+    the runtime service account (not a static key). When ``base_url`` is None the SDK
+    reads ``OPENAI_BASE_URL``/``OPENAI_API_KEY`` from the environment — used for the
+    primary provider; the fallback passes ``base_url`` explicitly so it can point
+    somewhere other than the primary's env-configured endpoint.
+    """
     try:
         from openai import AsyncOpenAI
     except Exception as exc:
         raise RuntimeError(f"openai SDK import failed: {type(exc).__name__}: {exc}") from exc
-    return AsyncOpenAI(timeout=config.timeout_seconds)
+    kwargs: dict[str, Any] = {"timeout": timeout}
+    if base_url:
+        kwargs["base_url"] = base_url
+    if provider == "vertex":
+        kwargs["api_key"] = _vertex_access_token()
+    return AsyncOpenAI(**kwargs)
+
+
+def _is_availability_error(exc: Exception) -> bool:
+    """True for errors that mean the provider is *unreachable/unhealthy* (worth a
+    failover), as opposed to auth (401) or client (4xx) errors that would fail on
+    the fallback too."""
+    try:
+        from openai import APIConnectionError, APIStatusError, APITimeoutError
+    except Exception:
+        return False
+    if isinstance(exc, (APIConnectionError, APITimeoutError)):
+        return True
+    if isinstance(exc, APIStatusError):
+        return getattr(exc, "status_code", None) in {500, 502, 503, 504}
+    return False
+
+
+def _vertex_access_token() -> str:
+    """Mint a fresh Google Cloud access token for the Vertex AI OpenAI-compatible API.
+
+    Uses Application Default Credentials — on Cloud Run this resolves to the runtime
+    service account via the metadata server (no key file). google-auth caches and
+    refreshes the token, so calling this once per request is cheap and always-valid.
+    """
+    try:
+        import google.auth
+        import google.auth.transport.requests
+    except Exception as exc:
+        raise RuntimeError(
+            "google-auth import failed (required for MAIN_AGENT_LLM_PROVIDER=vertex): "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
+    creds, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
+    creds.refresh(google.auth.transport.requests.Request())
+    if not creds.token:
+        raise RuntimeError("google.auth returned an empty Vertex access token")
+    return creds.token
 
 
 class ScriptedLLMClient:

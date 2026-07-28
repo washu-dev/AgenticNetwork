@@ -23,6 +23,16 @@ class MainAgentConfig(BaseModel):
     timeout_seconds: float = Field(60, gt=0)
     max_steps: int = Field(10, gt=0)
 
+    # Optional automatic failover: when the primary provider is unavailable
+    # (connection error / timeout / 5xx), retry the same request against this
+    # fallback provider. Left unset → no failover (single-provider behaviour).
+    llm_fallback_provider: str | None = None
+    llm_fallback_base_url: str | None = None
+    llm_fallback_model: str | None = None
+    # Shorter timeout for the primary attempt when a fallback is configured, so
+    # a down primary fails over quickly instead of hanging the whole request.
+    llm_primary_timeout_seconds: float = Field(20, gt=0)
+
     fake_ads: bool = False
     ads_server_addr: str | None = None
 
@@ -43,10 +53,21 @@ def load_config(env: Mapping[str, str] | None = None) -> MainAgentConfig:
         ads_server_addr=_optional(values.get("ADS_SERVER_ADDR") or values.get("ADS_URL")),
         policy_mode=values.get("MAIN_AGENT_POLICY_MODE", "permissive").strip().lower(),
         history_limit=_int(values.get("MAIN_AGENT_HISTORY_LIMIT"), default=20),
+        llm_fallback_provider=_lower_optional(values.get("MAIN_AGENT_LLM_FALLBACK_PROVIDER")),
+        llm_fallback_base_url=_optional(values.get("MAIN_AGENT_LLM_FALLBACK_BASE_URL")),
+        llm_fallback_model=_optional(values.get("MAIN_AGENT_LLM_FALLBACK_MODEL")),
+        llm_primary_timeout_seconds=_float(
+            values.get("MAIN_AGENT_LLM_PRIMARY_TIMEOUT_SECONDS"), default=20
+        ),
     )
     if config.llm_enabled and config.llm_provider == "openai" and not values.get("OPENAI_API_KEY"):
         raise MainAgentConfigError(
             "MAIN_AGENT_LLM_ENABLED=true with provider=openai requires OPENAI_API_KEY."
+        )
+    if config.llm_fallback_provider and not config.llm_fallback_model:
+        raise MainAgentConfigError(
+            "MAIN_AGENT_LLM_FALLBACK_PROVIDER is set but MAIN_AGENT_LLM_FALLBACK_MODEL is missing; "
+            "the fallback provider serves a different model name than the primary."
         )
     return config
 
@@ -70,3 +91,8 @@ def _optional(value: str | None) -> str | None:
         return None
     stripped = value.strip()
     return stripped or None
+
+
+def _lower_optional(value: str | None) -> str | None:
+    stripped = _optional(value)
+    return stripped.lower() if stripped else None
