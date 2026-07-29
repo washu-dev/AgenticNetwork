@@ -455,7 +455,7 @@ optionally, specialists) on your laptop**, bridging to vLLM over an SSH tunnel.
    cp planner_agent/.env.example planner_agent/.env.local
    # in .env.local:
    #   OPENAI_BASE_URL=http://localhost:8100/v1
-   #   OPENAI_API_KEY=dummy                     # vLLM ignores it, but it must be non-empty
+   #   OPENAI_API_KEY=<VLLM_API_KEY value>      # gated vLLM validates this — must MATCH its --api-key (a dummy 401s)
    #   MAIN_AGENT_LLM_MODEL=openai/gpt-oss-120b
    planner_agent/scripts/start.sh --fake-ads \
      --card ../agent-directory/email_agent/email_agent.card.json \
