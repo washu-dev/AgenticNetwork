@@ -584,10 +584,19 @@ def create_app(
     @app.on_event("startup")
     async def _start_health_probe_loop():
         async def _loop():
+            # On-demand (scale-to-zero) agents must be excluded from probing: a probe
+            # HTTP-hits the agent's card URL, which cold-starts a min=0 Cloud Run agent
+            # and keeps it warm — defeating scale-to-zero. Skip by agent_id via
+            # HEALTH_PROBE_SKIP_AGENTS (comma-separated).
+            skip = {s.strip() for s in os.getenv("HEALTH_PROBE_SKIP_AGENTS", "").split(",") if s.strip()}
             while True:
                 try:
                     agents = directory.search_agents()
-                    tasks = [_probe_agent(a.agent_id, a.endpoint) for a in agents if a.endpoint]
+                    tasks = [
+                        _probe_agent(a.agent_id, a.endpoint)
+                        for a in agents
+                        if a.endpoint and a.agent_id not in skip
+                    ]
                     if tasks:
                         await asyncio.gather(*tasks, return_exceptions=True)
                 except Exception:
