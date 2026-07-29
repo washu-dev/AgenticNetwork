@@ -27,7 +27,7 @@ from pathlib import Path
 
 import httpx
 
-from registration_service.models import APIProxyConfig, CustomConfig, LLMConfig
+from registration_service.models import APIProxyConfig, CustomConfig, LLMConfig, ToolLoopConfig
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +37,11 @@ _HEALTH_POLL_INTERVAL_SECONDS = 0.5
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _AGENT_SKELETON_DIR = _REPO_ROOT / "agent_skeleton"
 
-AnyConfig = LLMConfig | APIProxyConfig | CustomConfig
+AnyConfig = LLMConfig | APIProxyConfig | CustomConfig | ToolLoopConfig
+
+# Handler types whose code is uploaded and run in-process (need HANDLER_FILE_PATH,
+# the project root on PYTHONPATH, and a per-agent venv for their requirements).
+_UPLOAD_CODE_TYPES = ("custom", "tool_loop")
 
 
 def _handler_files_dir() -> Path:
@@ -162,8 +166,8 @@ class SubprocessBackend(ContainerBackend):
 
         python = sys.executable
 
-        if handler_type == "custom":
-            assert isinstance(config, CustomConfig)
+        if handler_type in _UPLOAD_CODE_TYPES:
+            assert isinstance(config, (CustomConfig, ToolLoopConfig))
             handler_dir = _handler_files_dir() / agent_id
             env["HANDLER_FILE_PATH"] = str(handler_dir / config.entry_file)
             if config.system_packages:

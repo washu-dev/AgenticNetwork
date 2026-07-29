@@ -178,6 +178,10 @@
             API Proxy <span class="hint" style="margin-left:4px">— forwards calls to your existing service</span>
           </label>
           <label class="radio-label">
+            <input type="radio" name="handler_type" value="tool_loop" onchange="onHandlerChange()">
+            LLM Tool Loop <span class="hint" style="margin-left:4px">— upload tools + a prompt; the loop is built for you; requires admin approval</span>
+          </label>
+          <label class="radio-label">
             <input type="radio" name="handler_type" value="custom" onchange="onHandlerChange()">
             Custom (Python) <span class="hint" style="margin-left:4px">— upload a handler; requires admin approval</span>
           </label>
@@ -298,6 +302,61 @@
         </div>
       </div>
 
+      <!-- LLM Tool Loop fields -->
+      <div id="toolloop-fields" style="display:none">
+        <div class="form-group">
+          <label class="field-label" for="inp-tl-system-prompt">System prompt</label>
+          <textarea id="inp-tl-system-prompt" rows="4" placeholder="You are a specialist in… Tell the agent its role and to use its tools when helpful."></textarea>
+        </div>
+        <div class="form-row">
+          <div>
+            <label class="field-label" for="inp-tl-entry-file">Tools file <span class="hint">— module at the upload root that defines the tools</span></label>
+            <input type="text" id="inp-tl-entry-file" value="tools.py">
+          </div>
+          <div>
+            <label class="field-label" for="inp-tl-requirements">Requirements <span class="hint">— comma-separated pip packages, optional</span></label>
+            <input type="text" id="inp-tl-requirements" placeholder="requests, rapidfuzz">
+          </div>
+        </div>
+        <div class="form-group" style="margin-bottom:8px">
+          <span class="hint">The module must expose <code>TOOL_SCHEMAS</code> + <code>TOOL_REGISTRY</code>, or a
+          <code>build_tools(config)</code> factory returning them. The LLM loop, handler, and A2A server are built for you.</span>
+        </div>
+        <!-- Upload mode: a single tools .py, or a zipped multi-file project -->
+        <div class="form-group">
+          <label class="field-label">Code upload <span class="hint">— a single tools file, or a zipped project (tools + deps)</span></label>
+          <div style="display:flex;gap:18px;font-size:13px">
+            <label style="font-weight:400"><input type="radio" name="tl_mode" value="single" checked onchange="onTlModeChange()"> Single file (.py)</label>
+            <label style="font-weight:400"><input type="radio" name="tl_mode" value="zip" onchange="onTlModeChange()"> Project (.zip)</label>
+          </div>
+        </div>
+
+        <div id="tl-single">
+          <div class="form-group">
+            <div style="display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:5px">
+              <label class="field-label" for="inp-tl-code" style="margin:0">Tools code <span class="hint">— defines TOOL_SCHEMAS + TOOL_REGISTRY</span></label>
+              <label class="btn btn-sm btn-outline" style="cursor:pointer;margin-bottom:0">
+                Upload .py file
+                <input type="file" accept=".py,text/x-python" style="display:none" onchange="loadTlFile(this)">
+              </label>
+            </div>
+            <textarea id="inp-tl-code" class="code-editor" rows="15" spellcheck="false"></textarea>
+          </div>
+        </div>
+
+        <div id="tl-zip" style="display:none">
+          <div class="form-group">
+            <label class="field-label">Project archive <span class="hint">— .zip; the tools file must sit at the archive root, next to importable siblings</span></label>
+            <label class="btn btn-sm btn-outline" style="cursor:pointer">
+              Choose .zip file
+              <input type="file" accept=".zip,application/zip" style="display:none" onchange="loadTlZip(this)">
+            </label>
+            <span id="tl-zip-filename" style="margin-left:10px;font-size:13px;color:var(--muted)">No file selected</span>
+            <label style="font-weight:400;font-size:13px;display:block;margin-top:8px"><input type="checkbox" id="inp-tl-install-project" checked> <code>pip install .</code> if the project ships pyproject.toml / setup.py</label>
+          </div>
+        </div>
+      </div>
+
       <hr>
 
       <div class="form-group">
@@ -339,6 +398,7 @@ let allSkills = [];
 const selectedSkills = new Map(); // name → {name, id}
 let refreshTimer = null;
 let customZipFile = null;         // the .zip File held for project-mode uploads
+let toolloopZipFile = null;       // the .zip File held for tool_loop project uploads
 
 // ── Tab switching ─────────────────────────────────────────────────────────────
 function switchTab(tab) {
@@ -358,11 +418,12 @@ function switchTab(tab) {
 // ── Handler type toggle ───────────────────────────────────────────────────────
 function onHandlerChange() {
   const v = document.querySelector('input[name=handler_type]:checked').value;
-  document.getElementById('llm-fields').style.display    = v === 'llm'       ? '' : 'none';
-  document.getElementById('proxy-fields').style.display  = v === 'api_proxy' ? '' : 'none';
-  document.getElementById('custom-fields').style.display = v === 'custom'    ? '' : 'none';
-  // The Model field only applies to LLM agents.
-  const showModel = v === 'llm';
+  document.getElementById('llm-fields').style.display      = v === 'llm'       ? '' : 'none';
+  document.getElementById('proxy-fields').style.display    = v === 'api_proxy' ? '' : 'none';
+  document.getElementById('custom-fields').style.display   = v === 'custom'    ? '' : 'none';
+  document.getElementById('toolloop-fields').style.display = v === 'tool_loop' ? '' : 'none';
+  // The Model field applies to the LLM-backed types (llm + tool_loop).
+  const showModel = v === 'llm' || v === 'tool_loop';
   document.getElementById('inp-model').style.display    = showModel ? '' : 'none';
   document.getElementById('label-model').style.display  = showModel ? '' : 'none';
 }
@@ -378,6 +439,28 @@ function loadZipFile(input) {
   customZipFile = (input.files && input.files[0]) || null;
   document.getElementById('zip-filename').textContent =
     customZipFile ? customZipFile.name : 'No file selected';
+}
+
+// Toggle single-file vs project(.zip) upload within the tool_loop section.
+function onTlModeChange() {
+  const mode = document.querySelector('input[name=tl_mode]:checked').value;
+  document.getElementById('tl-single').style.display = mode === 'single' ? '' : 'none';
+  document.getElementById('tl-zip').style.display    = mode === 'zip'    ? '' : 'none';
+}
+
+function loadTlZip(input) {
+  toolloopZipFile = (input.files && input.files[0]) || null;
+  document.getElementById('tl-zip-filename').textContent =
+    toolloopZipFile ? toolloopZipFile.name : 'No file selected';
+}
+
+function loadTlFile(input) {
+  const f = input.files && input.files[0];
+  if (!f) return;
+  const reader = new FileReader();
+  reader.onload = e => { document.getElementById('inp-tl-code').value = e.target.result; };
+  reader.readAsText(f);
+  input.value = '';  // allow re-selecting the same file
 }
 
 // ── Required credentials (P4a) ─────────────────────────────────────────────────
@@ -533,6 +616,7 @@ async function submitRegistration() {
 
   let config;
   let handlerCode = null;
+  let toolsCode = null;
   if (handler_type === 'llm') {
     const system_prompt = document.getElementById('inp-system-prompt').value.trim();
     const model         = document.getElementById('inp-model').value.trim() || 'openai/gpt-oss-120b';
@@ -543,6 +627,22 @@ async function submitRegistration() {
     const auth_header  = document.getElementById('inp-auth-header').value.trim();
     if (!upstream_url) return showAlert('error', 'Upstream URL is required for API proxy agents.');
     config = { upstream_url, ...(auth_header ? { auth_header } : {}) };
+  } else if (handler_type === 'tool_loop') {
+    const system_prompt = document.getElementById('inp-tl-system-prompt').value.trim();
+    const model         = document.getElementById('inp-model').value.trim() || 'openai/gpt-oss-120b';
+    const entry_file    = document.getElementById('inp-tl-entry-file').value.trim() || 'tools.py';
+    const reqRaw        = document.getElementById('inp-tl-requirements').value.trim();
+    const requirements  = reqRaw ? reqRaw.split(',').map(s => s.trim()).filter(Boolean) : [];
+    const mode          = document.querySelector('input[name=tl_mode]:checked').value;
+    if (!system_prompt) return showAlert('error', 'System prompt is required for tool-loop agents.');
+    config = { system_prompt, model, entry_file, requirements };
+    if (mode === 'zip') {
+      if (!toolloopZipFile) return showAlert('error', 'Choose a .zip project file to upload.');
+      config.install_project = document.getElementById('inp-tl-install-project').checked;
+    } else {
+      toolsCode = document.getElementById('inp-tl-code').value;
+      if (!toolsCode.trim()) return showAlert('error', 'Tools code is required for tool-loop agents.');
+    }
   } else { // custom
     const class_name     = document.getElementById('inp-class-name').value.trim();
     const python_version = document.getElementById('inp-python-version').value;
@@ -602,14 +702,23 @@ async function submitRegistration() {
     stage = 'submit';
     createdId = agent.id;
 
-    if (handler_type === 'custom') {
-      // Step 2: upload the handler — a single .py blob or the chosen .zip project.
+    if (handler_type === 'custom' || handler_type === 'tool_loop') {
+      // Step 2: upload the code — a single .py blob or the chosen .zip project.
       // Validation / unpack errors surface here.
       const fd = new FormData();
-      if (customZipFile && config.entry_file) {
-        fd.append('file', customZipFile, customZipFile.name);
-      } else {
-        fd.append('file', new Blob([handlerCode], { type: 'text/x-python' }), 'handler.py');
+      if (handler_type === 'custom') {
+        if (customZipFile && config.entry_file) {
+          fd.append('file', customZipFile, customZipFile.name);
+        } else {
+          fd.append('file', new Blob([handlerCode], { type: 'text/x-python' }), 'handler.py');
+        }
+      } else { // tool_loop
+        const tlMode = document.querySelector('input[name=tl_mode]:checked').value;
+        if (tlMode === 'zip') {
+          fd.append('file', toolloopZipFile, toolloopZipFile.name);
+        } else {
+          fd.append('file', new Blob([toolsCode], { type: 'text/x-python' }), config.entry_file || 'tools.py');
+        }
       }
       const up = await fetch(`${API_PREFIX}/agents/${agent.id}/handler`, { method: 'POST', body: fd });
       if (!up.ok) {
@@ -623,7 +732,7 @@ async function submitRegistration() {
       const warnNote = (upBody.warnings && upBody.warnings.length)
         ? ` Advisory: ${upBody.warnings.join('; ')}.` : '';
       showAlert('success',
-        `"${agent.name}" registered and handler uploaded. It is pending admin approval before it goes live.${warnNote}`);
+        `"${agent.name}" registered and code uploaded. It is pending admin approval before it goes live.${warnNote}`);
     } else {
       showAlert('success',
         `"${agent.name}" registered! Status: ${agent.status}. Port: ${agent.port}.`);
@@ -650,7 +759,8 @@ function fmtDetail(detail) {
 function resetForm() {
   ['inp-name','inp-description','inp-system-prompt',
    'inp-upstream-url','inp-auth-header','skill-search',
-   'inp-requirements','inp-system-packages','inp-extra'].forEach(id => {
+   'inp-requirements','inp-system-packages','inp-extra',
+   'inp-tl-system-prompt','inp-tl-requirements'].forEach(id => {
     document.getElementById(id).value = '';
   });
   document.getElementById('inp-model').value = 'openai/gpt-oss-120b';
@@ -664,6 +774,14 @@ function resetForm() {
   document.getElementById('inp-install-project').checked = true;
   customZipFile = null;
   document.getElementById('zip-filename').textContent = 'No file selected';
+  // Reset tool_loop fields.
+  document.getElementById('inp-tl-entry-file').value = 'tools.py';
+  document.getElementById('inp-tl-code').value = DEFAULT_TOOLS_CODE;
+  const tlSingle = document.querySelector('input[name=tl_mode][value=single]');
+  if (tlSingle) { tlSingle.checked = true; onTlModeChange(); }
+  document.getElementById('inp-tl-install-project').checked = true;
+  toolloopZipFile = null;
+  document.getElementById('tl-zip-filename').textContent = 'No file selected';
   selectedSkills.clear();
   renderBadges();
   renderSkillList(allSkills);
@@ -724,8 +842,8 @@ function renderAgentTable(agents) {
 // status value.
 function statusBadge(a) {
   let key = a.status, label = a.status;
-  if (a.handler_type === 'custom' && a.approved === false && a.status === 'registered') {
-    // Distinguish a real pending agent from a codeless orphan (no handler uploaded).
+  if ((a.handler_type === 'custom' || a.handler_type === 'tool_loop') && a.approved === false && a.status === 'registered') {
+    // Distinguish a real pending agent from a codeless orphan (no code uploaded).
     if (a.has_handler) { key = 'pending'; label = 'Pending Approval'; }
     else { key = 'registered'; label = 'Awaiting Upload'; }
   } else if (a.status === 'building') {
@@ -871,6 +989,36 @@ function loadHandlerFile(input) {
   input.value = '';  // allow re-selecting the same file
 }
 
+// ── Tool-loop tools editor ────────────────────────────────────────────────────
+const DEFAULT_TOOLS_CODE = `# Your tools: bodies + Chat Completions schemas. The service builds the LLM loop,
+# the handler, and the A2A server around these — you write only the tools.
+#
+# Expose TOOL_SCHEMAS + TOOL_REGISTRY (below), or a build_tools(config) factory
+# that returns (TOOL_SCHEMAS, TOOL_REGISTRY) — the factory lets you bake in a
+# secret from config without it ever becoming a tool parameter the model sees.
+
+TOOL_SCHEMAS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "word_count",
+            "description": "Count the words in a piece of text.",
+            "parameters": {
+                "type": "object",
+                "properties": {"text": {"type": "string", "description": "The text to measure."}},
+                "required": ["text"],
+                "additionalProperties": False,
+            },
+        },
+    },
+]
+
+def word_count(*, text: str) -> dict:
+    return {"ok": True, "word_count": len(text.split())}
+
+TOOL_REGISTRY = {"word_count": word_count}
+`;
+
 // ── Boot ──────────────────────────────────────────────────────────────────────
 // When served via the planner proxy at /register/, API calls must be absolute.
 // When served directly from the registration service, window.location.pathname
@@ -880,6 +1028,7 @@ const API_PREFIX = window.location.pathname.replace(/\/$/, '').endsWith('/regist
   : '';
 
 document.getElementById('inp-handler-code').value = DEFAULT_HANDLER_CODE;
+document.getElementById('inp-tl-code').value = DEFAULT_TOOLS_CODE;
 loadSkills();
 loadCredCatalog();
 </script>

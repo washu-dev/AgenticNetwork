@@ -10,11 +10,17 @@ from __future__ import annotations
 from typing import Any
 
 from ads_utils.converter import oasf_skill_tag
-from registration_service.models import CustomConfig
+from registration_service.models import CustomConfig, ToolLoopConfig
 
 
-def generate_dockerfile(config: CustomConfig) -> str:
-    """Render a Dockerfile for a custom agent image.
+def generate_dockerfile(config: CustomConfig | ToolLoopConfig) -> str:
+    """Render a Dockerfile for an uploaded-code agent image (custom or tool_loop).
+
+    Both config types share the fields used below (python_version, system_packages,
+    requirements, install_project, entry_file); the ENTRYPOINT is the shared
+    ``agent_skeleton.container_runner`` either way — it branches on handler_type
+    (carried in AGENT_CONFIG_JSON) to serve an AgentHandler (custom) or an uploaded
+    tool loop (tool_loop).
 
     Layout (build context = registered_agents/{slug}/):
       agent_skeleton/  — vendored framework, installed into the image (no external

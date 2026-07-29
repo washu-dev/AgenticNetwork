@@ -32,16 +32,10 @@ class ValidationResult:
     warnings: list[str] = field(default_factory=list)
 
 
-def validate_handler(source: str, class_name: str) -> ValidationResult:
-    errors: list[str] = []
+def _scan_warnings(tree: ast.AST) -> list[str]:
+    """Advisory-only findings surfaced to the approver (never block — D1)."""
     warnings: list[str] = []
-
-    try:
-        tree = ast.parse(source)
-    except SyntaxError as e:
-        return ValidationResult(ok=False, errors=[f"Syntax error at line {e.lineno}: {e.msg}"])
-
-    # Advisory: flag blocked imports for the approver (does not block — D1).
+    # Blocked imports.
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
@@ -50,8 +44,7 @@ def validate_handler(source: str, class_name: str) -> ValidationResult:
         if isinstance(node, ast.ImportFrom):
             if (node.module or "").split(".")[0] in BLOCKED_IMPORTS:
                 warnings.append(f"Line {node.lineno}: uses import from '{node.module}'")
-
-    # Advisory: flag blocked calls (eval/exec, os.system/os.popen) for the approver.
+    # Blocked calls (eval/exec, os.system/os.popen).
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
             func = node.func
@@ -61,6 +54,58 @@ def validate_handler(source: str, class_name: str) -> ValidationResult:
                 dotted = _dotted_name(func)
                 if dotted in BLOCKED_CALLS:
                     warnings.append(f"Line {node.lineno}: calls '{dotted}'")
+    return warnings
+
+
+def validate_tool_module(source: str) -> ValidationResult:
+    """Validate an uploaded ``tool_loop`` entry module (AST only; never executes).
+
+    Structural (blocking): the module must expose the tool contract — module-level
+    ``TOOL_SCHEMAS`` **and** ``TOOL_REGISTRY``, or a ``build_tools`` factory (which
+    returns them). This is the tool-loop analog of ``validate_handler``'s
+    AgentHandler check. The schema↔function alignment is enforced later, at spawn,
+    by ``AgentSpec.validate()`` (which does need to run the code).
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError as e:
+        return ValidationResult(ok=False, errors=[f"Syntax error at line {e.lineno}: {e.msg}"])
+
+    warnings = _scan_warnings(tree)
+
+    assigned: set[str] = set()
+    funcs: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            for t in node.targets:
+                if isinstance(t, ast.Name):
+                    assigned.add(t.id)
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            assigned.add(node.target.id)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            funcs.add(node.name)
+
+    has_contract = "build_tools" in funcs or {"TOOL_SCHEMAS", "TOOL_REGISTRY"} <= assigned
+    errors = (
+        []
+        if has_contract
+        else [
+            "Tools module must define module-level TOOL_SCHEMAS and TOOL_REGISTRY, "
+            "or a build_tools(config) factory that returns them."
+        ]
+    )
+    return ValidationResult(ok=not errors, errors=errors, warnings=warnings)
+
+
+def validate_handler(source: str, class_name: str) -> ValidationResult:
+    errors: list[str] = []
+
+    try:
+        tree = ast.parse(source)
+    except SyntaxError as e:
+        return ValidationResult(ok=False, errors=[f"Syntax error at line {e.lineno}: {e.msg}"])
+
+    warnings = _scan_warnings(tree)
 
     # Structural (blocking): the declared class must exist...
     classes = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)}

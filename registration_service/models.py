@@ -156,7 +156,44 @@ class CustomConfig(BaseModel):
         return cleaned
 
 
-AnyConfig = LLMConfig | APIProxyConfig | CustomConfig | EndpointOpsConfig
+class ToolLoopConfig(BaseModel):
+    """An uploaded LLM tool-loop agent: the author supplies the tool bodies +
+    schemas + a system prompt, and the service builds the loop / handler / A2A
+    server around them via the shared ``agent_skeleton`` engine.
+
+    Like ``custom`` it uploads Python and is admin-approved; unlike ``custom`` there
+    is NO ``AgentHandler`` — the uploaded ``entry_file`` module exposes the tool
+    contract instead: module-level ``TOOL_SCHEMAS`` + ``TOOL_REGISTRY`` (Chat
+    Completions schemas + a ``{name: fn}`` map), OR a ``build_tools(config)``
+    factory returning that pair (the closure-safe way to bake in secrets without
+    exposing them as tool parameters). Everything else — the tool loop, the
+    handler, the A2A wrapper — is generated (``agent_skeleton.spec.tool_loop_spec``).
+    """
+    system_prompt: str
+    model: str = "openai/gpt-oss-120b"
+    entry_file: str = "tools.py"            # module at the upload root exposing the tools
+    python_version: str = "3.11"
+    requirements: list[str] = Field(default_factory=list)
+    system_packages: list[str] = Field(default_factory=list)   # apt, cluster build only (D10)
+    install_project: bool = True            # pip install . if pyproject.toml/setup.py present at root
+    extra: dict[str, Any] = Field(default_factory=dict)         # passed to build_tools(config)
+
+    @field_validator("system_packages")
+    @classmethod
+    def _sanitize_apt(cls, v: list[str]) -> list[str]:
+        # Same injection guard as CustomConfig (not a package allowlist — _APT_TOKEN_RE).
+        cleaned: list[str] = []
+        for pkg in v:
+            pkg = pkg.strip()
+            if not pkg:
+                continue
+            if not _APT_TOKEN_RE.match(pkg):
+                raise ValueError(f"Invalid apt package name: {pkg!r}")
+            cleaned.append(pkg)
+        return cleaned
+
+
+AnyConfig = LLMConfig | APIProxyConfig | CustomConfig | EndpointOpsConfig | ToolLoopConfig
 
 
 def parse_config(handler_type: str, raw: dict) -> AnyConfig:
@@ -169,13 +206,15 @@ def parse_config(handler_type: str, raw: dict) -> AnyConfig:
         return CustomConfig(**raw)
     if handler_type == "endpoint_ops":
         return EndpointOpsConfig(**raw)
+    if handler_type == "tool_loop":
+        return ToolLoopConfig(**raw)
     raise ValueError(f"Unknown handler_type: {handler_type}")
 
 
 class RegisterRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=128)
     description: str = Field(..., min_length=1)
-    handler_type: Literal["llm", "api_proxy", "custom", "endpoint_ops"]
+    handler_type: Literal["llm", "api_proxy", "custom", "endpoint_ops", "tool_loop"]
     oasf_skills: list[OASFSkill] = Field(..., min_length=1)
     config: AnyConfig
 
@@ -186,7 +225,7 @@ class RegisterRequest(BaseModel):
         # available in info.data) rather than by pydantic's structural union match.
         # This is robust when configs share optional fields (e.g. an endpoint_ops
         # config with a system_prompt could otherwise be mis-coerced to LLMConfig).
-        if isinstance(v, (LLMConfig, APIProxyConfig, CustomConfig, EndpointOpsConfig)):
+        if isinstance(v, (LLMConfig, APIProxyConfig, CustomConfig, EndpointOpsConfig, ToolLoopConfig)):
             return v
         handler_type = info.data.get("handler_type")
         if handler_type and isinstance(v, dict):

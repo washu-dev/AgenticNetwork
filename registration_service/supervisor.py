@@ -36,10 +36,15 @@ from registration_service.models import (
     CustomConfig,
     EndpointOpsConfig,
     LLMConfig,
+    ToolLoopConfig,
 )
 from registration_service.port_pool import release_port
 
 logger = logging.getLogger(__name__)
+
+# Handler types whose code is uploaded + admin-approved before spawn, and (on the
+# cluster) built into a per-agent image via the GitHub → Docker Hub pipeline.
+_UPLOAD_CODE_TYPES = ("custom", "tool_loop")
 
 _HEALTH_POLL_SECONDS = 30.0
 _BUILD_POLL_SECONDS = 30.0
@@ -91,8 +96,9 @@ class Supervisor:
         raw_skills = agent["oasf_skills"]
         oasf_skills: list = raw_skills if isinstance(raw_skills, list) else json.loads(raw_skills)
 
-        # Custom agents must be explicitly approved before they can spawn.
-        if handler_type == "custom" and not agent.get("approved", False):
+        # Uploaded-code agents (custom, tool_loop) must be explicitly approved
+        # before they can spawn — they run arbitrary author Python.
+        if handler_type in _UPLOAD_CODE_TYPES and not agent.get("approved", False):
             raise RuntimeError(f"Agent {agent_id} is not approved")
 
         # Cluster build pipeline: on first approval, commit the build context to
@@ -101,7 +107,7 @@ class Supervisor:
         # image exists, at which point status is already 'building' and we fall
         # through to the actual spawn below.
         if (
-            handler_type == "custom"
+            handler_type in _UPLOAD_CODE_TYPES
             and _cluster_build_enabled()
             and agent.get("status") == "registered"
         ):
@@ -120,13 +126,13 @@ class Supervisor:
         # an agent would be published to ADS and marked 'live' with no process
         # behind it (a ghost-live row the planner would then dispatch to). Fail
         # loudly instead of creating that phantom.
-        if isinstance(self._backend, ClusterBackend) and handler_type != "custom":
+        if isinstance(self._backend, ClusterBackend) and handler_type not in _UPLOAD_CODE_TYPES:
             await _set_status(agent_id, "failed")
             raise RuntimeError(
                 f"handler_type={handler_type!r} is not supported on the cluster "
-                "backend — only 'custom' agents have a cluster spawn path. "
-                "Register it with the local subprocess backend, or use a 'custom' "
-                "handler."
+                "backend — only uploaded-code agents (custom, tool_loop) have a "
+                "cluster spawn path. Register it with the local subprocess backend, "
+                "or use a 'custom'/'tool_loop' handler."
             )
 
         try:
@@ -473,10 +479,9 @@ class Supervisor:
         name = agent["name"]
         slug = _image_slug(name)
 
-        raw_cfg = agent["config"]
-        config = CustomConfig.model_validate(
-            raw_cfg if isinstance(raw_cfg, dict) else json.loads(raw_cfg)
-        )
+        # custom → CustomConfig, tool_loop → ToolLoopConfig; both carry the fields
+        # generate_dockerfile needs (entry_file, requirements, system_packages, …).
+        config = _deserialize_config(agent)
 
         handler_path = agent.get("handler_file_path")
         if not handler_path or not Path(handler_path).exists():
@@ -698,6 +703,8 @@ def _deserialize_config(agent: dict[str, Any]) -> AnyConfig:
         return LLMConfig.model_validate(config_data)
     if handler_type == "custom":
         return CustomConfig.model_validate(config_data)
+    if handler_type == "tool_loop":
+        return ToolLoopConfig.model_validate(config_data)
     if handler_type == "endpoint_ops":
         return EndpointOpsConfig.model_validate(config_data)
     return APIProxyConfig.model_validate(config_data)

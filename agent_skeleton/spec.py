@@ -272,6 +272,80 @@ def multi_endpoint_wrapper_spec(
     return spec
 
 
+def load_tool_module(path: str, config: dict[str, Any] | None = None) -> tuple[list[dict[str, Any]], dict[str, ToolFn]]:
+    """Load an uploaded tool-loop module and return its (tool_schemas, tool_registry).
+
+    The module (the author's uploaded tool bodies + schemas) must expose the tool
+    contract in ONE of two shapes:
+      * module-level ``TOOL_SCHEMAS`` (Chat Completions list) + ``TOOL_REGISTRY``
+        ({name: fn}); or
+      * a ``build_tools(config) -> (TOOL_SCHEMAS, TOOL_REGISTRY)`` factory. The
+        factory is the closure-safe path: it lets the author bake ``config`` (an
+        API key, a handle) into each tool WITHOUT the value ever becoming a tool
+        parameter the model sees.
+
+    This is the ``tool_loop`` handler's analog of ``make_operation_tool`` in the
+    endpoint-ops path — it turns uploaded code into the (schemas, registry) an
+    ``AgentSpec`` needs. Pure loading; alignment is checked by ``tool_loop_spec``.
+    """
+    import importlib.util
+
+    module_spec = importlib.util.spec_from_file_location("tool_loop_module", path)
+    if module_spec is None or module_spec.loader is None:
+        raise RuntimeError(f"Could not load tools module from {path}")
+    module = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(module)
+
+    if hasattr(module, "build_tools"):
+        result = module.build_tools(config or {})
+        try:
+            schemas, registry = result
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(
+                "build_tools(config) must return a (TOOL_SCHEMAS, TOOL_REGISTRY) tuple"
+            ) from exc
+    else:
+        schemas = getattr(module, "TOOL_SCHEMAS", None)
+        registry = getattr(module, "TOOL_REGISTRY", None)
+
+    if schemas is None or registry is None:
+        raise RuntimeError(
+            f"Tools module {path!r} must define module-level TOOL_SCHEMAS + "
+            "TOOL_REGISTRY, or a build_tools(config) factory returning them."
+        )
+    return list(schemas), dict(registry)
+
+
+def tool_loop_spec(
+    *,
+    name: str,
+    system_prompt: str,
+    tool_schemas: list[dict[str, Any]],
+    tool_registry: dict[str, ToolFn],
+    model: str | None = None,
+    max_steps: int = MAX_TOOL_STEPS,
+) -> AgentSpec:
+    """Build a spec for an uploaded LLM tool loop: the author's OWN tool bodies +
+    schemas + system prompt, run by the same frozen engine as every other spec.
+
+    This is the ``tool_loop`` registration type — the sibling of
+    ``llm_wrapper_spec`` (preset tools) and ``operation_wrapper_spec`` (typed HTTP
+    operations), but with the tools supplied as uploaded Python. Validated before
+    return, so a schema/function mismatch fails HERE (at spawn) rather than on the
+    first request."""
+    spec = AgentSpec(
+        name=name,
+        system_prompt=system_prompt,
+        tool_schemas=list(tool_schemas),
+        tool_registry=dict(tool_registry),
+        model=model,
+        max_steps=max_steps,
+        mode="llm",
+    )
+    spec.validate()
+    return spec
+
+
 def operation_wrapper_spec(
     *,
     name: str,

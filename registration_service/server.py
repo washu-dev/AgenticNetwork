@@ -27,12 +27,18 @@ from registration_service.models import (
     RegisterRequest,
     RejectRequest,
     SpawnedReport,
+    ToolLoopConfig,
 )
 from registration_service.credential_catalog import CATALOG as CREDENTIAL_CATALOG
 from registration_service.oasf_skills import OASF_SKILLS
 from registration_service.port_pool import assign_port
 from registration_service.supervisor import get_supervisor
-from registration_service.validator import validate_handler
+from registration_service.validator import validate_handler, validate_tool_module
+
+# Handler types whose Python is uploaded and admin-reviewed before spawn. They
+# share the register-unapproved → upload → approve lifecycle and the handler
+# upload/review/download/approve/reject endpoints below.
+_CODE_UPLOAD_TYPES = {"custom", "tool_loop"}
 
 
 def _handler_dir(agent_id: Any) -> Path:
@@ -146,11 +152,14 @@ async def register_agent(req: RegisterRequest) -> AgentResponse:
             detail=f"An agent with a conflicting name already exists (slug '{new_slug}'): {req.name!r}",
         )
 
-    if req.handler_type == "custom":
+    if req.handler_type in _CODE_UPLOAD_TYPES:
+        # Uploaded-code agents (custom, tool_loop) are created NOT-approved and are
+        # NOT started here: the code must be uploaded (POST /agents/{id}/handler)
+        # and an admin must approve (POST /agents/{id}/approve) before they spawn.
         agent = await db.create_agent(
             name=req.name,
             description=req.description,
-            handler_type="custom",
+            handler_type=req.handler_type,
             oasf_skills=[s.model_dump() for s in req.oasf_skills],
             config=req.typed_config().model_dump(),
             approved=False,
@@ -245,9 +254,9 @@ async def delete_agent(agent_id: str) -> Response:
     if handler_dir.exists():
         shutil.rmtree(handler_dir, ignore_errors=True)
 
-    # Remove the committed build context from the agent-directory repo (custom
+    # Remove the committed build context from the agent-directory repo (uploaded-code
     # agents on the cluster build path only). Best-effort — never blocks the delete.
-    if agent["handler_type"] == "custom":
+    if agent["handler_type"] in _CODE_UPLOAD_TYPES:
         await get_supervisor().delete_github_context(agent["name"])
     return Response(status_code=204)
 
@@ -303,14 +312,15 @@ async def upload_handler(agent_id: str, file: UploadFile = File(...)) -> dict:
     approval to False.
     """
     agent = await db.get_agent(_parse_uuid(agent_id))
-    if not agent or agent["handler_type"] != "custom":
-        raise HTTPException(status_code=404, detail="Custom agent not found")
+    if not agent or agent["handler_type"] not in _CODE_UPLOAD_TYPES:
+        raise HTTPException(status_code=404, detail="Uploaded-code agent not found")
+    handler_type = agent["handler_type"]
 
     # asyncpg returns JSONB columns as JSON strings; fake_db returns dicts. Handle
     # both (same guard used in _row_to_response / supervisor._deserialize_config).
     raw_cfg = agent["config"]
     cfg_dict = raw_cfg if isinstance(raw_cfg, dict) else json.loads(raw_cfg)
-    config = CustomConfig(**cfg_dict)
+    config = ToolLoopConfig(**cfg_dict) if handler_type == "tool_loop" else CustomConfig(**cfg_dict)
 
     raw = await file.read()
     is_zip = _is_zip_upload(file.filename, raw)
@@ -333,7 +343,12 @@ async def upload_handler(agent_id: str, file: UploadFile = File(...)) -> dict:
         entry_path.write_text(source)
 
     # Validate the entry file only (structural blocks; blocklist is advisory — D1).
-    result = validate_handler(source, config.class_name)
+    # tool_loop checks the tool contract (TOOL_SCHEMAS/TOOL_REGISTRY or build_tools);
+    # custom checks the AgentHandler subclass.
+    if handler_type == "tool_loop":
+        result = validate_tool_module(source)
+    else:
+        result = validate_handler(source, config.class_name)
     if not result.ok:
         if is_zip:
             _clear_dir(handler_dir)  # don't leave a rejected tree on disk
@@ -359,8 +374,9 @@ async def get_handler_source(agent_id: str, request: Request) -> dict:
     """
     _require_admin(request)
     agent = await db.get_agent(_parse_uuid(agent_id))
-    if not agent or agent["handler_type"] != "custom":
-        raise HTTPException(status_code=404, detail="Custom agent not found")
+    if not agent or agent["handler_type"] not in _CODE_UPLOAD_TYPES:
+        raise HTTPException(status_code=404, detail="Uploaded-code agent not found")
+    handler_type = agent["handler_type"]
     path = agent.get("handler_file_path")
     if not path or not Path(path).exists():
         raise HTTPException(status_code=404, detail="No handler file uploaded")
@@ -368,8 +384,14 @@ async def get_handler_source(agent_id: str, request: Request) -> dict:
     entry_source = Path(path).read_text(encoding="utf-8", errors="replace")
     raw_cfg = agent["config"]
     cfg_dict = raw_cfg if isinstance(raw_cfg, dict) else json.loads(raw_cfg)
-    config = CustomConfig(**cfg_dict)
-    warnings = validate_handler(entry_source, config.class_name).warnings
+    if handler_type == "tool_loop":
+        config = ToolLoopConfig(**cfg_dict)
+        warnings = validate_tool_module(entry_source).warnings
+        credentials: list = []   # tool_loop has no per-user credential declaration (v1)
+    else:
+        config = CustomConfig(**cfg_dict)
+        warnings = validate_handler(entry_source, config.class_name).warnings
+        credentials = [c.model_dump() for c in config.credentials]   # user creds it asks for (P4a)
 
     if agent.get("is_archive"):
         handler_dir = _handler_dir(agent_id)
@@ -380,7 +402,7 @@ async def get_handler_source(agent_id: str, request: Request) -> dict:
             "download_url": f"/agents/{agent_id}/handler/download",
             "warnings": warnings,
             "system_packages": config.system_packages,   # apt, flagged for review (D10)
-            "credentials": [c.model_dump() for c in config.credentials],   # user creds it asks for (P4a)
+            "credentials": credentials,
         }
     return {
         "is_archive": False,
@@ -388,7 +410,7 @@ async def get_handler_source(agent_id: str, request: Request) -> dict:
         "handler_file_path": path,
         "warnings": warnings,
         "system_packages": config.system_packages,       # apt, flagged for review (D10)
-        "credentials": [c.model_dump() for c in config.credentials],       # user creds it asks for (P4a)
+        "credentials": credentials,
     }
 
 
@@ -397,8 +419,8 @@ async def download_handler_archive(agent_id: str, request: Request) -> Response:
     """Admin-only: download the stored project tree as a zip (multi-file inspection)."""
     _require_admin(request)
     agent = await db.get_agent(_parse_uuid(agent_id))
-    if not agent or agent["handler_type"] != "custom":
-        raise HTTPException(status_code=404, detail="Custom agent not found")
+    if not agent or agent["handler_type"] not in _CODE_UPLOAD_TYPES:
+        raise HTTPException(status_code=404, detail="Uploaded-code agent not found")
     handler_dir = _handler_dir(agent_id)
     if not agent.get("is_archive") or not handler_dir.exists():
         raise HTTPException(status_code=404, detail="No uploaded archive for this agent")
@@ -415,8 +437,8 @@ async def approve_agent(agent_id: str, request: Request) -> dict:
     """Admin-only: approve a custom agent and start it."""
     _require_admin(request)
     agent = await db.get_agent(_parse_uuid(agent_id))
-    if not agent or agent["handler_type"] != "custom":
-        raise HTTPException(status_code=404, detail="Custom agent not found")
+    if not agent or agent["handler_type"] not in _CODE_UPLOAD_TYPES:
+        raise HTTPException(status_code=404, detail="Uploaded-code agent not found")
     if not agent.get("handler_file_path"):
         raise HTTPException(status_code=409, detail="No handler file uploaded yet")
 
@@ -434,8 +456,8 @@ async def reject_agent(agent_id: str, body: RejectRequest, request: Request) -> 
     """Admin-only: reject a custom agent (leaves it registered, not approved)."""
     _require_admin(request)
     agent = await db.get_agent(_parse_uuid(agent_id))
-    if not agent or agent["handler_type"] != "custom":
-        raise HTTPException(status_code=404, detail="Custom agent not found")
+    if not agent or agent["handler_type"] not in _CODE_UPLOAD_TYPES:
+        raise HTTPException(status_code=404, detail="Uploaded-code agent not found")
 
     await db.update_agent(_parse_uuid(agent_id), approved=False, status="registered")
     logger.info("agent_rejected agent_id=%s reason=%s", agent_id, body.reason)

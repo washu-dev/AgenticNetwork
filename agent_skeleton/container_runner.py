@@ -34,6 +34,57 @@ def _load_handler_class(path: str, class_name: str):
     return getattr(module, class_name)
 
 
+def _serve_tool_loop(cfg: dict) -> None:
+    """Serve an uploaded LLM tool loop (registration ``tool_loop`` type) on the cluster.
+
+    Loads the author's tools module (TOOL_SCHEMAS + TOOL_REGISTRY, or build_tools),
+    builds an AgentSpec, and serves it through the skeleton's own create_app +
+    SkeletonAgentExecutor — the same engine the local tool_loop_handler uses, but
+    without any registration_service import (which isn't in this image)."""
+    import uvicorn
+    from a2a.types import AgentCapabilities, AgentCard, AgentSkill
+
+    from agent_skeleton.serve import create_app
+    from agent_skeleton.spec import load_tool_module, tool_loop_spec
+
+    config: dict = cfg.get("config", {})
+    agent_id: str = cfg.get("agent_id", "tool_loop")
+    port = int(cfg.get("port") or os.environ.get("AGENT_PORT", "0"))
+    name: str = config.get("name", agent_id)
+    description: str = config.get("description", "")
+    system_prompt: str = config.get("system_prompt", "")
+    model = config.get("model")
+    handler_file = os.environ.get(
+        "HANDLER_FILE_PATH", "/app/" + config.get("entry_file", "tools.py")
+    )
+
+    logger.info(
+        "container_runner_tool_loop_start agent_id=%s port=%d file=%s",
+        agent_id, port, handler_file,
+    )
+
+    schemas, registry = load_tool_module(handler_file, config.get("extra", {}))
+    spec = tool_loop_spec(
+        name=name,
+        system_prompt=system_prompt,
+        tool_schemas=schemas,
+        tool_registry=registry,
+        model=model,
+    )
+    card = AgentCard(
+        name=name,
+        description=description,
+        url=f"http://localhost:{port}/",
+        version="1.0.0",
+        capabilities=AgentCapabilities(streaming=False),
+        skills=[AgentSkill(id=f"{agent_id}/respond", name="respond", description=description, tags=[])],
+        default_input_modes=["text"],
+        default_output_modes=["text"],
+    )
+    app = create_app(card, model=model, spec=spec)
+    uvicorn.run(app, host="0.0.0.0", port=port, log_level="warning")
+
+
 def main() -> None:
     raw = os.environ.get("AGENT_CONFIG_JSON")
     if not raw:
@@ -41,6 +92,14 @@ def main() -> None:
         sys.exit(1)
 
     cfg = json.loads(raw)
+
+    # tool_loop agents run an uploaded LLM tool loop, not an AgentHandler subclass.
+    # Serve them via the skeleton's own spec engine (create_app), which is baked
+    # into this image — registration_service is NOT installed here.
+    if cfg.get("handler_type") == "tool_loop":
+        _serve_tool_loop(cfg)
+        return
+
     config: dict = cfg.get("config", {})
     agent_id: str = cfg.get("agent_id", "custom")
     port = int(cfg.get("port") or os.environ.get("AGENT_PORT", "0"))
