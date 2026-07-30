@@ -13,16 +13,27 @@ from __future__ import annotations
 
 import io
 import os
+import re
 import shutil
 import stat
 import zipfile
 from pathlib import Path
+
+try:  # tomllib is stdlib on Python 3.11+ (the service's runtime)
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - defensive for <3.11
+    tomllib = None
 
 # Top-level names reserved for platform-injected build-context files. A user
 # archive that carries these at its root would collide with what the builder /
 # supervisor write alongside the project tree (see builder.generate_dockerfile
 # and supervisor._commit_to_github).
 RESERVED_ROOT_NAMES = {"agent_skeleton", "Dockerfile"}
+
+# The import package the platform vendors and installs on every custom image; the
+# container ENTRYPOINT is ``python -m agent_skeleton.container_runner``. An uploaded
+# project must not re-declare/install it (see ``_framework_impersonation_reason``).
+_FRAMEWORK_PACKAGE = "agent_skeleton"
 
 # Directories skipped when re-zipping / listing a stored tree (build artifacts,
 # never part of the uploaded project).
@@ -39,6 +50,58 @@ def _max_files() -> int:
 
 class ArchiveError(ValueError):
     """Raised when an uploaded archive fails a safety check (→ HTTP 422)."""
+
+
+def _normalize_dist_name(name: str) -> str:
+    """PEP 503 normalization: distribution names are case-insensitive and treat runs
+    of ``-``/``_``/``.`` as equivalent, so ``Agent_Skeleton`` == ``agent-skeleton``."""
+    return re.sub(r"[-_.]+", "-", name.strip().lower())
+
+
+def _framework_impersonation_reason(
+    zf: zipfile.ZipFile, manifest: list[str]
+) -> str | None:
+    """Why the uploaded ``pyproject.toml`` would install itself AS the vendored
+    ``agent_skeleton`` framework package (else ``None``).
+
+    The reserved-name check above blocks a literal ``agent_skeleton/`` directory, but
+    a project can omit that folder and still claim the package via packaging metadata:
+    ``name = "agent-skeleton"``, ``package-dir {agent_skeleton = "."}``, or
+    ``packages = ["agent_skeleton", ...]``. On the built image ``pip install /app``
+    then *uninstalls* the vendored framework — dropping
+    ``agent_skeleton/container_runner.py`` (the ENTRYPOINT) — and the agent fails to
+    boot. We reject that at upload instead of shipping a container that dies on start.
+
+    Only ``pyproject.toml`` is inspected (the framework/template's build system); a
+    malformed or absent file is skipped (out of scope — the image build surfaces it).
+    """
+    if tomllib is None or "pyproject.toml" not in manifest:
+        return None
+    try:
+        data = tomllib.loads(zf.read("pyproject.toml").decode("utf-8"))
+    except (KeyError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+        return None
+
+    name = (data.get("project") or {}).get("name")
+    if isinstance(name, str) and _normalize_dist_name(name) == "agent-skeleton":
+        return 'declares [project] name = "agent-skeleton"'
+
+    setuptools_cfg = (data.get("tool") or {}).get("setuptools") or {}
+    package_dir = setuptools_cfg.get("package-dir") or {}
+    if isinstance(package_dir, dict) and _FRAMEWORK_PACKAGE in package_dir:
+        return (
+            f"maps [tool.setuptools.package-dir] {_FRAMEWORK_PACKAGE} = "
+            f"{package_dir[_FRAMEWORK_PACKAGE]!r}"
+        )
+
+    packages = setuptools_cfg.get("packages")
+    if isinstance(packages, list):
+        for pkg in packages:
+            if isinstance(pkg, str) and (
+                pkg == _FRAMEWORK_PACKAGE or pkg.startswith(_FRAMEWORK_PACKAGE + ".")
+            ):
+                return f"lists {pkg!r} in [tool.setuptools] packages"
+    return None
 
 
 def unpack_archive(raw: bytes, dest: Path, entry_file: str) -> list[str]:
@@ -97,6 +160,22 @@ def unpack_archive(raw: bytes, dest: Path, entry_file: str) -> list[str]:
         raise ArchiveError(
             f"Entry file {entry_file!r} not found at the archive root "
             f"(archive root must be the project root)"
+        )
+
+    # Reserved-name analog for packaging metadata: a pyproject that installs itself
+    # AS the vendored ``agent_skeleton`` framework would remove the container
+    # entrypoint on the built image (see _framework_impersonation_reason). Reject it
+    # here with an actionable message rather than shipping an agent that won't boot.
+    reason = _framework_impersonation_reason(zf, manifest)
+    if reason is not None:
+        raise ArchiveError(
+            f"Uploaded project must not install itself as the reserved framework "
+            f"package {_FRAMEWORK_PACKAGE!r} — it {reason}. The platform vendors "
+            f"{_FRAMEWORK_PACKAGE!r} (it provides the container entrypoint), so a "
+            f"project re-declaring it removes that entrypoint at build time and the "
+            f"agent won't start. Rename your project and package only your own code "
+            f'(e.g. name = "myagent", packages = ["my_pkg"]) and drop any package-dir '
+            f'mapping {_FRAMEWORK_PACKAGE} = ".". See REGISTERING.md.'
         )
 
     # All checks passed — clear dest, then extract only the validated members.

@@ -127,3 +127,52 @@ def test_rejection_does_not_partially_unpack(tmp_path: Path) -> None:
         unpack_archive(_zip({"handler.py": HANDLER, "../evil.py": "x"}), dest, "handler.py")
     # A rejected archive writes nothing (validation happens before extraction).
     assert not dest.exists() or not any(dest.iterdir())
+
+
+# ── Framework-impersonation guard (pyproject that installs itself AS agent_skeleton) ──
+
+_PYPROJECT_IMPERSONATION_NAME = '[project]\nname = "Agent_Skeleton"\nversion = "0.1.0"\n'
+_PYPROJECT_PACKAGE_DIR_REMAP = (
+    '[project]\nname = "geoagent"\nversion = "0.1.0"\n\n'
+    '[tool.setuptools.package-dir]\nagent_skeleton = "."\n'
+)
+_PYPROJECT_PACKAGES_LIST = (
+    '[project]\nname = "geoagent"\nversion = "0.1.0"\n\n'
+    '[tool.setuptools]\npackages = ["agent_skeleton.system_tools", "skills"]\n'
+)
+_PYPROJECT_CLEAN = (
+    '[project]\nname = "geoagent"\nversion = "0.1.0"\n\n'
+    '[tool.setuptools]\npackages = ["skills"]\n'
+)
+
+
+@pytest.mark.parametrize(
+    "pyproject",
+    [_PYPROJECT_IMPERSONATION_NAME, _PYPROJECT_PACKAGE_DIR_REMAP, _PYPROJECT_PACKAGES_LIST],
+)
+def test_reject_pyproject_impersonating_framework(tmp_path: Path, pyproject: str) -> None:
+    """An upload whose pyproject would install itself AS the vendored agent_skeleton
+    framework (by dist name / package-dir remap / packages list) is rejected — it would
+    otherwise uninstall the framework and drop the container_runner entrypoint at build."""
+    with pytest.raises(ArchiveError, match="reserved framework package"):
+        unpack_archive(
+            _zip({"handler.py": HANDLER, "pyproject.toml": pyproject}),
+            tmp_path / "a",
+            "handler.py",
+        )
+
+
+def test_accept_clean_pyproject_packaging_own_code(tmp_path: Path) -> None:
+    """A well-formed custom upload (own dist name, only its own package) is accepted."""
+    manifest = unpack_archive(
+        _zip(
+            {
+                "handler.py": HANDLER,
+                "pyproject.toml": _PYPROJECT_CLEAN,
+                "skills/__init__.py": "",
+            }
+        ),
+        tmp_path / "a",
+        "handler.py",
+    )
+    assert "pyproject.toml" in manifest and "handler.py" in manifest
