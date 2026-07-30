@@ -1,6 +1,6 @@
 # GCP Migration — AgenticNetwork
 
-**Amaan · updated 2026-07-21 · single source of truth for the GCP migration.**
+**Amaan · updated 2026-07-27 · single source of truth for the GCP migration.**
 Supersedes `GCP_MIGRATION_PLAN.md`, `GCP_MIGRATION_PROPOSAL.md`, `GCP_TEST_STATUS.md`, and
 `GCP_GLOSSARY.md` — retired to avoid stale/conflicting copies. Diagram:
 [`gcp_target_architecture.svg`](gcp_target_architecture.svg). Kept separate (broader than
@@ -104,6 +104,37 @@ while unused, but it's not free, and it's one more thing the team learns during 
 | **Slurm** | Stays as maintained backup | De-risks the prototype; nothing deleted. |
 | **Infrastructure-as-code** | Define the GCP stack in IaC (Pulumi-in-Python or Terraform/OpenTofu) | Reproducible spin-up/tear-down (key for cost control on fixed credits), reviewable, no click-ops drift. Note: IaC buys *repeatability*, not provider-agnosticism — real portability comes from the containers + standard interfaces (OpenAI-compat LLM, Postgres, HTTP/A2A) we already have. Adopt incrementally: `gcloud` scripts for the first deploys, capture in IaC once the stack shape settles. |
 
+## Portability / no lock-in (design rule)
+
+**Goal: the same system runs on the ENGR Slurm cluster *or* on GCP (or hybrid) — no hard coupling to
+either.** Portability comes from **standard interfaces + containers**, not from any cloud tool or IaC.
+The rule: keep platform-specifics at the *edges* (entrypoints, env wiring, IaC); keep app code
+talking only to standard seams.
+
+| Seam | Standard interface | Cluster | GCP |
+|---|---|---|---|
+| LLM | OpenAI-compatible Chat Completions | vLLM via `OPENAI_BASE_URL` | Vertex via `OPENAI_BASE_URL` |
+| Agent↔agent | A2A over HTTP/JSON-RPC | localhost ports | Cloud Run URLs (card data) |
+| State | Postgres wire protocol | Postgres on `/engrfs` | Cloud SQL |
+| Packaging | OCI containers | Slurm (Pyxis/enroot) | Cloud Run / GKE |
+| Launch (on-demand) | `ContainerBackend` interface | host `srun` loop | `CloudRunBackend` / `GKEBackend` |
+| Config / secrets | env vars | `secrets.env` | Secret Manager → env |
+
+**Rules that keep it un-locked-in:**
+- **Cloud-SDK calls only behind config-gated adapters, never in the core path.** Example: the planner's
+  Vertex support (`llm_client.py` `_make_client` / `_vertex_access_token`) and the disaster agent's
+  (`_call_model`) both mint a Google token **only** when `…LLM_PROVIDER=vertex`; otherwise the plain
+  OpenAI/vLLM path runs and the Google code never executes. Same image, backend chosen by env.
+- **No hardcoded GCP project IDs / URLs / endpoints in app code** — they live in env
+  (`OPENAI_BASE_URL`, `MAIN_AGENT_PORT` not `$PORT`, no baked Vertex URL).
+- **One image runs both places;** only the *entrypoint* + *env wiring* differ (`submit.sbatch` vs a
+  Cloud Run command override).
+- **Slurm stays a maintained backup** — the migration is additive, not a boat-burn.
+
+Portability wrinkles to retire (not GCP lock-in — cluster-origin assumptions that bite on both):
+the planner/vendored copies shelling out to the `dirctl` binary, and ADS's `localhost:5000` OCI
+registry assumption. Replace with a network directory client when standing up real ADS (Phase 2).
+
 ## LLM hosting
 
 **Decision (2026-07-22, supervisor direction): for now, the GCP deployment calls the existing
@@ -166,19 +197,101 @@ ingress — GCP is default-deny, and with no `tcp:8100` allow rule it's already 
 internet (verify: `curl` the VM's *external* IP:8100 from off-VPC → should time out). The token is
 the primary control; the firewall is defense-in-depth.
 
-**Connector-range gotcha (bites at planner-deploy time):** the default `default-allow-internal`
-rule only covers `10.128.0.0/9`. If the Serverless VPC Access connector you create for the planner
-lands *outside* that range (e.g. `10.8.0.0/28`), it **won't** be able to reach the relay's `:8100`
-and the planner will fail to hit vLLM. Fix by either giving the connector a range inside
-`10.128.0.0/9`, or adding an explicit rule:
+**Connector-range gotcha (bites at planner-deploy time):** in an auto-mode VPC the entire
+`10.128.0.0/9` block is **reserved** for auto-subnet allocation, so the Serverless VPC Access
+connector's `/28` **must** live *outside* it (e.g. `10.8.0.0/28`, in `10.0.0.0/9`) — any range
+inside `10.128.0.0/9` fails to create with "conflicts with an existing subnetwork." But a range
+outside `10.128.0.0/9` is *not* covered by `default-allow-internal`, so you **must** also add an
+explicit rule for the relay to accept the connector's traffic (this is not optional):
 `gcloud compute firewall-rules create allow-vllm-relay-from-connector --network=default
---direction=INGRESS --action=ALLOW --rules=tcp:8100 --source-ranges=<connector-range>
---target-tags=vllm-relay` (tag the VM `vllm-relay` first).
+--direction=INGRESS --action=ALLOW --rules=tcp:8100 --source-ranges=10.8.0.0/28
+--target-tags=vllm-relay` (tag the VM `vllm-relay` first). Without the rule the planner deploys
+fine but every LLM call silently hangs.
 
 **Gotchas hit (for the record):** the served model name is `openai/gpt-oss-120b` (raw OpenAI
 clients send it verbatim — must match vLLM's `--served-model-name`); the token is symmetric (same
 value in `secrets.env`/`--api-key` and the planner's `OPENAI_API_KEY`); connect to
 `shell.engr.wustl.edu`, not the node hostname you land on.
+
+### Planner on Cloud Run — first live slice (working 2026-07-27)
+
+The planner runs **self-contained on Cloud Run** (fake ADS, no DB, no auth), reasoning through the
+ENGR vLLM via the relay. Definition of done met: chat UI loads, `gpt-oss-120b` answers, `/health`
+→ `200`. This is the "something live on GCP" vertical slice; real ADS / Cloud SQL / Shibboleth
+layer on after (Phasing A1→). The request path is
+`Cloud Run planner ─(connector)─▶ relay :8100 ─(autossh)─▶ h100-2405:8100 (vLLM)`; the planner
+carries the token as `OPENAI_API_KEY`, which vLLM checks app-side (the relay is a dumb TCP tunnel
+and does **not** inject it).
+
+**Working sequence** (`di2-agenticweb`, `us-central1`):
+1. **Token → Secret Manager.** `printf %s '<token>' | gcloud secrets create vllm-api-key
+   --data-file=-` — use `printf %s`, **never** `echo` (a trailing `\n` breaks the bearer match →
+   401; verify with `gcloud secrets versions access latest --secret=vllm-api-key | xxd | tail`,
+   last byte must not be `0a`). Then grant the runtime SA read access:
+   `gcloud secrets add-iam-policy-binding vllm-api-key
+   --member="serviceAccount:<project-number>-compute@developer.gserviceaccount.com"
+   --role="roles/secretmanager.secretAccessor"`.
+2. **VPC connector** so Cloud Run can reach the relay's private IP:
+   `gcloud compute networks vpc-access connectors create planner-connector --region=us-central1
+   --network=default --range=10.8.0.0/28` (range **must** be outside `10.128.0.0/9` — see gotcha).
+3. **Firewall** the relay to the connector range (required — see connector-range gotcha above): tag
+   the VM `vllm-relay`, then allow `tcp:8100` from `10.8.0.0/28` to that tag.
+4. **Deploy** with a command override that bypasses the entrypoint's ADS-wait:
+   `gcloud run deploy planner --image=di2washu/agenticnetwork-planner:latest --port=8080
+   --command=python --args=-m,planner_agent.scripts.run_server,--fake-ads
+   --vpc-connector=planner-connector
+   --set-env-vars=MAIN_AGENT_PORT=8080,AGENT_NETWORK_FAKE_ADS=true,PLANNER_ALLOW_ANON=1,OPENAI_BASE_URL=http://10.128.0.2:8100/v1,MAIN_AGENT_LLM_MODEL=openai/gpt-oss-120b
+   --set-secrets=OPENAI_API_KEY=vllm-api-key:latest --min-instances=1 --max-instances=1
+   --no-cpu-throttling --memory=1Gi --timeout=3600 --no-allow-unauthenticated`.
+5. **Test privately** via `gcloud run services proxy planner --region=us-central1 --port=8080` →
+   browser `http://localhost:8080/` (send a message; "no agents" is expected in fake-ADS mode) and
+   `curl -s -o /dev/null -w "%{http_code}\n" http://localhost:8080/health` → `200`.
+
+**Gotchas that actually bit (beyond the vLLM ones above):**
+- **Editor can't grant the secret binding.** Creating the secret only needs `roles/editor`, but
+  `secrets add-iam-policy-binding` needs `secretmanager.secrets.setIamPolicy`, which is Owner /
+  `secretmanager.admin`-only — a fresh operator hits a 403 and must first get `roles/secretmanager.admin`
+  from a project Owner. Deploy also can't self-grant it. Request the role up front.
+- **Connector range must be *outside* `10.128.0.0/9`** and paired with the `tcp:8100` firewall rule
+  — full detail in the connector-range gotcha above.
+- **`MAIN_AGENT_PORT=8080`, not `$PORT`** (the code reads `MAIN_AGENT_PORT`); `OPENAI_API_KEY` is
+  mandatory at boot (the vLLM token satisfies it); `--no-cpu-throttling` for the 60s background
+  health loop; the command override is required (the stock entrypoint waits for ADS and exits);
+  keep `--no-allow-unauthenticated` while `PLANNER_ALLOW_ANON=1` (otherwise it's an open, no-login
+  planner driving the ENGR LLM — proxy for testing, don't expose it).
+
+### Operating the live planner — cheat-sheet
+
+**What's up right now (5 GCP resources + 1 ENGR dependency):** Cloud Run `planner` (min=1, private,
+always-warm) · VPC connector `planner-connector` (`10.8.0.0/28`, always-on) · firewall
+`allow-vllm-relay-from-connector` · GCE VM `vllm-relay` (e2-micro, always-on) · Secret `vllm-api-key`
+· **ENGR vLLM Slurm job on `h100-2405`** (the one leg not controlled from GCP — if it ends, the UI
+still loads but every message fails at the LLM call). All commands take
+`--region=us-central1 --project=di2-agenticweb`.
+
+**Inspect / access:**
+```
+gcloud run services describe planner --region=us-central1 --project=di2-agenticweb
+gcloud run services logs read planner --region=us-central1 --project=di2-agenticweb --limit=80
+gcloud run services proxy planner --region=us-central1 --port=8080 --project=di2-agenticweb   # → http://localhost:8080/ (only way in)
+```
+
+**Change config / ship code:** `gcloud run services update planner ... --update-env-vars=K=V` for a
+tweak; re-run the full `gcloud run deploy planner ...` (above) to push a new image (new revision,
+auto traffic shift).
+
+**Diagnose a failed LLM call** (problem is the relay/Slurm job, not Cloud Run):
+```
+gcloud compute ssh vllm-relay --zone=us-central1-a --project=di2-agenticweb \
+  --command="systemctl is-active vllm-tunnel && curl -s -o /dev/null -w '%{http_code}\n' localhost:8100/v1/models"   # want: active + 200
+```
+
+**Cost note — this slice is NOT scale-to-zero.** Planner (min=1 + always-CPU), the connector (≥2
+always-on instances), and the relay VM all bill while idle. To pause spend between demos (all
+reversible): `gcloud run services update planner ... --min-instances=0` (planner cold-starts on
+demand) and `gcloud compute instances stop vllm-relay --zone=us-central1-a ...`. The connector can't
+be paused — delete + recreate it if it'll sit idle for a long stretch. For a short-lived demo, leave
+everything up.
 
 ## Identity, gateway & auth
 
@@ -253,15 +366,60 @@ setup + WashU IT coordination, revisit when retiring the external box becomes wo
 | # | Phase | Deliverable |
 |---|---|---|
 | **A0** | Foundation — GCP access *(blocker)*, VPC + WashU-IP restriction, Cloud SQL, CI (GitHub Actions → shared Docker Hub), budget alerts | Infra up; images pushed via CI |
-| **A1** | Control plane on Cloud Run + Cloud SQL + Vertex, behind WashU login (agents still always-on) | End-to-end query on GCP |
+| **A1** | Control plane on Cloud Run + Vertex (planner + real ADS; Cloud SQL/login still TODO) | End-to-end query on GCP — **✅ done** |
 | **A1b** | Load test — ~50 users via API; tune Cloud Run + Cloud SQL | Known concurrency ceiling |
-| **B2** | Decouple publishing | Planner discovers a stopped agent |
-| **B3** | On-demand backend + activation (**milestone 1**) — stand up Cloud Run *and* GKE Autopilot in parallel; card resource field picks the backend per agent | One agent spun up per query, torn down |
+| **B2** | Decouple publishing | Planner discovers a stopped agent — **✅ done** (decoupled `ads_utils` publish) |
+| **B3** | On-demand backend + activation (**milestone 1**) — Cloud Run native scale-to-zero (GKE deferred) | One agent spun up per query — **✅ done** (manual; `CloudRunBackend` automates it, Phase 4) |
 | **B4** | Fleet + LLM finalize (email/geospatial Responses→Chat rewrites) | Full fleet on-demand |
 | **C5** | Hardening — A2A auth, Secret Manager, coding-agent sandboxing | Secured demo URL |
 | **C6** | Cutover eval — GCP default once proven; **Slurm stays** | Parallel run, no files deleted |
 
-## First steps — getting *something* live on GCP
+## Shipped — Phases 0-3 live on GCP (2026-07-29)
+
+Phases **A1, B2, B3 are implemented and running** (`di2-agenticweb`, `us-central1`). The WIP runbooks
+that drove them are folded here and removed. What's live:
+
+- **Planner** on Cloud Run; LLM via Vertex with **vLLM-primary / Vertex automatic failover**
+  (`llm_client.py` `_create_with_failover`; env `MAIN_AGENT_LLM_FALLBACK_*`). vLLM reached via the
+  `vllm-relay` VM (autossh) + the `planner-connector` VPC connector.
+- **Authenticated cross-network A2A** — the planner attaches a Google OIDC ID token for `*.run.app`
+  targets (`transport.py` `CloudRunIdTokenAuth`); each agent's SA gets `run.invoker`. (Org policy blocks
+  public `allUsers` Cloud Run — this replaced it.)
+- **Real ADS** on a Container-Optimized-OS GCE VM (`ads`, `10.128.0.3`): `dirctl daemon` + a local OCI
+  registry, sqlite config `ads_daemon.gcp.yaml`. Planner discovers dynamically (`dirctl` is in the
+  planner image; set `ADS_SERVER_ADDR`, drop `AGENT_NETWORK_FAKE_ADS`).
+- **On-demand agent** — the disaster agent at `min-instances=0`; Cloud Run cold-starts it per query.
+
+### Operational gotchas (learned — these bit us)
+- **COS host firewall.** Container-Optimized OS ships `iptables -P INPUT DROP` (only lo/icmp/ssh/
+  established), so `:8888/:8999` are dropped even with the daemon listening + the VPC firewall open
+  (symptom: `docker exec … localhost` works, VM-to-VM/Cloud Run time out). Fix: `iptables -I INPUT -p
+  tcp -m multiport --dports 8888,8999 -j ACCEPT` + a startup-script (COS resets iptables on reboot).
+- **VPC connector range must be *outside* `10.128.0.0/9`** (auto-mode reserves it) — use `10.8.0.0/28`
+  — **and** needs an explicit `tcp:<port>` firewall rule (it's outside `default-allow-internal`).
+- **`OPENAI_API_KEY` must equal `VLLM_API_KEY`** once vLLM is gated (`--api-key`) — derive it in
+  `secrets.env`. A dummy only worked while vLLM was un-gated.
+- **vLLM torch.compile cache must be node-local**, not `/engrfs` NFS (atomic-rename crash) — set
+  `VLLM_CACHE_ROOT`/`TORCHINDUCTOR_CACHE_DIR`/`TRITON_CACHE_DIR` to `/tmp` in `start_vllm.sbatch`.
+- **Stale OASF converter.** `AgenticNetwork`'s `card_oasf_converter`/`ads_utils` emit empty top-level
+  `skills` for custom-skill cards → stored-but-not-routed → invisible. Publish via the
+  `agent-directory/ads_utils` converter, or ensure an `oasf:<name>:<id>` tag on ≥1 skill.
+- **On-demand publish must be decoupled** — a self-publishing agent unpublishes on scale-down (and
+  crashes on boot if ADS is unreachable, since publish runs before it binds `$PORT`). Publish the card
+  separately so it persists at 0 instances.
+- **Planner health-probe cold-starts min=0 agents** every cycle → they never idle. Skip them
+  (`HEALTH_PROBE_SKIP_AGENTS`; the `CloudRunBackend` will own this).
+- **Cold-start timeout** — raise the planner's `A2A_HTTP_TIMEOUT_SECONDS` (120) so the first request
+  doesn't time out while Cloud Run spins the agent up.
+- **IAM (recurring):** Editor can create resources but not modify IAM (`*.setIamPolicy`) — each step
+  needed a specific admin role (`secretmanager.admin`, `run.admin`) from a project Owner.
+
+**Next — Phase 4 (B4/on-demand fleet): automate agent onboarding via a `CloudRunBackend`** so a
+registered agent auto-deploys + auto-publishes. Design + steps:
+[`DESIGN_CLOUDRUN_BACKEND.md`](DESIGN_CLOUDRUN_BACKEND.md),
+[`IMPLEMENTATION_CLOUDRUN_BACKEND.md`](IMPLEMENTATION_CLOUDRUN_BACKEND.md).
+
+## First steps — getting *something* live on GCP (historical — done)
 
 The fastest path to a real GCP URL, ordered by least resistance. Steps 1–5 land a working
 planner; everything after layers onto it (see Phasing). Do step 4 with plain `gcloud` first to
@@ -276,12 +434,12 @@ prove it, then capture the stack in IaC.
    vLLM with an `--api-key`, create the relay VM, run autossh under systemd, and verify
    `curl localhost:8100/v1/models` on the VM returns `200` (see "vLLM endpoint from GCP" above).
    The planner in step 4 points `OPENAI_BASE_URL` at `http://<relay-internal-ip>:8100/v1`.
-4. **Deploy the planner alone, self-contained.** Reuse the existing planner image (build
-   `--platform linux/amd64`, push to the shared Docker Hub). `gcloud run deploy` with:
-   `AGENT_NETWORK_FAKE_ADS=true` + baked cards, `PLANNER_ALLOW_ANON=1` (no DB/auth yet),
-   `MAIN_AGENT_PORT=$PORT` (the code reads this, not `$PORT`), the LLM endpoint from step 3,
-   `--min-instances=1 --cpu-always-allocated` (for the 60s background loop), `--max-instances`
-   set. → a live HTTPS chat UI reasoning through the LLM, with no ADS/DB/proxy. **This is
+4. **Deploy the planner alone, self-contained (done ✅ 2026-07-27).** Working runbook folded into
+   "Planner on Cloud Run — first live slice" above. Reuses the existing planner image
+   (`di2washu/agenticnetwork-planner`, `linux/amd64`, shared Docker Hub), `AGENT_NETWORK_FAKE_ADS=true`
+   + baked cards, `PLANNER_ALLOW_ANON=1` (no DB/auth yet), `MAIN_AGENT_PORT=8080`, the LLM endpoint
+   from step 3, `--min-instances=1 --no-cpu-throttling --max-instances=1`, private ingress + proxy
+   for testing. → a live HTTPS chat UI reasoning through gpt-oss-120b, no ADS/DB/proxy. **This is
    "something on GCP."**
 5. **Capture it in IaC.** Once step 4 works, translate that one service into Pulumi/Terraform so
    it's reproducible and tear-down-able. Small surface = a good first IaC artifact.
@@ -300,10 +458,10 @@ Vertex), stub the LLM during load tests, stay **single-region**.
 
 ## Open questions
 
-- **ADS home:** Cloud Run (min=1) vs a small GKE Deployment — depends on whether libp2p
-  routing + the OCI store need more persistence than Cloud Run offers. Verify whether the
-  `localhost:5000` OCI registry ref in `ads_daemon.yaml` needs a companion registry service
-  on GCP.
+- **ADS home:** ~~Cloud Run vs GKE~~ **resolved — a small Container-Optimized-OS GCE VM** (`ads`) runs
+  `dirctl daemon` + a co-located `registry:2` OCI store with host networking, sqlite config
+  (`ads_daemon.gcp.yaml`). Lower-resistance than forcing the libp2p/OCI daemon onto serverless. (COS
+  host-firewall gotcha: see "Operational gotchas.")
 - **Teardown granularity:** per-query vs per-session vs idle-timeout for on-demand agents.
 - **Milestone-1 scope:** bring up all 6 specialists on-demand at once, or prove the loop with
   one simple agent (e.g. disaster) first? Recommend the latter as the vertical slice.
@@ -322,6 +480,13 @@ internal `10.128.0.2`) runs autossh tunneling `:8100` → `shell.engr.wustl.edu`
 Cloud Run VPC connector range only. The `agenticweb` Apache-gateway approach was tried first and
 **rejected** — the EIT nginx front enforces SSO for the whole vhost above our Apache (see "vLLM
 endpoint from GCP").
+
+**✅ Working (2026-07-27) — Planner live on Cloud Run.** Self-contained planner (fake ADS, no
+DB/auth) on Cloud Run in `di2-agenticweb`/`us-central1`, reaching the ENGR vLLM through the relay
+via a Serverless VPC Access connector (`10.8.0.0/28`) + a `tcp:8100` firewall rule to the relay.
+Chat UI loads, `gpt-oss-120b` answers, `/health` → `200`; tested privately via `gcloud run services
+proxy`. First "something live on GCP" slice (Phasing A1, partial — auth / DB / real ADS still to
+layer on). Runbook: "Planner on Cloud Run — first live slice" above.
 
 **🔄 Next — decentralization test (runbook ready, not yet executed).** Deploy the
 disaster-response agent on GCP Cloud Run, publish its card into the live ENGR ADS, confirm
