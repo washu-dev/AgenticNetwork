@@ -472,6 +472,7 @@ class Supervisor:
             logger.warning("github_delete_failed name=%s error=%s", name, exc)
 
     async def _commit_to_github(self, agent: dict[str, Any], oasf_skills: list) -> None:
+        from registration_service.build_manifest import MANIFEST_FILENAME, build_agent_manifest
         from registration_service.builder import generate_card_json, generate_dockerfile
 
         repo = os.environ["GITHUB_REPO"]
@@ -497,6 +498,25 @@ class Supervisor:
         files = {
             f"{base}/Dockerfile": dockerfile,
             f"{base}/{slug}.card.json": card_json,
+            # The authoring fields the build context otherwise loses (class_name,
+            # max_runtime_seconds, declared credentials): without them the committed
+            # tree can't be reconstructed and the credential declarations never get
+            # PR review. Secret-bearing and free-text fields are NOT included — see
+            # build_manifest for the allowlist and its commit-time self-test.
+            #
+            # If that self-test trips, this raises while the files dict is still being
+            # assembled — before any network call — so nothing is committed. The
+            # approval endpoint surfaces a 500 and the row stays 'registered', which
+            # is retryable once the offending input is corrected. The exception text
+            # never echoes the offending value, since it reaches logs and the API.
+            f"{base}/{MANIFEST_FILENAME}": build_agent_manifest(
+                name=name,
+                description=agent.get("description") or "",
+                slug=slug,
+                handler_type=agent["handler_type"],
+                config=config,
+                oasf_skills=oasf_skills,
+            ),
         }
         # The user's uploaded project tree → src/ (entry file at the src root, next
         # to importable siblings). Covers both single-file and multi-file uploads.
