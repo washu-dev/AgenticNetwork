@@ -418,15 +418,21 @@ that drove them are folded here and removed. What's live:
 registered agent auto-deploys + auto-publishes. Design + steps:
 [`DESIGN_CLOUDRUN_BACKEND.md`](DESIGN_CLOUDRUN_BACKEND.md),
 [`IMPLEMENTATION_CLOUDRUN_BACKEND.md`](IMPLEMENTATION_CLOUDRUN_BACKEND.md). **In progress as of
-2026-08-03: Steps 0-7 of 10 done** (code Steps 0-6 working-tree/uncommitted; Step 7 IAM live on GCP) —
-capability-flag refactor, OASF routable-skill enforcement, `image_ref` digest column, the
-**`CloudRunBackend` itself** (deploy by digest via the Cloud Run Admin API, `:latest` fallback, planner-SA
-invoker grant, scale-to-zero, plus the `image_ready`→deploy→publish-run.app-URL trigger), Step 5's
-**decoupled-publish** contract, Step 6's **health-loop skip + Cloud Run recovery reconcile**, and Step 7's
-**IAM** (`agent-runtime` + `registration-service` SAs; `run.admin` + scoped `serviceAccountUser` +
-`aiplatform.user`; captured in `scripts/gcp_iam_step7.sh`). 141 tests pass.
-**Next: Step 8** (resource-requirements card ext — code only), then Step 9 (Cloud SQL + reg-service
-deploy) and Step 10 (planner front-door). See the implementation doc's "Progress" section.
+2026-08-03: Steps 0-8 of 10 done** (code in the working tree; Step 7 IAM live on GCP) — capability-flag
+refactor, OASF routable-skill enforcement, `image_ref` digest column, the **`CloudRunBackend` itself**
+(deploy by digest, `:latest` fallback, planner-SA invoker grant, scale-to-zero, `image_ready`→deploy→
+publish-run.app-URL trigger), Step 5's **decoupled-publish** contract, Step 6's **health-loop skip + Cloud
+Run recovery reconcile**, Step 7's **IAM** (`agent-runtime` + `registration-service` SAs; captured in
+`scripts/gcp_iam_step7.sh`), and Step 8's **resource-requirements card extension** (`resources` column +
+card ext → cpu/memory/concurrency/max-instances deploy args; GPU→GKEBackend seam). Working tree rebased
+onto the upstream `build_manifest` commit. 187 tests pass.
+**Step 9 core PROVEN LIVE (2026-08-03):** the registration service runs on **Cloud Run** wired to **Cloud SQL**
+(`agenticnetwork-db`) + the VPC connector, and drove a custom agent end-to-end — register → CI build →
+`image_ready` → `CloudRunBackend` auto-deploy (`agent-echo-test`, min=0) → card published. First live Phase-4
+loop. Three bugs fixed live (JSONB-string `resources`, recovery retry, Cloud Run entrypoint). The **planner is now
+also on Cloud SQL** (shared `registration` DB) — **Step 9 complete: reg service + planner both on Cloud
+Run/Cloud SQL.** Only **Step 10** (planner front-door) and the **Option-1 cutover** remain. See the
+implementation doc's Step 9 notes.
 
 ## First steps — getting *something* live on GCP (historical — done)
 

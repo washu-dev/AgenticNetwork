@@ -13,15 +13,16 @@ All file refs are under `/Users/amaankhan/Desktop/DTRC/AgenticNetwork/`.
 
 ## Progress (2026-07-30)
 
-**Steps 0-7 are done** (code Steps 0-6 in the working tree, uncommitted; Step 7 IAM applied live on GCP
-by the user). Baseline: `FAKE_DB=1 PYTHONPATH=. registration_service/.venv/bin/python -m
-pytest registration_service/tests -q` → **141 passed** (124 + 17 in `test_cloudrun_backend.py`).
-Run this before/after any further change.
-**Next up: Step 8** (resource-requirements card extension) — pure code + tests, no `gcloud`: parse a
-`resource-requirements` card ext (cpu/mem/concurrency/max-instances) and map it in `_deploy_spec`, with a
-`gpu`/strict-isolation seam for a future `GKEBackend`. Then Step 9 (Cloud SQL + deploy the reg service on
-Cloud Run as `registration-service`) and Step 10 (planner front-door) → the Option-1 cutover. Ask before
-running any `gcloud`.
+**Steps 0-8 done; Step 9 core PROVEN LIVE on GCP (2026-08-03).** Baseline:
+`FAKE_DB=1 PYTHONPATH=. registration_service/.venv/bin/python -m pytest registration_service/tests -q`
+→ **189 passed, 1 skipped** (Step 8 +8; two live-debug regressions +2; merged `build_manifest` +38).
+**Step 9 core:** the registration service runs on Cloud Run (`registration`, `SPAWN_BACKEND=cloudrun`) wired
+to Cloud SQL + the VPC connector, and drove a custom agent end-to-end: register → CI build → `image_ready`
+→ `CloudRunBackend` auto-deploy (`agent-echo-test`, min=0, as `agent-runtime`) → card published. First live
+Phase-4 loop. Three bugs were found + fixed live (see Step 9 notes below).
+**Steps 0-9 DONE** (Step 9 = reg service + planner both on Cloud Run/Cloud SQL, register→deploy loop proven
+live). **Only Step 10** (planner front-door: drop `PLANNER_ALLOW_ANON`, lock ingress, strip identity headers,
+wire `CREDENTIALS_ENCRYPTION_KEY`) **and then the Option-1 cutover remain.** Ask before running any `gcloud`.
 
 **Roadmap end-state.** Steps 5–8 finish the agent-onboarding automation; **Steps 9–10** (Cloud SQL
 persistence + planner front-door hardening) make the planner safe to expose and are the prerequisites for
@@ -275,12 +276,42 @@ So Step 5 is a **test lock** on the decoupled-publish contract rather than a beh
   `PLANNER_INVOKER_SA=267355023116-compute@developer.gserviceaccount.com`, `IMAGE_REGISTRY=di2washu`
   (`VPC_CONNECTOR` left unset for now — agents don't need VPC egress yet).
 
-## Step 8 — Resource-requirements card extension (right-sizing + backend choice)
+## Step 8 — Resource-requirements card extension (right-sizing + backend choice) — ✅ Done (2026-08-03)
 - Define ext `agenticnetwork.dev/ext/resource-requirements` (cpu/mem/gpu/concurrency/max_instances);
   parse in the card path; persist alongside `config`.
 - `CloudRunBackend.spawn` maps it to `--cpu/--memory/--concurrency/--max-instances`. `gpu`/strict
   isolation → route to a future `GKEBackend` (out of scope now; leave the selection seam).
 - **Test:** a card with resource hints produces the expected deploy args.
+
+**What actually happened:**
+- **Model:** `models.ResourceRequirements` (cpu/memory/concurrency/max_instances/gpu) with cpu/memory
+  format validators + `ge=1` on the counts; added `resources: ResourceRequirements | None` to
+  `RegisterRequest`. Every default equals the CloudRunBackend's prior hardcoded behavior, so an agent that
+  declares nothing deploys byte-identically to before.
+- **Persistence:** a nullable `resources JSONB` column (mirrors the Step-3 `image_ref` pattern —
+  `_SCHEMA_SQL` + `ADD COLUMN IF NOT EXISTS` + `fake_db` row/`fake_create_agent`). Set at registration via
+  an optional `create_agent(resources=...)` param; `server.register_agent` passes it **on the uploaded-code
+  path only** (the sole path that reaches a cloud deploy — the `owns_build` guard rejects `llm`/`api_proxy`
+  on cloud backends, so the non-upload raw-INSERT path and its 6-arg `fake_db` branch were left untouched).
+  Not added to the update whitelist (set once at register), so the `test_db_schema` drift guard is
+  unaffected.
+- **Backend:** `_deploy_spec` gained a None-safe `concurrency` (absent → leave Cloud Run's default; set →
+  pin, e.g. 1 for per-request isolation) mapped onto `RevisionTemplate.max_instance_request_concurrency`;
+  cpu/memory/max_instances were already read from the `resource` dict since Step 4. `CloudRunBackend.spawn`
+  now reads `resources` off the row (same `get_agent` call as `image_ref`).
+- **GKE seam:** `spawn` raises loudly on a `gpu: true` request ("Cloud Run cannot provide a GPU; no
+  GKEBackend configured") rather than misdeploying. Per-agent Cloud-Run-vs-GKE *routing* stays out of scope
+  (the service still picks one backend via `SPAWN_BACKEND`); this is just the fork + clear failure.
+- **Card visibility:** new `card_resources.py` (`build_resources_extension`, mirrors `card_credentials.py`)
+  surfaces the sizing on the published card's `capabilities.extensions`; `_build_agent_card` now attaches
+  both the credentials and resources extensions (each omitted when empty). This is for planner/UI
+  visibility — the **authoritative** copy the backend deploys from is the `resources` column, not the card.
+- **Tests (8 new):** model validation; `_deploy_spec` maps hints / omits concurrency when unset; the card
+  carries (or omits) the extension; `spawn` uses the hints; `spawn` rejects a GPU request (seam); and an
+  end-to-end register→deploy→publish asserting resources persist, drive the deploy spec, and reach the
+  card. **187 passed** (179 + 8), 1 skipped.
+- **Out of scope (logged):** surfacing `resources` in `build_manifest.py`'s `agent.json` (it's a new
+  top-level field, not in the handler `config` the manifest allowlist reads — no interaction, safe to defer).
 
 ---
 
@@ -294,6 +325,44 @@ decided and documented in [`DOWNSTREAM_CONSIDERATIONS.md`](DOWNSTREAM_CONSIDERAT
 steps are its prerequisites; the cutover itself is a config change on the out-of-repo gateway, done last.
 
 ## Step 9 — Cloud SQL persistence (planner + registration service)
+
+**What actually happened (registration-service half — DONE + PROVEN LIVE 2026-08-03; planner half pending):**
+- Provisioned Cloud SQL `agenticnetwork-db` (POSTGRES_15, db-f1-micro), db `registration`, user `regsvc`.
+  Full asyncpg **socket** DSN (`postgresql://regsvc:…@/registration?host=/cloudsql/<conn>`) in Secret Manager
+  `registration-db-dsn`; password reset to **hex** (URL-safe — base64 `/`/`+` break a URL DSN).
+- Deployed the reg service on Cloud Run as `registration-service` SA: `SPAWN_BACKEND=cloudrun`, the Step-7
+  SA/project env, `ADS_SERVER_ADDR=10.128.0.3:8888`, `SKIP_STARTUP_WAITS=1`, `--add-cloudsql-instances`,
+  `--vpc-connector planner-connector`, secrets `registration-db-dsn`+`github-token`, `ADMIN_EMAILS`.
+  `ingress=all`+`--no-allow-unauthenticated` (IAM-private, reach via `gcloud run services proxy` — NOT
+  `ingress=internal`, which 404s the external proxy). Deployed one custom agent end-to-end.
+- **`entrypoint-registration.sh` needed a Cloud Run branch** (working-tree change): honor `$PORT`, and
+  `SKIP_STARTUP_WAITS=1` to skip the cluster-only localhost Postgres/ADS TCP waits (Cloud SQL is a socket,
+  ADS is over the connector — neither is on localhost).
+- **Three bugs found + fixed live** (working-tree changes): (1) `backend.py` — asyncpg returns `resources`
+  JSONB as a **string**; `spawn` must `json.loads` it (fake_db returns a dict → Step-8 tests missed it →
+  live deploy failed with `'str' object has no attribute 'get'`); (2) `supervisor.py` — recovery now retries
+  `failed`+`image_ref` agents (a built agent that failed at the deploy step shouldn't strand); (3) the
+  entrypoint above. +2 regression tests → 189 passed.
+- **Cleanup — purge sparing (DONE):** the startup purge (`db.py` / `fake_db.init_fake_db`) now deletes only
+  `status='stopped' OR (status='failed' AND image_ref IS NULL)` — it **spares `failed`+`image_ref` rows** so
+  fix (2)'s recovery-retry actually fires (previously the purge deleted them first). Shared `_is_purgeable`
+  helper in `fake_db` keeps the two fake handlers consistent; +1 test. 190 passed. (Needs a reg-image
+  rebuild+redeploy to take effect on GCP — not urgent; the live agent is already deployed.)
+- **Operational gotchas that made the live re-test painful** (not bugs — worth a runbook note): the
+  painful (not bugs, but worth a runbook note): `_image_exists_on_dockerhub`'s **freshness guard** refuses an
+  image older than the agent's `updated_at` (blocks reusing an image after re-register), and the
+  `update_updated_at` **trigger** force-sets `updated_at=now()` (can't backdate a row — set `status`+`image_ref`
+  directly + restart so recovery deploys it).
+- **Planner → Cloud SQL (DONE 2026-08-03):** pointed the planner at the **same** `registration-db-dsn`
+  secret + instance (the planner's `db.py` reads the same `REGISTRATION_DB_DSN` and shares the `registration`
+  database — disjoint tables, distinct trigger fns `planner_update_updated_at` vs `update_updated_at`, no
+  clobber). Granted the planner SA (default compute SA) `cloudsql.client` + accessor on the secret;
+  `gcloud run services update planner --add-cloudsql-instances --update-secrets=REGISTRATION_DB_DSN=…` (additive,
+  preserved its existing secrets). init_db came up clean. **Note:** setting the DSN also activates the planner's
+  auth/credential routers (gated on the same env); `PLANNER_ALLOW_ANON=1` still allows anon, so no lockout —
+  enforcement + `CREDENTIALS_ENCRYPTION_KEY` are Step 10. **Step 9 complete** (both services on Cloud SQL).
+
+### Original plan
 - Provision a **Cloud SQL Postgres** instance; wire both the planner and the registration service to it
   (Cloud SQL connector / auth proxy or private IP over the VPC), replacing the ephemeral/local Postgres.
   Both services need durable Postgres before real users: the planner for `users`, `user_credentials`,
@@ -307,7 +376,39 @@ steps are its prerequisites; the cutover itself is a config change on the out-of
   row + a conversation row survive a service restart.
 - **Gates:** DOWNSTREAM #4 prerequisite (1).
 
-## Step 10 — Planner front-door hardening (Option 1 readiness)
+## Step 10 — Planner front-door hardening (Option 1 readiness) — ◑ NEXT (design settled 2026-08-03)
+
+**Decision (2026-08-03): the secure gateway→planner leg = Option A** (gateway mints a Google ID token →
+planner run.app). Evaluated against Option B (external LB + Cloud Armor): A needs **no org-policy exception**
+(the org blocks public `allUsers` Cloud Run; B's serverless-NEG→Cloud-Run path requires `allow-unauthenticated`,
+so B is gated on an exception or IAP), keeps the existing WashU Shibboleth SP, adds **no GCP infra** (no LB/
+cert), and puts the work on the gateway we control. IAP+WIF (Option D) is the clean long-term end-state but
+needs org-level GCP access + WashU-IdP re-registration — deferred.
+
+**Option A build outline (review before running — the full runbook lives in this session's notes):**
+- *Pre-checks:* (1) is SA-key creation allowed? `gcloud org-policies describe
+  constraints/iam.disableServiceAccountKeyCreation` — if enforced, use Workload Identity Federation instead
+  of a key. (2) planner run.app URL (the token audience): `gcloud run services describe planner
+  --format='value(status.url)'`.
+- *GCP (tiny):* create SA `agenticweb-gateway@`; grant it `run.invoker` **on the planner only**; create a key.
+  Planner stays `--no-allow-unauthenticated`/`ingress=all` (unchanged).
+- *Gateway (the work):* deploy the key (chmod 600, dedicated user); a cron/systemd timer every ~30 min mints
+  an ID token (audience = run.app URL, via `google-auth` `IDTokenCredentials`) into a file; the existing
+  reverse-proxy config (nginx/Apache — whichever proxies to the ENGR planner today) is repointed to run.app
+  **and** injects `Authorization: Bearer <token>`, sets SNI + `Host: <run.app host>`, keeps `proxy_buffering
+  off` for `/messages/stream` SSE, and forwards the mod_shib identity headers.
+- *The flip (together):* `gcloud run services update planner --remove-env-vars=PLANNER_ALLOW_ANON` + repoint
+  the gateway upstream to run.app.
+- *Validate first:* from the gateway, `curl -H "Authorization: Bearer $(cat token)" …/health` → 200; a bare
+  curl (no token) → 403; confirm the refresh survives a token expiry.
+- *Rollback:* flip the gateway upstream back to the ENGR planner (Slurm stays live).
+- *Security must-dos:* the gateway MUST strip client-supplied `mail`/`eppn`/`remote-user` (test with a forged
+  header); SA-key hygiene + rotation (or WIF); SA scoped to `run.invoker` on the planner only; monitor the
+  token refresh (stale token = outage).
+- *Open before starting:* pre-check #1 result (key vs WIF); which gateway layer proxies today (nginx/Apache);
+  can the gateway run `google-auth`/`gcloud`.
+
+### Original plan
 - **Drop `PLANNER_ALLOW_ANON`** on the GCP planner so it enforces identity (no anonymous path).
 - **Lock ingress** so the Shibboleth SP proxy is the *only* way in (internal-only / LB-only), and ensure
   the trusted proxy **strips any client-supplied `eppn`/`mail`/`remote-user` headers** before injecting
