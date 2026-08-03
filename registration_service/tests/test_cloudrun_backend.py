@@ -19,9 +19,10 @@ from registration_service.backend import (
     _deploy_spec,
     make_backend,
 )
+from registration_service.card_resources import RESOURCE_REQUIREMENTS_EXTENSION_URI
 from registration_service.fake_db import reset_fake_db
-from registration_service.models import CustomConfig
-from registration_service.supervisor import Supervisor
+from registration_service.models import CustomConfig, ResourceRequirements
+from registration_service.supervisor import Supervisor, _build_agent_card
 
 # This module mixes pure-sync (_deploy_spec) and async (backend/supervisor) tests,
 # so mark the async ones individually rather than with a module-level pytestmark.
@@ -86,7 +87,7 @@ async def _fresh_db():
     await db.init_db()
 
 
-async def _make_custom(image_ref="sha256:deadbeef", status="image_ready"):
+async def _make_custom(image_ref="sha256:deadbeef", status="image_ready", resources=None):
     agent = await db.create_agent(
         name="Paper Reviewer",
         description="Reviews papers",
@@ -94,6 +95,7 @@ async def _make_custom(image_ref="sha256:deadbeef", status="image_ready"):
         oasf_skills=[{"name": "nlp/text-summarization", "id": 1}],
         config={"class_name": "H", "python_version": "3.12", "requirements": [], "extra": {}},
         approved=True,
+        resources=resources,
     )
     await db.update_agent(agent["id"], status=status, image_ref=image_ref)
     return agent
@@ -488,4 +490,149 @@ async def test_recovery_deploys_stranded_image_ready(monkeypatch):
     assert len(fake.created) == 1
     assert len(publisher.published) == 1
     assert publisher.published[0]["advertise_url"].endswith(".run.app")
+    await db.close_db()
+
+
+# ── Step 8: resource-requirements card extension (right-sizing + GKE seam) ──────────
+
+
+def test_resource_requirements_validation():
+    import pytest as _pytest
+    # Valid hints coerce/clean.
+    r = ResourceRequirements(cpu=" 2 ", memory="2Gi", concurrency=4, max_instances=10)
+    assert r.cpu == "2" and r.memory == "2Gi" and r.concurrency == 4 and r.max_instances == 10
+    # Bad formats / out-of-range rejected.
+    for bad in (
+        {"cpu": "two"},
+        {"memory": "2 gigs"},
+        {"concurrency": 0},
+        {"max_instances": 0},
+    ):
+        with _pytest.raises(Exception):
+            ResourceRequirements(**bad)
+
+
+def test_deploy_spec_maps_resource_hints():
+    spec = _deploy_spec(
+        agent_id="a1", name="Paper Reviewer", description="d", handler_type="custom",
+        config=_custom_config(), image_ref="sha256:x",
+        service_account=None, invoker_member=None, vpc_connector=None,
+        resource={"cpu": "2", "memory": "2Gi", "concurrency": 4, "max_instances": 10, "gpu": False},
+    )
+    assert spec["cpu"] == "2"
+    assert spec["memory"] == "2Gi"
+    assert spec["concurrency"] == 4
+    assert spec["max_instances"] == 10
+    assert spec["min_instances"] == 0
+
+
+def test_deploy_spec_no_resource_uses_defaults_and_omits_concurrency():
+    spec = _deploy_spec(
+        agent_id="a1", name="Paper Reviewer", description="d", handler_type="custom",
+        config=_custom_config(), image_ref="sha256:x",
+        service_account=None, invoker_member=None, vpc_connector=None,
+        resource=None,
+    )
+    assert spec["cpu"] == "1"
+    assert spec["memory"] == "512Mi"
+    assert spec["max_instances"] == 1
+    assert spec["concurrency"] is None      # unset → leave Cloud Run's default
+
+
+def test_build_agent_card_carries_resource_extension():
+    card = _build_agent_card(
+        "a1", "Paper Reviewer", "d",
+        [{"name": "nlp/text-summarization", "id": 1}], 8080,
+        resources={"cpu": "2", "memory": "2Gi", "gpu": False},
+    )
+    exts = card.capabilities.extensions or []
+    uris = [e.uri for e in exts]
+    assert RESOURCE_REQUIREMENTS_EXTENSION_URI in uris
+    res_ext = next(e for e in exts if e.uri == RESOURCE_REQUIREMENTS_EXTENSION_URI)
+    assert res_ext.params["cpu"] == "2" and res_ext.params["memory"] == "2Gi"
+
+
+def test_build_agent_card_omits_extension_when_no_resources():
+    card = _build_agent_card(
+        "a1", "Paper Reviewer", "d",
+        [{"name": "nlp/text-summarization", "id": 1}], 8080,
+    )
+    assert card.capabilities.extensions is None
+
+
+@_aio
+async def test_spawn_uses_resource_hints(monkeypatch):
+    _cloud_env(monkeypatch)
+    await _fresh_db()
+    agent = await _make_custom(
+        image_ref="sha256:cafe",
+        resources={"cpu": "2", "memory": "2Gi", "concurrency": 4, "max_instances": 8, "gpu": False},
+    )
+    fake = _FakeCloudRunClient()
+    backend = CloudRunBackend(client=fake)
+    await backend.spawn(
+        agent_id=str(agent["id"]), name="Paper Reviewer", description="d",
+        handler_type="custom", config=_custom_config(), port=19110,
+    )
+    spec = fake.created[0]
+    assert spec["cpu"] == "2"
+    assert spec["memory"] == "2Gi"
+    assert spec["concurrency"] == 4
+    assert spec["max_instances"] == 8
+    await db.close_db()
+
+
+@_aio
+async def test_spawn_rejects_gpu_request(monkeypatch):
+    """A GPU request is the GKEBackend seam: Cloud Run can't schedule GPUs, so
+    spawn must fail loudly rather than deploy an agent that can't run."""
+    _cloud_env(monkeypatch)
+    await _fresh_db()
+    agent = await _make_custom(resources={"gpu": True, "memory": "4Gi"})
+    fake = _FakeCloudRunClient()
+    backend = CloudRunBackend(client=fake)
+    import pytest as _pytest
+    with _pytest.raises(RuntimeError, match="GPU"):
+        await backend.spawn(
+            agent_id=str(agent["id"]), name="Paper Reviewer", description="d",
+            handler_type="custom", config=_custom_config(), port=19110,
+        )
+    assert fake.created == []   # never deployed
+    await db.close_db()
+
+
+@_aio
+async def test_resources_persist_and_reach_deploy_and_card(monkeypatch):
+    """End-to-end: resources declared at registration persist, drive the deploy
+    spec, and surface on the published card."""
+    _cloud_env(monkeypatch)
+    monkeypatch.setenv("GITHUB_TOKEN", "tok")
+    monkeypatch.setenv("GITHUB_REPO", "washu-dev/agent-directory")
+    await _fresh_db()
+    agent = await _make_custom(
+        image_ref=None, status="building",
+        resources={"cpu": "2", "memory": "2Gi", "concurrency": 2, "max_instances": 5, "gpu": False},
+    )
+
+    async def yes(image, since=None):
+        return True
+
+    async def digest(image, tag="latest"):
+        return "sha256:feed"
+
+    monkeypatch.setattr(sup_mod, "_image_exists_on_dockerhub", yes)
+    monkeypatch.setattr(sup_mod, "_image_digest_on_dockerhub", digest)
+    fake = _FakeCloudRunClient()
+    publisher = _FakePublisher()
+    sup = Supervisor(backend=CloudRunBackend(client=fake), publisher=publisher)
+    await sup._check_building_agents()
+
+    # Persisted on the row.
+    assert (await db.get_agent(agent["id"]))["resources"]["cpu"] == "2"
+    # Drove the deploy.
+    assert fake.created[0]["cpu"] == "2" and fake.created[0]["concurrency"] == 2
+    # Surfaced on the published card.
+    card = publisher.published[0]["card"]
+    uris = [e.uri for e in (card.capabilities.extensions or [])]
+    assert RESOURCE_REQUIREMENTS_EXTENSION_URI in uris
     await db.close_db()

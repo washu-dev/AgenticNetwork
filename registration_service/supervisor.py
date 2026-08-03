@@ -18,6 +18,7 @@ from ads_utils.publisher import DirectoryPublisher, DirectoryUnavailable
 from a2a.types import AgentCard, AgentCapabilities, AgentSkill
 
 from registration_service.card_credentials import build_credentials_extension
+from registration_service.card_resources import build_resources_extension
 
 from registration_service.archive import list_tree
 from registration_service.backend import (
@@ -192,15 +193,19 @@ class Supervisor:
         port: int,
         credentials: list[dict[str, Any]] | None = None,
         endpoint_url: str | None = None,
+        resources: dict[str, Any] | None = None,
     ) -> None:
         """Publish the agent card to ADS and mark it live. Shared by the local-spawn
         path (spawn_and_publish), the cluster host-loop path (finalize_spawned), and
         the Cloud Run deploy path (_deploy_ready_agent).
 
         endpoint_url overrides the advertised URL — an off-host backend (Cloud Run)
-        passes its run.app URL; the local/cluster paths default to localhost:port."""
+        passes its run.app URL; the local/cluster paths default to localhost:port.
+        resources surfaces the agent's declared sizing on the card (Step 8)."""
         endpoint_url = endpoint_url or f"http://localhost:{port}/"
-        card = _build_agent_card(agent_id, name, description, oasf_skills, port, credentials)
+        card = _build_agent_card(
+            agent_id, name, description, oasf_skills, port, credentials, resources
+        )
 
         ads_cid: str | None = None
         try:
@@ -530,6 +535,8 @@ class Supervisor:
         config = _deserialize_config(agent)
         raw_skills = agent["oasf_skills"]
         oasf_skills = raw_skills if isinstance(raw_skills, list) else json.loads(raw_skills)
+        raw_res = agent.get("resources")
+        resources = json.loads(raw_res) if isinstance(raw_res, str) else raw_res
 
         # Same belt-and-suspenders as spawn_and_publish: never deploy an agent that
         # would publish stored-but-not-routed (undiscoverable) — fail before the
@@ -555,7 +562,7 @@ class Supervisor:
 
         await self._publish_and_set_live(
             agent_id, name, description, oasf_skills, port,
-            _declared_credentials(config), endpoint_url=endpoint_url,
+            _declared_credentials(config), endpoint_url=endpoint_url, resources=resources,
         )
         logger.info("cloud_deployed_live agent_id=%s url=%s", agent_id, endpoint_url)
 
@@ -907,6 +914,7 @@ def _build_agent_card(
     oasf_skills: list[dict[str, Any]],
     port: int,
     credentials: list[dict[str, Any]] | None = None,
+    resources: dict[str, Any] | None = None,
 ) -> AgentCard:
     skills = [
         AgentSkill(
@@ -924,9 +932,15 @@ def _build_agent_card(
         )
         for s in oasf_skills
     ]
-    # P4a: declared user credentials ride on capabilities.extensions (the only
-    # field the planner's discovery read path round-trips). Omitted when empty.
-    ext = build_credentials_extension(credentials)
+    # Declared credentials (P4a) and resource requirements (Step 8) ride on
+    # capabilities.extensions — the only field the planner's discovery read path
+    # round-trips. Each is omitted when empty, keeping other cards byte-identical.
+    exts = [
+        e for e in (
+            build_credentials_extension(credentials),
+            build_resources_extension(resources),
+        ) if e is not None
+    ]
     return AgentCard(
         name=name,
         description=description,
@@ -936,7 +950,7 @@ def _build_agent_card(
         # heartbeat (P3) — this is the card the planner actually reads from ADS.
         capabilities=AgentCapabilities(
             streaming=True,
-            extensions=[ext] if ext else None,
+            extensions=exts or None,
         ),
         skills=skills,
         default_input_modes=["text"],

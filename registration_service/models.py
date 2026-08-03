@@ -43,6 +43,40 @@ class CredentialRequirement(BaseModel):
         return v
 
 
+_CPU_RE = re.compile(r"^\d+(\.\d+)?m?$")          # Cloud Run --cpu: "1", "2", "0.5", "1000m"
+_MEMORY_RE = re.compile(r"^\d+(\.\d+)?(Mi|Gi|M|G)$")  # --memory: "512Mi", "2Gi"
+
+
+class ResourceRequirements(BaseModel):
+    """Deploy sizing an agent declares for its on-demand backend (load-bearing
+    change #3). Maps to Cloud Run --cpu/--memory/--concurrency/--max-instances;
+    ``gpu`` (or a future strict-isolation flag) signals the agent belongs on a
+    GPU/isolation backend (a future GKEBackend) rather than Cloud Run.
+
+    All fields have defaults equal to the CloudRunBackend's current hardcoded
+    behavior, so an agent that declares no resources deploys exactly as before.
+    """
+    cpu: str = "1"
+    memory: str = "512Mi"
+    concurrency: int = Field(default=1, ge=1)      # requests per instance (1 = per-request isolation)
+    max_instances: int = Field(default=1, ge=1)
+    gpu: bool = False
+
+    @field_validator("cpu")
+    @classmethod
+    def _valid_cpu(cls, v: str) -> str:
+        if not _CPU_RE.match(v.strip()):
+            raise ValueError(f"Invalid cpu {v!r} (e.g. '1', '2', '500m')")
+        return v.strip()
+
+    @field_validator("memory")
+    @classmethod
+    def _valid_memory(cls, v: str) -> str:
+        if not _MEMORY_RE.match(v.strip()):
+            raise ValueError(f"Invalid memory {v!r} (e.g. '512Mi', '2Gi')")
+        return v.strip()
+
+
 class LLMConfig(BaseModel):
     system_prompt: str
     model: str = "openai/gpt-oss-120b"
@@ -217,6 +251,9 @@ class RegisterRequest(BaseModel):
     handler_type: Literal["llm", "api_proxy", "custom", "endpoint_ops", "tool_loop"]
     oasf_skills: list[OASFSkill] = Field(..., min_length=1)
     config: AnyConfig
+    # Optional deploy sizing (cloud backends). None → the backend's defaults, so
+    # agents that don't declare resources deploy exactly as before.
+    resources: ResourceRequirements | None = None
 
     @field_validator("config", mode="before")
     @classmethod

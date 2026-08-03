@@ -84,6 +84,7 @@ class FakeConnection:
                 "endpoint_url": None,
                 "ads_cid": None,
                 "image_ref": None,
+                "resources": None,
                 "created_at": now,
                 "updated_at": now,
             }
@@ -312,6 +313,7 @@ def fake_create_agent(
     oasf_skills: list,
     config: dict,
     approved: bool = True,
+    resources: dict | None = None,
 ) -> dict:
     s = _store()
     s.seed_ports()
@@ -341,6 +343,7 @@ def fake_create_agent(
         "endpoint_url": None,
         "ads_cid": None,
         "image_ref": None,
+        "resources": resources,
         "created_at": now,
         "updated_at": now,
     }

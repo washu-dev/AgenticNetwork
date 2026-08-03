@@ -472,6 +472,9 @@ def _deploy_spec(
     env["AGENT_PORT"] = str(_CLOUD_RUN_CONTAINER_PORT)
 
     resource = resource or {}
+    # concurrency is None-safe: omitted (None) → Cloud Run's default is left in
+    # place; set → pinned (e.g. 1 for per-request isolation of untrusted agents).
+    concurrency = resource.get("concurrency")
     return {
         "service_id": _cloudrun_service_id(name),
         "image": image,
@@ -480,6 +483,7 @@ def _deploy_spec(
         "max_instances": int(resource.get("max_instances", _CLOUD_RUN_DEFAULT_MAX_INSTANCES)),
         "cpu": str(resource.get("cpu", _CLOUD_RUN_DEFAULT_CPU)),
         "memory": str(resource.get("memory", _CLOUD_RUN_DEFAULT_MEMORY)),
+        "concurrency": int(concurrency) if concurrency is not None else None,
         "service_account": service_account,
         "ingress": "internal-only",
         "allow_unauthenticated": False,
@@ -526,6 +530,8 @@ class _CloudRunClient:
                 max_instance_count=spec["max_instances"],
             ),
         )
+        if spec.get("concurrency") is not None:
+            template.max_instance_request_concurrency = spec["concurrency"]
         if spec["service_account"]:
             template.service_account = spec["service_account"]
         if spec["vpc_connector"]:
@@ -633,12 +639,23 @@ class CloudRunBackend(ContainerBackend):
         config: AnyConfig,
         port: int,
     ) -> str | None:
-        # image_ref is composed by this backend (Step-3 contract): read the bare
-        # digest off the agent row; _deploy_spec falls back to :latest if it's None.
+        # image_ref (Step-3 contract) and resources (Step 8) are read off the agent
+        # row here; _deploy_spec falls back to :latest / default sizing when absent.
         from registration_service.db import get_agent
 
         row = await get_agent(agent_id)
         image_ref = (row or {}).get("image_ref")
+        resources = (row or {}).get("resources")
+
+        # Backend-selection seam: a GPU (or future strict-isolation) request means
+        # Cloud Run is the wrong home — it can't schedule GPUs. Fail loudly rather
+        # than deploy somewhere the agent can't run; routing these to a GKEBackend
+        # is the follow-up.
+        if resources and resources.get("gpu"):
+            raise RuntimeError(
+                f"agent {name!r} requests a GPU, which Cloud Run cannot provide; "
+                "no GKEBackend is configured to host GPU/strict-isolation agents"
+            )
 
         spec = _deploy_spec(
             agent_id=agent_id,
@@ -650,6 +667,7 @@ class CloudRunBackend(ContainerBackend):
             service_account=self._service_account,
             invoker_member=self._invoker_member,
             vpc_connector=self._vpc_connector,
+            resource=resources,
         )
         client = self._cr_client()
         url = await client.create_or_replace(spec)

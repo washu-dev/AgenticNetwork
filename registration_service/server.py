@@ -173,6 +173,10 @@ async def register_agent(req: RegisterRequest) -> AgentResponse:
             oasf_skills=[s.model_dump() for s in req.oasf_skills],
             config=req.typed_config().model_dump(),
             approved=False,
+            # Deploy sizing for cloud backends (CloudRunBackend). Only uploaded-code
+            # agents reach a cloud deploy path, so resources is persisted here; the
+            # subprocess-only handler types below ignore it.
+            resources=req.resources.model_dump() if req.resources else None,
         )
         return _row_to_response(agent)
 

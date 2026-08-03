@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS agents (
     endpoint_url      TEXT,
     ads_cid           TEXT,
     image_ref         TEXT,
+    resources         JSONB,
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -41,6 +42,9 @@ ALTER TABLE agents ADD COLUMN IF NOT EXISTS is_archive BOOLEAN NOT NULL DEFAULT 
 -- ('sha256:...'), captured at image_ready so CloudRunBackend can deploy by
 -- digest instead of a floating ':latest' tag.
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS image_ref TEXT;
+-- resources: optional deploy sizing declared at registration (cpu/memory/
+-- concurrency/max_instances/gpu) that cloud backends map to service parameters.
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS resources JSONB;
 ALTER TABLE agents DROP CONSTRAINT IF EXISTS agents_handler_type_check;
 ALTER TABLE agents ADD CONSTRAINT agents_handler_type_check
     CHECK (handler_type IN ('llm', 'api_proxy', 'custom', 'endpoint_ops', 'tool_loop'));
@@ -164,6 +168,7 @@ async def create_agent(
     oasf_skills: list[dict],
     config: dict,
     approved: bool = True,
+    resources: dict | None = None,
 ) -> dict[str, Any]:
     """Insert a new agent row, assign a port, and return the row as a dict."""
     if os.getenv("FAKE_DB"):
@@ -175,6 +180,7 @@ async def create_agent(
             oasf_skills=oasf_skills,
             config=config,
             approved=approved,
+            resources=resources,
         )
 
     from registration_service.port_pool import assign_port
@@ -186,8 +192,8 @@ async def create_agent(
             await conn.execute(
                 """
                 INSERT INTO agents
-                    (id, name, description, handler_type, oasf_skills, config, status, approved)
-                VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, 'registered', $7)
+                    (id, name, description, handler_type, oasf_skills, config, status, approved, resources)
+                VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, 'registered', $7, $8::jsonb)
                 """,
                 agent_id,
                 name,
@@ -196,6 +202,7 @@ async def create_agent(
                 _json.dumps(oasf_skills),
                 _json.dumps(config),
                 approved,
+                _json.dumps(resources) if resources is not None else None,
             )
             port = await assign_port(conn, str(agent_id))
             await conn.execute(
