@@ -157,3 +157,10 @@ OASF_SKILLS: list[dict] = [
     {"name": "Advanced Reasoning & Planning / Chain-of-Thought Structuring", "id": 1503, "key": "advanced_reasoning_and_planning/chain_of_thought_structuring"},
     {"name": "Advanced Reasoning & Planning / Hypothesis Generation", "id": 1504, "key": "advanced_reasoning_and_planning/hypothesis_generation"},
 ]
+
+
+def has_routable_skill(oasf_skills: list[dict]) -> bool:
+    """True if at least one skill carries an id (supervisor._build_agent_card
+    stamps an 'oasf:<name>:<id>' routing tag only for skills with an id — a card
+    with none is stored-but-not-routed in ADS, i.e. undiscoverable)."""
+    return any(s.get("id") is not None for s in oasf_skills)

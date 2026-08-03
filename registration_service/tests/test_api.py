@@ -86,6 +86,29 @@ async def test_register_wrong_handler_type_returns_422(client: AsyncClient) -> N
     assert r.status_code == 422
 
 
+async def test_register_no_routable_skill_returns_400(client: AsyncClient) -> None:
+    """Every skill lacks an id -> the card would publish stored-but-not-routed
+    (undiscoverable in ADS). Reject before spawning anything."""
+    bad = {**LLM_PAYLOAD, "oasf_skills": [{"name": "custom/freeform-skill"}]}
+    r = await client.post("/agents", json=bad)
+    assert r.status_code == 400
+    assert "routable" in r.text or "id" in r.text
+
+
+async def test_register_mixed_skills_one_routable_succeeds(client: AsyncClient) -> None:
+    """Only one of several skills needs an id for the card to be routable."""
+    ok = {
+        **LLM_PAYLOAD,
+        "oasf_skills": [
+            {"name": "custom/freeform-skill"},
+            {"name": "nlp/text-summarization", "id": 10101},
+        ],
+    }
+    r = await client.post("/agents", json=ok)
+    assert r.status_code == 201
+    assert r.json()["status"] == "live"
+
+
 # ── List ───────────────────────────────────────────────────────────────────────
 
 

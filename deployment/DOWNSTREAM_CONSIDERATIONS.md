@@ -287,6 +287,84 @@ agent inherits, so they are tracked once here rather than repeated per agent.
 
 ---
 
+## 4. Public front-door cutover — routing `agenticweb.engr.wustl.edu` to GCP
+
+- **Status:** Open / Deferred — 2026-07-30 — **decided: Option 1 (repoint gateway upstream), executed at the *end* of the migration**
+- **Raised:** 2026-07-30 (migration planning)
+- **Scope:** the out-of-repo WashU ENGR gateway (nginx + Apache + `mod_shib`); the GCP planner Cloud Run service (ingress, `PLANNER_ALLOW_ANON`); `main_agent/auth.py` (header trust); Cloud SQL; `deployment/GCP_MIGRATION.md`, `deployment/IMPLEMENTATION_CLOUDRUN_BACKEND.md` (Steps 9–10 + Go-live)
+
+**Problem.** `https://agenticweb.engr.wustl.edu` is the public entry point users bookmark; today it
+routes to the ENGR (Slurm) planner. Once the GCP stack is fully live we want that same hostname to
+route to the GCP planner. The naive read is "change a DNS record," but that hostname is a **WashU-owned
+front door** carrying three load-bearing functions, not a bare pointer:
+
+1. **TLS termination** for the `.engr.wustl.edu` cert (nginx).
+2. **Shibboleth SP** (Apache + `mod_shib`) — validates the WashU SAML assertion against the campus IdP
+   and injects `eppn`/`mail`/`remote-user` headers. The SP is *registered with the WashU IdP against
+   that specific hostname*.
+3. **Reverse-proxy** to the planner upstream.
+
+The security crux: **the planner has no login of its own — it blindly trusts those injected headers**
+(`main_agent/auth.py` `get_shib_email`). So the real question is not "where does DNS point" but "where
+does the SP live, and how is the planner made reachable *only* through it" — anyone who reaches the
+planner directly can forge `eppn` and impersonate any WashU user. DNS is the easy 10%.
+
+**Current behavior.** The gateway is persistent infra **outside this repo** (a WashU ENGR host holding
+the DNS name + SP registration); it reverse-proxies to the planner, which today runs on an *ephemeral*
+Slurm node — so the gateway upstream is repointed each run (the pain in entry #3 / GCP_MIGRATION #3). On
+GCP the planner currently runs `PLANNER_ALLOW_ANON=1`, private ingress (reachable only via `gcloud run
+services proxy`), **no Cloud SQL, no SP in front** — i.e. not yet safe to expose to real users.
+
+**Recommendation.**
+- *Decision — Option 1, at the end of the migration.* Keep the WashU ENGR gateway box exactly where it
+  is (DNS, TLS cert, SP registration all unchanged) and **repoint only its reverse-proxy upstream** from
+  the Slurm node to the GCP planner. This is the lowest-resistance cut: no WashU IT ticket for DNS/TLS/SP,
+  and a Cloud Run URL is *stable*, so it also **retires the repoint-every-run chore** (entry #3). Rollback
+  is instant — flip the upstream back to the Slurm node (which the additive migration keeps as a live
+  backup).
+- *The one genuinely new piece:* a secure path from the on-campus gateway to the **private** Cloud Run
+  planner (org policy blocks public `allUsers` Cloud Run). Options, cheapest first: an external HTTPS LB
+  with **Cloud Armor** allowlisting the gateway's egress IP **+ a shared-secret header or mTLS**; or a
+  reverse tunnel/relay VM (the mirror of the existing `vllm-relay` autossh pattern, ENGR→GCP); or a
+  VPN/Interconnect (heavy, IT-gated — avoid for now).
+- *Invariant that IS the cutover:* lock planner ingress so the SP proxy is the **sole** path, and have
+  that trusted proxy **strip any client-supplied identity headers** before injecting its own. Without
+  this, exposing the planner is an auth bypass. (Tracked as Step 10.)
+- *Rejected as the cutover mechanism (kept as later hardening):* **Option 2** — move the SP onto GCP
+  (Apache+`mod_shib` as a Cloud Run ingress sidecar) and point DNS at a GCP LB. Cleaner end-state (no
+  campus-box dependency) but heaviest: needs a GCP-served TLS cert for the WashU-owned name, SP
+  re-registration with the campus IdP, and resolving the no-public-Cloud-Run policy — all WashU-IT-gated,
+  with slower DNS-TTL rollback. **Option 3** — Workforce Identity Federation + IAP (Google-managed login,
+  still WashU-credentialed) — the eventual clean replacement for the bespoke Shibboleth box; revisit when
+  retiring the campus box is worth the one-time setup.
+
+- **Prerequisites (must be true before any flip — folded into the roadmap as steps).**
+  1. **Cloud SQL persistence** for the planner *and* the registration service (users, per-user
+     credentials, conversation history, pending confirmations) — else sessions/creds evaporate or diverge
+     from the cluster. → IMPLEMENTATION_CLOUDRUN_BACKEND.md **Step 9**.
+  2. **Planner enforces identity** — drop `PLANNER_ALLOW_ANON`, lock ingress internal/LB-only, strip
+     inbound identity headers at the trusted proxy, wire the secure gateway→private-Cloud-Run leg. →
+     IMPLEMENTATION_CLOUDRUN_BACKEND.md **Step 10**.
+- **Staging.** Validate the whole auth chain (real SAML login → headers arriving → sessions/creds
+  working) on a *scratch* name (or `gcloud run services proxy`) first; only then flip the gateway upstream.
+
+- **Enablers already in the repo.** The planner already reads Shibboleth headers (`main_agent/auth.py`)
+  and refreshes Google OAuth tokens (`server.py` `_refresh_google_token`), so no planner login code is
+  needed — only the front-door plumbing. The `vllm-relay` VM (autossh under systemd) is a working
+  template for the reverse tunnel option.
+- **Open questions / risks.** Header-spoofing if ingress isn't locked (the central risk); which secure
+  leg to use (Cloud Armor+secret vs. relay vs. VPN); whether WashU allows the gateway's egress IP to be
+  pinned; cold-start latency on the first post-cutover request (raise the planner's read timeout, already
+  bumped in Phase 3).
+- **References.**
+  - CLAUDE.md §8 (auth chain), [`docs/AUTH.md`](../docs/AUTH.md) (identity/Shibboleth)
+  - [`GCP_MIGRATION.md`](GCP_MIGRATION.md) "Identity, gateway & auth" (the sidecar/Option-2 sketch) and
+    "Login (must-do)" (the header-trust invariant)
+  - [`DEPLOYED_COMPONENTS.md`](DEPLOYED_COMPONENTS.md) "What's live vs. still to come" (front door + Cloud SQL = "Not yet")
+  - Entry #3 (cross-cutting cloud prerequisites) — the DNS/auth/gateway substrate this closes out
+
+---
+
 ## Entry template (copy for new entries)
 
 ```markdown

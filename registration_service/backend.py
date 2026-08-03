@@ -1,6 +1,6 @@
 """Agent process backend — spawn, stop, and health-check agent processes.
 
-Two backends share one interface (ContainerBackend):
+Three backends share one interface (ContainerBackend):
 
   * SubprocessBackend — local dev. Each agent is an asyncio subprocess running
     registration_service.runner. Custom agents with requirements get a per-agent
@@ -11,7 +11,13 @@ Two backends share one interface (ContainerBackend):
     step inside the existing Slurm allocation, using a per-agent (custom) or
     shared (llm/api_proxy) Docker image.
 
-make_backend() selects ClusterBackend when SPAWN_BACKEND == "cluster".
+  * CloudRunBackend — GCP. Each custom agent is deployed as a scale-to-zero Cloud
+    Run service off the CI-built image (Cloud Run Admin API), run as a shared
+    low-privilege SA, with the planner SA granted run.invoker. Shares Cluster's
+    out-of-band build; only the launch mechanism differs (API call, no host loop).
+
+make_backend() selects ClusterBackend when SPAWN_BACKEND == "cluster",
+CloudRunBackend when SPAWN_BACKEND == "cloudrun", else SubprocessBackend.
 """
 
 from __future__ import annotations
@@ -122,6 +128,14 @@ def cluster_srun_argv(
 
 
 class ContainerBackend(ABC):
+    # Capability flags — defaults match SubprocessBackend. A backend that builds
+    # out-of-band (commit->CI->registry) and/or launches via an external host loop
+    # (e.g. ClusterBackend, future CloudRunBackend) overrides the relevant ones.
+    owns_build: bool = False
+    needs_host_loop: bool = False
+    supports_health_restart: bool = True
+    publishes_decoupled: bool = False
+
     @abstractmethod
     async def spawn(
         self,
@@ -131,7 +145,11 @@ class ContainerBackend(ABC):
         handler_type: str,
         config: AnyConfig,
         port: int,
-    ) -> None: ...
+    ) -> str | None:
+        """Launch the agent. Returns the externally-reachable base URL for
+        backends that address agents off-host (CloudRunBackend → the run.app URL);
+        the local/host-loop backends bind localhost and return None."""
+        ...
 
     @abstractmethod
     async def stop(self, agent_id: str) -> None: ...
@@ -299,6 +317,10 @@ class ClusterBackend(ContainerBackend):
     queues the PID for the host loop to kill via /internal/stop-queue.
     """
 
+    owns_build = True
+    needs_host_loop = True
+    supports_health_restart = False
+
     def __init__(self) -> None:
         # agent_id -> (pid, port), reported by the host loop after a successful srun.
         self._procs: dict[str, tuple[int, int]] = {}
@@ -370,7 +392,301 @@ def _image_registry() -> str:
     return os.environ.get("IMAGE_REGISTRY", "di2washu")
 
 
+# ── Cloud Run backend ────────────────────────────────────────────────────────────
+
+# Cloud Run always injects PORT (default 8080) and expects the container to listen
+# on it. container_runner binds the AGENT_CONFIG_JSON `port` (falling back to
+# AGENT_PORT), NOT $PORT — so we pin both the envelope port and the service's
+# container port to this constant. The DB-allocated port is irrelevant off-host.
+_CLOUD_RUN_CONTAINER_PORT = 8080
+_CLOUD_RUN_DEFAULT_CPU = "1"
+_CLOUD_RUN_DEFAULT_MEMORY = "512Mi"
+_CLOUD_RUN_DEFAULT_MAX_INSTANCES = 1
+# Registration-service env forwarded into every deployed agent (LLM wiring + ADS
+# address). The agent runs auth-unaware; this mirrors what the cluster's
+# --export=ALL propagates. Extend via CLOUDRUN_FORWARD_ENV (comma-separated).
+_CLOUD_RUN_FORWARD_ENV_DEFAULT = (
+    "OPENAI_BASE_URL",
+    "OPENAI_API_KEY",
+    "AGENT_MODEL",
+    "ADS_SERVER_ADDR",
+)
+
+
+def _cloudrun_service_id(name: str) -> str:
+    """Cloud Run service id for an agent: `agent-<slug>`, RFC1035-safe.
+
+    Service ids must be lowercase, start with a letter, contain only letters,
+    digits and hyphens, and be <= 63 chars. `_image_slug` only lowercases +
+    space->hyphen, so sanitize anything else here.
+    """
+    raw = _image_slug(name)
+    cleaned = "".join(c if (c.isalnum() or c == "-") else "-" for c in raw)
+    cleaned = "-".join(part for part in cleaned.split("-") if part)  # collapse runs
+    svc = f"agent-{cleaned}".strip("-")
+    return svc[:63].rstrip("-")
+
+
+def _sa_member(sa_email: str | None) -> str | None:
+    """IAM member string for a service-account email (idempotent if already one)."""
+    if not sa_email:
+        return None
+    return sa_email if sa_email.startswith("serviceAccount:") else f"serviceAccount:{sa_email}"
+
+
+def _forward_env_keys() -> tuple[str, ...]:
+    extra = os.getenv("CLOUDRUN_FORWARD_ENV", "")
+    extras = tuple(k.strip() for k in extra.split(",") if k.strip())
+    return _CLOUD_RUN_FORWARD_ENV_DEFAULT + extras
+
+
+def _deploy_spec(
+    *,
+    agent_id: str,
+    name: str,
+    description: str,
+    handler_type: str,
+    config: AnyConfig,
+    image_ref: str | None,
+    service_account: str | None,
+    invoker_member: str | None,
+    vpc_connector: str | None,
+    resource: dict | None = None,
+) -> dict:
+    """Pure description of the Cloud Run service to deploy (no API calls).
+
+    Image is composed here per the Step-3 contract: `image_ref` is a *bare* digest
+    (`sha256:...`), so deploy `name@digest`; fall back to `:latest` when it's None
+    (digest lookup is best-effort and older rows predate the column).
+    """
+    image_name = f"{_image_registry()}/agenticnetwork-custom-{_image_slug(name)}"
+    image = f"{image_name}@{image_ref}" if image_ref else f"{image_name}:latest"
+
+    env = {
+        k: os.environ[k] for k in _forward_env_keys() if os.environ.get(k) is not None
+    }
+    # Pin the port the container binds (see _CLOUD_RUN_CONTAINER_PORT note).
+    env["AGENT_CONFIG_JSON"] = _config_envelope(
+        agent_id, name, description, handler_type, config, _CLOUD_RUN_CONTAINER_PORT
+    )
+    env["AGENT_PORT"] = str(_CLOUD_RUN_CONTAINER_PORT)
+
+    resource = resource or {}
+    return {
+        "service_id": _cloudrun_service_id(name),
+        "image": image,
+        "container_port": _CLOUD_RUN_CONTAINER_PORT,
+        "min_instances": 0,
+        "max_instances": int(resource.get("max_instances", _CLOUD_RUN_DEFAULT_MAX_INSTANCES)),
+        "cpu": str(resource.get("cpu", _CLOUD_RUN_DEFAULT_CPU)),
+        "memory": str(resource.get("memory", _CLOUD_RUN_DEFAULT_MEMORY)),
+        "service_account": service_account,
+        "ingress": "internal-only",
+        "allow_unauthenticated": False,
+        "vpc_connector": vpc_connector or None,
+        "env": env,
+        "invoker_member": invoker_member,
+    }
+
+
+class _CloudRunClient:
+    """Thin wrapper over the Cloud Run Admin API (`google-cloud-run`).
+
+    The ONLY place the google client library is imported, and it's imported
+    lazily on construction so `backend.py` (and `make_backend`) import fine on
+    hosts without the package — unit tests inject a fake in its place.
+    """
+
+    def __init__(self, project: str, region: str) -> None:
+        from google.cloud import run_v2  # lazy: keep the dep out of import time
+
+        self._run_v2 = run_v2
+        self._services = run_v2.ServicesAsyncClient()
+        self._project = project
+        self._region = region
+        self._parent = f"projects/{project}/locations/{region}"
+
+    def _service_name(self, service_id: str) -> str:
+        return f"{self._parent}/services/{service_id}"
+
+    def _build_service(self, spec: dict):
+        run_v2 = self._run_v2
+        container = run_v2.Container(
+            image=spec["image"],
+            ports=[run_v2.ContainerPort(container_port=spec["container_port"])],
+            env=[run_v2.EnvVar(name=k, value=v) for k, v in spec["env"].items()],
+            resources=run_v2.ResourceRequirements(
+                limits={"cpu": spec["cpu"], "memory": spec["memory"]}
+            ),
+        )
+        template = run_v2.RevisionTemplate(
+            containers=[container],
+            scaling=run_v2.RevisionScaling(
+                min_instance_count=spec["min_instances"],
+                max_instance_count=spec["max_instances"],
+            ),
+        )
+        if spec["service_account"]:
+            template.service_account = spec["service_account"]
+        if spec["vpc_connector"]:
+            template.vpc_access = run_v2.VpcAccess(
+                connector=spec["vpc_connector"],
+                egress=run_v2.VpcAccess.VpcEgress.PRIVATE_RANGES_ONLY,
+            )
+        return run_v2.Service(
+            template=template,
+            ingress=run_v2.IngressTraffic.INGRESS_TRAFFIC_INTERNAL_ONLY,
+        )
+
+    async def create_or_replace(self, spec: dict) -> str:
+        """Create the service (or replace it if it already exists); return its URI."""
+        from google.api_core.exceptions import AlreadyExists
+
+        service = self._build_service(spec)
+        name = self._service_name(spec["service_id"])
+        try:
+            op = await self._services.create_service(
+                parent=self._parent, service=service, service_id=spec["service_id"]
+            )
+        except AlreadyExists:
+            service.name = name
+            op = await self._services.update_service(service=service)
+        result = await op.result()
+        return result.uri
+
+    async def delete(self, service_id: str) -> None:
+        op = await self._services.delete_service(name=self._service_name(service_id))
+        await op.result()
+
+    async def get(self, service_id: str) -> dict | None:
+        from google.api_core.exceptions import NotFound
+
+        try:
+            svc = await self._services.get_service(name=self._service_name(service_id))
+        except NotFound:
+            return None
+        ready = any(
+            c.type_ == "Ready" and c.state == self._run_v2.Condition.State.CONDITION_SUCCEEDED
+            for c in svc.conditions
+        )
+        return {"ready": ready, "uri": svc.uri}
+
+    async def set_invoker(self, service_id: str, member: str) -> None:
+        """Grant `member` roles/run.invoker on the service (additive, idempotent)."""
+        from google.iam.v1 import iam_policy_pb2, policy_pb2
+
+        name = self._service_name(service_id)
+        policy = await self._services.get_iam_policy(
+            request=iam_policy_pb2.GetIamPolicyRequest(resource=name)
+        )
+        binding = next((b for b in policy.bindings if b.role == "roles/run.invoker"), None)
+        if binding is None:
+            binding = policy_pb2.Binding(role="roles/run.invoker")
+            policy.bindings.append(binding)
+        if member not in binding.members:
+            binding.members.append(member)
+            await self._services.set_iam_policy(
+                request=iam_policy_pb2.SetIamPolicyRequest(resource=name, policy=policy)
+            )
+
+
+class CloudRunBackend(ContainerBackend):
+    """Deploys each custom agent as a scale-to-zero Cloud Run service.
+
+    Like ClusterBackend, the build is out-of-band (commit -> CI -> Docker Hub) and
+    spawn() only runs once the image is ready. Unlike Cluster, there is no host
+    loop: this backend calls the Cloud Run Admin API directly (needs_host_loop=
+    False), so the supervisor invokes spawn() itself when an agent reaches
+    image_ready. Liveness is an API get (never an HTTP GET — that would cold-start
+    a min=0 service), and the card is published decoupled so it persists at zero
+    instances (publishes_decoupled=True).
+    """
+
+    owns_build = True
+    needs_host_loop = False
+    supports_health_restart = False
+    publishes_decoupled = True
+
+    def __init__(self, client: object | None = None) -> None:
+        self._project = os.getenv("GCP_PROJECT", "")
+        self._region = os.getenv("GCP_REGION", "us-central1")
+        self._service_account = os.getenv("AGENT_RUNTIME_SA") or None
+        self._invoker_member = _sa_member(os.getenv("PLANNER_INVOKER_SA"))
+        self._vpc_connector = os.getenv("VPC_CONNECTOR") or None
+        # Lazily built on first use so make_backend()/import work without the
+        # google-cloud-run package (and so unit tests can inject a fake).
+        self._client = client
+
+    def _cr_client(self) -> _CloudRunClient:
+        if self._client is None:
+            if not self._project:
+                raise RuntimeError("CloudRunBackend requires GCP_PROJECT to be set")
+            self._client = _CloudRunClient(self._project, self._region)
+        return self._client  # type: ignore[return-value]
+
+    async def spawn(
+        self,
+        agent_id: str,
+        name: str,
+        description: str,
+        handler_type: str,
+        config: AnyConfig,
+        port: int,
+    ) -> str | None:
+        # image_ref is composed by this backend (Step-3 contract): read the bare
+        # digest off the agent row; _deploy_spec falls back to :latest if it's None.
+        from registration_service.db import get_agent
+
+        row = await get_agent(agent_id)
+        image_ref = (row or {}).get("image_ref")
+
+        spec = _deploy_spec(
+            agent_id=agent_id,
+            name=name,
+            description=description,
+            handler_type=handler_type,
+            config=config,
+            image_ref=image_ref,
+            service_account=self._service_account,
+            invoker_member=self._invoker_member,
+            vpc_connector=self._vpc_connector,
+        )
+        client = self._cr_client()
+        url = await client.create_or_replace(spec)
+        if self._invoker_member:
+            await client.set_invoker(spec["service_id"], self._invoker_member)
+        logger.info(
+            "cloudrun_spawned agent_id=%s service=%s image=%s url=%s",
+            agent_id, spec["service_id"], spec["image"], url,
+        )
+        return url
+
+    async def stop(self, agent_id: str) -> None:
+        from registration_service.db import get_agent
+
+        row = await get_agent(agent_id)
+        if row is None:
+            return
+        service_id = _cloudrun_service_id(row["name"])
+        await self._cr_client().delete(service_id)
+        logger.info("cloudrun_stopped agent_id=%s service=%s", agent_id, service_id)
+
+    async def is_alive(self, agent_id: str) -> bool:
+        # Cloud Run Admin API only — an HTTP GET would cold-start a min=0 service.
+        # "Exists & Ready (even at 0 instances)" counts as alive.
+        from registration_service.db import get_agent
+
+        row = await get_agent(agent_id)
+        if row is None:
+            return False
+        svc = await self._cr_client().get(_cloudrun_service_id(row["name"]))
+        return bool(svc and svc.get("ready"))
+
+
 def make_backend() -> ContainerBackend:
-    if os.getenv("SPAWN_BACKEND") == "cluster":
+    backend = os.getenv("SPAWN_BACKEND")
+    if backend == "cluster":
         return ClusterBackend()
+    if backend == "cloudrun":
+        return CloudRunBackend()
     return SubprocessBackend()

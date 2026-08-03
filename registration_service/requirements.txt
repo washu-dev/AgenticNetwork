@@ -8,6 +8,11 @@ openai>=1.40.0
 a2a-sdk[http-server]==0.3.2
 httpx>=0.27.0
 
+# GCP Cloud Run Admin API — only needed when SPAWN_BACKEND=cloudrun (imported
+# lazily by registration_service.backend._CloudRunClient, so the rest of the
+# service and the test suite run without it installed).
+google-cloud-run>=0.10.0
+
 # Custom-handler framework (AgentHandler / FileInput / HandlerExecutor).
 # Editable path is relative to the CWD pip runs in; install from the repo root,
 # e.g.  pip install -r registration_service/requirements.txt  (run at repo root).

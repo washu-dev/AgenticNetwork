@@ -30,7 +30,7 @@ from registration_service.models import (
     ToolLoopConfig,
 )
 from registration_service.credential_catalog import CATALOG as CREDENTIAL_CATALOG
-from registration_service.oasf_skills import OASF_SKILLS
+from registration_service.oasf_skills import OASF_SKILLS, has_routable_skill
 from registration_service.port_pool import assign_port
 from registration_service.supervisor import get_supervisor
 from registration_service.validator import validate_handler, validate_tool_module
@@ -150,6 +150,16 @@ async def register_agent(req: RegisterRequest) -> AgentResponse:
         raise HTTPException(
             status_code=409,
             detail=f"An agent with a conflicting name already exists (slug '{new_slug}'): {req.name!r}",
+        )
+
+    # At least one skill must carry an id so the card gets a routable
+    # 'oasf:<name>:<id>' tag (_build_agent_card) — otherwise it publishes to ADS
+    # stored-but-not-routed (undiscoverable). Reject before spawning anything.
+    if not has_routable_skill([s.model_dump() for s in req.oasf_skills]):
+        raise HTTPException(
+            status_code=400,
+            detail="At least one oasf_skill must have an id (from GET /oasf-skills) "
+            "so the agent is discoverable in ADS.",
         )
 
     if req.handler_type in _CODE_UPLOAD_TYPES:

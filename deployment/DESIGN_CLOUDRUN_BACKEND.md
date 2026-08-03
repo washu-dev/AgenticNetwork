@@ -4,7 +4,11 @@
 **built, deployed to Cloud Run (scale-to-zero), and published to ADS automatically** — no manual
 recipe. Grounded in a four-repo deep dive (registration_service, agent-directory, both agent-skeletons,
 AgenticNetwork infra). Companion to `GCP_MIGRATION.md` (load-bearing change #2; its "Shipped —
-Phases 0-3" section is the manual reference this automates).
+Phases 0-3" section is the manual reference this automates). Implementation progress + step-by-step
+corrections: [`IMPLEMENTATION_CLOUDRUN_BACKEND.md`](IMPLEMENTATION_CLOUDRUN_BACKEND.md) (Steps 0-3 done
+as of 2026-07-30). **Read the "Corrections (2026-07-30)" note below before trusting the "Converter
+divergence" and "six `isinstance`" bullets further down** — both describe states that implementation
+work has since resolved or found to be already-stale.
 
 ---
 
@@ -12,7 +16,8 @@ Phases 0-3" section is the manual reference this automates).
 
 The automation seam already exists: the registration service launches agents through a pluggable
 **`ContainerBackend`** (`registration_service/backend.py:124` — `spawn`/`stop`/`is_alive`), selected by
-`make_backend()` (`backend.py:373`) on `SPAWN_BACKEND`. Today there's `SubprocessBackend` (local) and
+`make_backend()` (`backend.py:385`, was `:373` pre-Step-1) on `SPAWN_BACKEND`. Today there's
+`SubprocessBackend` (local) and
 `ClusterBackend` (Slurm). **We add `CloudRunBackend`.** Crucially, the **build half is already done and
 reusable as-is**: for uploaded-code agents the supervisor commits a build context to the
 `agent-directory` repo → the `build-custom-agent.yml` GitHub Action builds `di2washu/agenticnetwork-
@@ -45,23 +50,37 @@ Admin API. So `CloudRunBackend` mirrors **`ClusterBackend`** (out-of-band build,
   list, whose reliable source is an **`oasf:<name>:<id>` tag on ≥1 card skill**. The planner builds
   `DiscoveredAgent` from the record's embedded `card_data`, not top-level skills — so empty skills
   breaks *routing/discovery*, not parsing.
-- **Converter divergence (must resolve):** the copy that populates skills correctly (oasf: tags +
+- **Converter divergence (must resolve):** ~~the copy that populates skills correctly (oasf: tags +
   per-agent map, hard-fails on empty) is `agent-directory/ads_utils/converter.py`. The registration
   image bakes `AgenticNetwork/ads_utils/` whose `_AGENT_OASF_ROUTING_SKILLS` is **empty** and which can
-  silently emit `skills: []`. So a registered agent is only discoverable if its card carries an `oasf:`
-  tag (which the OASF-skill selection at registration should stamp — `registration_service/oasf_skills.py`).
+  silently emit `skills: []`.~~ **Corrections (2026-07-30):** this description is stale. The repo-root
+  `ads_utils/converter.py` (the *only* `ads_utils` in this repo — the one `registration_service` actually
+  imports and `Dockerfile.registration` bakes in) already has the `oasf:<name>:<id>` tag mechanism and
+  already hard-fails `_ads_routing_skills` on empty, since commit `0922ef5` (2026-07-09) — three weeks
+  *before* this draft. `_AGENT_OASF_ROUTING_SKILLS` being empty there is by design (superseded by the tag
+  mechanism), not a bug. There was nothing to "point at the working skill-mapping logic" — see
+  `IMPLEMENTATION_CLOUDRUN_BACKEND.md`'s Step 2 for what the real gap turned out to be (the API layer
+  didn't enforce a routable tag exists, so an unroutable card could get past registration and fail late,
+  mid-spawn — now fixed) and what actually shipped. So a registered agent is only discoverable if its
+  card carries an `oasf:` tag (which the OASF-skill selection at registration should stamp —
+  `registration_service/oasf_skills.py`) — that part of the original bullet still holds.
 
 **Hard-coded assumptions that break under Cloud Run** (from the dive):
-- `endpoint_url`/card `url` = `http://localhost:{port}/` (`supervisor.py:167`) → must be the `*.run.app` URL.
-- `is_alive` = HTTP GET `localhost:{port}/health` (`backend.py:254`) → an HTTP GET **cold-starts a
-  min=0 service**; use the Cloud Run Admin API (service exists/ready) instead, don't wake it.
+- `endpoint_url`/card `url` = `http://localhost:{port}/` (`supervisor.py:191`, was `:167`) → must be the
+  `*.run.app` URL.
+- `is_alive` = HTTP GET `localhost:{port}/health` (`backend.py:262`, was `:254`, in `SubprocessBackend`) →
+  an HTTP GET **cold-starts a min=0 service**; use the Cloud Run Admin API (service exists/ready)
+  instead, don't wake it.
 - Publish/unpublish coupled to process lifetime → fine for min=0 *if* published once with the stable
   run.app URL (the card persists at 0 instances; that's the decoupling).
 - `port_pool` (`port_pool.py`) → irrelevant for external routing; keep a nominal port for the container
   to bind `$PORT`, ignore it for addressing.
-- **Six `isinstance(self._backend, ClusterBackend)` branches** in the supervisor (`supervisor.py:129,
+- ~~**Six `isinstance(self._backend, ClusterBackend)` branches** in the supervisor (`supervisor.py:129,
   256, 356, 414, 444, 454`) → refactor into `ContainerBackend` capability flags or `CloudRunBackend`
-  trips the subprocess branches.
+  trips the subprocess branches.~~ **Done (2026-07-30, Step 1).** All six sites now read a capability flag
+  (`owns_build`/`needs_host_loop`/`supports_health_restart`) via a getattr helper instead of `isinstance`;
+  `CloudRunBackend` just needs to set the right flags, no subprocess-branch tripping risk. See
+  `IMPLEMENTATION_CLOUDRUN_BACKEND.md` Step 1 for the exact flag-to-site mapping.
 
 ---
 
@@ -148,10 +167,15 @@ the manual grants we hit (`run.admin`, `secretmanager.admin`).
 - **Reuse unchanged:** the `agents` table + lifecycle, `_commit_to_github` build path + `builder.py` +
   vendored `agent_skeleton`/`container_runner.py`, the Docker Hub `image_ready` poll, supervisor
   publish/unpublish, `DirectoryPublisher`.
-- **Build new:** `CloudRunBackend` (Cloud Run Admin API), the capability-flag refactor, run.app URL
-  persistence, the converter unification, resource-field mapping, IAM for the reg SA, Cloud Run recovery.
+- **Build new:** `CloudRunBackend` (Cloud Run Admin API), the capability-flag refactor (✅ done), run.app
+  URL persistence, `oasf:` tag enforcement (**not** converter unification — see "Resolved decisions"
+  below), resource-field mapping, IAM for the reg SA, Cloud Run recovery.
 
 ## Rollout order (incremental, each testable)
+
+Live status (which of these are actually done) lives in
+[`IMPLEMENTATION_CLOUDRUN_BACKEND.md`](IMPLEMENTATION_CLOUDRUN_BACKEND.md), not here — this list is the
+original plan and isn't kept in sync step-by-step.
 1. Capability-flag refactor (no behavior change; unblocks a clean CloudRunBackend).
 2. `CloudRunBackend.spawn/stop/is_alive` against the Cloud Run Admin API; wire `make_backend`.
 3. run.app URL → `endpoint_url` + decoupled publish (advertise the run.app URL).
@@ -166,9 +190,10 @@ min=0 → auto-publish → planner discovers → cold-start on query), then gene
 - **Converter — targeted fix, not unification (this pass).** Don't merge the divergent copies now
   (cross-repo packaging friction: `agent-directory` is a separate repo → needs a shared package/submodule).
   Instead: **enforce an `oasf:<name>:<id>` tag on ≥1 skill of every registered card** (via
-  `registration_service/oasf_skills.py`) — all four converter copies honor that tag — and point the
-  reg-service publish path at the working skill-mapping logic. Full converter unification + the 5-copy
-  protocol dedup (CLAUDE.md §9) are tracked as separate follow-ups.
+  `registration_service/oasf_skills.py`) — all four converter copies honor that tag. (The reg-service
+  publish path was *already* on the working skill-mapping logic as of 2026-07-09 — see the
+  "Corrections" note near the top of this doc; there was no pointing to do.) Full converter unification +
+  the 5-copy protocol dedup (CLAUDE.md §9) are tracked as separate follow-ups.
 - **Agents run as one shared, low-privilege `agent-runtime` SA** — NOT the Editor-carrying default
   compute SA, and NOT per-agent SAs (defer that to the security-hardening phase). The registration SA
   deploys agents *as* this SA (`iam.serviceAccountUser` on it). Least-privilege without per-agent mgmt.

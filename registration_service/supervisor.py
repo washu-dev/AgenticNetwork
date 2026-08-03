@@ -22,14 +22,13 @@ from registration_service.card_credentials import build_credentials_extension
 from registration_service.archive import list_tree
 from registration_service.backend import (
     _AGENT_SKELETON_DIR,
-    ClusterBackend,
     ContainerBackend,
     _image_registry,
     _image_slug,
     cluster_srun_argv,
     make_backend,
 )
-from registration_service.db import get_pool, list_agents_by_status
+from registration_service.db import get_pool, list_agents_by_status, update_agent
 from registration_service.models import (
     AnyConfig,
     APIProxyConfig,
@@ -38,6 +37,7 @@ from registration_service.models import (
     LLMConfig,
     ToolLoopConfig,
 )
+from registration_service.oasf_skills import has_routable_skill
 from registration_service.port_pool import release_port
 
 logger = logging.getLogger(__name__)
@@ -52,10 +52,26 @@ _BACKOFF_BASE_SECONDS = 5.0
 _MAX_RESTART_ATTEMPTS = 3
 
 
-def _cluster_build_enabled() -> bool:
-    """True when custom approvals should go through the GitHub → Docker Hub build."""
+def _backend_flag(backend: object, name: str, default: bool) -> bool:
+    """Read a ContainerBackend capability flag defensively.
+
+    Uses getattr rather than a direct attribute access so backends that don't
+    subclass ContainerBackend (e.g. test fakes) still get the documented default
+    instead of an AttributeError.
+    """
+    return getattr(backend, name, default)
+
+
+def _oob_build_enabled() -> bool:
+    """True when custom approvals should go through the GitHub → Docker Hub build.
+
+    Both out-of-band-build backends use this pipeline: the ENGR cluster and Cloud
+    Run. They diverge only at launch (host-loop srun vs. Cloud Run Admin API), not
+    at build. (`owns_build` is the per-backend flag; this env gate additionally
+    requires the GitHub credentials the commit step needs.)
+    """
     return (
-        os.getenv("SPAWN_BACKEND") == "cluster"
+        os.getenv("SPAWN_BACKEND") in ("cluster", "cloudrun")
         and bool(os.getenv("GITHUB_TOKEN"))
         and bool(os.getenv("GITHUB_REPO"))
     )
@@ -101,6 +117,20 @@ class Supervisor:
         if handler_type in _UPLOAD_CODE_TYPES and not agent.get("approved", False):
             raise RuntimeError(f"Agent {agent_id} is not approved")
 
+        # Belt-and-suspenders: the API layer (server.register_agent) already
+        # rejects a skill list with no routable id, but a row can also reach here
+        # via the cluster host-loop / recovery / a future CloudRunBackend path, or
+        # simply predate that check. Catch it before spawning anything — publish
+        # would otherwise raise ValueError (uncaught by _publish_and_set_live,
+        # which only handles DirectoryUnavailable) *after* the backend is already
+        # running, leaving an orphaned process with no card and no 'live' status.
+        if not has_routable_skill(oasf_skills):
+            await _set_status(agent_id, "failed")
+            raise RuntimeError(
+                f"Agent {agent_id} has no OASF skill with an id — it would publish "
+                "to ADS stored-but-not-routed (undiscoverable). Fix its oasf_skills."
+            )
+
         # Cluster build pipeline: on first approval, commit the build context to
         # agent-directory and wait (status='building') for the image to appear on
         # Docker Hub. The build-poll loop re-invokes spawn_and_publish once the
@@ -108,7 +138,7 @@ class Supervisor:
         # through to the actual spawn below.
         if (
             handler_type in _UPLOAD_CODE_TYPES
-            and _cluster_build_enabled()
+            and _oob_build_enabled()
             and agent.get("status") == "registered"
         ):
             # First approval: commit the build context and wait for the image. The
@@ -119,14 +149,14 @@ class Supervisor:
             logger.info("custom_build_started agent_id=%s name=%s", agent_id, name)
             return
 
-        # The cluster backend only has a spawn path for 'custom' agents (per-agent
-        # image built via the GitHub→Docker Hub flow). 'llm'/'api_proxy' have no
-        # cluster spawn path: ClusterBackend.spawn() is a no-op and the host srun
-        # loop only launches 'image_ready' (custom) agents. Without this guard such
-        # an agent would be published to ADS and marked 'live' with no process
-        # behind it (a ghost-live row the planner would then dispatch to). Fail
-        # loudly instead of creating that phantom.
-        if isinstance(self._backend, ClusterBackend) and handler_type not in _UPLOAD_CODE_TYPES:
+        # An out-of-band-build backend (cluster, future Cloud Run) only has a spawn
+        # path for uploaded-code agents (per-agent image built via the
+        # GitHub→Docker Hub flow). 'llm'/'api_proxy' have no such path: spawn() is
+        # a no-op and the host loop only launches built ('image_ready') agents.
+        # Without this guard such an agent would be published to ADS and marked
+        # 'live' with no process behind it (a ghost-live row the planner would then
+        # dispatch to). Fail loudly instead of creating that phantom.
+        if _backend_flag(self._backend, "owns_build", False) and handler_type not in _UPLOAD_CODE_TYPES:
             await _set_status(agent_id, "failed")
             raise RuntimeError(
                 f"handler_type={handler_type!r} is not supported on the cluster "
@@ -161,10 +191,15 @@ class Supervisor:
         oasf_skills: list,
         port: int,
         credentials: list[dict[str, Any]] | None = None,
+        endpoint_url: str | None = None,
     ) -> None:
         """Publish the agent card to ADS and mark it live. Shared by the local-spawn
-        path (spawn_and_publish) and the cluster host-loop path (finalize_spawned)."""
-        endpoint_url = f"http://localhost:{port}/"
+        path (spawn_and_publish), the cluster host-loop path (finalize_spawned), and
+        the Cloud Run deploy path (_deploy_ready_agent).
+
+        endpoint_url overrides the advertised URL — an off-host backend (Cloud Run)
+        passes its run.app URL; the local/cluster paths default to localhost:port."""
+        endpoint_url = endpoint_url or f"http://localhost:{port}/"
         card = _build_agent_card(agent_id, name, description, oasf_skills, port, credentials)
 
         ads_cid: str | None = None
@@ -238,22 +273,35 @@ class Supervisor:
 
     async def recover_live_agents(self) -> None:
         """On startup, reconcile agents that were 'live' before the last shutdown.
+        Three backends, three recovery models (keyed on capability flags):
 
-        Local (subprocess) backend: re-spawn them in-process.
+        Subprocess: the agents were in-process children that died with this
+        process — re-spawn them in-process.
 
-        Cluster backend: the actual agent processes were independent srun steps
-        that died with the previous Slurm job, and ADS's routing index (`dir`) is
-        wiped fresh each deploy — so a persisted status='live' row is a *ghost*
-        (no process, not routed, invisible on the planner dashboard). The
+        Cluster (`needs_host_loop`): the actual agent processes were independent
+        srun steps that died with the previous Slurm job, and ADS's routing index
+        (`dir`) is wiped fresh each deploy — so a persisted status='live' row is a
+        *ghost* (no process, not routed, invisible on the planner dashboard). The
         registration container can't re-spawn srun steps itself, but it can
         reconcile the DB to reality: re-queue custom agents whose image still
         exists on Docker Hub back to 'image_ready' (the host spawn loop then
-        redeploys + republishes them), and mark the rest 'stopped' so the DB no
-        longer falsely claims they're live.
+        redeploys + republishes them), and mark the rest 'stopped'.
+
+        Cloud (`publishes_decoupled`): Cloud Run services and the ADS card (on a
+        separate VM) persist independently of this singleton, so a 'live' row is
+        usually still real. Reconcile against actual services via the backend API
+        (see `_recover_cloud_agents`) rather than re-spawning blindly.
         """
         pool = await get_pool()
 
-        if not isinstance(self._backend, ClusterBackend):
+        # Cloud: agents + their decoupled cards outlive this process — reconcile via
+        # the API instead of re-spawning. (Checked before the subprocess branch,
+        # which is also needs_host_loop=False.)
+        if _backend_flag(self._backend, "publishes_decoupled", False):
+            await self._recover_cloud_agents()
+            return
+
+        if not _backend_flag(self._backend, "needs_host_loop", False):
             async with pool.acquire() as conn:
                 rows = await conn.fetch("SELECT id FROM agents WHERE status = 'live'")
             agent_ids = [str(row["id"]) for row in rows]
@@ -294,7 +342,7 @@ class Supervisor:
             # the approval time and a newer image is what we're waiting for.
             redeployable = (
                 row["handler_type"] == "custom"
-                and _cluster_build_enabled()
+                and _oob_build_enabled()
                 and await _image_exists_on_dockerhub(
                     f"{_image_registry()}/agenticnetwork-custom-{_image_slug(row['name'])}",
                 )
@@ -330,6 +378,48 @@ class Supervisor:
             "recovery_complete_cluster requeued=%d stopped=%d", requeued, stopped
         )
 
+    async def _recover_cloud_agents(self) -> None:
+        """Reconcile a decoupled-publish (Cloud Run) backend against reality.
+
+        This singleton lost its in-memory state on restart, but the Cloud Run
+        services and the ADS card (on a separate VM) persist independently — so we
+        reconcile the DB rather than re-spawn:
+          * 'live'        — confirm the service still exists & is Ready via the
+                            backend API (`is_alive`, an Admin-API get — never an
+                            HTTP probe, which would cold-start it). If so, leave it:
+                            the decoupled card is still published. If the service
+                            vanished, drop the stale card and redeploy.
+          * 'image_ready' — the deploy trigger never fired before the restart (the
+                            Step-4 window between image_ready and deploy); deploy now.
+        """
+        confirmed = redeployed = 0
+        for agent in await list_agents_by_status("live"):
+            agent_id = str(agent["id"])
+            if await self._backend.is_alive(agent_id):
+                confirmed += 1
+                logger.info("recovery_confirmed_cloud agent_id=%s name=%s", agent_id, agent["name"])
+                continue
+            # Service is gone — drop the stale card (best-effort) then redeploy.
+            stale_cid = agent.get("ads_cid")
+            if stale_cid:
+                try:
+                    self._publisher.unpublish(stale_cid)
+                except DirectoryUnavailable as exc:
+                    logger.warning(
+                        "recovery_stale_unpublish_failed agent_id=%s error=%s", agent_id, exc
+                    )
+            logger.info("recovery_redeploy_cloud agent_id=%s name=%s (service gone)", agent_id, agent["name"])
+            await self._deploy_ready_agent(agent)
+            redeployed += 1
+        for agent in await list_agents_by_status("image_ready"):
+            logger.info(
+                "recovery_deploy_stranded_cloud agent_id=%s name=%s (image_ready)",
+                agent["id"], agent["name"],
+            )
+            await self._deploy_ready_agent(agent)
+            redeployed += 1
+        logger.info("recovery_complete_cloud confirmed=%d redeployed=%d", confirmed, redeployed)
+
     # ── Health-check loop ──────────────────────────────────────────────────────
 
     async def start_health_loop(self) -> None:
@@ -353,10 +443,11 @@ class Supervisor:
                 logger.exception("health_loop_error error=%s", exc)
 
     async def _check_all_live_agents(self) -> None:
-        if isinstance(self._backend, ClusterBackend):
-            # Lifecycle of cluster agents is owned by Slurm + the host spawn loop;
-            # the supervisor doesn't health-restart them. (Known limitation: a
-            # crashed cluster agent isn't auto-respawned — re-approve to redeploy.)
+        if not _backend_flag(self._backend, "supports_health_restart", True):
+            # Lifecycle is owned externally (Slurm + the host spawn loop for
+            # cluster; Cloud Run self-heals) — the supervisor doesn't health-restart
+            # these. (Known limitation for cluster: a crashed agent isn't
+            # auto-respawned — re-approve to redeploy.)
             return
         pool = await get_pool()
         async with pool.acquire() as conn:
@@ -395,23 +486,84 @@ class Supervisor:
                 logger.exception("build_poll_error error=%s", exc)
 
     async def _check_building_agents(self) -> None:
-        if not _cluster_build_enabled():
+        if not _oob_build_enabled():
             return
         building = await list_agents_by_status("building")
         for agent in building:
             slug = _image_slug(agent["name"])
             image = f"{_image_registry()}/agenticnetwork-custom-{slug}"
             if await _image_exists_on_dockerhub(image, agent.get("updated_at")):
-                # Hand off to the host spawn loop: it polls /internal/spawn-queue for
-                # image_ready agents, runs srun, and calls finalize_spawned (Note #8).
-                await _set_status(str(agent["id"]), "image_ready")
-                logger.info("custom_image_ready agent_id=%s image=%s -> image_ready", agent["id"], image)
+                # Best-effort digest capture: a failed lookup leaves image_ref=None
+                # (the CloudRunBackend deploy then falls back to ':latest') rather
+                # than blocking the transition to image_ready.
+                image_ref = await _image_digest_on_dockerhub(image)
+                await update_agent(str(agent["id"]), status="image_ready", image_ref=image_ref)
+                logger.info(
+                    "custom_image_ready agent_id=%s image=%s image_ref=%s -> image_ready",
+                    agent["id"], image, image_ref,
+                )
+                # Launch. Two shapes of out-of-band-build backend:
+                #  * cluster (needs_host_loop=True): hand off to the host spawn loop
+                #    — it polls /internal/spawn-queue, runs srun, calls finalize_spawned.
+                #  * Cloud Run (needs_host_loop=False): no host loop; deploy via the
+                #    Admin API right here and publish the run.app card.
+                if _backend_flag(self._backend, "owns_build", False) and not _backend_flag(
+                    self._backend, "needs_host_loop", False
+                ):
+                    await self._deploy_ready_agent(agent)
+
+    async def _deploy_ready_agent(self, agent: dict[str, Any]) -> None:
+        """Deploy an image_ready agent through a direct-API backend (Cloud Run) and
+        publish its card. The cluster path defers this to the host srun loop; this
+        is the no-host-loop equivalent.
+
+        NOTE: a restart between the image_ready transition and a successful deploy
+        would strand the row at image_ready (the build poll only scans 'building').
+        Step 6 (recover_live_agents reconcile) closes that window; for now the
+        deploy fires inline in the same poll iteration.
+        """
+        agent_id = str(agent["id"])
+        name = agent["name"]
+        description = agent["description"]
+        handler_type = agent["handler_type"]
+        port: int = agent["port"]
+        config = _deserialize_config(agent)
+        raw_skills = agent["oasf_skills"]
+        oasf_skills = raw_skills if isinstance(raw_skills, list) else json.loads(raw_skills)
+
+        # Same belt-and-suspenders as spawn_and_publish: never deploy an agent that
+        # would publish stored-but-not-routed (undiscoverable) — fail before the
+        # backend creates a live-but-invisible service.
+        if not has_routable_skill(oasf_skills):
+            logger.error("cloud_deploy_unroutable agent_id=%s -> failed", agent_id)
+            await _set_status(agent_id, "failed")
+            return
+
+        try:
+            endpoint_url = await self._backend.spawn(
+                agent_id=agent_id,
+                name=name,
+                description=description,
+                handler_type=handler_type,
+                config=config,
+                port=port,
+            )
+        except Exception as exc:
+            logger.error("cloud_deploy_spawn_failed agent_id=%s error=%s", agent_id, exc)
+            await _set_status(agent_id, "failed")
+            return
+
+        await self._publish_and_set_live(
+            agent_id, name, description, oasf_skills, port,
+            _declared_credentials(config), endpoint_url=endpoint_url,
+        )
+        logger.info("cloud_deployed_live agent_id=%s url=%s", agent_id, endpoint_url)
 
     # ── Host-loop spawn coordination (cluster, Note #8) ──────────────────────────
 
     async def spawn_queue(self) -> list[dict[str, Any]]:
         """Agents ready for the host loop to srun (status='image_ready')."""
-        if not isinstance(self._backend, ClusterBackend):
+        if not _backend_flag(self._backend, "needs_host_loop", False):
             return []
         out: list[dict[str, Any]] = []
         for agent in await list_agents_by_status("image_ready"):
@@ -441,7 +593,7 @@ class Supervisor:
         raw_skills = agent["oasf_skills"]
         oasf_skills = raw_skills if isinstance(raw_skills, list) else json.loads(raw_skills)
 
-        if isinstance(self._backend, ClusterBackend):
+        if _backend_flag(self._backend, "needs_host_loop", False):
             self._backend.record_pid(agent_id, pid, port)
         await self._publish_and_set_live(
             agent_id, agent["name"], agent["description"], oasf_skills, port,
@@ -451,7 +603,7 @@ class Supervisor:
 
     def stop_queue(self) -> list[int]:
         """PIDs the host loop should kill (consumed once)."""
-        if isinstance(self._backend, ClusterBackend):
+        if _backend_flag(self._backend, "needs_host_loop", False):
             return self._backend.pending_stops()
         return []
 
@@ -463,7 +615,7 @@ class Supervisor:
         Only acts on the cluster build path (GITHUB_TOKEN/REPO + SPAWN_BACKEND set);
         a failure is logged, never raised, so it can't block agent deletion.
         """
-        if not _cluster_build_enabled():
+        if not _oob_build_enabled():
             return
         try:
             await _delete_from_github(_image_slug(name))
@@ -687,6 +839,24 @@ async def _image_exists_on_dockerhub(image_name: str, since: Any = None) -> bool
     except Exception as exc:
         logger.warning("dockerhub_poll_error image=%s error=%s", image_name, exc)
         return False
+
+
+async def _image_digest_on_dockerhub(image_name: str, tag: str = "latest") -> str | None:
+    """The manifest digest ('sha256:...') for {image_name}:{tag}, or None if
+    unavailable. Persisted as image_ref so a future CloudRunBackend can deploy by
+    digest instead of the floating ':latest' tag (reproducibility/rollback — the
+    same footgun already hit with vLLM's cache path, see GCP_MIGRATION.md).
+    """
+    url = f"https://hub.docker.com/v2/repositories/{image_name}/tags/{tag}"
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(url)
+        if resp.status_code != 200:
+            return None
+        return resp.json().get("digest")
+    except Exception as exc:
+        logger.warning("dockerhub_digest_error image=%s error=%s", image_name, exc)
+        return None
 
 
 # ── Module-level singleton ─────────────────────────────────────────────────────

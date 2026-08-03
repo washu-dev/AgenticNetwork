@@ -83,6 +83,7 @@ class FakeConnection:
                 "is_archive": False,
                 "endpoint_url": None,
                 "ads_cid": None,
+                "image_ref": None,
                 "created_at": now,
                 "updated_at": now,
             }
@@ -295,6 +296,7 @@ _ALLOWED_UPDATE_COLS = {
     "endpoint_url",
     "ads_cid",
     "port",
+    "image_ref",
 }
 
 
@@ -338,6 +340,7 @@ def fake_create_agent(
         "is_archive": False,
         "endpoint_url": None,
         "ads_cid": None,
+        "image_ref": None,
         "created_at": now,
         "updated_at": now,
     }

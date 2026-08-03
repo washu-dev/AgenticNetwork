@@ -15,7 +15,7 @@ ENDPOINT_OPS_PAYLOAD = {
     "name": "Weather API Agent",
     "description": "wraps the weather API as typed operations",
     "handler_type": "endpoint_ops",
-    "oasf_skills": [{"name": "integration/rest-api", "id": None}],
+    "oasf_skills": [{"name": "tool_interaction/api_schema_understanding", "id": 1401}],
     "config": {
         "base_url": "https://api.example.com/v1",
         "auth_env": "WEATHER_API_KEY",

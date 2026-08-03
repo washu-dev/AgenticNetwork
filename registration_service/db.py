@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS agents (
     id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name              TEXT NOT NULL,
     description       TEXT NOT NULL,
-    handler_type      TEXT NOT NULL CHECK (handler_type IN ('llm', 'api_proxy', 'custom', 'endpoint_ops')),
+    handler_type      TEXT NOT NULL CHECK (handler_type IN ('llm', 'api_proxy', 'custom', 'endpoint_ops', 'tool_loop')),
     oasf_skills       JSONB NOT NULL,
     config            JSONB NOT NULL,
     port              INT UNIQUE,
@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS agents (
     is_archive        BOOLEAN NOT NULL DEFAULT FALSE,
     endpoint_url      TEXT,
     ads_cid           TEXT,
+    image_ref         TEXT,
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -36,9 +37,13 @@ CREATE TABLE IF NOT EXISTS agents (
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS handler_file_path TEXT;
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS approved BOOLEAN NOT NULL DEFAULT TRUE;
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS is_archive BOOLEAN NOT NULL DEFAULT FALSE;
+-- image_ref: the built custom-agent image's Docker Hub manifest digest
+-- ('sha256:...'), captured at image_ready so CloudRunBackend can deploy by
+-- digest instead of a floating ':latest' tag.
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS image_ref TEXT;
 ALTER TABLE agents DROP CONSTRAINT IF EXISTS agents_handler_type_check;
 ALTER TABLE agents ADD CONSTRAINT agents_handler_type_check
-    CHECK (handler_type IN ('llm', 'api_proxy', 'custom', 'endpoint_ops'));
+    CHECK (handler_type IN ('llm', 'api_proxy', 'custom', 'endpoint_ops', 'tool_loop'));
 ALTER TABLE agents DROP CONSTRAINT IF EXISTS agents_status_check;
 ALTER TABLE agents ADD CONSTRAINT agents_status_check
     CHECK (status IN ('registered', 'live', 'failed', 'stopped', 'building', 'image_ready'));
@@ -143,6 +148,7 @@ _UPDATABLE_COLUMNS = {
     "endpoint_url",
     "ads_cid",
     "port",
+    "image_ref",
 }
 
 

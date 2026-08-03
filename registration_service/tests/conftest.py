@@ -67,7 +67,7 @@ API_PROXY_PAYLOAD = {
     "name": "Test Proxy Agent",
     "description": "Proxies requests to an upstream service",
     "handler_type": "api_proxy",
-    "oasf_skills": [{"name": "integration/rest-api", "id": None}],
+    "oasf_skills": [{"name": "tool_interaction/api_schema_understanding", "id": 1401}],
     "config": {
         "upstream_url": "http://example.com/api",
         "auth_header": "Bearer test-token",

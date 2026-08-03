@@ -10,7 +10,11 @@ import pytest
 from registration_service import db, supervisor as sup_mod
 from registration_service.backend import ClusterBackend
 from registration_service.fake_db import reset_fake_db
-from registration_service.supervisor import Supervisor, _image_exists_on_dockerhub
+from registration_service.supervisor import (
+    Supervisor,
+    _image_digest_on_dockerhub,
+    _image_exists_on_dockerhub,
+)
 
 pytestmark = pytest.mark.asyncio
 
@@ -125,12 +129,43 @@ async def test_build_poll_marks_image_ready(monkeypatch):
     async def yes(image, since=None):
         return True
 
+    async def digest(image, tag="latest"):
+        return "sha256:deadbeef"
+
     monkeypatch.setattr(sup_mod, "_image_exists_on_dockerhub", yes)
+    monkeypatch.setattr(sup_mod, "_image_digest_on_dockerhub", digest)
     sup = Supervisor(backend=ClusterBackend(), publisher=_FakePublisher())
     await sup._check_building_agents()
 
     got = await db.get_agent(agent["id"])
     assert got["status"] == "image_ready"   # waits for the host loop, not live yet
+    assert got["image_ref"] == "sha256:deadbeef"
+    await db.close_db()
+
+
+async def test_build_poll_image_ready_survives_digest_lookup_failure(monkeypatch):
+    """A Docker Hub digest-lookup failure must not block the image_ready
+    transition — it only means image_ref stays None (CloudRunBackend falls back
+    to ':latest' later)."""
+    _cluster_env(monkeypatch)
+    await _fresh_db()
+    agent = await _make_custom(approved=True)
+    await db.update_agent(agent["id"], status="building")
+
+    async def yes(image, since=None):
+        return True
+
+    async def no_digest(image, tag="latest"):
+        return None
+
+    monkeypatch.setattr(sup_mod, "_image_exists_on_dockerhub", yes)
+    monkeypatch.setattr(sup_mod, "_image_digest_on_dockerhub", no_digest)
+    sup = Supervisor(backend=ClusterBackend(), publisher=_FakePublisher())
+    await sup._check_building_agents()
+
+    got = await db.get_agent(agent["id"])
+    assert got["status"] == "image_ready"
+    assert got["image_ref"] is None
     await db.close_db()
 
 
@@ -245,6 +280,21 @@ async def test_image_exists_false_on_404(monkeypatch):
         sup_mod.httpx, "AsyncClient", lambda *a, **k: _FakeClient(_Resp(404)),
     )
     assert await _image_exists_on_dockerhub("di2washu/agenticnetwork-custom-x") is False
+
+
+async def test_image_digest_returns_digest_on_200(monkeypatch):
+    monkeypatch.setattr(
+        sup_mod.httpx, "AsyncClient",
+        lambda *a, **k: _FakeClient(_Resp(200, {"digest": "sha256:abc123"})),
+    )
+    assert await _image_digest_on_dockerhub("di2washu/agenticnetwork-custom-x") == "sha256:abc123"
+
+
+async def test_image_digest_none_on_404(monkeypatch):
+    monkeypatch.setattr(
+        sup_mod.httpx, "AsyncClient", lambda *a, **k: _FakeClient(_Resp(404)),
+    )
+    assert await _image_digest_on_dockerhub("di2washu/agenticnetwork-custom-x") is None
 
 
 # ── Recovery on redeploy: a live custom agent is re-queued, not lost ──────────────
