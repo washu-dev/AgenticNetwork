@@ -115,12 +115,18 @@ async def init_db() -> None:
         await conn.execute(_SCHEMA_SQL)
         from registration_service.port_pool import seed_ports
         await seed_ports(conn)
-        # Clean up stopped/failed agents from previous runs so ports are freed.
+        # Clean up dead agents from previous runs so ports are freed. Spare a
+        # 'failed' agent that built (has image_ref): the build succeeded and only
+        # the deploy step failed, which is retryable on recovery
+        # (supervisor._recover_cloud_agents) — deleting it would strand the work.
         await conn.execute(
             "UPDATE port_pool SET in_use = false, agent_id = NULL "
-            "WHERE agent_id IN (SELECT id FROM agents WHERE status IN ('stopped', 'failed'))"
+            "WHERE agent_id IN (SELECT id FROM agents "
+            "WHERE status = 'stopped' OR (status = 'failed' AND image_ref IS NULL))"
         )
-        await conn.execute("DELETE FROM agents WHERE status IN ('stopped', 'failed')")
+        await conn.execute(
+            "DELETE FROM agents WHERE status = 'stopped' OR (status = 'failed' AND image_ref IS NULL)"
+        )
     logger.info("db_init dsn=%s", dsn.split("@")[-1])
 
 

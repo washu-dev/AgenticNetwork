@@ -26,6 +26,15 @@ def _coerce_uuid(v: Any) -> uuid.UUID:
     return v if isinstance(v, uuid.UUID) else uuid.UUID(str(v))
 
 
+def _is_purgeable(agent: dict) -> bool:
+    """Mirror init_db's startup purge: delete 'stopped' agents and 'failed' agents
+    that never built. Spare 'failed'+image_ref rows — a built agent whose deploy
+    step failed is retryable on recovery, so it must survive the restart."""
+    return agent["status"] == "stopped" or (
+        agent["status"] == "failed" and agent.get("image_ref") is None
+    )
+
+
 class FakeRecord(dict):
     """dict that mimics asyncpg.Record attribute/key access."""
 
@@ -135,8 +144,8 @@ class FakeConnection:
         elif s.startswith("delete from agents where id"):
             self._s.agents.pop(_coerce_uuid(args[0]), None)
 
-        elif s.startswith("delete from agents where status in"):
-            stale = [k for k, v in self._s.agents.items() if v["status"] in ("stopped", "failed")]
+        elif s.startswith("delete from agents where status = 'stopped'"):
+            stale = [k for k, v in self._s.agents.items() if _is_purgeable(v)]
             for k in stale:
                 del self._s.agents[k]
 
@@ -154,9 +163,9 @@ class FakeConnection:
                 self._s.port_pool[port]["agent_id"] = None
 
         elif "set in_use = false, agent_id = null where agent_id in" in s:
-            stopped = {str(v["id"]) for v in self._s.agents.values() if v["status"] in ("stopped", "failed")}
+            dead = {str(v["id"]) for v in self._s.agents.values() if _is_purgeable(v)}
             for p in self._s.port_pool.values():
-                if str(p.get("agent_id")) in stopped:
+                if str(p.get("agent_id")) in dead:
                     p["in_use"] = False
                     p["agent_id"] = None
 
@@ -266,12 +275,15 @@ async def init_fake_db() -> None:
     pool = get_fake_pool()
     pool._store.seed_ports()
     conn = pool._conn
-    # Mirror the cleanup that init_db() does on real postgres
+    # Mirror the cleanup that init_db() does on real postgres (spares failed+built).
     await conn.execute(
         "update port_pool set in_use = false, agent_id = null "
-        "where agent_id in (select id from agents where status in ('stopped', 'failed'))"
+        "where agent_id in (select id from agents "
+        "where status = 'stopped' or (status = 'failed' and image_ref is null))"
     )
-    await conn.execute("delete from agents where status in ('stopped', 'failed')")
+    await conn.execute(
+        "delete from agents where status = 'stopped' or (status = 'failed' and image_ref is null)"
+    )
 
 
 async def close_fake_db() -> None:

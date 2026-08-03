@@ -690,3 +690,27 @@ async def test_recovery_retries_failed_agent_with_image(monkeypatch):
     assert (await db.get_agent(unbuilt["id"]))["status"] == "failed"   # left alone
     assert len(fake.created) == 1
     await db.close_db()
+
+
+@_aio
+async def test_startup_purge_spares_failed_with_image(monkeypatch):
+    """The startup purge deletes 'failed' agents that never built, but spares those
+    with an image_ref (built, deploy-failed) so recovery can retry them — otherwise
+    the failed-retry in _recover_cloud_agents is dead code (the purge runs first)."""
+    from registration_service.fake_db import init_fake_db
+    _cloud_env(monkeypatch)
+    await _fresh_db()
+    built = await _make_custom(image_ref="sha256:x", status="failed")
+    unbuilt = await db.create_agent(
+        name="No Image", description="d", handler_type="custom",
+        oasf_skills=[{"name": "nlp/text-summarization", "id": 1}],
+        config={"class_name": "H", "python_version": "3.12", "requirements": [], "extra": {}},
+        approved=True,
+    )
+    await db.update_agent(unbuilt["id"], status="failed")  # failed, no image_ref
+
+    await init_fake_db()  # re-run the startup purge over the populated store
+
+    assert await db.get_agent(built["id"]) is not None    # built → spared
+    assert await db.get_agent(unbuilt["id"]) is None       # never built → purged
+    await db.close_db()
