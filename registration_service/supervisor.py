@@ -396,6 +396,10 @@ class Supervisor:
                             vanished, drop the stale card and redeploy.
           * 'image_ready' — the deploy trigger never fired before the restart (the
                             Step-4 window between image_ready and deploy); deploy now.
+          * 'failed'      — but only if it has an image_ref: it built successfully and
+                            failed at (or after) the deploy step, so retry it. A row
+                            that failed *before* a build has no image_ref and is left
+                            alone. Deploy failures shouldn't strand an agent forever.
         """
         confirmed = redeployed = 0
         for agent in await list_agents_by_status("live"):
@@ -419,6 +423,15 @@ class Supervisor:
         for agent in await list_agents_by_status("image_ready"):
             logger.info(
                 "recovery_deploy_stranded_cloud agent_id=%s name=%s (image_ready)",
+                agent["id"], agent["name"],
+            )
+            await self._deploy_ready_agent(agent)
+            redeployed += 1
+        for agent in await list_agents_by_status("failed"):
+            if not agent.get("image_ref"):
+                continue  # failed before a build → not a deploy retry, leave it
+            logger.info(
+                "recovery_retry_failed_cloud agent_id=%s name=%s (built, deploy had failed)",
                 agent["id"], agent["name"],
             )
             await self._deploy_ready_agent(agent)

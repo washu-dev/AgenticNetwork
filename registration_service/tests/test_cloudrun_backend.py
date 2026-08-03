@@ -636,3 +636,57 @@ async def test_resources_persist_and_reach_deploy_and_card(monkeypatch):
     uris = [e.uri for e in (card.capabilities.extensions or [])]
     assert RESOURCE_REQUIREMENTS_EXTENSION_URI in uris
     await db.close_db()
+
+
+@_aio
+async def test_spawn_handles_jsonb_string_resources(monkeypatch):
+    """Regression: asyncpg returns the resources JSONB column as a *string*, but
+    fake_db returns a dict. spawn must deserialize the string (the real-DB deploy
+    failed with \"'str' object has no attribute 'get'\" before this)."""
+    import json as _json
+    _cloud_env(monkeypatch)
+    await _fresh_db()
+    agent = await _make_custom(image_ref="sha256:x")
+    aid = str(agent["id"])
+
+    row = dict(await db.get_agent(aid))
+    row["resources"] = _json.dumps({"cpu": "2", "memory": "2Gi", "concurrency": 3, "gpu": False})
+
+    async def fake_get_agent(agent_id):
+        return row
+
+    monkeypatch.setattr(db, "get_agent", fake_get_agent)
+    fake = _FakeCloudRunClient()
+    backend = CloudRunBackend(client=fake)
+    await backend.spawn(
+        agent_id=aid, name="Paper Reviewer", description="d",
+        handler_type="custom", config=_custom_config(), port=19110,
+    )
+    assert fake.created[0]["cpu"] == "2"
+    assert fake.created[0]["concurrency"] == 3
+    await db.close_db()
+
+
+@_aio
+async def test_recovery_retries_failed_agent_with_image(monkeypatch):
+    """A 'failed' row that has an image_ref (built, but the deploy step failed) is
+    retried on recovery; a 'failed' row without one is left alone."""
+    _cloud_env(monkeypatch)
+    await _fresh_db()
+    built = await _make_custom(image_ref="sha256:beef", status="failed")
+    unbuilt = await db.create_agent(
+        name="No Image", description="d", handler_type="custom",
+        oasf_skills=[{"name": "nlp/text-summarization", "id": 1}],
+        config={"class_name": "H", "python_version": "3.12", "requirements": [], "extra": {}},
+        approved=True,
+    )
+    await db.update_agent(unbuilt["id"], status="failed")  # no image_ref
+
+    fake = _FakeCloudRunClient()
+    sup = Supervisor(backend=CloudRunBackend(client=fake), publisher=_FakePublisher())
+    await sup.recover_live_agents()
+
+    assert (await db.get_agent(built["id"]))["status"] == "live"       # retried
+    assert (await db.get_agent(unbuilt["id"]))["status"] == "failed"   # left alone
+    assert len(fake.created) == 1
+    await db.close_db()

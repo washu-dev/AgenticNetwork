@@ -645,7 +645,11 @@ class CloudRunBackend(ContainerBackend):
 
         row = await get_agent(agent_id)
         image_ref = (row or {}).get("image_ref")
+        # asyncpg returns JSONB as a string; fake_db returns a dict. Handle both
+        # (same guard used for config/oasf_skills throughout the supervisor).
         resources = (row or {}).get("resources")
+        if isinstance(resources, str):
+            resources = json.loads(resources)
 
         # Backend-selection seam: a GPU (or future strict-isolation) request means
         # Cloud Run is the wrong home — it can't schedule GPUs. Fail loudly rather
