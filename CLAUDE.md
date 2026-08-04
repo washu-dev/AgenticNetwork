@@ -164,7 +164,8 @@ The system is being migrated onto **GCP** (project `di2-agenticweb`, `us-central
 Tier D (ENGR cluster) stays a working backup, nothing deleted. **Live today:** the **planner and
 registration service on Cloud Run** wired to **Cloud SQL**, a **real ADS on a GCE VM**, authenticated
 cross-network A2A, LLM = vLLM-primary with automatic **Vertex AI fallback**, and the **`CloudRunBackend`**
-auto-deploying + auto-publishing registered agents end-to-end (register→build→deploy→publish). **Not yet:**
+auto-deploying + auto-publishing registered agents end-to-end (register→build→deploy→publish). **Deferred
+to future development** (paused end of summer 2026 at this milestone; ENGR stays the public deployment):
 the public front door (the planner is anon + `gcloud run services proxy`-only) and the DNS cutover. If a
 task touches GCP, start with the **GCP runbook** `docs/deployment/gcp/README.md` (architecture, how to
 access, dev workflow, cluster differences); deeper dives: `docs/deployment/gcp/MIGRATION.md` (design +

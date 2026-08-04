@@ -281,7 +281,7 @@ agent inherits, so they are tracked once here rather than repeated per agent.
 
 ## 4. Public front-door cutover — routing `agenticweb.engr.wustl.edu` to GCP
 
-- **Status:** In progress — 2026-08-03 — **Option 1 (repoint gateway upstream); secure leg = Option A (gateway mints a Google ID token → planner run.app), design settled, build not started.** Runbook: `IMPLEMENTATION_CLOUDRUN_BACKEND.md` Step 10. (Prereqs 1+2 done: reg service + planner on Cloud SQL.)
+- **Status:** Deferred (future development) — 2026-08-03 — **Option 1 (repoint gateway upstream); secure leg = Option A (gateway mints a Google ID token → planner run.app). Design settled, build deferred at end of summer 2026** (a deliberate stop; prereqs 1+2 done — reg service + planner on Cloud SQL). Ready-to-execute runbook: `gcp/IMPLEMENTATION_CLOUDRUN_BACKEND.md` Step 10.
 - **Raised:** 2026-07-30 (migration planning)
 - **Scope:** the out-of-repo WashU ENGR gateway (nginx + Apache + `mod_shib`); the GCP planner Cloud Run service (ingress, `PLANNER_ALLOW_ANON`); `main_agent/auth.py` (header trust); Cloud SQL; `docs/deployment/gcp/MIGRATION.md`, `docs/deployment/gcp/IMPLEMENTATION_CLOUDRUN_BACKEND.md` (Steps 9–10 + Go-live)
 

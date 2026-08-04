@@ -21,8 +21,11 @@ to Cloud SQL + the VPC connector, and drove a custom agent end-to-end: register 
 → `CloudRunBackend` auto-deploy (`agent-echo-test`, min=0, as `agent-runtime`) → card published. First live
 Phase-4 loop. Three bugs were found + fixed live (see Step 9 notes below).
 **Steps 0-9 DONE** (Step 9 = reg service + planner both on Cloud Run/Cloud SQL, register→deploy loop proven
-live). **Only Step 10** (planner front-door: drop `PLANNER_ALLOW_ANON`, lock ingress, strip identity headers,
-wire `CREDENTIALS_ENCRYPTION_KEY`) **and then the Option-1 cutover remain.** Ask before running any `gcloud`.
+live). **Step 10 (planner front-door) + the Option-1 cutover are DEFERRED to future development** (end of
+summer 2026) — a deliberate stop at a stable milestone, not a blocker. The design is **settled** and the
+full build runbook is **preserved** in Step 10 below, so a successor can execute it directly (no
+re-deciding). The ENGR cluster stays the public deployment meanwhile. Handoff summary:
+[`gcp/README.md`](README.md#status--deferred-work-handoff).
 
 **Roadmap end-state.** Steps 5–8 finish the agent-onboarding automation; **Steps 9–10** (Cloud SQL
 persistence + planner front-door hardening) make the planner safe to expose and are the prerequisites for
@@ -376,7 +379,11 @@ steps are its prerequisites; the cutover itself is a config change on the out-of
   row + a conversation row survive a service restart.
 - **Gates:** DOWNSTREAM #4 prerequisite (1).
 
-## Step 10 — Planner front-door hardening (Option 1 readiness) — ◑ NEXT (design settled 2026-08-03)
+## Step 10 — Planner front-door hardening (Option 1 readiness) — ⏸ DEFERRED to future development (design settled 2026-08-03)
+
+> **Handoff note.** This step + the Option-1 cutover were deferred at end of summer 2026. Everything below
+> is a **ready-to-execute runbook** — the approach is decided and the alternatives are recorded, so whoever
+> picks this up can start from the pre-checks without re-litigating the design.
 
 **Decision (2026-08-03): the secure gateway→planner leg = Option A** (gateway mints a Google ID token →
 planner run.app). Evaluated against Option B (external LB + Cloud Armor): A needs **no org-policy exception**

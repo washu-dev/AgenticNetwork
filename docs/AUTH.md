@@ -26,9 +26,10 @@ Browser → nginx (TLS) → Apache + mod_shib (Shibboleth SP) → reverse-proxy 
 > **On GCP (front door not built yet).** The GCP planner has **no SSO gateway in front of it**
 > today — it runs `PLANNER_ALLOW_ANON=1` and is reached IAM-privately via `gcloud run services
 > proxy` (operators only). It *is* now on Cloud SQL, so the credential/history persistence and the
-> fail-closed machinery below are live; they just aren't enforced while anon is on. The planned
-> front door is **Option A** — the same WashU Shibboleth gateway repointed at GCP, minting a Google
-> ID token to reach the private planner (drops anon at cutover). See
+> fail-closed machinery below are live; they just aren't enforced while anon is on. The GCP front door
+> is **deferred to future development** (paused end of summer 2026); the decided approach is **Option A**
+> — the same WashU Shibboleth gateway repointed at GCP, minting a Google ID token to reach the private
+> planner (drops anon at cutover). See
 > [`docs/deployment/gcp/README.md`](deployment/gcp/README.md) "How to access" + "Not done yet" and
 > [`docs/deployment/DOWNSTREAM_CONSIDERATIONS.md`](deployment/DOWNSTREAM_CONSIDERATIONS.md) #4.
 

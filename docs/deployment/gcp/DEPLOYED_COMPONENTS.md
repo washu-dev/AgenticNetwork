@@ -75,13 +75,14 @@ SA** (`267355023116-compute@`, Editor-carrying → hardening follow-up). Capture
 
 **ENGR vLLM (`gpt-oss-120b` on `h100-2405`)** — *not a GCP resource*; primary LLM via the relay.
 
-## What's live vs. still to come
+## What's live vs. deferred
 - **Live:** planner (on Cloud SQL) + real ADS + authenticated A2A + on-demand agents + LLM failover, **and
   the full register→build→deploy→publish automation** (registration service + CloudRunBackend + Cloud SQL).
-- **Not yet:** the **public front door** (Step 10 — the planner is still anon + proxy-only; decided approach
-  is Option A, gateway mints an ID token → run.app; build outline in `IMPLEMENTATION_CLOUDRUN_BACKEND.md`
-  Step 10) and the **Option-1 cutover** (`agenticweb.engr.wustl.edu` → GCP). Plus the rest of the agent
-  fleet.
+- **Deferred to future development** (paused end of summer 2026; ENGR stays the public deployment): the
+  **public front door** (decided approach Option A, gateway mints an ID token → run.app; ready-to-execute
+  runbook in `IMPLEMENTATION_CLOUDRUN_BACKEND.md` Step 10) and the **Option-1 cutover**
+  (`agenticweb.engr.wustl.edu` → GCP). Plus the rest of the specialist agent fleet. Handoff summary:
+  [`README.md`](README.md#status--deferred-work-handoff).
 
 ## Cost / pause
 Always-on billers: planner (min=1), **registration (min=1)**, **Cloud SQL `agenticnetwork-db`**, `ads` VM,

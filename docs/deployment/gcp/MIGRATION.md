@@ -1,5 +1,12 @@
 # GCP Migration — AgenticNetwork
 
+> **Status (end of summer 2026): PAUSED at a stable milestone.** Phases 0-3 and the **Phase-4
+> `CloudRunBackend` automation are live and proven** (planner + registration service on Cloud Run/Cloud
+> SQL; register→build→deploy→publish end-to-end). The **public front door + DNS cutover are deferred to
+> future development** — a deliberate stop, with the design settled and a ready-to-execute runbook
+> preserved. The ENGR cluster stays the public deployment. New here? Start with the handoff summary in
+> [`gcp/README.md`](README.md#status--deferred-work-handoff). This doc is the deeper design/history record.
+
 **Amaan · updated 2026-07-27 · single source of truth for the GCP migration.**
 Supersedes `GCP_MIGRATION_PLAN.md`, `GCP_MIGRATION_PROPOSAL.md`, `GCP_TEST_STATUS.md`, and
 `GCP_GLOSSARY.md` — retired to avoid stale/conflicting copies. Diagram:
@@ -392,12 +399,14 @@ that drove them are folded here and removed. What's live:
 - **IAM (recurring):** Editor can create resources but not modify IAM (`*.setIamPolicy`) — each step
   needed a specific admin role (`secretmanager.admin`, `run.admin`) from a project Owner.
 
-**Next — Phase 4 (B4/on-demand fleet): automate agent onboarding via a `CloudRunBackend`** so a
+**Phase 4 (B4/on-demand fleet): automate agent onboarding via a `CloudRunBackend`** so a
 registered agent auto-deploys + auto-publishes. Design + steps:
 [`DESIGN_CLOUDRUN_BACKEND.md`](DESIGN_CLOUDRUN_BACKEND.md),
-[`IMPLEMENTATION_CLOUDRUN_BACKEND.md`](IMPLEMENTATION_CLOUDRUN_BACKEND.md). **In progress as of
-2026-08-03: Steps 0-8 of 10 done** (code in the working tree; Step 7 IAM live on GCP) — capability-flag
-refactor, OASF routable-skill enforcement, `image_ref` digest column, the **`CloudRunBackend` itself**
+[`IMPLEMENTATION_CLOUDRUN_BACKEND.md`](IMPLEMENTATION_CLOUDRUN_BACKEND.md). **DONE + proven live
+(2026-08-03): Steps 0-9 of 10** (reg service + planner on Cloud Run/Cloud SQL; register→deploy loop
+proven end-to-end). **Step 10 (front door) + the cutover are deferred to future development** (see the
+status banner up top). What shipped — capability-flag refactor, OASF routable-skill enforcement,
+`image_ref` digest column, the **`CloudRunBackend` itself**
 (deploy by digest, `:latest` fallback, planner-SA invoker grant, scale-to-zero, `image_ready`→deploy→
 publish-run.app-URL trigger), Step 5's **decoupled-publish** contract, Step 6's **health-loop skip + Cloud
 Run recovery reconcile**, Step 7's **IAM** (`agent-runtime` + `registration-service` SAs; captured in
