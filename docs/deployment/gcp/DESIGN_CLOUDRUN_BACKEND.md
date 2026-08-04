@@ -3,12 +3,12 @@
 **Draft 2026-07-29.** Design for the Phase-4 automation: when a user registers/approves an agent, it's
 **built, deployed to Cloud Run (scale-to-zero), and published to ADS automatically** — no manual
 recipe. Grounded in a four-repo deep dive (registration_service, agent-directory, both agent-skeletons,
-AgenticNetwork infra). Companion to `GCP_MIGRATION.md` (load-bearing change #2; its "Shipped —
-Phases 0-3" section is the manual reference this automates). Implementation progress + step-by-step
-corrections: [`IMPLEMENTATION_CLOUDRUN_BACKEND.md`](IMPLEMENTATION_CLOUDRUN_BACKEND.md) (Steps 0-3 done
-as of 2026-07-30). **Read the "Corrections (2026-07-30)" note below before trusting the "Converter
-divergence" and "six `isinstance`" bullets further down** — both describe states that implementation
-work has since resolved or found to be already-stale.
+AgenticNetwork infra). Companion to [`MIGRATION.md`](MIGRATION.md) (load-bearing change #2; its "Shipped —
+Phases 0-3" section is the manual reference this automates). This is the rationale/design record; current
+build progress lives in [`IMPLEMENTATION_CLOUDRUN_BACKEND.md`](IMPLEMENTATION_CLOUDRUN_BACKEND.md) — check
+that doc's own progress line rather than trusting a step count here, it will drift. The "Converter
+divergence" and "six `isinstance`" bullets further down were already resolved by the time this draft was
+written; see the "Corrections" notes inline with each.
 
 ---
 
@@ -50,20 +50,16 @@ Admin API. So `CloudRunBackend` mirrors **`ClusterBackend`** (out-of-band build,
   list, whose reliable source is an **`oasf:<name>:<id>` tag on ≥1 card skill**. The planner builds
   `DiscoveredAgent` from the record's embedded `card_data`, not top-level skills — so empty skills
   breaks *routing/discovery*, not parsing.
-- **Converter divergence (must resolve):** ~~the copy that populates skills correctly (oasf: tags +
-  per-agent map, hard-fails on empty) is `agent-directory/ads_utils/converter.py`. The registration
-  image bakes `AgenticNetwork/ads_utils/` whose `_AGENT_OASF_ROUTING_SKILLS` is **empty** and which can
-  silently emit `skills: []`.~~ **Corrections (2026-07-30):** this description is stale. The repo-root
+- **Converter divergence — already resolved before this draft, no action needed here.** The repo-root
   `ads_utils/converter.py` (the *only* `ads_utils` in this repo — the one `registration_service` actually
   imports and `Dockerfile.registration` bakes in) already has the `oasf:<name>:<id>` tag mechanism and
   already hard-fails `_ads_routing_skills` on empty, since commit `0922ef5` (2026-07-09) — three weeks
   *before* this draft. `_AGENT_OASF_ROUTING_SKILLS` being empty there is by design (superseded by the tag
-  mechanism), not a bug. There was nothing to "point at the working skill-mapping logic" — see
-  `IMPLEMENTATION_CLOUDRUN_BACKEND.md`'s Step 2 for what the real gap turned out to be (the API layer
-  didn't enforce a routable tag exists, so an unroutable card could get past registration and fail late,
-  mid-spawn — now fixed) and what actually shipped. So a registered agent is only discoverable if its
-  card carries an `oasf:` tag (which the OASF-skill selection at registration should stamp —
-  `registration_service/oasf_skills.py`) — that part of the original bullet still holds.
+  mechanism), not a bug. See `IMPLEMENTATION_CLOUDRUN_BACKEND.md`'s Step 2 for what the real gap turned
+  out to be (the API layer didn't enforce a routable tag exists, so an unroutable card could get past
+  registration and fail late, mid-spawn — now fixed) and what actually shipped. A registered agent is
+  only discoverable if its card carries an `oasf:` tag (which the OASF-skill selection at registration
+  should stamp — `registration_service/oasf_skills.py`).
 
 **Hard-coded assumptions that break under Cloud Run** (from the dive):
 - `endpoint_url`/card `url` = `http://localhost:{port}/` (`supervisor.py:191`, was `:167`) → must be the
@@ -75,9 +71,8 @@ Admin API. So `CloudRunBackend` mirrors **`ClusterBackend`** (out-of-band build,
   run.app URL (the card persists at 0 instances; that's the decoupling).
 - `port_pool` (`port_pool.py`) → irrelevant for external routing; keep a nominal port for the container
   to bind `$PORT`, ignore it for addressing.
-- ~~**Six `isinstance(self._backend, ClusterBackend)` branches** in the supervisor (`supervisor.py:129,
-  256, 356, 414, 444, 454`) → refactor into `ContainerBackend` capability flags or `CloudRunBackend`
-  trips the subprocess branches.~~ **Done (2026-07-30, Step 1).** All six sites now read a capability flag
+- **Six `isinstance(self._backend, ClusterBackend)` branches in the supervisor — done (2026-07-30, Step
+  1).** All six sites (`supervisor.py:129, 256, 356, 414, 444, 454`) now read a capability flag
   (`owns_build`/`needs_host_loop`/`supports_health_restart`) via a getattr helper instead of `isinstance`;
   `CloudRunBackend` just needs to set the right flags, no subprocess-branch tripping risk. See
   `IMPLEMENTATION_CLOUDRUN_BACKEND.md` Step 1 for the exact flag-to-site mapping.

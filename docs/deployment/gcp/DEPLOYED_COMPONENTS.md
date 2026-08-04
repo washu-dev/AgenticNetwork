@@ -3,7 +3,7 @@
 Operator reference for what's currently running on GCP. As of 2026-08-03 this is **Phases 0-3 + the
 CloudRunBackend (Phase 4) live**: planner + real ADS + on-demand agent, **plus the registration service on
 Cloud Run wired to Cloud SQL, auto-deploying agents end-to-end**. Full design/status:
-[`GCP_MIGRATION.md`](MIGRATION.md) + [`IMPLEMENTATION_CLOUDRUN_BACKEND.md`](IMPLEMENTATION_CLOUDRUN_BACKEND.md)
+[`MIGRATION.md`](MIGRATION.md) + [`IMPLEMENTATION_CLOUDRUN_BACKEND.md`](IMPLEMENTATION_CLOUDRUN_BACKEND.md)
 (Step 9 notes). Everything is in project `di2-agenticweb`, region `us-central1`.
 
 ## The request paths

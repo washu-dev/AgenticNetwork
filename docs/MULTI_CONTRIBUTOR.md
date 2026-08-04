@@ -280,8 +280,8 @@ image" run both attribute to `agenticnetwork-bot[bot]`, nothing reads a personal
   registration process never sends a stale token.
 - **Durable end state:** post-GCP-migration, DockerHub → Artifact Registry with GitHub OIDC /
   Workload Identity Federation removes the last long-lived push secret entirely (see
-  `deployment/GCP_MIGRATION_PLAN.md`). App (GitHub) + OIDC (registry) = zero personal credentials
-  in the path.
+  [`docs/deployment/gcp/MIGRATION.md`](deployment/gcp/MIGRATION.md), "Images" decision row).
+  App (GitHub) + OIDC (registry) = zero personal credentials in the path.
 
 ---
 

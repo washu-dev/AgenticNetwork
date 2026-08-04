@@ -260,38 +260,16 @@ and does **not** inject it).
   keep `--no-allow-unauthenticated` while `PLANNER_ALLOW_ANON=1` (otherwise it's an open, no-login
   planner driving the ENGR LLM — proxy for testing, don't expose it).
 
-### Operating the live planner — cheat-sheet
+### Operating the live system
 
-**What's up right now (5 GCP resources + 1 ENGR dependency):** Cloud Run `planner` (min=1, private,
-always-warm) · VPC connector `planner-connector` (`10.8.0.0/28`, always-on) · firewall
-`allow-vllm-relay-from-connector` · GCE VM `vllm-relay` (e2-micro, always-on) · Secret `vllm-api-key`
-· **ENGR vLLM Slurm job on `h100-2405`** (the one leg not controlled from GCP — if it ends, the UI
-still loads but every message fails at the LLM call). All commands take
-`--region=us-central1 --project=di2-agenticweb`.
-
-**Inspect / access:**
-```
-gcloud run services describe planner --region=us-central1 --project=di2-agenticweb
-gcloud run services logs read planner --region=us-central1 --project=di2-agenticweb --limit=80
-gcloud run services proxy planner --region=us-central1 --port=8080 --project=di2-agenticweb   # → http://localhost:8080/ (only way in)
-```
-
-**Change config / ship code:** `gcloud run services update planner ... --update-env-vars=K=V` for a
-tweak; re-run the full `gcloud run deploy planner ...` (above) to push a new image (new revision,
-auto traffic shift).
-
-**Diagnose a failed LLM call** (problem is the relay/Slurm job, not Cloud Run):
+Current inspect/access/cost-pause commands for every live component (not just the planner) are
+kept in one place — [`DEPLOYED_COMPONENTS.md`](DEPLOYED_COMPONENTS.md) — rather than duplicated
+here. One thing worth keeping in this history: **diagnosing a failed LLM call** is usually a relay/
+Slurm-job problem, not a Cloud Run one —
 ```
 gcloud compute ssh vllm-relay --zone=us-central1-a --project=di2-agenticweb \
   --command="systemctl is-active vllm-tunnel && curl -s -o /dev/null -w '%{http_code}\n' localhost:8100/v1/models"   # want: active + 200
 ```
-
-**Cost note — this slice is NOT scale-to-zero.** Planner (min=1 + always-CPU), the connector (≥2
-always-on instances), and the relay VM all bill while idle. To pause spend between demos (all
-reversible): `gcloud run services update planner ... --min-instances=0` (planner cold-starts on
-demand) and `gcloud compute instances stop vllm-relay --zone=us-central1-a ...`. The connector can't
-be paused — delete + recreate it if it'll sit idle for a long stretch. For a short-lived demo, leave
-everything up.
 
 ## Identity, gateway & auth
 
@@ -425,7 +403,9 @@ publish-run.app-URL trigger), Step 5's **decoupled-publish** contract, Step 6's 
 Run recovery reconcile**, Step 7's **IAM** (`agent-runtime` + `registration-service` SAs; captured in
 `scripts/gcp_iam_step7.sh`), and Step 8's **resource-requirements card extension** (`resources` column +
 card ext → cpu/memory/concurrency/max-instances deploy args; GPU→GKEBackend seam). Working tree rebased
-onto the upstream `build_manifest` commit. 187 tests pass.
+onto the upstream `build_manifest` commit. (Test counts per step are tracked in
+[`IMPLEMENTATION_CLOUDRUN_BACKEND.md`](IMPLEMENTATION_CLOUDRUN_BACKEND.md) — don't duplicate a number
+here, it drifts.)
 **Step 9 core PROVEN LIVE (2026-08-03):** the registration service runs on **Cloud Run** wired to **Cloud SQL**
 (`agenticnetwork-db`) + the VPC connector, and drove a custom agent end-to-end — register → CI build →
 `image_ready` → `CloudRunBackend` auto-deploy (`agent-echo-test`, min=0) → card published. First live Phase-4

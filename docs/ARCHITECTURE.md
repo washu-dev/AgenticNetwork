@@ -24,19 +24,13 @@ agent-to-agent protocol.
 
 ## The three contracts
 
-Everything interoperates through three contracts, and nothing else. This is what lets agents
-be written in any language/framework and still cooperate.
-
-| Contract | Plain-English role | Implemented with |
-|---|---|---|
-| **Agent Card** (`*.card.json`) | An agent's résumé: name, URL, skills | local `card_oasf_converter.py` |
-| **ADS** (the directory) | The phone book: publish a card, search by skill | AGNTCY `dir` via the `dirctl` CLI |
-| **A2A** (agent-to-agent) | The phone call: send a task over HTTP/JSON-RPC, get a result | the official `a2a-sdk` |
-
-Because agents share only these wire contracts — never Python imports at runtime — each can
-have any dependencies, any Python version, and run on any machine or container. That's why the
-components deliberately use *different* environments and even disagree on library versions
-(ADS pins `a2a-sdk==0.3.2`; the planner uses `0.3.26`). See [`CLAUDE.md`](../CLAUDE.md) §5.
+Everything interoperates through three contracts, and nothing else — see [`CLAUDE.md`](../CLAUDE.md)
+§1 for the table (Agent Card / ADS / A2A). This is what lets agents be written in any
+language/framework and still cooperate: because they share only these wire contracts — never
+Python imports at runtime — each can have any dependencies, any Python version, and run on any
+machine or container. That's why the components deliberately use *different* environments and
+even disagree on library versions (ADS pins `a2a-sdk==0.3.2`; the planner uses `0.3.26`). See
+[`CLAUDE.md`](../CLAUDE.md) §5.
 
 ## Request lifecycle (end to end)
 

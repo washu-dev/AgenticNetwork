@@ -4,7 +4,7 @@
 and its supporting changes. Design + rationale: [`DESIGN_CLOUDRUN_BACKEND.md`](DESIGN_CLOUDRUN_BACKEND.md)
 (see its **Corrections (2026-07-30)** note before trusting the converter-divergence claim in "Current-state
 facts"). Manual reference implementation (what this automates): the Phase 1-3 work now folded into
-[`GCP_MIGRATION.md`](MIGRATION.md). Decisions resolved 2026-07-29 (see design doc).
+[`MIGRATION.md`](MIGRATION.md). Decisions resolved 2026-07-29 (see design doc).
 
 Each step is independently testable and lands behind the existing `SPAWN_BACKEND` switch, so nothing
 changes for the cluster/subprocess paths until `SPAWN_BACKEND=cloudrun`.

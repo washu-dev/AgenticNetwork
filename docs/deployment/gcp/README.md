@@ -11,24 +11,11 @@ each platform.
 
 ## Architecture
 
-```
-User path:
-  you ─(gcloud run proxy, for now)─▶ Cloud Run: planner ──dirctl──▶ ADS VM (10.128.0.3:8888)  [discover]
-                        │                                                    [route ↓ via ID token]
-                        │  LLM (vLLM primary → Vertex fallback)   Cloud Run agents (min=0) cold-start
-                        ▼                                          Cloud SQL ◀─ planner persists
-        vLLM-relay VM :8100 ─autossh─▶ h100-2405 (vLLM)          users/creds/conversations
-
-Onboarding path (automated, Phase 4):
-  register agent ▶ Cloud Run: registration ─commit─▶ GitHub Action builds image ─▶ Docker Hub
-                        └─ build-poll sees image ─▶ CloudRunBackend deploys it (min=0, as agent-runtime SA,
-                           grants planner run.invoker) ─▶ publishes card to ADS ─▶ planner discovers it
-```
-
 A message hits the planner; it **discovers** agents from ADS, **routes** to the chosen agent's Cloud Run
 URL (authenticated with a Google ID token), reasons via **vLLM-primary / Vertex-fallback**, and persists
 to **Cloud SQL**. Separately, registering a custom agent triggers a CI build and the **`CloudRunBackend`**
-auto-deploys + auto-publishes it — no operator step.
+auto-deploys + auto-publishes it — no operator step. The request-path diagram is kept in one place —
+[DEPLOYED_COMPONENTS.md](DEPLOYED_COMPONENTS.md) — rather than duplicated here.
 
 ## Services → GCP primitives
 

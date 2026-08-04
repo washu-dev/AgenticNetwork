@@ -15,32 +15,11 @@ Building or operating the system rather than using it? See the **developer refer
 
 ## How it works
 
-```
-        You (browser / curl)
-              │
-              ▼
-        ┌───────────┐   "who can send email?"     ┌─────────────┐
-        │  PLANNER  │ ─────────────────────────▶  │     ADS     │  agent registry
-        │  :8090    │ ◀──── card + endpoint ───── │    :8888    │
-        └─────┬─────┘                             └─────────────┘
-              │
-              │  A2A call (HTTP/JSON-RPC)
-              ▼
-   ┌──────────┬──────────┬─────────────┬───────────┬──────────┬──────────┐
-   │  email   │  scout   │ geospatial  │  coding   │  intel   │ disaster │
-   │  :9103   │  :9104   │   :19105    │  :19106   │  :19107  │  :19108  │
-   └──────────┴──────────┴─────────────┴───────────┴──────────┴──────────┘
-```
-
-Three contracts hold the system together:
-
-| Contract | Role | Implementation |
-|---|---|---|
-| **Agent Card** (`*.card.json`) | An agent's résumé: name, URL, skills | lives next to each agent's code |
-| **ADS** (Agent Directory Service) | The registry: publish your card, search by skill | AGNTCY `dirctl` daemon |
-| **A2A** (agent-to-agent protocol) | The call: send a task over HTTP/JSON-RPC, get a result | `a2a-sdk` |
-
-Adding a new agent to ADS makes it available to the planner with **zero planner code changes**.
+A user talks to the **planner** (`:8090`), which discovers specialist agents via the **ADS**
+registry (`:8888`) and dispatches tasks to them over **A2A** (HTTP/JSON-RPC). Adding a new agent
+to ADS makes it available to the planner with **zero planner code changes**. For the architecture
+diagram and the three contracts (Agent Card / ADS / A2A) that hold this together, see
+[`CLAUDE.md`](CLAUDE.md) §1–§2.
 
 ## Components
 
@@ -73,19 +52,10 @@ The system runs on the WashU **ENGR cluster** via Slurm + Pyxis/enroot. Each com
 
 See [`deployment/README.md`](docs/deployment/engr/README.md) for the full cluster runbook.
 
-For local development without the cluster, the planner supports a **fake-ADS mode** that runs an in-process directory — useful for testing the planner against specific agent cards without standing up the full stack:
-
-```bash
-cd /path/to/AgenticNetwork
-python3 -m venv planner_agent/.venv
-planner_agent/.venv/bin/python -m pip install -r planner_agent/requirements.txt
-cp planner_agent/.env.example planner_agent/.env.local  # add OPENAI_API_KEY
-planner_agent/scripts/start.sh --fake-ads \
-  --card ../agent-directory/email_agent/email_agent.card.json \
-  --card ../agent-directory/coding_agent/coding_agent.card.json
-```
-
-Open **http://localhost:8090/** for the chat UI.
+For local development without the cluster, the planner supports a **fake-ADS mode** that runs an
+in-process directory — useful for testing the planner against specific agent cards without
+standing up the full stack. See [`CLAUDE.md`](CLAUDE.md) §4 "Tier A" for the setup commands; it
+ends with the chat UI at **http://localhost:8090/**.
 
 The registration service has an analogous **fake-DB mode** (`FAKE_DB=1`) that stubs out postgres, ADS publishing, and subprocess spawning — useful for working on the registration UI and API without any external services:
 

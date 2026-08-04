@@ -127,14 +127,11 @@ agents on the OpenAI *Responses* API (or Gemini) need a code rewrite.
 | coding | litellm (Chat) | ✅ env-only | strong execution sandbox (YOLO bash) |
 | intelligence | litellm (Chat) | ✅ env-only | stale card; `BRAVE_API_KEY` secret |
 | scout | Chat Completions | ✅ env-only | **uses a different directory** (gRPC `:8889`) |
-| email | **Responses** | ❌ rewrite | 4 call sites + 26 tool schemas; Google OAuth |
+| email | Chat Completions | ✅ done | non-LLM only (Google OAuth creds externalization) |
 | geospatial | **Responses + Gemini** | ❌ hard | rewrite + vision + web-grounding gaps |
 
-> ⚠️ CLAUDE.md §7's table row marking **disaster** as "Responses / rewrite needed"
-> is **stale**: disaster was rewritten to Chat Completions (commit `55a7325`,
-> `disaster_response_agent.py::build_response`) and already wires `OPENAI_BASE_URL`.
-> Only **email + geospatial** remain on the Responses API. (CLAUDE.md §7 body text
-> was partially updated; the table row was not.)
+Only **geospatial** remains on the Responses API — planner, disaster, and email are all migrated to
+Chat Completions (CLAUDE.md §7 is kept current on this).
 
 **Recommendation.**
 
@@ -152,13 +149,10 @@ agents on the OpenAI *Responses* API (or Gemini) need a code rewrite.
     pod needs no `dirctl` binary. Set a non-permissive `policy_mode` for a shared
     deployment, and note the bypass: with no skill hint, write-gating is skipped
     entirely (`runtime.py::_evaluate_policy`).
-  - **email.** Migrate Responses → Chat Completions: 4 `client.responses.create`
-    sites + ~26 tool schemas reshaped flat → nested, replace `previous_response_id`
-    chaining with a locally-maintained message history, rewrite parsers
-    (`response.output`/`output_text` → `choices[0].message`); use the planner's
-    `llm_client.py` as the worked reference. Wire `base_url` into
-    `email_agent.py::_openai_client` and relax its hard `OPENAI_API_KEY` guard to a
-    dummy key (mirror disaster). Move Google OAuth creds **out of the image**
+  - **email.** LLM migration **done** (already on Chat Completions,
+    `email_agent.py::_openai_client` reads `chat.completions.create`) — just relax
+    its hard `OPENAI_API_KEY` guard to a dummy key (mirror disaster) if not already.
+    Remaining work is non-LLM: move Google OAuth creds **out of the image**
     (`Dockerfile.email` `COPY deployment/google_credentials/` → mounted secret /
     Workload Identity — the TODO is already in that Dockerfile). Externalize the
     long-lived per-user OAuth **refresh tokens** (currently a local-disk store) to a
@@ -196,9 +190,7 @@ agents on the OpenAI *Responses* API (or Gemini) need a code rewrite.
     `dirctl` self-publish/unpublish from process lifetime (#1); replace the vendored
     `dirctl`-CLI directory stack (`intelligence_agent/_vendor_v2/`) with a network
     client; externalize `BRAVE_API_KEY`. Resolve its `9105` port collision with
-    geospatial via distinct cloud service names. Fix the stale card
-    (`intelligence_agent.card.json` still says "mock deterministic" though it's a
-    live LLM analyst).
+    geospatial via distinct cloud service names.
   - **scout — directory reconciliation is the headline blocker.** It uses
     `agntcy_app_sdk` `AgentDirectory` over gRPC at `DIRECTORY_ENDPOINT` (default
     `127.0.0.1:8889`, `scout/network/directory.py`) while every other agent uses
@@ -223,7 +215,7 @@ agents on the OpenAI *Responses* API (or Gemini) need a code rewrite.
     must be replicated across copies (see CLAUDE.md §8).
 
 - **References.**
-  - `../email_agent/email_agent.py` (`_openai_client`, Responses call sites),
+  - `../email_agent/email_agent.py` (`_openai_client`, already Chat Completions),
     `../geoSpatial_agent/geospatial_agent.py` + `attack_bundle/src/{config,pipeline_simple}.py`
   - `../planner_agent/main_agent/llm_client.py` (Chat-Completions reference),
     `../disaster_response_agent/disaster_response_agent.py` (`build_response`)
@@ -291,7 +283,7 @@ agent inherits, so they are tracked once here rather than repeated per agent.
 
 - **Status:** In progress — 2026-08-03 — **Option 1 (repoint gateway upstream); secure leg = Option A (gateway mints a Google ID token → planner run.app), design settled, build not started.** Runbook: `IMPLEMENTATION_CLOUDRUN_BACKEND.md` Step 10. (Prereqs 1+2 done: reg service + planner on Cloud SQL.)
 - **Raised:** 2026-07-30 (migration planning)
-- **Scope:** the out-of-repo WashU ENGR gateway (nginx + Apache + `mod_shib`); the GCP planner Cloud Run service (ingress, `PLANNER_ALLOW_ANON`); `main_agent/auth.py` (header trust); Cloud SQL; `deployment/GCP_MIGRATION.md`, `deployment/IMPLEMENTATION_CLOUDRUN_BACKEND.md` (Steps 9–10 + Go-live)
+- **Scope:** the out-of-repo WashU ENGR gateway (nginx + Apache + `mod_shib`); the GCP planner Cloud Run service (ingress, `PLANNER_ALLOW_ANON`); `main_agent/auth.py` (header trust); Cloud SQL; `docs/deployment/gcp/MIGRATION.md`, `docs/deployment/gcp/IMPLEMENTATION_CLOUDRUN_BACKEND.md` (Steps 9–10 + Go-live)
 
 **Problem.** `https://agenticweb.engr.wustl.edu` is the public entry point users bookmark; today it
 routes to the ENGR (Slurm) planner. Once the GCP stack is fully live we want that same hostname to
@@ -358,7 +350,7 @@ services proxy`), **no Cloud SQL, no SP in front** — i.e. not yet safe to expo
   bumped in Phase 3).
 - **References.**
   - CLAUDE.md §8 (auth chain), [`docs/AUTH.md`](../AUTH.md) (identity/Shibboleth)
-  - [`GCP_MIGRATION.md`](gcp/MIGRATION.md) "Identity, gateway & auth" (the sidecar/Option-2 sketch) and
+  - [`MIGRATION.md`](gcp/MIGRATION.md) "Identity, gateway & auth" (the sidecar/Option-2 sketch) and
     "Login (must-do)" (the header-trust invariant)
   - [`DEPLOYED_COMPONENTS.md`](gcp/DEPLOYED_COMPONENTS.md) "What's live vs. still to come" (front door + Cloud SQL = "Not yet")
   - Entry #3 (cross-cutting cloud prerequisites) — the DNS/auth/gateway substrate this closes out

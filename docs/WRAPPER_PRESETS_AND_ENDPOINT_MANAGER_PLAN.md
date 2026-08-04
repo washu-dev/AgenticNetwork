@@ -1,9 +1,9 @@
 # Plan — Wrapper preset tools + endpoint "manager"
 
-Status: **PROPOSAL / for review** (branch `feature/wrapper-presets-and-endpoint-manager`).
-Nothing here is wired into a deployed service yet. This touches the custom-agent
-creation system, which the team operates through the registration service — so
-the approach in §4 should be agreed before implementation lands.
+Status: **Partially implemented**, merged to `main` via PR #2 (commits `153c7ff`/`91167f5`).
+Feature A (preset-tool LLM wrapper) and Feature B's engine core are done + tested — see §4b.
+Still open: the registration UI tool-selector, generator support for `preset_tools`/
+`endpoints[]`, and a live end-to-end run against vLLM — see §4b "Not yet done" and §5.
 
 Goal (two asks):
 - **A. LLM wrapper with preset tools** — today the "LLM Agent" option is
@@ -132,10 +132,10 @@ editing the frozen loop.
 
 ## 4. Decisions to settle before implementing
 
-- **D1 (architecture fork — biggest one):** How does the tool-capable LLM path
-  reach users?
+- **D1 (architecture fork — biggest one) — ✅ resolved, implemented (§4b):** How does
+  the tool-capable LLM path reach users?
   - (i) **Route `handler_type=="llm"` through the System-2 engine** (reuse the
-    tool loop; retire the single-turn `llm_handler`). *Recommended* — least new
+    tool loop; retire the single-turn `llm_handler`). *Chosen* — least new
     code, one loop.
   - (ii) Add a new `llm_endpoint`/`llm_tools` handler_type (the documented
     future work), leaving `llm` untouched.
@@ -143,12 +143,16 @@ editing the frozen loop.
     `LLMConfig.tools`. *Not recommended* — grows a second loop to maintain.
 - **D2 (tool source):** curated built-in catalog only, user-supplied JSON-schema
   tools (what the dead `LLMConfig.tools` implies), or both? Security posture for
-  side-effecting/secret tools.
-- **D3 (Feature B scope now):** ship single-endpoint-with-optional-manager first
-  and add multi-endpoint after, or design for N endpoints from the start?
+  side-effecting/secret tools. **Still open** — the two starter tools shipped so
+  far (`calculator`, `current_time`) are curated/stdlib-only; network/secret
+  tools are deferred pending this decision.
+- **D3 (Feature B scope now) — ✅ resolved, implemented (§4b):** ship
+  single-endpoint-with-optional-manager first and add multi-endpoint after, or
+  design for N endpoints from the start? **Chosen:** design for N from the
+  start (a single-endpoint list is the degenerate case).
 - **D4 (process):** this lives in `AgenticNetwork` (Amaan's repo) and the custom-
   agent creation flow he owns; it deploys via rebuilt Docker images, not repo
-  edits. Agree the approach (esp. D1) with him before landing code.
+  edits. Agree the approach with him before landing further code.
 
 ---
 

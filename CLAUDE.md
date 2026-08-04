@@ -49,10 +49,10 @@ task. There are three kinds of thing in the repo:
               │
               │ A2A call (HTTP/JSON-RPC): "send this email"
               ▼
-   ┌──────────┬───────────┬─────────────┬──────────┐
-   │  email   │  coding   │  geospatial │   …      │  specialist agents,
-   │  :9103   │  :19106   │  :19105     │          │  each its own service
-   └──────────┴───────────┴─────────────┴──────────┘
+   ┌──────────┬──────────┬─────────────┬───────────┬──────────┬──────────┐
+   │  email   │  scout   │ geospatial  │  coding   │  intel   │ disaster │  specialist agents,
+   │  :9103   │  :9104   │   :19105    │  :19106   │  :19107  │  :19108  │  each its own service
+   └──────────┴──────────┴─────────────┴───────────┴──────────┴──────────┘
 ```
 
 **Request lifecycle (end to end):**
@@ -95,12 +95,12 @@ whole `agent_directory_service/scripts/` suite exists to detect and repair this.
 
 | Component | Role | Default port | Environment | LLM API surface |
 |---|---|---|---|---|
-| `email_agent` | Gmail/Calendar/Docs/Sheets | **9103** | conda `email-agent-a2a` (shared) | OpenAI **Responses** (gpt-5.2) |
+| `email_agent` | Gmail/Calendar/Docs/Sheets | **9103** | conda `email-agent-a2a` (shared) | OpenAI **Chat Completions** (vLLM-ready) |
 | `scout_agent` | OSINT web research | **9104** | pip venv (`pyproject.toml`) | OpenAI **Chat Completions** |
 | `geoSpatial_agent` | Photo geolocation + incident class. | **19105** | conda `email-agent-a2a` (shared) | Gemini + OpenAI **Responses** (multimodal) |
 | `coding_agent` | Code writing via mini-swe-agent | **19106** | conda `coding-agent-a2a` | **litellm** (Chat) |
 | `intelligence_agent` | Analyst / situational briefs | **19107** | conda `intelligence-agent-a2a` | **litellm** (Chat) |
-| `disaster_response_agent` | Emergency response plans | **19108** | conda `email-agent-a2a` (shared) | OpenAI **Responses** (gpt-5) |
+| `disaster_response_agent` | Emergency response plans | **19108** | conda `email-agent-a2a` (shared) | OpenAI **Chat Completions** (vLLM-ready) |
 
 > **5-digit ports (19105–19108)** are used for geospatial, coding, intelligence, and
 > disaster to avoid collisions with other users on shared ENGR cluster nodes.
@@ -153,8 +153,10 @@ per service (`deployment/dockerfiles/Dockerfile.<agent>`, built/pushed by
 `deployment/build_and_push.sh` to `di2washu/agenticnetwork-<agent>`), launched together
 as parallel `srun --overlap` steps in `submit.sbatch` on one CPU node, plus a separate GPU
 job (`start_vllm.sbatch`) serving `gpt-oss-120b` via vLLM. ADS starts first; each agent's
-`entrypoints/entrypoint-<agent>.sh` waits up to 60 s for it, then `exec`s the agent with an
-absolute conda path (`/opt/conda/envs/<env>/bin/python`). The planner reaches vLLM through
+own `entrypoint.sh` (in its directory in the `agent-directory` repo; this repo's
+`deployment/entrypoints/` only holds the planner/postgres/registration ones) waits up
+to 60 s for it, then `exec`s the agent with an absolute conda path
+(`/opt/conda/envs/<env>/bin/python`). The planner reaches vLLM through
 `OPENAI_BASE_URL`. Full runbook: `docs/deployment/engr/README.md`.
 
 ### Tier E — GCP (migration in progress; register→deploy automation live as of 2026-08-03)
@@ -197,18 +199,20 @@ Python version, even run on a different machine or container.
 | Env | Components | How to create |
 |---|---|---|
 | pip venv | `planner_agent` | `python3 -m venv planner_agent/.venv && .../pip install -r planner_agent/requirements.txt` |
+| pip venv | `registration_service` | `python3 -m venv registration_service/.venv && .../pip install -r registration_service/requirements.txt` |
 | pip venv (editable) | `scout_agent` | `python3 -m venv .venv && .venv/bin/pip install -e .` (needs Python ≥3.11) |
 | conda `agent-directory-service` | `agent_directory_service` | `conda env create -f agent_directory_service/environment.yml` |
-| conda `email-agent-a2a` (shared) | `email_agent`, `disaster_response_agent`, `geoSpatial_agent` | `conda env create -f disaster_response_agent/environment.yml` (the superset) |
+| conda `email-agent-a2a` (shared) | `email_agent`, `disaster_response_agent`, `geoSpatial_agent` | `conda env create -f email_agent/environment.yml` (the superset) |
 | conda `coding-agent-a2a` | `coding_agent` | `conda env create -f coding_agent/environment.yml` |
 | conda `intelligence-agent-a2a` | `intelligence_agent` | `conda env create -f intelligence_agent/environment.yml` |
 
 `geoSpatial_agent/` ships **no** `environment.yml` of its own — it reuses the
 shared `email-agent-a2a` env. The `email_agent` and `disaster_response_agent`
 env files share the same name but are **not** identical: the geospatial deps
-(`google-genai`, `geopy`, `Pillow`) live only in
-`disaster_response_agent/environment.yml`, so create the shared env from that
-(superset) file. OASF SDK packages come from the `buf.build` registry
+(`google-genai`, `geopy`, `Pillow`) live only in `email_agent/environment.yml`,
+so create the shared env from that (superset) file — building it from
+`disaster_response_agent/environment.yml` instead omits those deps and breaks
+`geoSpatial_agent`. OASF SDK packages come from the `buf.build` registry
 (`--extra-index-url https://buf.build/gen/python`). Run each agent as its own
 long-running process in its own activated environment.
 
@@ -254,9 +258,9 @@ the Responses-API agents, an **API rewrite** to Chat Completions.
 **Update (2026-06):** the **planner is now migrated to Chat Completions**
 (`main_agent/llm_client.py`, commit `c4d8048` "added planner vllm support") and a
 containerized ENGR deployment (`deployment/`, §4 Tier D) wires every agent to vLLM via
-`OPENAI_BASE_URL`. The only agents still on the OpenAI **Responses** API are **email
-and geospatial** — so the planner web UI (:8090) now runs against self-hosted
-gpt-oss-120b without a rewrite.
+`OPENAI_BASE_URL`. **`email_agent` has since migrated too** (see table below) — the
+only agent still on the OpenAI **Responses** API is **geospatial** — so the planner
+web UI (:8090) now runs against self-hosted gpt-oss-120b without a rewrite.
 
 | Agent | API today | Endpoint wiring | Rewrite? | Difficulty |
 |---|---|---|---|---|
@@ -264,7 +268,7 @@ gpt-oss-120b without a rewrite.
 | `coding_agent` | litellm (Chat) | env `OPENAI_API_BASE` + 1-line edit in `coding_agent.py` runner | No | 🟢 trivial–moderate |
 | `intelligence_agent` | litellm (Chat) | env `OPENAI_API_BASE` only | No | 🟢 trivial |
 | `planner_agent` | **Chat Completions** ✅ | env `OPENAI_BASE_URL` | **Done** — migrated 2026-06 (`main_agent/llm_client.py`) | 🟢 complete |
-| `email_agent` | **Responses** | edit `_openai_client` in `email_agent.py` | **Yes** (4 call sites + 26 tool schemas) | 🟡 moderate |
+| `email_agent` | **Chat Completions** ✅ | env `OPENAI_BASE_URL` | **Done** — already migrated (`email_agent.py`, `chat.completions.create`) | 🟢 complete |
 | `disaster_response_agent` | **Chat Completions** ✅ | env `OPENAI_BASE_URL` | **Done** — migrated 2026-06 (`build_response`) | 🟢 complete |
 | `geoSpatial_agent` + `attack_bundle` | **Responses + Gemini** | edit client ctors | **Yes** + capability gaps | 🔴 hard |
 
@@ -284,7 +288,8 @@ gpt-oss-120b without a rewrite.
   YAML, so also inject `api_base`/`api_key` there (`_default_minisweagent_runner`
   in `coding_agent.py`) and set `MSWEA_COST_TRACKING=ignore_errors`.
 
-**Responses → Chat Completions rewrite (email, disaster, geospatial-coordination — the planner is already done, use it as the reference):** the same shape of change in each:
+**Responses → Chat Completions rewrite (geospatial-coordination — planner, disaster,
+and email are already done; use them as the reference):** the same shape of change:
 - `client.responses.create(...)` → `client.chat.completions.create(...)`.
 - **Replace `previous_response_id` chaining with a locally-maintained message
   history.** Responses keeps conversation state server-side by id; vLLM is
@@ -292,7 +297,7 @@ gpt-oss-120b without a rewrite.
   assistant-with-`tool_calls` + `{role:"tool", tool_call_id, content}`) and resend
   it each step.
 - **Reshape tool schemas** from flat `{type, name, parameters}` (Responses) to
-  nested `{type:"function", function:{name, parameters}}` (Chat). Email has ~26.
+  nested `{type:"function", function:{name, parameters}}` (Chat).
 - Rewrite parsers to read `choices[0].message.tool_calls` / `.content` instead of
   `response.output` / `output_text`.
 - `max_output_tokens` → `max_tokens`; drop Responses-only `reasoning=` and
@@ -421,10 +426,7 @@ auth-unaware.
   the agent's production location engine. Be aware of its re-identification power.
 - **Stale artifacts to watch:** `scout_agent/scripts/call_scout.py` passes SLIM
   transport params the current factory rejects (would `TypeError`);
-  `intelligence_agent.card.json` still says "mock deterministic" though the code is
-  a live LLM analyst; `email_agent/notice_list.txt` is empty so `email/group_send`
-  has no recipients; the email agent's self-publish skips the routing poll, so it
-  can land in the stored-but-not-routed state.
+  `email_agent/notice_list.txt` is empty so `email/group_send` has no recipients.
 
 ---
 

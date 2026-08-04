@@ -23,6 +23,9 @@ decisions, and rationale.
 | [REGISTRATION_SERVICE.md](REGISTRATION_SERVICE.md) | work on agent registration, the custom-agent upload lanes, or the approval flow. |
 | [AGENT_DIRECTORY.md](AGENT_DIRECTORY.md) | operate or debug ADS — publishing, the routing index, repair tooling. |
 | [BUILDING_AGENTS.md](BUILDING_AGENTS.md) | build a new agent — the skeleton, the two executor lanes, the answers→agent generator, and cards. |
+| [TESTING_CHANGES.md](TESTING_CHANGES.md) | test a change on your own throwaway instance instead of the shared prod deployment. |
+| [BUG_REPORTING_AND_FEEDBACK_PLAN.md](BUG_REPORTING_AND_FEEDBACK_PLAN.md) | understand the bug-report / agent-creation-feedback → GitHub-issue paths (implemented) and their staged-deployment test runbook. |
+| [WRAPPER_PRESETS_AND_ENDPOINT_MANAGER_PLAN.md](WRAPPER_PRESETS_AND_ENDPOINT_MANAGER_PLAN.md) | add preset tools to the LLM wrapper or a multi-endpoint "manager" to a custom agent (partially implemented). |
 
 ## Related root docs
 - [`CLAUDE.md`](../CLAUDE.md) — system guide + operating manual (agent- and human-facing).

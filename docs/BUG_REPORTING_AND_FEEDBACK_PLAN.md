@@ -1,6 +1,7 @@
 # Bug Reporting & Agent-Creation Feedback — Implementation Plan
 
-**Status:** proposed (not yet implemented)
+**Status:** ✅ implemented (2026-07-16) — see §11 for what shipped, §12 for the staged-deployment
+runbook (still relevant when redeploying or retesting this feature).
 **Date:** 2026-07-16
 **Scope:** add two user-facing reporting paths to the deployed system, both landing as GitHub issues.
 
@@ -179,17 +180,9 @@ configured" message (fail loud, never silent).
 
 ---
 
-## 10. Open items to confirm during implementation
-1. Exact proxy path for the registration form → planner `/issues` (§7b).
-2. Which httpx client instance to reuse in the planner (avoid opening a new pool per request).
-3. Whether to also expose `/issues` behind the same auth as other authenticated planner routes
-   (it should require a logged-in Shibboleth identity so reporter email is always present).
+## 10. Implementation status (2026-07-16) — DONE
 
----
-
-## 11. Implementation status (2026-07-16) — DONE
-
-All five steps implemented and verified. Resolutions to §10:
+All five steps implemented and verified:
 1. The registration form POSTs to `/issues` on the **current origin**; `API_PREFIX` resolves to
    `/register` when proxied, confirming same-origin reach to the planner. Verified live: the POST
    hit the planner (its 502 message + a `kind=agent_creation_feedback` planner log line), not the
@@ -214,7 +207,7 @@ All five steps implemented and verified. Resolutions to §10:
 
 ---
 
-## 12. Staged deployment testing (do this before prod)
+## 11. Staged deployment testing (do this before prod)
 
 The one real unknown is **the token + egress working from a cluster node** — everything else is
 verified locally. Test in stages; do not add the prod secret until the test instance proves it out.
