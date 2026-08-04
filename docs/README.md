@@ -28,6 +28,18 @@ decisions, and rationale.
 - [`CLAUDE.md`](../CLAUDE.md) — system guide + operating manual (agent- and human-facing).
 - [`AGENTS.md`](../AGENTS.md) — project direction + working rules.
 - [`SECURITY.md`](../SECURITY.md) — security posture + active hazards.
-- [`deployment/README.md`](../deployment/README.md) — ENGR cluster deployment runbook.
+- [`../deployment/`](../deployment/) — deployment **machinery** (Dockerfiles, entrypoints, launch scripts).
 - Each component (`planner_agent/`, `registration_service/`, `agent_directory_service/`,
   `agent_skeleton/`) has its own `README.md` with authoritative install/run steps.
+
+## Deployment
+
+Deployment guides (the machinery lives in [`../deployment/`](../deployment/)):
+
+| Doc | Read it when you need to… |
+|---|---|
+| [deployment/README.md](deployment/README.md) | **start here** — the two targets (cluster / GCP) and how to read them side-by-side. |
+| [deployment/engr/README.md](deployment/engr/README.md) | run/operate on the **ENGR cluster** (Slurm + Pyxis/enroot) — the backup deployment. |
+| [deployment/gcp/README.md](deployment/gcp/README.md) | run/operate on **GCP** (Cloud Run + Cloud SQL) — architecture, how to access, dev workflow, cluster differences. |
+| [deployment/gcp/MIGRATION.md](deployment/gcp/MIGRATION.md) · [DEPLOYED_COMPONENTS](deployment/gcp/DEPLOYED_COMPONENTS.md) | GCP design/status, and the live inventory. |
+| [deployment/DOWNSTREAM_CONSIDERATIONS.md](deployment/DOWNSTREAM_CONSIDERATIONS.md) · [AGENT_INTEGRATION_SPEC.md](deployment/AGENT_INTEGRATION_SPEC.md) | target-agnostic: forward-looking decisions, and the agent-integration contract. |

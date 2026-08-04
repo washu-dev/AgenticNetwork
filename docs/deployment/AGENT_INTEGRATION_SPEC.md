@@ -6,8 +6,8 @@ generator) and for anyone reasoning about how the current ENGR-cluster deploy
 differs from a future cloud/scaled one.
 
 It is a companion to three other docs — read them for the surrounding context:
-- [`../CLAUDE.md`](../CLAUDE.md) — the system overview (architecture, ports, LLM config).
-- [`README.md`](README.md) — how to build/run the cluster deploy.
+- [`../CLAUDE.md`](../../CLAUDE.md) — the system overview (architecture, ports, LLM config).
+- [`README.md`](engr/README.md) — how to build/run the cluster deploy.
 - [`DOWNSTREAM_CONSIDERATIONS.md`](DOWNSTREAM_CONSIDERATIONS.md) — forward-looking
   scale/cloud decisions; **entries #1–#3 there are the authoritative "what changes
   at scale" companion to §4–§5 of this file.** This spec describes *what is*; that

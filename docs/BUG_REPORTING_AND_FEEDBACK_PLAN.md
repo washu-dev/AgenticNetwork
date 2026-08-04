@@ -155,7 +155,7 @@ For **agent-creation feedback**, context is just: reporter email, timestamp, `st
 
 ## 8. Configuration
 
-New env vars (document in `deployment/README.md` and the relevant `.env.example`):
+New env vars (document in `docs/deployment/engr/README.md` and the relevant `.env.example`):
 
 | Var | Purpose | Notes |
 |---|---|---|
@@ -241,7 +241,7 @@ and `http://localhost:8090/register/` (creation feedback, needs the registration
    `~/.config/agenticnetwork/secrets.env` → `GITHUB_ISSUES_TOKEN=…`
    and set `GITHUB_ISSUES_REPO=washu-dev/AgenticNetwork` in your `.env` (or rely on the default).
 2. Deploy the isolated test instance: `deployment/deploy.sh test`.
-3. Tunnel to the test planner (see `deployment/README.md` "Accessing a test instance"), then:
+3. Tunnel to the test planner (see `docs/deployment/engr/README.md` "Accessing a test instance"), then:
    - `curl` the `/issues` endpoint through the tunnel (as in Stage A) — **this is the egress test**.
    - Confirm the issue appears in `washu-dev/AgenticNetwork` with correct labels and a readable
      auto-context block (reporter, trace, agent names).

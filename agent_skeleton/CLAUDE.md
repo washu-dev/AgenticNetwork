@@ -3,7 +3,7 @@
 Guidance for Claude (and humans) working **inside this template**. For the
 human-facing walkthrough see [`README.md`](README.md); for the surrounding
 system see the repo-root [`../CLAUDE.md`](../CLAUDE.md) and
-[`../deployment/AGENT_INTEGRATION_SPEC.md`](../deployment/AGENT_INTEGRATION_SPEC.md).
+[`../deployment/AGENT_INTEGRATION_SPEC.md`](../docs/deployment/AGENT_INTEGRATION_SPEC.md).
 
 ---
 

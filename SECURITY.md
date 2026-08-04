@@ -4,7 +4,7 @@ Status of the AgenticNetwork demo as it runs **today** (single trusted Slurm nod
 behind a WashU Shibboleth gateway). This is a **research/demo** posture — several
 things that are fine on a trusted single node become hard requirements before any
 broader exposure. Companion docs: repo-root [`CLAUDE.md`](CLAUDE.md) §8–§9 (auth +
-caveats) and [`deployment/DOWNSTREAM_CONSIDERATIONS.md`](deployment/DOWNSTREAM_CONSIDERATIONS.md)
+caveats) and [`deployment/DOWNSTREAM_CONSIDERATIONS.md`](docs/deployment/DOWNSTREAM_CONSIDERATIONS.md)
 #2–#3 (the at-scale hardening plan). Update this file when the posture changes.
 
 ---
@@ -82,7 +82,7 @@ trusted node."* Everything inside the node trusts everything else.
 
 ## 4. Future hardening checklist (before broader exposure)
 
-Tracked in detail in [`deployment/DOWNSTREAM_CONSIDERATIONS.md`](deployment/DOWNSTREAM_CONSIDERATIONS.md) #2–#3; summary:
+Tracked in detail in [`deployment/DOWNSTREAM_CONSIDERATIONS.md`](docs/deployment/DOWNSTREAM_CONSIDERATIONS.md) #2–#3; summary:
 
 1. **Real A2A authn/authz** — populate `securitySchemes` and enforce at the planner *and*
    each specialist; stop binding specialists on an open `0.0.0.0` with no auth.

@@ -103,4 +103,4 @@ Commit and push your branch (Step 1), then ask for it to be merged into `main`. 
 ---
 
 More detail on how any of this works: [`MULTI_CONTRIBUTOR.md`](MULTI_CONTRIBUTOR.md) (the design)
-and [`../deployment/README.md`](../deployment/README.md) (the full runbook).
+and [`../deployment/README.md`](deployment/engr/README.md) (the full runbook).

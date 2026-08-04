@@ -23,6 +23,15 @@ Browser → nginx (TLS) → Apache + mod_shib (Shibboleth SP) → reverse-proxy 
 - The gateway (nginx/Apache/Shibboleth) is **persistent infra outside this repo**; it proxies
   to the planner on an ephemeral Slurm node, so its upstream is repointed each run.
 
+> **On GCP (front door not built yet).** The GCP planner has **no SSO gateway in front of it**
+> today — it runs `PLANNER_ALLOW_ANON=1` and is reached IAM-privately via `gcloud run services
+> proxy` (operators only). It *is* now on Cloud SQL, so the credential/history persistence and the
+> fail-closed machinery below are live; they just aren't enforced while anon is on. The planned
+> front door is **Option A** — the same WashU Shibboleth gateway repointed at GCP, minting a Google
+> ID token to reach the private planner (drops anon at cutover). See
+> [`docs/deployment/gcp/README.md`](deployment/gcp/README.md) "How to access" + "Not done yet" and
+> [`docs/deployment/DOWNSTREAM_CONSIDERATIONS.md`](deployment/DOWNSTREAM_CONSIDERATIONS.md) #4.
+
 ### Fail-closed identity (D9)
 `server.py::_resolve_shib_user_id` is the single identity resolver for `/messages` and the data
 endpoints. When no header is present:
@@ -57,7 +66,7 @@ The old shared `X-Admin-Token` / `MAIN_AGENT_ADMIN_TOKEN` and `POST /admin/login
   without identity when a DB is set) — defense-in-depth alongside the Apache SP.
 - Logout (`auth_router.py`) returns through `/Shibboleth.sso/Logout?return=/` to the landing.
 - Making `/` truly anonymous requires an Apache SP carve-out (public `/` + `/health`, protected
-  everything else) — documented in [`deployment/README.md`](../deployment/README.md).
+  everything else) — documented in [`deployment/README.md`](deployment/engr/README.md).
 
 ## 4. Per-user credentials
 

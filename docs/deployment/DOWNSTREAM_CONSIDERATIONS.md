@@ -357,10 +357,10 @@ services proxy`), **no Cloud SQL, no SP in front** — i.e. not yet safe to expo
   pinned; cold-start latency on the first post-cutover request (raise the planner's read timeout, already
   bumped in Phase 3).
 - **References.**
-  - CLAUDE.md §8 (auth chain), [`docs/AUTH.md`](../docs/AUTH.md) (identity/Shibboleth)
-  - [`GCP_MIGRATION.md`](GCP_MIGRATION.md) "Identity, gateway & auth" (the sidecar/Option-2 sketch) and
+  - CLAUDE.md §8 (auth chain), [`docs/AUTH.md`](../AUTH.md) (identity/Shibboleth)
+  - [`GCP_MIGRATION.md`](gcp/MIGRATION.md) "Identity, gateway & auth" (the sidecar/Option-2 sketch) and
     "Login (must-do)" (the header-trust invariant)
-  - [`DEPLOYED_COMPONENTS.md`](DEPLOYED_COMPONENTS.md) "What's live vs. still to come" (front door + Cloud SQL = "Not yet")
+  - [`DEPLOYED_COMPONENTS.md`](gcp/DEPLOYED_COMPONENTS.md) "What's live vs. still to come" (front door + Cloud SQL = "Not yet")
   - Entry #3 (cross-cutting cloud prerequisites) — the DNS/auth/gateway substrate this closes out
 
 ---

@@ -51,7 +51,7 @@ to make the personal ones group-owned, exactly like Slurm already is.**
 | DockerHub namespace — **submit** | `deployment/submit.sbatch` (10× `--container-image=amaankhan25/agenticnetwork-*`) | The cluster only ever pulls from the personal account. |
 | DockerHub namespace — **application code** ⚠️ | `registration_service/backend.py:96`, `registration_service/supervisor.py:263,368` (`amaankhan25/agenticnetwork-custom-*`) | The trap: a contributor's *running* instance builds/pulls custom-agent images into the personal account. Not an env knob — it's a code literal. |
 | GitHub write identity — **personal PAT** ⏳ | `registration_service/supervisor.py` (`GITHUB_TOKEN` in `_github_commit_files`/`_delete_from_github`; no `author`/`committer` set) + `deployment/secrets.env` | Every `registered_agents/…` commit is authored by the PAT owner, and the triggered "Build custom agent image" Actions run (`agent-directory/.github/workflows/build-custom-agent.yml`) lists them as actor — so the whole custom-agent build/push flow reads as one person. Plan: replace with a GitHub App (see Future work). |
-| Image tags — `:latest` everywhere (+ ADS manually pinned `:v4`) | `deployment/submit.sbatch`, `deployment/README.md` | Any two builds clobber each other; ADS tag drifts and must be hand-bumped. |
+| Image tags — `:latest` everywhere (+ ADS manually pinned `:v4`) | `deployment/submit.sbatch`, `docs/deployment/engr/README.md` | Any two builds clobber each other; ADS tag drifts and must be hand-bumped. |
 
 ### B. Shared mutable state — singletons with no coordination
 
@@ -115,7 +115,7 @@ account hardcoded across the build script, submit job, and application code.
   `OPENAI_API_KEY`) stay in `.env`.
   - ⏳ Follow-up: a real secret manager is the durable target (a group-readable file is the
     "at minimum" step). The `/workspace/.hf_token` (vLLM's HuggingFace token on `/engrfs`)
-    `chmod 600` guidance is now documented in `start_vllm.sbatch` + `deployment/README.md`; the
+    `chmod 600` guidance is now documented in `start_vllm.sbatch` + `docs/deployment/engr/README.md`; the
     operator still has to apply it.
 
 ### Phase 2 — Instance modes: prod vs isolated test — ✅ cluster lane done
@@ -157,7 +157,7 @@ squeue -u $USER -n agenticnetwork-test -h -o '%N'                      # find <t
 ssh -J <wustlkey>@<login-host> <wustlkey>@<test-node> -L 18090:localhost:18090
 ```
 (Two-hop — jump through the login node, SSH into the test node, forward its local `:18090`. Keep
-the session open. Full step-by-step + `~/.ssh/config` shortcut in `deployment/README.md`.)
+the session open. Full step-by-step + `~/.ssh/config` shortcut in `docs/deployment/engr/README.md`.)
 - Because that path bypasses Apache, there are **no Shibboleth identity headers**, so the planner
   would 401 every `/app`/`/messages` request. Therefore `submit.sbatch` sets
   **`PLANNER_ALLOW_ANON=1` for `DEPLOY_ENV=test` only** (prod always keeps the SSO gate;

@@ -155,18 +155,19 @@ as parallel `srun --overlap` steps in `submit.sbatch` on one CPU node, plus a se
 job (`start_vllm.sbatch`) serving `gpt-oss-120b` via vLLM. ADS starts first; each agent's
 `entrypoints/entrypoint-<agent>.sh` waits up to 60 s for it, then `exec`s the agent with an
 absolute conda path (`/opt/conda/envs/<env>/bin/python`). The planner reaches vLLM through
-`OPENAI_BASE_URL`. Full runbook: `deployment/README.md`.
+`OPENAI_BASE_URL`. Full runbook: `docs/deployment/engr/README.md`.
 
-### Tier E — GCP (migration in progress; Phases 0-3 live as of 2026-07-29)
+### Tier E — GCP (migration in progress; register→deploy automation live as of 2026-08-03)
 The system is being migrated onto **GCP** (project `di2-agenticweb`, `us-central1`) **additively** —
-Tier D (ENGR cluster) stays a working backup, nothing deleted. **Live today:** the **planner on Cloud
-Run** (LLM = self-hosted vLLM primary with automatic **Vertex AI fallback**), a **real ADS on a GCE
-VM**, **authenticated cross-network A2A**, and one **on-demand scale-to-zero agent**. **Next — Phase 4:**
-a **`CloudRunBackend`** that auto-deploys + auto-publishes registered agents (register→deploy). If a task
-touches GCP or deployment, read these first: **`deployment/GCP_MIGRATION.md`** (status + design +
-operational gotchas), **`deployment/DEPLOYED_COMPONENTS.md`** (what's live + control commands), and
-**`deployment/DESIGN_CLOUDRUN_BACKEND.md`** + **`deployment/IMPLEMENTATION_CLOUDRUN_BACKEND.md`** (the
-Phase-4 plan).
+Tier D (ENGR cluster) stays a working backup, nothing deleted. **Live today:** the **planner and
+registration service on Cloud Run** wired to **Cloud SQL**, a **real ADS on a GCE VM**, authenticated
+cross-network A2A, LLM = vLLM-primary with automatic **Vertex AI fallback**, and the **`CloudRunBackend`**
+auto-deploying + auto-publishing registered agents end-to-end (register→build→deploy→publish). **Not yet:**
+the public front door (the planner is anon + `gcloud run services proxy`-only) and the DNS cutover. If a
+task touches GCP, start with the **GCP runbook** `docs/deployment/gcp/README.md` (architecture, how to
+access, dev workflow, cluster differences); deeper dives: `docs/deployment/gcp/MIGRATION.md` (design +
+status + gotchas), `.../DEPLOYED_COMPONENTS.md` (live inventory + control commands), and
+`.../DESIGN_CLOUDRUN_BACKEND.md` + `.../IMPLEMENTATION_CLOUDRUN_BACKEND.md` (the automation).
 
 ### Interfacing with the running system
 - **Chat UI:** `http://localhost:8090/`
@@ -350,7 +351,7 @@ Browser → https://agenticweb.engr.wustl.edu   (public DNS — WashU ENGR)
 > DNS name and the Shibboleth SP registration. It reverse-proxies to the planner,
 > which runs on an **ephemeral Slurm compute node**, so the gateway's upstream must
 > be repointed (or SSH-tunneled) to the current node each run. Stabilizing this is
-> tracked in [`deployment/DOWNSTREAM_CONSIDERATIONS.md`](deployment/DOWNSTREAM_CONSIDERATIONS.md) #3.
+> tracked in [`deployment/DOWNSTREAM_CONSIDERATIONS.md`](docs/deployment/DOWNSTREAM_CONSIDERATIONS.md) #3.
 
 **Key files:**
 | File | Role |
@@ -487,7 +488,8 @@ python -m agent_directory_service.scripts.validate_agent_endpoint \
 | `agent_directory_service/scripts/` | publish / show / diagnose / repair / watch ADS |
 | `agent_directory_service/configs/ads_daemon_fast_routing.yaml` | Fast-routing daemon config |
 | `agent_skeleton/` | Agent template + spec-driven **endpoint-wrapper engine** (`spec.py`, `system_tools/call_endpoint.py`) + answers→agent **`generator/`** |
-| `deployment/` | Infra deploy. **ENGR cluster:** `submit.sbatch`, `dockerfiles/`, `entrypoints/`, `build_and_push.sh`. **GCP migration (Phases 0-3 live):** `GCP_MIGRATION.md`, `DEPLOYED_COMPONENTS.md`, `DESIGN_`/`IMPLEMENTATION_CLOUDRUN_BACKEND.md` |
+| `deployment/` | Infra **machinery** (shared images/entrypoints/launch scripts): `submit.sbatch`, `dockerfiles/`, `entrypoints/`, `build_and_push.sh`, `scripts/gcp_iam_step7.sh`. Deployment **docs** live in `docs/deployment/` |
+| `docs/deployment/` | Deployment guides: `engr/README.md` (cluster runbook), `gcp/README.md` (GCP runbook) + `gcp/MIGRATION.md`, `gcp/DEPLOYED_COMPONENTS.md`, `gcp/DESIGN_`/`IMPLEMENTATION_CLOUDRUN_BACKEND.md`; agnostic: `AGENT_INTEGRATION_SPEC.md`, `DOWNSTREAM_CONSIDERATIONS.md` |
 | `registration_service/server.py` | FastAPI app — REST API for agent registration + static UI at `/` |
 | `registration_service/db.py` | asyncpg pool + schema migrations; `FAKE_DB=1` swaps in `fake_db.py` |
 | `registration_service/supervisor.py` | Subprocess lifecycle, ADS publish/unpublish, health loop; `FAKE_DB=1` swaps in `fake_supervisor.py` |

@@ -4,7 +4,7 @@
 and its supporting changes. Design + rationale: [`DESIGN_CLOUDRUN_BACKEND.md`](DESIGN_CLOUDRUN_BACKEND.md)
 (see its **Corrections (2026-07-30)** note before trusting the converter-divergence claim in "Current-state
 facts"). Manual reference implementation (what this automates): the Phase 1-3 work now folded into
-[`GCP_MIGRATION.md`](GCP_MIGRATION.md). Decisions resolved 2026-07-29 (see design doc).
+[`GCP_MIGRATION.md`](MIGRATION.md). Decisions resolved 2026-07-29 (see design doc).
 
 Each step is independently testable and lands behind the existing `SPAWN_BACKEND` switch, so nothing
 changes for the cluster/subprocess paths until `SPAWN_BACKEND=cloudrun`.
@@ -27,7 +27,7 @@ wire `CREDENTIALS_ENCRYPTION_KEY`) **and then the Option-1 cutover remain.** Ask
 **Roadmap end-state.** Steps 5–8 finish the agent-onboarding automation; **Steps 9–10** (Cloud SQL
 persistence + planner front-door hardening) make the planner safe to expose and are the prerequisites for
 the migration's final move: pointing `agenticweb.engr.wustl.edu` at GCP via **Option 1** (repoint the
-WashU ENGR gateway upstream). Decision + procedure: [`DOWNSTREAM_CONSIDERATIONS.md`](DOWNSTREAM_CONSIDERATIONS.md) #4.
+WashU ENGR gateway upstream). Decision + procedure: [`DOWNSTREAM_CONSIDERATIONS.md`](../DOWNSTREAM_CONSIDERATIONS.md) #4.
 So when Steps 0–10 are done, the Option 1 cutover is a config change on the out-of-repo gateway → a live
 GCP instance behind the existing hostname.
 
@@ -250,7 +250,7 @@ So Step 5 is a **test lock** on the decoupled-publish contract rather than a beh
   `iam.serviceAccountUser` on `agent-runtime` SA, Secret Manager access, and VPC egress to ADS.
 - (These mirror the manual `run.admin`/`secretmanager.admin` grants from Phases 1-3.)
 
-**What actually happened (run by the user; captured in [`scripts/gcp_iam_step7.sh`](scripts/gcp_iam_step7.sh), idempotent):**
+**What actually happened (run by the user; captured in [`scripts/gcp_iam_step7.sh`](../../../deployment/scripts/gcp_iam_step7.sh), idempotent):**
 - Two SAs created: `agent-runtime@di2-agenticweb.iam.gserviceaccount.com` (agent runtime identity) and
   `registration-service@di2-agenticweb.iam.gserviceaccount.com` (the reg-service deployer).
 - Grants applied: `registration-service` → `roles/run.admin` (project) **✓ confirmed**;
@@ -321,7 +321,7 @@ Steps 0–8 make the *agent fleet* self-deploying. Steps 9–10 make the **plann
 to real users on GCP, which is what unblocks the public front-door cutover. The migration's terminal
 move — pointing `agenticweb.engr.wustl.edu` at GCP via **Option 1** (repoint the WashU ENGR gateway's
 upstream to the GCP planner; keep the box, DNS, TLS, and Shibboleth SP registration unchanged) — is
-decided and documented in [`DOWNSTREAM_CONSIDERATIONS.md`](DOWNSTREAM_CONSIDERATIONS.md) #4. These two
+decided and documented in [`DOWNSTREAM_CONSIDERATIONS.md`](../DOWNSTREAM_CONSIDERATIONS.md) #4. These two
 steps are its prerequisites; the cutover itself is a config change on the out-of-repo gateway, done last.
 
 ## Step 9 — Cloud SQL persistence (planner + registration service)

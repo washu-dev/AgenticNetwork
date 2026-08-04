@@ -3,7 +3,7 @@
 Operator reference for what's currently running on GCP. As of 2026-08-03 this is **Phases 0-3 + the
 CloudRunBackend (Phase 4) live**: planner + real ADS + on-demand agent, **plus the registration service on
 Cloud Run wired to Cloud SQL, auto-deploying agents end-to-end**. Full design/status:
-[`GCP_MIGRATION.md`](GCP_MIGRATION.md) + [`IMPLEMENTATION_CLOUDRUN_BACKEND.md`](IMPLEMENTATION_CLOUDRUN_BACKEND.md)
+[`GCP_MIGRATION.md`](MIGRATION.md) + [`IMPLEMENTATION_CLOUDRUN_BACKEND.md`](IMPLEMENTATION_CLOUDRUN_BACKEND.md)
 (Step 9 notes). Everything is in project `di2-agenticweb`, region `us-central1`.
 
 ## The request paths
@@ -67,7 +67,7 @@ registration service to reach the private ADS VM (+ relay). Firewall allows the 
 `registration-service@` (reg-service runtime + deployer: `run.admin`, `serviceAccountUser` on
 agent-runtime, `cloudsql.client`, secret access, `vpcaccess.user`). Planner runs as the **default compute
 SA** (`267355023116-compute@`, Editor-carrying → hardening follow-up). Captured in
-[`scripts/gcp_iam_step7.sh`](scripts/gcp_iam_step7.sh).
+[`scripts/gcp_iam_step7.sh`](../../../deployment/scripts/gcp_iam_step7.sh).
 
 **Secret Manager** — `vllm-api-key` (planner's `OPENAI_API_KEY`), `disaster-card`, `registration-db-dsn`
 (shared Cloud SQL DSN), `github-token` (reg-service build-commit path), `credentials-encryption-key`

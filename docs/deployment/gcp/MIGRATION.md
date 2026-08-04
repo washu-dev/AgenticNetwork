@@ -3,10 +3,10 @@
 **Amaan · updated 2026-07-27 · single source of truth for the GCP migration.**
 Supersedes `GCP_MIGRATION_PLAN.md`, `GCP_MIGRATION_PROPOSAL.md`, `GCP_TEST_STATUS.md`, and
 `GCP_GLOSSARY.md` — retired to avoid stale/conflicting copies. Diagram:
-[`gcp_target_architecture.svg`](gcp_target_architecture.svg). Kept separate (broader than
-GCP): [`DOWNSTREAM_CONSIDERATIONS.md`](DOWNSTREAM_CONSIDERATIONS.md) (cloud-agnostic scaling
-log), [`AGENT_INTEGRATION_SPEC.md`](AGENT_INTEGRATION_SPEC.md) (agent-authoring reference),
-[`../CLAUDE.md`](../CLAUDE.md) (whole-system overview).
+[`gcp_target_architecture.svg`](../../../deployment/gcp_target_architecture.svg). Kept separate (broader than
+GCP): [`DOWNSTREAM_CONSIDERATIONS.md`](../DOWNSTREAM_CONSIDERATIONS.md) (cloud-agnostic scaling
+log), [`AGENT_INTEGRATION_SPEC.md`](../AGENT_INTEGRATION_SPEC.md) (agent-authoring reference),
+[`../CLAUDE.md`](../../../CLAUDE.md) (whole-system overview).
 
 ---
 

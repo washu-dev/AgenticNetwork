@@ -58,7 +58,7 @@ gated at the planner (401 without identity when a DB is set) in addition to the 
 **Rationale.** The old setup auto-dropped every visitor straight into chat with no front door;
 an explicit "Sign in with WashU" landing + a planner-side gate (defense-in-depth alongside the
 SP) is the intended entry flow. Requires an Apache SP carve-out to make `/` anonymous. **Code.**
-`server.py` (`/` vs `/app`), `web/landing.html`; SP carve-out in `deployment/README.md`.
+`server.py` (`/` vs `/app`), `web/landing.html`; SP carve-out in `docs/deployment/engr/README.md`.
 
 ## D6 — Two credential-sourcing models: operator env-var vs. per-user
 **Decision.** Credentials come from one of two models, chosen by *who owns the resource*:

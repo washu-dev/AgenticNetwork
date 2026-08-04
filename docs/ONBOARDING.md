@@ -18,7 +18,7 @@ running until two separate things happen:
 
 `git push` updates source. It does not update the images on the cluster, and it does not add
 an agent to the directory. A source sync (`git pull` on the cluster) is step one of many, not
-the deploy. See [`deployment/README.md`](../deployment/README.md).
+the deploy. See [`deployment/README.md`](deployment/engr/README.md).
 
 ### 2. An agent is discoverable only when it's *published to ADS* — not when its card file exists
 The planner has **zero hardcoded agent list**; it discovers agents at runtime by querying ADS's
@@ -89,7 +89,7 @@ see it.
 ### …change the deployed system
 Editing source is not deploying. To ship a change: `deployment/build_and_push.sh <service>` to
 rebuild the image (bump the tag if reusing `:latest`), then resubmit `submit.sbatch`. Config-only
-changes go in `deployment/.env`. See [`deployment/README.md`](../deployment/README.md).
+changes go in `deployment/.env`. See [`deployment/README.md`](deployment/engr/README.md).
 
 ---
 
@@ -120,4 +120,4 @@ python -m agent_directory_service.scripts.validate_agent_endpoint \
 ## Where to go deeper
 [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) · [`docs/REGISTRATION_SERVICE.md`](REGISTRATION_SERVICE.md) ·
 [`docs/AGENT_DIRECTORY.md`](AGENT_DIRECTORY.md) · [`docs/BUILDING_AGENTS.md`](BUILDING_AGENTS.md) ·
-[`docs/AUTH.md`](AUTH.md) · [`docs/DECISIONS.md`](DECISIONS.md) · [`deployment/README.md`](../deployment/README.md)
+[`docs/AUTH.md`](AUTH.md) · [`docs/DECISIONS.md`](DECISIONS.md) · [`deployment/README.md`](deployment/engr/README.md)

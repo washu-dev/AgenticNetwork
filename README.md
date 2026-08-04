@@ -52,7 +52,7 @@ Adding a new agent to ADS makes it available to the planner with **zero planner 
 | [`agent_directory_service/`](agent_directory_service/) | ADS operator tooling (cluster ops) | — | [README](agent_directory_service/README.md) |
 | [`registration_service/`](registration_service/) | Agent self-registration web UI + manager | — | [README](registration_service/README.md) |
 | [`agent_skeleton/`](agent_skeleton/) | Agent template + endpoint-wrapper engine + generator | — | [README](agent_skeleton/README.md) |
-| [`deployment/`](deployment/) | ENGR cluster containerized deployment | — | [README](deployment/README.md) |
+| [`deployment/`](deployment/) | ENGR cluster containerized deployment | — | [README](docs/deployment/engr/README.md) |
 
 **[`agent-directory`](https://github.com/washu-dev/agent-directory) repo — specialist agents:**
 
@@ -71,7 +71,7 @@ Adding a new agent to ADS makes it available to the planner with **zero planner 
 
 The system runs on the WashU **ENGR cluster** via Slurm + Pyxis/enroot. Each component is a Docker image; `deployment/submit.sbatch` starts them all as parallel containers on one node, with ADS coming up first and agents self-publishing on startup.
 
-See [`deployment/README.md`](deployment/README.md) for the full cluster runbook.
+See [`deployment/README.md`](docs/deployment/engr/README.md) for the full cluster runbook.
 
 For local development without the cluster, the planner supports a **fake-ADS mode** that runs an in-process directory — useful for testing the planner against specific agent cards without standing up the full stack:
 
@@ -130,4 +130,4 @@ See [`docs/BUILDING_AGENTS.md`](docs/BUILDING_AGENTS.md) for the full step-by-st
 - [`CLAUDE.md`](CLAUDE.md) — system guide + operating manual (run tiers, LLM/vLLM config, caveats)
 - [`SECURITY.md`](SECURITY.md) — security posture + active hazards
 - [`AGENTS.md`](AGENTS.md) — working rules and validation commands for contributors
-- [`deployment/README.md`](deployment/README.md) — ENGR cluster runbook
+- [`deployment/README.md`](docs/deployment/engr/README.md) — ENGR cluster runbook

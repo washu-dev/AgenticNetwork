@@ -224,5 +224,5 @@ Every zone maps back to the reference implementation, `disaster_response_agent.p
 `create_disaster_a2a_app` serve, and ADS publish helpers. That agent now lives in
 the separate [`agent-directory`](https://github.com/washu-dev/agent-directory) repo
 (the specialist agents were extracted there). Background contracts:
-[`../deployment/AGENT_INTEGRATION_SPEC.md`](../deployment/AGENT_INTEGRATION_SPEC.md)
+[`../deployment/AGENT_INTEGRATION_SPEC.md`](../docs/deployment/AGENT_INTEGRATION_SPEC.md)
 and [`../CLAUDE.md`](../CLAUDE.md).
