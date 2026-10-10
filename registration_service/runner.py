@@ -2,6 +2,13 @@
 
 Reads AGENT_CONFIG_JSON from the environment, dispatches to the right handler.
 This script is exec'd by SubprocessBackend.spawn() for each registered agent.
+
+Dispatch is on the CANONICAL handler type (``llm`` / ``proxy`` / ``custom``) and,
+for ``llm``, on ``config.tools.source`` — because "where do the tools come from"
+is a field now, not a type. Legacy stored values (``api_proxy``, ``tool_loop``,
+``endpoint_ops``) are normalized by ``models.parse_config`` +
+``normalize_handler_type``, so an agent row written before the consolidation still
+starts unchanged.
 """
 
 from __future__ import annotations
@@ -18,7 +25,23 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def _handler_file_path() -> str:
+    path = os.environ.get("HANDLER_FILE_PATH")
+    if not path:
+        logger.error("runner_missing_handler_file HANDLER_FILE_PATH not set")
+        sys.exit(1)
+    return path
+
+
 def main() -> None:
+    from registration_service.models import (
+        LLMConfig,
+        ProxyConfig,
+        CustomConfig,
+        normalize_handler_type,
+        parse_config,
+    )
+
     raw = os.getenv("AGENT_CONFIG_JSON")
     if not raw:
         logger.error("runner_missing_config AGENT_CONFIG_JSON not set")
@@ -31,90 +54,117 @@ def main() -> None:
         sys.exit(1)
 
     agent_id: str = cfg["agent_id"]
-    handler_type: str = cfg["handler_type"]
+    wire_type: str = cfg["handler_type"]
     port: int = int(cfg["port"])
-    config: dict = cfg["config"]
+    raw_config: dict = cfg["config"]
 
-    logger.info("runner_start agent_id=%s handler_type=%s port=%d", agent_id, handler_type, port)
+    handler_type = normalize_handler_type(wire_type)
+    # name/description ride along in the envelope but are not config fields.
+    name = raw_config.get("name", agent_id)
+    description = raw_config.get("description", "")
+    try:
+        config = parse_config(wire_type, {k: v for k, v in raw_config.items()
+                                         if k not in ("name", "description")})
+    except Exception as exc:
+        logger.error("runner_bad_config handler_type=%s error=%s", wire_type, exc)
+        sys.exit(1)
 
-    if handler_type == "llm":
-        from registration_service.handlers.llm_handler import run
+    logger.info(
+        "runner_start agent_id=%s handler_type=%s (wire=%s) port=%d",
+        agent_id, handler_type, wire_type, port,
+    )
 
-        run(
-            agent_id=agent_id,
-            name=config.get("name", agent_id),
-            description=config.get("description", ""),
-            system_prompt=config["system_prompt"],
-            model=config.get("model", "openai/gpt-oss-120b"),
-            port=port,
-            preset_tools=config.get("preset_tools", []),
-        )
-    elif handler_type == "api_proxy":
+    if isinstance(config, ProxyConfig):
         from registration_service.handlers.api_proxy_handler import run
 
         run(
             agent_id=agent_id,
-            name=config.get("name", agent_id),
-            description=config.get("description", ""),
-            upstream_url=config["upstream_url"],
-            auth_header=config.get("auth_header"),
+            name=name,
+            description=description,
+            upstream_url=config.upstream_url,
+            auth_header=config.auth_header,
             port=port,
         )
-    elif handler_type == "endpoint_ops":
-        from registration_service.handlers.operation_handler import run
+        return
 
-        run(
-            agent_id=agent_id,
-            name=config.get("name", agent_id),
-            description=config.get("description", ""),
-            base_url=config["base_url"],
-            operations=config.get("operations", []),
-            auth_env=config.get("auth_env"),
-            auth_scheme=config.get("auth_scheme", "Bearer"),
-            system_prompt=config.get("system_prompt"),
-            model=config.get("model", "openai/gpt-oss-120b"),
-            port=port,
-        )
-    elif handler_type == "custom":
+    if isinstance(config, CustomConfig):
         from registration_service.handlers.custom_handler import run
 
-        handler_file_path = os.environ.get("HANDLER_FILE_PATH")
-        if not handler_file_path:
-            logger.error("runner_missing_handler_file HANDLER_FILE_PATH not set")
-            sys.exit(1)
+        run(
+            agent_id=agent_id,
+            name=name,
+            description=description,
+            handler_file_path=_handler_file_path(),
+            class_name=config.class_name,
+            extra=config.extra,
+            port=port,
+            max_runtime_seconds=float(config.max_runtime_seconds),
+            credentials=[c.model_dump() for c in config.credentials],
+        )
+        return
+
+    if isinstance(config, LLMConfig):
+        source = config.tools.source
+        if source == "upload":
+            # Author-uploaded tool bodies (the old `tool_loop` type).
+            from registration_service.handlers.tool_loop_handler import run
+
+            run(
+                agent_id=agent_id,
+                name=name,
+                description=description,
+                handler_file_path=_handler_file_path(),
+                system_prompt=config.system_prompt or "",
+                model=config.model,
+                port=port,
+                extra=config.tools.extra,
+            )
+            return
+        if source == "http":
+            # One typed tool per API operation (the old `endpoint_ops` type).
+            from registration_service.handlers.operation_handler import run
+
+            run(
+                agent_id=agent_id,
+                name=name,
+                description=description,
+                base_url=config.tools.base_url,
+                operations=[op.model_dump() for op in config.tools.operations],
+                auth_env=config.tools.auth_env,
+                auth_scheme=config.tools.auth_scheme,
+                system_prompt=config.system_prompt,
+                model=config.model,
+                port=port,
+            )
+            return
+
+        # none / presets / raw — a prompt, optionally armed with catalog tools.
+        if source == "raw":
+            # Schemas with no bodies: the model could emit these calls but nothing
+            # can dispatch them, and the engine's strict schema<->function alignment
+            # check would reject them. This was silently ignored before the
+            # consolidation; keep that behavior (run prompt-only) but say so.
+            logger.warning(
+                "runner_raw_tool_schemas_not_dispatchable agent_id=%s count=%d "
+                "(declared schemas have no function bodies; running prompt-only. "
+                "Use tools.source='upload' to ship bodies, or 'presets'/'http'.)",
+                agent_id, len(config.tools.schemas),
+            )
+        from registration_service.handlers.llm_handler import run
 
         run(
             agent_id=agent_id,
-            name=config.get("name", agent_id),
-            description=config.get("description", ""),
-            handler_file_path=handler_file_path,
-            class_name=config["class_name"],
-            extra=config.get("extra", {}),
+            name=name,
+            description=description,
+            system_prompt=config.system_prompt or "",
+            model=config.model,
             port=port,
-            max_runtime_seconds=float(config.get("max_runtime_seconds", 1800)),
-            credentials=config.get("credentials", []),
+            preset_tools=list(getattr(config.tools, "names", []) or []),
         )
-    elif handler_type == "tool_loop":
-        from registration_service.handlers.tool_loop_handler import run
+        return
 
-        handler_file_path = os.environ.get("HANDLER_FILE_PATH")
-        if not handler_file_path:
-            logger.error("runner_missing_handler_file HANDLER_FILE_PATH not set")
-            sys.exit(1)
-
-        run(
-            agent_id=agent_id,
-            name=config.get("name", agent_id),
-            description=config.get("description", ""),
-            handler_file_path=handler_file_path,
-            system_prompt=config["system_prompt"],
-            model=config.get("model", "openai/gpt-oss-120b"),
-            port=port,
-            extra=config.get("extra", {}),
-        )
-    else:
-        logger.error("runner_unknown_handler_type handler_type=%s", handler_type)
-        sys.exit(1)
+    logger.error("runner_unknown_config handler_type=%s config=%s", wire_type, type(config).__name__)
+    sys.exit(1)
 
 
 if __name__ == "__main__":

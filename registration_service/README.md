@@ -6,31 +6,73 @@ Runs on port **8091**. Accessible through the planner UI at `/register/` (proxie
 
 ## Handler types
 
-| Type | What it does |
-|---|---|
-| `llm` | Spawns a subprocess running a generic LLM agent with a researcher-provided system prompt. Uses the Chat Completions API via `OPENAI_BASE_URL`. |
-| `api_proxy` | Forwards incoming A2A tasks to an existing upstream HTTP service the researcher already runs. |
-| `custom` | Runs researcher-uploaded handler code (a subclass of `agent_skeleton.AgentHandler`). Requires admin approval; on the cluster it goes through a GitHub→Docker Hub per-agent image build (see below). |
+There are **three**, split on the one question that changes the runtime — *who runs
+the loop*:
 
-> **Backend support:** `llm`/`api_proxy` currently spawn only via the local
-> `SubprocessBackend`. The cluster `ClusterBackend` supports **`custom` only** —
-> registering an `llm`/`api_proxy` agent while `SPAWN_BACKEND=cluster` is rejected
-> (it has no cluster spawn path).
+| Type | Who runs the loop | What it does |
+|---|---|---|
+| `llm` | our frozen engine (`agent_skeleton.llm_loop`) | An LLM tool loop. `config.tools` selects where the capabilities come from — see the table below. Chat Completions via `OPENAI_BASE_URL`. |
+| `proxy` | nobody | Forwards each incoming A2A task to an upstream HTTP service the researcher already runs. No LLM. |
+| `custom` | your uploaded code | Runs a researcher-uploaded `agent_skeleton.AgentHandler` subclass, which owns the whole flow. |
+
+### `llm` tool sources (`config.tools.source`)
+
+| Source | Capabilities from | Ships code? |
+|---|---|---|
+| `none` | nothing — a single LLM turn from the prompt | no |
+| `presets` | named tools in the built-in catalog (`agent_skeleton.system_tools.preset_tools`) | no |
+| `upload` | author-uploaded tool bodies + schemas (`TOOL_SCHEMAS` + `TOOL_REGISTRY`, or a `build_tools(config)` factory) | **yes** |
+| `http` | one typed tool per operation of an external API; a routing prompt is generated, so `system_prompt` is optional | no |
+| `raw` | caller-supplied schemas with no bodies — nothing can dispatch them, so the agent runs prompt-only and logs a warning | no |
+
+> **Approval and image builds hang off the CONFIG, not the type name.**
+> `models.carries_upload(config)` is the single predicate: it is true for `custom`
+> and for `llm` + `tools.source == "upload"`. Those agents are created
+> **not-approved**, must have their code uploaded (`POST /agents/{id}/handler`), and
+> must be approved by an admin before they spawn; on the cluster they go through the
+> GitHub→Docker Hub per-agent image build (see below). `models.upload_spec(config)`
+> returns the shared build parameters, so one `generate_dockerfile` serves both.
+
+> **Backend support:** agents that ship no code spawn only via the local
+> `SubprocessBackend`. The cluster `ClusterBackend` supports **uploaded-code agents
+> only** — registering a prompt-only `llm` or a `proxy` while `SPAWN_BACKEND=cluster`
+> is rejected (there is no cluster spawn path, and publishing one would create a
+> ghost-live row the planner would dispatch to).
+
+### Legacy type names (still accepted)
+
+This taxonomy replaced a five-way split in 2026-07. `tool_loop` and `endpoint_ops`
+were never different *runtimes* from `llm` — `handlers/tool_loop_handler.py` imports
+`llm_handler`'s executor and card builder verbatim; only the `AgentSpec` differed. So
+"where do the tools come from" became a field.
+
+| Legacy name | Now |
+|---|---|
+| `api_proxy` | `proxy` |
+| `tool_loop` | `llm` with `tools.source = "upload"` |
+| `endpoint_ops` | `llm` with `tools.source = "http"` |
+
+The old names **and their old flat config shapes** are still accepted on the wire and
+still parse (`models.parse_config`). That is load-bearing, not politeness: rows
+already in Postgres carry the old `handler_type` *and* the old config JSON, and the
+read path re-parses them on every spawn. Old rows are normalized **on read**, never
+rewritten — so the `agents_handler_type_check` constraint permits both sets, and a
+registration submitted under a legacy name is *persisted* under the canonical one.
 
 ## Key files
 
 | File | Purpose |
 |---|---|
 | `server.py` | FastAPI app — REST endpoints for agent CRUD + static file serving |
-| `models.py` | Pydantic models: `RegisterRequest`, `LLMConfig`, `APIProxyConfig`, `AgentResponse` |
+| `models.py` | Pydantic models: `RegisterRequest`, `LLMConfig` (+ the `ToolSource` union), `ProxyConfig`, `CustomConfig`, `AgentResponse`; the handler-type aliases and `carries_upload`/`upload_spec` |
 | `db.py` | asyncpg connection pool, schema migrations, startup cleanup of stale agents |
 | `port_pool.py` | Allocates ports 19200–19299 to spawned agents; `SELECT FOR UPDATE SKIP LOCKED` for concurrency safety |
 | `supervisor.py` | Spawns/publishes agents, waits for health, runs a 30s health-check loop, restarts failed agents with backoff; drives the cluster custom-agent build pipeline |
 | `backend.py` | `SubprocessBackend` (local dev) + `ClusterBackend` (cluster `srun` steps) behind one `ContainerBackend` interface; `make_backend()` picks by `SPAWN_BACKEND` |
-| `runner.py` | Entry point for local subprocess agents; reads `AGENT_CONFIG_JSON` and dispatches `handler_type` → the right handler |
+| `runner.py` | Entry point for local subprocess agents; reads `AGENT_CONFIG_JSON` and dispatches on the canonical type + `tools.source` → the right handler |
 | `builder.py` | Generates the per-agent Docker build context (`Dockerfile` + `{slug}.card.json`) committed to the agent-directory repo for cluster custom agents |
-| `handlers/llm_handler.py` | Minimal A2A server backed by a single-turn Chat Completions call |
-| `handlers/api_proxy_handler.py` | Minimal A2A server that forwards tasks to an upstream URL |
+| `handlers/llm_handler.py` | A2A server for the `llm` loop (`none`/`presets` sources); its executor + card builder are reused verbatim by `tool_loop_handler.py` (`upload`) and `operation_handler.py` (`http`) |
+| `handlers/api_proxy_handler.py` | Minimal A2A server that forwards tasks to an upstream URL (the `proxy` type) |
 | `handlers/custom_handler.py` | Loads and runs an uploaded `AgentHandler` subclass (local subprocess path) |
 | `credential_catalog.py` / `card_credentials.py` | Canonical credential-type catalog + the card credentials extension for declared per-user creds (P4) |
 | `validator.py` | Validates uploaded custom-agent handler code/archives before spawn |
@@ -99,7 +141,8 @@ FAKE_DB=1 PYTHONPATH=. registration_service/.venv/bin/python -m pytest \
   registration_service/tests -v
 ```
 
-Tests cover: register (LLM + api_proxy), list, get, delete, restart, port
+Tests cover: register (every type + tool source, canonical and legacy names — see
+`tests/test_handler_taxonomy.py`), list, get, delete, restart, port
 reuse after delete, validation errors, and skills round-trip.
 
 ### How this relates to the planner's `--fake-ads`

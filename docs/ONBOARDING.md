@@ -60,12 +60,18 @@ There are two lanes; pick by what you're building.
 **A. A user-contributed / self-service agent → use the registration service.** This is the
 managed path: it builds, spawns, health-checks, and **publishes to ADS for you**, and (for
 uploaded code) routes it through admin approval.
-- In the planner UI: `/register/` (or `:8091` directly). Choose the handler type:
-  - `llm` — a system-prompt agent; auto-published on register.
-  - `api_proxy` — forwards to an upstream HTTP service; auto-published.
-  - `custom` — upload a `.py` or a multi-file `.zip`; an admin reviews + **approves**, then it
-    spawns and publishes.
-  - endpoint-wrapper — generate one from an `answers.json` (no code).
+- In the planner UI: `/register/` (or `:8091` directly). Choose the handler type —
+  three of them, split on *who runs the loop*:
+  - `llm` — we run the loop. A **Tools** field picks where its capabilities come from:
+    none (prompt only), preset catalog tools, **uploaded tool code**, or typed HTTP
+    operations over an external API. Auto-published on register *except* for uploaded
+    tool code, which is admin-approved like `custom`.
+  - `proxy` — no LLM; forwards each call to an upstream HTTP service you host;
+    auto-published.
+  - `custom` — upload a `.py` or a multi-file `.zip` defining an `AgentHandler`; an admin
+    reviews + **approves**, then it spawns and publishes.
+  (The older `api_proxy` / `tool_loop` / `endpoint_ops` names still work on the API and
+  map onto the three above.)
 - You do **not** touch ADS or `dirctl` manually. See [`docs/REGISTRATION_SERVICE.md`](REGISTRATION_SERVICE.md)
   and [`docs/BUILDING_AGENTS.md`](BUILDING_AGENTS.md).
 

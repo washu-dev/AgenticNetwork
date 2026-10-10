@@ -32,20 +32,18 @@ from registration_service.backend import (
 from registration_service.db import get_pool, list_agents_by_status, update_agent
 from registration_service.models import (
     AnyConfig,
-    APIProxyConfig,
-    CustomConfig,
-    EndpointOpsConfig,
-    LLMConfig,
-    ToolLoopConfig,
+    carries_upload,
+    parse_config,
 )
 from registration_service.oasf_skills import has_routable_skill
 from registration_service.port_pool import release_port
 
 logger = logging.getLogger(__name__)
 
-# Handler types whose code is uploaded + admin-approved before spawn, and (on the
-# cluster) built into a per-agent image via the GitHub → Docker Hub pipeline.
-_UPLOAD_CODE_TYPES = ("custom", "tool_loop")
+# "Does this agent ship uploaded Python?" — the gate for admin approval before spawn
+# and (on the cluster) for the per-agent image build via the GitHub → Docker Hub
+# pipeline. It is a property of the CONFIG (`carries_upload`), not of the
+# handler_type name: both `custom` and `llm` with `tools.source='upload'` qualify.
 
 _HEALTH_POLL_SECONDS = 30.0
 _BUILD_POLL_SECONDS = 30.0
@@ -113,9 +111,10 @@ class Supervisor:
         raw_skills = agent["oasf_skills"]
         oasf_skills: list = raw_skills if isinstance(raw_skills, list) else json.loads(raw_skills)
 
-        # Uploaded-code agents (custom, tool_loop) must be explicitly approved
-        # before they can spawn — they run arbitrary author Python.
-        if handler_type in _UPLOAD_CODE_TYPES and not agent.get("approved", False):
+        # Uploaded-code agents must be explicitly approved before they can spawn —
+        # they run arbitrary author Python.
+        uploads_code = carries_upload(config)
+        if uploads_code and not agent.get("approved", False):
             raise RuntimeError(f"Agent {agent_id} is not approved")
 
         # Belt-and-suspenders: the API layer (server.register_agent) already
@@ -138,7 +137,7 @@ class Supervisor:
         # image exists, at which point status is already 'building' and we fall
         # through to the actual spawn below.
         if (
-            handler_type in _UPLOAD_CODE_TYPES
+            uploads_code
             and _oob_build_enabled()
             and agent.get("status") == "registered"
         ):
@@ -150,20 +149,20 @@ class Supervisor:
             logger.info("custom_build_started agent_id=%s name=%s", agent_id, name)
             return
 
-        # An out-of-band-build backend (cluster, future Cloud Run) only has a spawn
-        # path for uploaded-code agents (per-agent image built via the
-        # GitHub→Docker Hub flow). 'llm'/'api_proxy' have no such path: spawn() is
+        # An out-of-band-build backend (cluster, Cloud Run) only has a spawn path
+        # for UPLOADED-CODE agents (a per-agent image built via the GitHub→Docker
+        # Hub flow). A prompt-only `llm` or a `proxy` has no such path: spawn() is
         # a no-op and the host loop only launches built ('image_ready') agents.
         # Without this guard such an agent would be published to ADS and marked
         # 'live' with no process behind it (a ghost-live row the planner would then
         # dispatch to). Fail loudly instead of creating that phantom.
-        if _backend_flag(self._backend, "owns_build", False) and handler_type not in _UPLOAD_CODE_TYPES:
+        if _backend_flag(self._backend, "owns_build", False) and not uploads_code:
             await _set_status(agent_id, "failed")
             raise RuntimeError(
-                f"handler_type={handler_type!r} is not supported on the cluster "
-                "backend — only uploaded-code agents (custom, tool_loop) have a "
-                "cluster spawn path. Register it with the local subprocess backend, "
-                "or use a 'custom'/'tool_loop' handler."
+                f"handler_type={handler_type!r} with this config is not supported on "
+                "the cluster backend — only uploaded-code agents have a cluster spawn "
+                "path (a 'custom' handler, or an 'llm' agent whose tools.source is "
+                "'upload'). Register it with the local subprocess backend instead."
             )
 
         try:
@@ -652,8 +651,8 @@ class Supervisor:
         name = agent["name"]
         slug = _image_slug(name)
 
-        # custom → CustomConfig, tool_loop → ToolLoopConfig; both carry the fields
-        # generate_dockerfile needs (entry_file, requirements, system_packages, …).
+        # Either uploaded-code shape; generate_dockerfile reads the build fields
+        # (entry_file, requirements, system_packages, …) via models.upload_spec.
         config = _deserialize_config(agent)
 
         handler_path = agent.get("handler_file_path")
@@ -900,24 +899,26 @@ def get_supervisor() -> Supervisor:
 
 def _declared_credentials(config: AnyConfig) -> list[dict[str, Any]]:
     """Declared user credentials (P4a) — only custom agents can declare them."""
+    from registration_service.models import CustomConfig
+
     if isinstance(config, CustomConfig):
         return [c.model_dump() for c in config.credentials]
     return []
 
 
 def _deserialize_config(agent: dict[str, Any]) -> AnyConfig:
+    """Typed config for a stored row.
+
+    Goes through ``parse_config``, which accepts BOTH the canonical shapes and the
+    pre-consolidation ones — rows written before the taxonomy change still carry
+    ``handler_type`` = ``api_proxy``/``tool_loop``/``endpoint_ops`` and the matching
+    old config JSON, and are normalized here on read. Old rows are deliberately not
+    rewritten in place; only newly registered agents are stored canonical.
+    """
     handler_type: str = agent["handler_type"]
     raw = agent["config"]
     config_data: dict = raw if isinstance(raw, dict) else json.loads(raw)
-    if handler_type == "llm":
-        return LLMConfig.model_validate(config_data)
-    if handler_type == "custom":
-        return CustomConfig.model_validate(config_data)
-    if handler_type == "tool_loop":
-        return ToolLoopConfig.model_validate(config_data)
-    if handler_type == "endpoint_ops":
-        return EndpointOpsConfig.model_validate(config_data)
-    return APIProxyConfig.model_validate(config_data)
+    return parse_config(handler_type, config_data)
 
 
 def _build_agent_card(

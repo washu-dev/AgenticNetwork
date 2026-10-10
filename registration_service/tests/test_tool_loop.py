@@ -90,7 +90,11 @@ async def _register(client: AsyncClient) -> dict:
 
 async def test_register_tool_loop_not_approved_and_not_started(client: AsyncClient) -> None:
     body = await _register(client)
-    assert body["handler_type"] == "tool_loop"
+    # Registered under the legacy name `tool_loop`; persisted as canonical `llm`
+    # with tools.source='upload' (the 2026-07 consolidation).
+    assert body["handler_type"] == "llm"
+    assert body["config"]["tools"]["source"] == "upload"
+    assert body["config"]["tools"]["entry_file"] == "tools.py"
     assert body["approved"] is False
     assert body["status"] == "registered"
     assert body["has_handler"] is False
@@ -168,3 +172,62 @@ async def test_inspect_shows_tool_source_no_credentials(client: AsyncClient, mon
     body = (await client.get(f"/agents/{agent['id']}/handler")).json()
     assert "TOOL_REGISTRY" in body["source"]
     assert body["credentials"] == []   # tool_loop declares no per-user creds (v1)
+
+
+# ── extra / build_tools(config) ──────────────────────────────────────────────────
+# `extra` is the ONLY channel for a value a tool needs but the model must never see
+# or set (an API key, a contact email, a timeout, a result cap): it is handed to
+# build_tools(config), which closes over it. The wizard's tool-loop form sends it
+# (static/index.html `inp-tl-extra`); these tests pin the API + engine halves.
+
+async def test_register_tool_loop_persists_extra(client: AsyncClient) -> None:
+    payload = {**TOOL_LOOP_PAYLOAD, "name": "TL Extra",
+               "config": {**TOOL_LOOP_PAYLOAD["config"],
+                          "extra": {"contact_email": "a@b.edu", "http_timeout": 20}}}
+    resp = await client.post("/agents", json=payload)
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["config"]["tools"]["extra"] == {
+        "contact_email": "a@b.edu", "http_timeout": 20}
+
+
+async def test_register_tool_loop_extra_defaults_to_empty(client: AsyncClient) -> None:
+    # A form that omits `extra` must still register; build_tools then sees {}.
+    body = await _register(client)
+    assert body["config"]["tools"]["extra"] == {}
+
+
+async def test_extra_reaches_build_tools_closure(tmp_path) -> None:
+    """The engine half: load_tool_module(path, extra) -> build_tools(extra), and the
+    closed-over value must NOT appear as a model-visible tool parameter."""
+    from agent_skeleton.spec import load_tool_module, tool_loop_spec
+
+    src = '''
+def build_tools(config):
+    timeout = config.get("http_timeout", 5)
+    schemas = [{
+        "type": "function",
+        "function": {"name": "fetch", "description": "Fetch.",
+            "parameters": {"type": "object",
+                "properties": {"url": {"type": "string"}},
+                "required": ["url"], "additionalProperties": False}},
+    }]
+    def fetch(*, url: str) -> dict:
+        return {"ok": True, "url": url, "timeout": timeout}
+    return schemas, {"fetch": fetch}
+'''
+    path = tmp_path / "tools.py"
+    path.write_text(src)
+
+    schemas, registry = load_tool_module(str(path), {"http_timeout": 42})
+    # tool_loop_spec runs the strict schema<->function alignment check.
+    spec = tool_loop_spec(name="t", system_prompt="p", tool_schemas=schemas,
+                          tool_registry=registry)
+    assert spec.tool_registry["fetch"](url="http://x")["timeout"] == 42
+    # The secret/config value is closed over, never a parameter the model can set.
+    props = schemas[0]["function"]["parameters"]["properties"]
+    assert set(props) == {"url"}
+
+    # An empty config must still work — load_tool_module prefers build_tools, so a
+    # factory that requires config would break every wizard registration.
+    _, registry_default = load_tool_module(str(path), {})
+    assert registry_default["fetch"](url="http://x")["timeout"] == 5

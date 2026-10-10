@@ -17,7 +17,14 @@ CREATE TABLE IF NOT EXISTS agents (
     id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name              TEXT NOT NULL,
     description       TEXT NOT NULL,
-    handler_type      TEXT NOT NULL CHECK (handler_type IN ('llm', 'api_proxy', 'custom', 'endpoint_ops', 'tool_loop')),
+    -- Canonical types are ('llm', 'proxy', 'custom'); the other three are legacy
+    -- names still present in rows written before the 2026-07 consolidation and
+    -- still accepted on the wire (models.LEGACY_HANDLER_ALIASES). Old rows are
+    -- normalized on READ (models.parse_config), not rewritten, so the constraint
+    -- must keep permitting them.
+    handler_type      TEXT NOT NULL CHECK (handler_type IN
+                          ('llm', 'proxy', 'custom',
+                           'api_proxy', 'endpoint_ops', 'tool_loop')),
     oasf_skills       JSONB NOT NULL,
     config            JSONB NOT NULL,
     port              INT UNIQUE,
@@ -45,9 +52,15 @@ ALTER TABLE agents ADD COLUMN IF NOT EXISTS image_ref TEXT;
 -- resources: optional deploy sizing declared at registration (cpu/memory/
 -- concurrency/max_instances/gpu) that cloud backends map to service parameters.
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS resources JSONB;
+-- Handler-type consolidation (2026-07): canonical ('llm','proxy','custom') plus the
+-- three legacy names. Widening rather than rewriting is deliberate — an existing row
+-- keeps its old handler_type AND its old config JSON, and both are normalized on read
+-- (models.parse_config). Rewriting handler_type in SQL without also rewriting the
+-- config JSON would produce rows that no longer parse, so we don't.
 ALTER TABLE agents DROP CONSTRAINT IF EXISTS agents_handler_type_check;
 ALTER TABLE agents ADD CONSTRAINT agents_handler_type_check
-    CHECK (handler_type IN ('llm', 'api_proxy', 'custom', 'endpoint_ops', 'tool_loop'));
+    CHECK (handler_type IN ('llm', 'proxy', 'custom',
+                            'api_proxy', 'endpoint_ops', 'tool_loop'));
 ALTER TABLE agents DROP CONSTRAINT IF EXISTS agents_status_check;
 ALTER TABLE agents ADD CONSTRAINT agents_status_check
     CHECK (status IN ('registered', 'live', 'failed', 'stopped', 'building', 'image_ready'));

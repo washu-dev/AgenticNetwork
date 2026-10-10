@@ -26,7 +26,7 @@ _CANONICAL_HANDLER_TYPES = set(
 def _handler_type_check_clauses() -> list[set[str]]:
     """Every `handler_type IN (...)` CHECK clause in the schema SQL, as sets."""
     clauses = []
-    for match in re.finditer(r"handler_type IN \(([^)]*)\)", db._SCHEMA_SQL):
+    for match in re.finditer(r"handler_type IN\s*\(([^)]*)\)", db._SCHEMA_SQL):
         values = {v.strip().strip("'") for v in match.group(1).split(",")}
         clauses.append(values)
     return clauses

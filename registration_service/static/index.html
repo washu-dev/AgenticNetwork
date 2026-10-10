@@ -166,26 +166,36 @@
         </div>
       </div>
 
+      <!-- Three handler types, split on WHO RUNS THE LOOP. "Where do the tools come
+           from" is a field under LLM Agent (tool_source), not a type of its own —
+           see registration_service/models.py. -->
       <div class="form-group">
-        <label class="field-label">Handler type</label>
+        <label class="field-label">Handler type <span class="hint">— who runs the loop</span></label>
         <div class="radio-group">
           <label class="radio-label">
             <input type="radio" name="handler_type" value="llm" checked onchange="onHandlerChange()">
-            LLM Agent <span class="hint" style="margin-left:4px">— powered by a system prompt on vLLM</span>
+            LLM Agent <span class="hint" style="margin-left:4px">— we run the loop; you choose its tools below</span>
           </label>
           <label class="radio-label">
-            <input type="radio" name="handler_type" value="api_proxy" onchange="onHandlerChange()">
-            API Proxy <span class="hint" style="margin-left:4px">— forwards calls to your existing service</span>
-          </label>
-          <label class="radio-label">
-            <input type="radio" name="handler_type" value="tool_loop" onchange="onHandlerChange()">
-            LLM Tool Loop <span class="hint" style="margin-left:4px">— upload tools + a prompt; the loop is built for you; requires admin approval</span>
+            <input type="radio" name="handler_type" value="proxy" onchange="onHandlerChange()">
+            Proxy <span class="hint" style="margin-left:4px">— no LLM; forwards each call to a service you host</span>
           </label>
           <label class="radio-label">
             <input type="radio" name="handler_type" value="custom" onchange="onHandlerChange()">
-            Custom (Python) <span class="hint" style="margin-left:4px">— upload a handler; requires admin approval</span>
+            Custom (Python) <span class="hint" style="margin-left:4px">— your uploaded handler owns the flow; requires admin approval</span>
           </label>
         </div>
+      </div>
+
+      <!-- Tool source — only meaningful for an LLM Agent. -->
+      <div class="form-group" id="tool-source-group">
+        <label class="field-label" for="inp-tool-source">Tools <span class="hint">— where this agent's capabilities come from</span></label>
+        <select id="inp-tool-source" onchange="onToolSourceChange()">
+          <option value="none" selected>None — a single LLM turn from the prompt alone</option>
+          <option value="presets">Preset tools — pick from the built-in catalog</option>
+          <option value="upload">Upload tool code — your tool bodies + schemas (requires admin approval)</option>
+          <option value="http">HTTP operations — one typed tool per API operation</option>
+        </select>
       </div>
 
       <div class="form-row">
@@ -206,15 +216,55 @@
 
       <hr>
 
-      <!-- LLM fields -->
+      <!-- LLM fields — the system prompt applies to EVERY tool source. -->
       <div id="llm-fields">
         <div class="form-group">
-          <label class="field-label" for="inp-system-prompt">System prompt</label>
+          <label class="field-label" for="inp-system-prompt">System prompt <span class="hint" id="hint-system-prompt">— required</span></label>
           <textarea id="inp-system-prompt" rows="5" placeholder="You are a specialist in… Describe the agent's role, tone, and any rules it must follow."></textarea>
         </div>
       </div>
 
-      <!-- API proxy fields -->
+      <!-- Tools: preset catalog -->
+      <div id="presets-fields" style="display:none">
+        <div class="form-group">
+          <label class="field-label" for="inp-preset-tools">Preset tools <span class="hint">— comma-separated names from the built-in catalog</span></label>
+          <input type="text" id="inp-preset-tools" placeholder="calculator, current_time">
+          <span class="hint">Names come from <code>agent_skeleton.system_tools.preset_tools</code>; an unknown
+          name fails at spawn, not at registration.</span>
+        </div>
+      </div>
+
+      <!-- Tools: typed HTTP operations (previously the API-only `endpoint_ops` type) -->
+      <div id="http-fields" style="display:none">
+        <div class="form-row">
+          <div>
+            <label class="field-label" for="inp-http-base-url">Base URL</label>
+            <input type="url" id="inp-http-base-url" placeholder="https://api.example.com/v1">
+          </div>
+          <div>
+            <label class="field-label" for="inp-http-auth-env">Auth env var <span class="hint">— optional; the NAME, never the token</span></label>
+            <input type="text" id="inp-http-auth-env" placeholder="WEATHER_API_KEY">
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="field-label" for="inp-http-auth-scheme">Auth scheme</label>
+          <select id="inp-http-auth-scheme">
+            <option value="Bearer" selected>Bearer</option>
+            <option value="raw">raw</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="field-label" for="inp-http-operations">Operations (JSON array)</label>
+          <textarea id="inp-http-operations" class="code-editor" rows="10" spellcheck="false"
+            placeholder='[{"name": "get_weather", "method": "GET", "path": "/weather", "description": "current weather for a city", "params": {"city": {"type": "string"}}, "required": ["city"]}]'></textarea>
+          <span class="hint">Each entry becomes its own typed tool. <code>params</code> is a JSON-Schema
+          <code>properties</code> dict; a <code>{x}</code> in <code>path</code> is a path parameter, otherwise
+          <code>param_in</code> routes it to query/body/header. With this source the system prompt is optional —
+          a routing prompt is generated from the operations.</span>
+        </div>
+      </div>
+
+      <!-- Proxy fields -->
       <div id="proxy-fields" style="display:none">
         <div class="form-group">
           <label class="field-label" for="inp-upstream-url">Upstream URL <span class="hint">— your agent's A2A HTTP endpoint</span></label>
@@ -303,11 +353,9 @@
       </div>
 
       <!-- LLM Tool Loop fields -->
+      <!-- Tools: uploaded tool code (previously the `tool_loop` type). The system
+           prompt lives in llm-fields above — one field for every tool source. -->
       <div id="toolloop-fields" style="display:none">
-        <div class="form-group">
-          <label class="field-label" for="inp-tl-system-prompt">System prompt</label>
-          <textarea id="inp-tl-system-prompt" rows="4" placeholder="You are a specialist in… Tell the agent its role and to use its tools when helpful."></textarea>
-        </div>
         <div class="form-row">
           <div>
             <label class="field-label" for="inp-tl-entry-file">Tools file <span class="hint">— module at the upload root that defines the tools</span></label>
@@ -317,6 +365,14 @@
             <label class="field-label" for="inp-tl-requirements">Requirements <span class="hint">— comma-separated pip packages, optional</span></label>
             <input type="text" id="inp-tl-requirements" placeholder="requests, rapidfuzz">
           </div>
+        </div>
+        <div class="form-group">
+          <label class="field-label" for="inp-tl-extra">Extra config (JSON) <span class="hint">— optional, passed to your <code>build_tools(config)</code> factory</span></label>
+          <textarea id="inp-tl-extra" class="code-editor" rows="3" placeholder='{"contact_email": "you@wustl.edu", "http_timeout": 20}'></textarea>
+          <span class="hint">Use this for per-deployment values a tool needs but the model must NOT see or set —
+          an API key, a contact email, a timeout, a result cap. <code>build_tools</code> closes over them, so they
+          never become tool parameters. Reaches the agent only via <code>build_tools</code>; ignored if the module
+          exposes plain <code>TOOL_SCHEMAS</code>/<code>TOOL_REGISTRY</code>.</span>
         </div>
         <div class="form-group" style="margin-bottom:8px">
           <span class="hint">The module must expose <code>TOOL_SCHEMAS</code> + <code>TOOL_REGISTRY</code>, or a
@@ -415,17 +471,40 @@ function switchTab(tab) {
   }
 }
 
-// ── Handler type toggle ───────────────────────────────────────────────────────
+// ── Handler type + tool source toggles ────────────────────────────────────────
+// Three types (llm / proxy / custom). For `llm`, the tool source selects which
+// extra block is shown — that axis used to be three separate handler types.
+function handlerType() {
+  return document.querySelector('input[name=handler_type]:checked').value;
+}
+
+function toolSource() {
+  return document.getElementById('inp-tool-source').value;
+}
+
 function onHandlerChange() {
-  const v = document.querySelector('input[name=handler_type]:checked').value;
-  document.getElementById('llm-fields').style.display      = v === 'llm'       ? '' : 'none';
-  document.getElementById('proxy-fields').style.display    = v === 'api_proxy' ? '' : 'none';
-  document.getElementById('custom-fields').style.display   = v === 'custom'    ? '' : 'none';
-  document.getElementById('toolloop-fields').style.display = v === 'tool_loop' ? '' : 'none';
-  // The Model field applies to the LLM-backed types (llm + tool_loop).
-  const showModel = v === 'llm' || v === 'tool_loop';
-  document.getElementById('inp-model').style.display    = showModel ? '' : 'none';
-  document.getElementById('label-model').style.display  = showModel ? '' : 'none';
+  const v = handlerType();
+  const isLlm = v === 'llm';
+  document.getElementById('llm-fields').style.display       = isLlm    ? '' : 'none';
+  document.getElementById('tool-source-group').style.display = isLlm   ? '' : 'none';
+  document.getElementById('proxy-fields').style.display     = v === 'proxy'  ? '' : 'none';
+  document.getElementById('custom-fields').style.display    = v === 'custom' ? '' : 'none';
+  // The Model field only applies when we run the loop.
+  document.getElementById('inp-model').style.display    = isLlm ? '' : 'none';
+  document.getElementById('label-model').style.display  = isLlm ? '' : 'none';
+  onToolSourceChange();
+}
+
+function onToolSourceChange() {
+  const isLlm = handlerType() === 'llm';
+  const src = isLlm ? toolSource() : null;
+  document.getElementById('presets-fields').style.display  = src === 'presets' ? '' : 'none';
+  document.getElementById('http-fields').style.display     = src === 'http'    ? '' : 'none';
+  document.getElementById('toolloop-fields').style.display = src === 'upload'  ? '' : 'none';
+  // HTTP operations can generate their own routing prompt, so the prompt is optional
+  // there and required everywhere else (models.LLMConfig enforces the same rule).
+  document.getElementById('hint-system-prompt').textContent =
+    src === 'http' ? '— optional; a routing prompt is generated from the operations' : '— required';
 }
 
 // Toggle single-file vs project(.zip) upload within the custom section.
@@ -618,31 +697,65 @@ async function submitRegistration() {
   let handlerCode = null;
   let toolsCode = null;
   if (handler_type === 'llm') {
+    // One shape: {system_prompt, model, tools:{source, …}}. The source decides which
+    // extra fields matter — see models.ToolSource.
     const system_prompt = document.getElementById('inp-system-prompt').value.trim();
     const model         = document.getElementById('inp-model').value.trim() || 'openai/gpt-oss-120b';
-    if (!system_prompt) return showAlert('error', 'System prompt is required for LLM agents.');
-    config = { system_prompt, model };
-  } else if (handler_type === 'api_proxy') {
+    const src           = toolSource();
+    // Required for every source except `http`, which generates a routing prompt.
+    if (!system_prompt && src !== 'http') {
+      return showAlert('error', 'System prompt is required for LLM agents.');
+    }
+    let tools;
+    if (src === 'presets') {
+      const raw = document.getElementById('inp-preset-tools').value.trim();
+      const names = raw ? raw.split(',').map(s => s.trim()).filter(Boolean) : [];
+      if (!names.length) return showAlert('error', 'Name at least one preset tool, or choose Tools: None.');
+      tools = { source: 'presets', names };
+    } else if (src === 'http') {
+      const base_url    = document.getElementById('inp-http-base-url').value.trim();
+      const auth_env    = document.getElementById('inp-http-auth-env').value.trim();
+      const auth_scheme = document.getElementById('inp-http-auth-scheme').value;
+      const opsRaw      = document.getElementById('inp-http-operations').value.trim();
+      if (!base_url) return showAlert('error', 'Base URL is required for HTTP-operation tools.');
+      let operations;
+      try { operations = JSON.parse(opsRaw || '[]'); }
+      catch { return showAlert('error', 'Operations must be a valid JSON array.'); }
+      if (!Array.isArray(operations) || !operations.length) {
+        return showAlert('error', 'Define at least one operation.');
+      }
+      tools = { source: 'http', base_url, operations, auth_scheme,
+                ...(auth_env ? { auth_env } : {}) };
+    } else if (src === 'upload') {
+      const entry_file   = document.getElementById('inp-tl-entry-file').value.trim() || 'tools.py';
+      const reqRaw       = document.getElementById('inp-tl-requirements').value.trim();
+      const requirements = reqRaw ? reqRaw.split(',').map(s => s.trim()).filter(Boolean) : [];
+      const mode         = document.querySelector('input[name=tl_mode]:checked').value;
+      const tlExtraRaw   = document.getElementById('inp-tl-extra').value.trim();
+      // `extra` is the only channel for values a tool needs but the model must not
+      // see; it reaches the agent as build_tools(config) (spec.load_tool_module).
+      let tlExtra = {};
+      if (tlExtraRaw) {
+        try { tlExtra = JSON.parse(tlExtraRaw); }
+        catch { return showAlert('error', 'Extra config must be valid JSON.'); }
+      }
+      tools = { source: 'upload', entry_file, requirements, extra: tlExtra };
+      if (mode === 'zip') {
+        if (!toolloopZipFile) return showAlert('error', 'Choose a .zip project file to upload.');
+        tools.install_project = document.getElementById('inp-tl-install-project').checked;
+      } else {
+        toolsCode = document.getElementById('inp-tl-code').value;
+        if (!toolsCode.trim()) return showAlert('error', 'Tools code is required when uploading tool code.');
+      }
+    } else {
+      tools = { source: 'none' };
+    }
+    config = { system_prompt, model, tools };
+  } else if (handler_type === 'proxy') {
     const upstream_url = document.getElementById('inp-upstream-url').value.trim();
     const auth_header  = document.getElementById('inp-auth-header').value.trim();
-    if (!upstream_url) return showAlert('error', 'Upstream URL is required for API proxy agents.');
+    if (!upstream_url) return showAlert('error', 'Upstream URL is required for proxy agents.');
     config = { upstream_url, ...(auth_header ? { auth_header } : {}) };
-  } else if (handler_type === 'tool_loop') {
-    const system_prompt = document.getElementById('inp-tl-system-prompt').value.trim();
-    const model         = document.getElementById('inp-model').value.trim() || 'openai/gpt-oss-120b';
-    const entry_file    = document.getElementById('inp-tl-entry-file').value.trim() || 'tools.py';
-    const reqRaw        = document.getElementById('inp-tl-requirements').value.trim();
-    const requirements  = reqRaw ? reqRaw.split(',').map(s => s.trim()).filter(Boolean) : [];
-    const mode          = document.querySelector('input[name=tl_mode]:checked').value;
-    if (!system_prompt) return showAlert('error', 'System prompt is required for tool-loop agents.');
-    config = { system_prompt, model, entry_file, requirements };
-    if (mode === 'zip') {
-      if (!toolloopZipFile) return showAlert('error', 'Choose a .zip project file to upload.');
-      config.install_project = document.getElementById('inp-tl-install-project').checked;
-    } else {
-      toolsCode = document.getElementById('inp-tl-code').value;
-      if (!toolsCode.trim()) return showAlert('error', 'Tools code is required for tool-loop agents.');
-    }
   } else { // custom
     const class_name     = document.getElementById('inp-class-name').value.trim();
     const python_version = document.getElementById('inp-python-version').value;
@@ -702,7 +815,13 @@ async function submitRegistration() {
     stage = 'submit';
     createdId = agent.id;
 
-    if (handler_type === 'custom' || handler_type === 'tool_loop') {
+    // Whether a second step is needed is decided by whether this config SHIPS CODE —
+    // a custom handler, or an llm agent whose tools.source is 'upload'. Same rule the
+    // server applies (models.carries_upload).
+    const uploadsCode = handler_type === 'custom'
+      || (handler_type === 'llm' && config.tools && config.tools.source === 'upload');
+
+    if (uploadsCode) {
       // Step 2: upload the code — a single .py blob or the chosen .zip project.
       // Validation / unpack errors surface here.
       const fd = new FormData();
@@ -712,12 +831,12 @@ async function submitRegistration() {
         } else {
           fd.append('file', new Blob([handlerCode], { type: 'text/x-python' }), 'handler.py');
         }
-      } else { // tool_loop
+      } else { // llm + uploaded tool code
         const tlMode = document.querySelector('input[name=tl_mode]:checked').value;
         if (tlMode === 'zip') {
           fd.append('file', toolloopZipFile, toolloopZipFile.name);
         } else {
-          fd.append('file', new Blob([toolsCode], { type: 'text/x-python' }), config.entry_file || 'tools.py');
+          fd.append('file', new Blob([toolsCode], { type: 'text/x-python' }), config.tools.entry_file || 'tools.py');
         }
       }
       const up = await fetch(`${API_PREFIX}/agents/${agent.id}/handler`, { method: 'POST', body: fd });
@@ -760,9 +879,12 @@ function resetForm() {
   ['inp-name','inp-description','inp-system-prompt',
    'inp-upstream-url','inp-auth-header','skill-search',
    'inp-requirements','inp-system-packages','inp-extra',
-   'inp-tl-system-prompt','inp-tl-requirements'].forEach(id => {
+   'inp-preset-tools','inp-http-base-url','inp-http-auth-env','inp-http-operations',
+   'inp-tl-requirements','inp-tl-extra'].forEach(id => {
     document.getElementById(id).value = '';
   });
+  document.getElementById('inp-tool-source').value = 'none';
+  document.getElementById('inp-http-auth-scheme').value = 'Bearer';
   document.getElementById('inp-model').value = 'openai/gpt-oss-120b';
   document.getElementById('inp-class-name').value = 'MyAgentHandler';
   document.getElementById('inp-python-version').value = '3.11';
@@ -837,12 +959,14 @@ function renderAgentTable(agents) {
     </div>`;
 }
 
-// Derive the status badge: custom agents awaiting approval show "Pending
+// Derive the status badge: uploaded-code agents awaiting approval show "Pending
 // Approval"; "building" agents show "Building"; everything else uses the raw
-// status value.
+// status value. Only agents that ship code are ever created unapproved, so
+// `approved === false` is the signal — no handler_type check needed (which also
+// keeps this correct for an `llm` agent whose tools.source is 'upload').
 function statusBadge(a) {
   let key = a.status, label = a.status;
-  if ((a.handler_type === 'custom' || a.handler_type === 'tool_loop') && a.approved === false && a.status === 'registered') {
+  if (a.approved === false && a.status === 'registered') {
     // Distinguish a real pending agent from a codeless orphan (no code uploaded).
     if (a.has_handler) { key = 'pending'; label = 'Pending Approval'; }
     else { key = 'registered'; label = 'Awaiting Upload'; }

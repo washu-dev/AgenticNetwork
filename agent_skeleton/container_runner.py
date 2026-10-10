@@ -54,16 +54,23 @@ def _serve_tool_loop(cfg: dict) -> None:
     description: str = config.get("description", "")
     system_prompt: str = config.get("system_prompt", "")
     model = config.get("model")
-    handler_file = os.environ.get(
-        "HANDLER_FILE_PATH", "/app/" + config.get("entry_file", "tools.py")
-    )
+
+    # `entry_file` and `extra` live under config.tools in the canonical `llm` shape
+    # and directly on config in the legacy `tool_loop` shape. Read whichever is
+    # present so one image works with either service version.
+    tools_cfg = config.get("tools")
+    tools_cfg = tools_cfg if isinstance(tools_cfg, dict) else {}
+    entry_file = tools_cfg.get("entry_file") or config.get("entry_file") or "tools.py"
+    extra = tools_cfg.get("extra") or config.get("extra") or {}
+
+    handler_file = os.environ.get("HANDLER_FILE_PATH", "/app/" + entry_file)
 
     logger.info(
         "container_runner_tool_loop_start agent_id=%s port=%d file=%s",
         agent_id, port, handler_file,
     )
 
-    schemas, registry = load_tool_module(handler_file, config.get("extra", {}))
+    schemas, registry = load_tool_module(handler_file, extra)
     spec = tool_loop_spec(
         name=name,
         system_prompt=system_prompt,
@@ -93,10 +100,22 @@ def main() -> None:
 
     cfg = json.loads(raw)
 
-    # tool_loop agents run an uploaded LLM tool loop, not an AgentHandler subclass.
-    # Serve them via the skeleton's own spec engine (create_app), which is baked
-    # into this image — registration_service is NOT installed here.
-    if cfg.get("handler_type") == "tool_loop":
+    # An uploaded TOOL MODULE runs an LLM tool loop, not an AgentHandler subclass.
+    # Serve it via the skeleton's own spec engine (create_app), which is baked into
+    # this image — registration_service is NOT installed here, so we sniff the shape
+    # of the envelope rather than importing its models.
+    #
+    # Two envelope shapes reach us, and both must work: the CANONICAL one
+    # (handler_type='llm' with config.tools.source='upload') and the legacy
+    # pre-consolidation one (handler_type='tool_loop'). A deployed image is
+    # long-lived and may be launched by an older or newer service, so accept both.
+    config_probe: dict = cfg.get("config") or {}
+    tools_probe = config_probe.get("tools")
+    is_uploaded_tool_loop = (
+        cfg.get("handler_type") == "tool_loop"
+        or (isinstance(tools_probe, dict) and tools_probe.get("source") == "upload")
+    )
+    if is_uploaded_tool_loop:
         _serve_tool_loop(cfg)
         return
 

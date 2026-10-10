@@ -55,7 +55,8 @@ async def test_register_api_proxy_agent(client: AsyncClient) -> None:
     r = await client.post("/agents", json=API_PROXY_PAYLOAD)
     assert r.status_code == 201
     body = r.json()
-    assert body["handler_type"] == "api_proxy"
+    # Registered under the legacy name `api_proxy`, persisted as canonical `proxy`.
+    assert body["handler_type"] == "proxy"
     assert body["status"] == "live"
 
 

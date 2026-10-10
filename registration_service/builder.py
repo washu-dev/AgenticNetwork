@@ -10,17 +10,19 @@ from __future__ import annotations
 from typing import Any
 
 from ads_utils.converter import oasf_skill_tag
-from registration_service.models import CustomConfig, ToolLoopConfig
+from registration_service.models import AnyConfig, upload_spec
 
 
-def generate_dockerfile(config: CustomConfig | ToolLoopConfig) -> str:
-    """Render a Dockerfile for an uploaded-code agent image (custom or tool_loop).
+def generate_dockerfile(config: AnyConfig) -> str:
+    """Render a Dockerfile for an uploaded-code agent image.
 
-    Both config types share the fields used below (python_version, system_packages,
-    requirements, install_project, entry_file); the ENTRYPOINT is the shared
-    ``agent_skeleton.container_runner`` either way — it branches on handler_type
-    (carried in AGENT_CONFIG_JSON) to serve an AgentHandler (custom) or an uploaded
-    tool loop (tool_loop).
+    Works for either uploaded-code config — ``custom`` (an ``AgentHandler``
+    subclass) or ``llm`` with ``tools.source == "upload"`` (author-supplied tool
+    bodies). ``upload_spec`` normalizes both into the same build parameters
+    (python_version, system_packages, requirements, install_project, entry_file),
+    so this function no longer branches on handler_type. The ENTRYPOINT is the
+    shared ``agent_skeleton.container_runner`` either way — it reads the config out
+    of AGENT_CONFIG_JSON and picks the right server.
 
     Layout (build context = registered_agents/{slug}/):
       agent_skeleton/  — vendored framework, installed into the image (no external
@@ -39,9 +41,16 @@ def generate_dockerfile(config: CustomConfig | ToolLoopConfig) -> str:
     (e.g. build-essential) to system_packages — not auto-added here. Package tokens are
     charset-validated at the model layer, so they interpolate into the RUN line safely.
     """
+    spec = upload_spec(config)
+    if spec is None:
+        raise ValueError(
+            "generate_dockerfile requires an uploaded-code config "
+            "(custom, or llm with tools.source='upload')"
+        )
+
     apt_line = ""
-    if config.system_packages:
-        pkgs = " ".join(config.system_packages)
+    if spec.system_packages:
+        pkgs = " ".join(spec.system_packages)
         apt_line = (
             "# System packages (apt) — arbitrary, flagged for approver review (D10)\n"
             "RUN apt-get update && apt-get install -y --no-install-recommends "
@@ -50,15 +59,15 @@ def generate_dockerfile(config: CustomConfig | ToolLoopConfig) -> str:
         )
 
     req_line = ""
-    if config.requirements:
-        pkgs = " ".join(f'"{r}"' for r in config.requirements)
+    if spec.requirements:
+        pkgs = " ".join(f'"{r}"' for r in spec.requirements)
         req_line = (
             "# Agent requirements (additive; installed last so they win) — D8\n"
             f"RUN pip install --no-cache-dir {pkgs}\n\n"
         )
 
     install_project_line = ""
-    if config.install_project:
+    if spec.install_project:
         # Gated by install_project; the shell test skips it when no metadata is present.
         install_project_line = (
             "# Install the uploaded project if it ships build metadata (D8)\n"
@@ -67,7 +76,7 @@ def generate_dockerfile(config: CustomConfig | ToolLoopConfig) -> str:
         )
 
     return (
-        f"FROM python:{config.python_version}-slim-bookworm\n"
+        f"FROM python:{spec.python_version}-slim-bookworm\n"
         "\n"
         "WORKDIR /app\n"
         "\n"
@@ -81,7 +90,7 @@ def generate_dockerfile(config: CustomConfig | ToolLoopConfig) -> str:
         "\n"
         f"{install_project_line}"
         f"{req_line}"
-        f"ENV PYTHONUNBUFFERED=1 HANDLER_FILE_PATH=/app/{config.entry_file}\n"
+        f"ENV PYTHONUNBUFFERED=1 HANDLER_FILE_PATH=/app/{spec.entry_file}\n"
         # Absolute interpreter path so a leaked host PATH (e.g. conda) can't hijack `python`.
         'ENTRYPOINT ["/usr/local/bin/python", "-m", "agent_skeleton.container_runner"]\n'
     )

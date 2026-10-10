@@ -1,13 +1,41 @@
-"""Pydantic models for the registration service API."""
+"""Pydantic models for the registration service API.
+
+## The handler-type taxonomy (consolidated 2026-07)
+
+There are **three** canonical handler types, split on the one question that
+actually changes the runtime — *who runs the loop*:
+
+| type | who runs the loop | capabilities come from |
+|---|---|---|
+| ``llm``    | our frozen engine (``agent_skeleton.llm_loop``) | ``LLMConfig.tools`` — none / presets / raw schemas / uploaded module / HTTP operations |
+| ``proxy``  | nobody — each A2A task is relayed to a URL you host | — |
+| ``custom`` | your uploaded ``AgentHandler`` subclass | your code |
+
+This replaces the older five-way split (``llm``, ``api_proxy``, ``custom``,
+``endpoint_ops``, ``tool_loop``). ``tool_loop`` and ``endpoint_ops`` were never
+different *runtimes* from ``llm`` — ``handlers/tool_loop_handler.py`` imports
+``llm_handler``'s executor and card builder verbatim and says so; only the
+``AgentSpec`` differed. So "where do the tools come from" is now a **field**
+(``LLMConfig.tools``) rather than a type. ``proxy`` stays separate precisely
+because "no LLM at all" is its defining property.
+
+**Legacy names keep working.** ``api_proxy`` / ``tool_loop`` / ``endpoint_ops``
+are still accepted on the wire and still parse from their old config shapes (see
+``LEGACY_HANDLER_ALIASES`` and ``parse_config``). This is load-bearing, not
+politeness: rows already in Postgres carry the old ``handler_type`` *and* the old
+config JSON, and the read path re-parses them on every spawn. Old rows are left
+as-is and normalized on read; only newly written rows are canonical.
+"""
 
 from __future__ import annotations
 
 import re
 import uuid
+from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from registration_service.credential_catalog import is_known_type
 
@@ -77,24 +105,89 @@ class ResourceRequirements(BaseModel):
         return v.strip()
 
 
-class LLMConfig(BaseModel):
-    system_prompt: str
-    model: str = "openai/gpt-oss-120b"
-    # Preset tools chosen by name from agent_skeleton.system_tools.preset_tools
-    # (e.g. ["calculator", "current_time"]). Empty => a prompt-only LLM turn.
-    preset_tools: list[str] = Field(default_factory=list)
-    # Reserved for future user-supplied raw tool schemas (not yet wired; see
-    # docs/WRAPPER_PRESETS_AND_ENDPOINT_MANAGER_PLAN.md, decision D2).
-    tools: list[dict[str, Any]] = Field(default_factory=list)
+HARD_MAX_RUNTIME_SECONDS = 3600   # ceiling for a single agent request (D11)
+
+# apt package tokens permitted in system_packages. Debian names are lowercase
+# letters/digits plus +.-, but we also allow version pins (pkg=1.2) and arch
+# qualifiers (pkg:amd64). This is NOT a judgment about which packages are
+# "safe" (D10 permits arbitrary apt, flagged for the approver) — it purely
+# blocks shell/Dockerfile injection by rejecting whitespace and metacharacters
+# before the token reaches the generated `apt-get install` RUN line.
+_APT_TOKEN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9+.:=~-]*$")
 
 
-class APIProxyConfig(BaseModel):
-    upstream_url: str
-    auth_header: str | None = None
+def _sanitize_apt_list(v: list[str]) -> list[str]:
+    """Reject tokens that could break out of the `apt-get install` RUN line
+    (injection guard, not a package allowlist — see _APT_TOKEN_RE)."""
+    cleaned: list[str] = []
+    for pkg in v:
+        pkg = pkg.strip()
+        if not pkg:
+            continue
+        if not _APT_TOKEN_RE.match(pkg):
+            raise ValueError(f"Invalid apt package name: {pkg!r}")
+        cleaned.append(pkg)
+    return cleaned
+
+
+# ── Tool sources for an `llm` agent ─────────────────────────────────────────────
+# A discriminated union on ``source``. Each member carries exactly the fields that
+# source needs and nothing else, so an impossible combination (e.g. an upload's
+# `requirements` on a preset-tools agent) cannot be expressed.
+
+class NoTools(BaseModel):
+    """A single LLM turn: a system prompt and no tools."""
+    source: Literal["none"] = "none"
+
+
+class PresetTools(BaseModel):
+    """Tools chosen by name from the built-in catalog
+    (``agent_skeleton.system_tools.preset_tools``), e.g. ``["calculator"]``."""
+    source: Literal["presets"] = "presets"
+    names: list[str] = Field(default_factory=list)
+
+
+class RawTools(BaseModel):
+    """Caller-supplied Chat Completions tool schemas with no bodies.
+
+    The model can *emit* these calls but nothing dispatches them, so this is only
+    useful for prompt/router experiments. Previously the unwired ``LLMConfig.tools``
+    list; it now has an explicit home rather than being silently ignored.
+    """
+    source: Literal["raw"] = "raw"
+    schemas: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class UploadedTools(BaseModel):
+    """Author-uploaded tool bodies + schemas — the old ``tool_loop`` type.
+
+    The uploaded ``entry_file`` module (at the archive root) must expose
+    module-level ``TOOL_SCHEMAS`` + ``TOOL_REGISTRY``, or a ``build_tools(config)``
+    factory returning that pair. The factory is the closure-safe path: it lets the
+    author bake ``extra`` (an API key, a contact email, a timeout, a result cap)
+    into each tool WITHOUT the value becoming a tool parameter the model can see or
+    set. Everything else — the loop, the handler, the A2A server — is generated
+    (``agent_skeleton.spec.tool_loop_spec``).
+
+    Uploads Python, so it is admin-approval-gated exactly like ``custom``
+    (see ``upload_spec``).
+    """
+    source: Literal["upload"] = "upload"
+    entry_file: str = "tools.py"            # module at the upload root exposing the tools
+    python_version: str = "3.11"
+    requirements: list[str] = Field(default_factory=list)
+    system_packages: list[str] = Field(default_factory=list)   # apt, cluster build only (D10)
+    install_project: bool = True            # pip install . if pyproject.toml/setup.py present at root
+    extra: dict[str, Any] = Field(default_factory=dict)         # passed to build_tools(config)
+
+    @field_validator("system_packages")
+    @classmethod
+    def _sanitize_apt(cls, v: list[str]) -> list[str]:
+        return _sanitize_apt_list(v)
 
 
 class OperationSpec(BaseModel):
-    """One API operation exposed to the model as a typed tool (Feature B).
+    """One API operation exposed to the model as a typed tool.
 
     Maps 1:1 to ``agent_skeleton.system_tools.call_endpoint.OperationConfig``.
     ``params`` is a JSON-Schema ``properties`` dict; a param named ``{x}`` in
@@ -118,19 +211,20 @@ class OperationSpec(BaseModel):
         return m
 
 
-class EndpointOpsConfig(BaseModel):
-    """A typed per-operation endpoint-wrapper agent (Feature B): an LLM loop over an
-    external API where each operation is its own typed tool. ``base_url`` + ``auth_env``
-    are the shared connection concerns; ``operations`` are the typed tools the model
-    calls. The token is read at call time from the env var NAMED by ``auth_env`` —
-    the value is never stored here."""
+class HttpTools(BaseModel):
+    """Each operation of an external API as its own typed tool — the old
+    ``endpoint_ops`` type.
 
+    ``base_url`` + ``auth_env`` are the shared connection concerns; ``operations``
+    are the typed tools the model calls. The token is read at call time from the env
+    var NAMED by ``auth_env`` — the value is never stored here. With this source a
+    ``system_prompt`` is optional: a routing prompt is generated from the operations.
+    """
+    source: Literal["http"] = "http"
     base_url: str
     operations: list[OperationSpec] = Field(..., min_length=1)
     auth_env: str | None = None      # NAME of the env var holding the token (never the token)
     auth_scheme: str = "Bearer"      # 'Bearer' | 'raw'
-    system_prompt: str | None = None  # optional override; otherwise a routing prompt is generated
-    model: str = "openai/gpt-oss-120b"
 
     @field_validator("base_url")
     @classmethod
@@ -143,18 +237,39 @@ class EndpointOpsConfig(BaseModel):
         return v
 
 
-HARD_MAX_RUNTIME_SECONDS = 3600   # ceiling for a single agent request (D11)
+ToolSource = Annotated[
+    NoTools | PresetTools | RawTools | UploadedTools | HttpTools,
+    Field(discriminator="source"),
+]
 
-# apt package tokens permitted in system_packages. Debian names are lowercase
-# letters/digits plus +.-, but we also allow version pins (pkg=1.2) and arch
-# qualifiers (pkg:amd64). This is NOT a judgment about which packages are
-# "safe" (D10 permits arbitrary apt, flagged for the approver) — it purely
-# blocks shell/Dockerfile injection by rejecting whitespace and metacharacters
-# before the token reaches the generated `apt-get install` RUN line.
-_APT_TOKEN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9+.:=~-]*$")
+
+# ── The three canonical configs ────────────────────────────────────────────────
+
+class LLMConfig(BaseModel):
+    """An LLM tool loop run by the shared engine. ``tools`` selects where the
+    capabilities come from (see ``ToolSource``)."""
+    system_prompt: str | None = None
+    model: str = "openai/gpt-oss-120b"
+    tools: ToolSource = Field(default_factory=NoTools)
+
+    @model_validator(mode="after")
+    def _prompt_required_unless_generated(self) -> "LLMConfig":
+        # Every source except `http` needs an author-written prompt; `http` can
+        # generate a routing prompt from the operations (prompt.build_operations_prompt).
+        if self.tools.source != "http" and not (self.system_prompt or "").strip():
+            raise ValueError("system_prompt is required unless tools.source is 'http'")
+        return self
+
+
+class ProxyConfig(BaseModel):
+    """No LLM: relay each A2A task to an upstream URL the author hosts.
+    Formerly ``api_proxy`` (still accepted as a legacy name)."""
+    upstream_url: str
+    auth_header: str | None = None
 
 
 class CustomConfig(BaseModel):
+    """An uploaded ``AgentHandler`` subclass that owns the whole flow."""
     class_name: str
     python_version: str = "3.11"
     requirements: list[str] = Field(default_factory=list)
@@ -177,78 +292,176 @@ class CustomConfig(BaseModel):
     @field_validator("system_packages")
     @classmethod
     def _sanitize_apt(cls, v: list[str]) -> list[str]:
-        # Reject tokens that could break out of the `apt-get install` RUN line
-        # (injection guard, not a package allowlist — see _APT_TOKEN_RE).
-        cleaned: list[str] = []
-        for pkg in v:
-            pkg = pkg.strip()
-            if not pkg:
-                continue
-            if not _APT_TOKEN_RE.match(pkg):
-                raise ValueError(f"Invalid apt package name: {pkg!r}")
-            cleaned.append(pkg)
-        return cleaned
+        return _sanitize_apt_list(v)
 
 
-class ToolLoopConfig(BaseModel):
-    """An uploaded LLM tool-loop agent: the author supplies the tool bodies +
-    schemas + a system prompt, and the service builds the loop / handler / A2A
-    server around them via the shared ``agent_skeleton`` engine.
+# Legacy aliases so `from registration_service.models import APIProxyConfig` and
+# isinstance checks in older code keep resolving.
+APIProxyConfig = ProxyConfig
 
-    Like ``custom`` it uploads Python and is admin-approved; unlike ``custom`` there
-    is NO ``AgentHandler`` — the uploaded ``entry_file`` module exposes the tool
-    contract instead: module-level ``TOOL_SCHEMAS`` + ``TOOL_REGISTRY`` (Chat
-    Completions schemas + a ``{name: fn}`` map), OR a ``build_tools(config)``
-    factory returning that pair (the closure-safe way to bake in secrets without
-    exposing them as tool parameters). Everything else — the tool loop, the
-    handler, the A2A wrapper — is generated (``agent_skeleton.spec.tool_loop_spec``).
+AnyConfig = LLMConfig | ProxyConfig | CustomConfig
+
+
+# ── Handler-type names ──────────────────────────────────────────────────────────
+
+CANONICAL_HANDLER_TYPES = ("llm", "proxy", "custom")
+
+# Legacy wire/DB names → the canonical type they became. Retained because stored
+# rows and older API clients still use them; ``parse_config`` also knows how to read
+# each one's *old config shape*.
+LEGACY_HANDLER_ALIASES = {
+    "api_proxy": "proxy",
+    "tool_loop": "llm",       # → LLMConfig(tools=UploadedTools(...))
+    "endpoint_ops": "llm",    # → LLMConfig(tools=HttpTools(...))
+}
+
+ALL_HANDLER_TYPES = (*CANONICAL_HANDLER_TYPES, *LEGACY_HANDLER_ALIASES)
+
+HandlerType = Literal["llm", "proxy", "custom", "api_proxy", "tool_loop", "endpoint_ops"]
+
+
+def normalize_handler_type(handler_type: str) -> str:
+    """Map a wire/stored handler_type to its canonical name. Unknown values are
+    returned unchanged so the caller's own error path reports them."""
+    return LEGACY_HANDLER_ALIASES.get(handler_type, handler_type)
+
+
+# ── Uploaded-code accessor ──────────────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class UploadSpec:
+    """The build/run parameters of a config that ships uploaded Python.
+
+    One shape for both uploaded-code paths (``custom`` and ``llm`` +
+    ``UploadedTools``) so the builder, the local subprocess backend, and the
+    approval gate stop branching on handler_type. ``carries_upload`` used to be
+    ``handler_type in ("custom", "tool_loop")``; asking the *config* is the more
+    honest question and it survives the taxonomy change.
     """
-    system_prompt: str
-    model: str = "openai/gpt-oss-120b"
-    entry_file: str = "tools.py"            # module at the upload root exposing the tools
-    python_version: str = "3.11"
-    requirements: list[str] = Field(default_factory=list)
-    system_packages: list[str] = Field(default_factory=list)   # apt, cluster build only (D10)
-    install_project: bool = True            # pip install . if pyproject.toml/setup.py present at root
-    extra: dict[str, Any] = Field(default_factory=dict)         # passed to build_tools(config)
-
-    @field_validator("system_packages")
-    @classmethod
-    def _sanitize_apt(cls, v: list[str]) -> list[str]:
-        # Same injection guard as CustomConfig (not a package allowlist — _APT_TOKEN_RE).
-        cleaned: list[str] = []
-        for pkg in v:
-            pkg = pkg.strip()
-            if not pkg:
-                continue
-            if not _APT_TOKEN_RE.match(pkg):
-                raise ValueError(f"Invalid apt package name: {pkg!r}")
-            cleaned.append(pkg)
-        return cleaned
+    entry_file: str
+    python_version: str
+    requirements: list[str]
+    system_packages: list[str]
+    install_project: bool
+    extra: dict[str, Any]
 
 
-AnyConfig = LLMConfig | APIProxyConfig | CustomConfig | EndpointOpsConfig | ToolLoopConfig
+def upload_spec(config: AnyConfig) -> UploadSpec | None:
+    """The uploaded-code parameters, or ``None`` if this config uploads no code.
+
+    A truthy result means: admin approval is required, an entry file must be
+    uploaded before the agent can start, and a per-agent image/venv is built.
+    """
+    if isinstance(config, CustomConfig):
+        return UploadSpec(
+            entry_file=config.entry_file,
+            python_version=config.python_version,
+            requirements=list(config.requirements),
+            system_packages=list(config.system_packages),
+            install_project=config.install_project,
+            extra=dict(config.extra),
+        )
+    if isinstance(config, LLMConfig) and isinstance(config.tools, UploadedTools):
+        t = config.tools
+        return UploadSpec(
+            entry_file=t.entry_file,
+            python_version=t.python_version,
+            requirements=list(t.requirements),
+            system_packages=list(t.system_packages),
+            install_project=t.install_project,
+            extra=dict(t.extra),
+        )
+    return None
+
+
+def carries_upload(config: AnyConfig) -> bool:
+    """True if this config ships uploaded Python (→ approval + entry file required)."""
+    return upload_spec(config) is not None
+
+
+# ── Parsing (including the legacy shapes) ───────────────────────────────────────
+
+def _llm_config_from_raw(raw: dict) -> LLMConfig:
+    """Build an ``LLMConfig``, accepting the pre-consolidation ``llm`` shape.
+
+    Old shape had ``preset_tools: list[str]`` and an unwired ``tools: list[dict]``
+    of raw schemas. Both are folded into the ``tools`` union. Stored configs were
+    written with ``model_dump()``, so an old row reliably has BOTH keys present
+    (usually ``[]``) — hence the emptiness checks rather than key presence.
+    """
+    raw = dict(raw)
+    if not isinstance(raw.get("tools"), dict):
+        legacy_presets = raw.pop("preset_tools", None) or []
+        legacy_raw_schemas = raw.pop("tools", None) or []
+        if legacy_presets:
+            raw["tools"] = {"source": "presets", "names": list(legacy_presets)}
+        elif legacy_raw_schemas:
+            raw["tools"] = {"source": "raw", "schemas": list(legacy_raw_schemas)}
+        else:
+            raw.pop("tools", None)          # fall through to the NoTools default
+    else:
+        raw.pop("preset_tools", None)       # canonical `tools` wins over a stale sibling
+    return LLMConfig(**raw)
+
+
+def _llm_config_from_tool_loop(raw: dict) -> LLMConfig:
+    """Legacy ``tool_loop`` config → ``LLMConfig(tools=UploadedTools(...))``."""
+    raw = dict(raw)
+    return LLMConfig(
+        system_prompt=raw.get("system_prompt"),
+        model=raw.get("model", "openai/gpt-oss-120b"),
+        tools=UploadedTools(
+            entry_file=raw.get("entry_file", "tools.py"),
+            python_version=raw.get("python_version", "3.11"),
+            requirements=raw.get("requirements") or [],
+            system_packages=raw.get("system_packages") or [],
+            install_project=raw.get("install_project", True),
+            extra=raw.get("extra") or {},
+        ),
+    )
+
+
+def _llm_config_from_endpoint_ops(raw: dict) -> LLMConfig:
+    """Legacy ``endpoint_ops`` config → ``LLMConfig(tools=HttpTools(...))``."""
+    raw = dict(raw)
+    return LLMConfig(
+        system_prompt=raw.get("system_prompt"),
+        model=raw.get("model", "openai/gpt-oss-120b"),
+        tools=HttpTools(
+            # .get, not [...]: a missing key must surface as a pydantic
+            # ValidationError (→ HTTP 422), not a KeyError (→ 500).
+            base_url=raw.get("base_url"),
+            operations=raw.get("operations") or [],
+            auth_env=raw.get("auth_env"),
+            auth_scheme=raw.get("auth_scheme", "Bearer"),
+        ),
+    )
 
 
 def parse_config(handler_type: str, raw: dict) -> AnyConfig:
-    """Build the typed config model for a handler_type from a raw dict."""
+    """Build the typed config for a handler_type, canonical or legacy.
+
+    Dispatches on the handler_type *as given* (not normalized) because the legacy
+    name is what identifies the legacy config shape: ``tool_loop`` and
+    ``endpoint_ops`` both normalize to ``llm`` but carry different old payloads.
+    """
     if handler_type == "llm":
-        return LLMConfig(**raw)
-    if handler_type == "api_proxy":
-        return APIProxyConfig(**raw)
+        return _llm_config_from_raw(raw)
+    if handler_type == "tool_loop":
+        return _llm_config_from_tool_loop(raw)
+    if handler_type == "endpoint_ops":
+        return _llm_config_from_endpoint_ops(raw)
+    if handler_type in ("proxy", "api_proxy"):
+        return ProxyConfig(**raw)
     if handler_type == "custom":
         return CustomConfig(**raw)
-    if handler_type == "endpoint_ops":
-        return EndpointOpsConfig(**raw)
-    if handler_type == "tool_loop":
-        return ToolLoopConfig(**raw)
     raise ValueError(f"Unknown handler_type: {handler_type}")
 
 
 class RegisterRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=128)
     description: str = Field(..., min_length=1)
-    handler_type: Literal["llm", "api_proxy", "custom", "endpoint_ops", "tool_loop"]
+    handler_type: HandlerType
     oasf_skills: list[OASFSkill] = Field(..., min_length=1)
     config: AnyConfig
     # Optional deploy sizing (cloud backends). None → the backend's defaults, so
@@ -260,18 +473,26 @@ class RegisterRequest(BaseModel):
     def validate_config(cls, v: Any, info: Any) -> Any:
         # Discriminate the config by handler_type (declared before this field, so
         # available in info.data) rather than by pydantic's structural union match.
-        # This is robust when configs share optional fields (e.g. an endpoint_ops
-        # config with a system_prompt could otherwise be mis-coerced to LLMConfig).
-        if isinstance(v, (LLMConfig, APIProxyConfig, CustomConfig, EndpointOpsConfig, ToolLoopConfig)):
+        # This is robust when configs share optional fields (e.g. an LLMConfig with
+        # HttpTools could otherwise be mis-coerced) and it is the only way to know
+        # which *legacy* shape a `tool_loop`/`endpoint_ops` payload is in.
+        if isinstance(v, (LLMConfig, ProxyConfig, CustomConfig)):
             return v
         handler_type = info.data.get("handler_type")
         if handler_type and isinstance(v, dict):
             return parse_config(handler_type, v)
         return v
 
+    @property
+    def canonical_handler_type(self) -> str:
+        """The type to persist. ``handler_type`` keeps whatever the caller sent so
+        ``typed_config()`` can still recognise a legacy config shape."""
+        return normalize_handler_type(self.handler_type)
+
     def typed_config(self) -> AnyConfig:
-        raw = self.config if isinstance(self.config, dict) else self.config.model_dump()
-        return parse_config(self.handler_type, raw)
+        if isinstance(self.config, (LLMConfig, ProxyConfig, CustomConfig)):
+            return self.config
+        return parse_config(self.handler_type, self.config)
 
 
 class RejectRequest(BaseModel):

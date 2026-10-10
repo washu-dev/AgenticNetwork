@@ -33,7 +33,7 @@ from pathlib import Path
 
 import httpx
 
-from registration_service.models import APIProxyConfig, CustomConfig, LLMConfig, ToolLoopConfig
+from registration_service.models import AnyConfig, UploadSpec, upload_spec
 
 logger = logging.getLogger(__name__)
 
@@ -43,11 +43,10 @@ _HEALTH_POLL_INTERVAL_SECONDS = 0.5
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _AGENT_SKELETON_DIR = _REPO_ROOT / "agent_skeleton"
 
-AnyConfig = LLMConfig | APIProxyConfig | CustomConfig | ToolLoopConfig
-
-# Handler types whose code is uploaded and run in-process (need HANDLER_FILE_PATH,
-# the project root on PYTHONPATH, and a per-agent venv for their requirements).
-_UPLOAD_CODE_TYPES = ("custom", "tool_loop")
+# Whether an agent's code is uploaded (and so needs HANDLER_FILE_PATH, the project
+# root on PYTHONPATH, and a per-agent venv for its requirements) is a property of
+# the CONFIG, not of the handler_type name — ``upload_spec(config)`` answers it for
+# both uploaded-code shapes (``custom`` and ``llm`` + ``tools.source='upload'``).
 
 
 def _handler_files_dir() -> Path:
@@ -184,18 +183,18 @@ class SubprocessBackend(ContainerBackend):
 
         python = sys.executable
 
-        if handler_type in _UPLOAD_CODE_TYPES:
-            assert isinstance(config, (CustomConfig, ToolLoopConfig))
+        spec = upload_spec(config)
+        if spec is not None:
             handler_dir = _handler_files_dir() / agent_id
-            env["HANDLER_FILE_PATH"] = str(handler_dir / config.entry_file)
-            if config.system_packages:
+            env["HANDLER_FILE_PATH"] = str(handler_dir / spec.entry_file)
+            if spec.system_packages:
                 # apt is a cluster-image concern (D10); we can't apt-install per-agent
                 # in local subprocess dev, so skip and warn. If the handler needs a
                 # system lib locally, install it on the host first.
                 logger.warning(
                     "subprocess_skipping_system_packages agent_id=%s packages=%s "
                     "(apt only applies to the cluster image build)",
-                    agent_id, config.system_packages,
+                    agent_id, spec.system_packages,
                 )
             # Both roots must be importable: registration_service + agent_skeleton
             # (framework) via _REPO_ROOT, and the uploaded project root (handler_dir)
@@ -204,8 +203,8 @@ class SubprocessBackend(ContainerBackend):
             env["PYTHONPATH"] = os.pathsep.join(
                 p for p in [str(handler_dir), str(_REPO_ROOT), env.get("PYTHONPATH", "")] if p
             )
-            if config.requirements or (config.install_project and _has_build_metadata(handler_dir)):
-                python = await self._ensure_venv(handler_dir, config)
+            if spec.requirements or (spec.install_project and _has_build_metadata(handler_dir)):
+                python = await self._ensure_venv(handler_dir, spec)
 
         runner_path = os.path.join(os.path.dirname(__file__), "runner.py")
         proc = await asyncio.create_subprocess_exec(
@@ -223,7 +222,7 @@ class SubprocessBackend(ContainerBackend):
 
         await self._wait_for_health(agent_id, port)
 
-    async def _ensure_venv(self, handler_dir: Path, config: CustomConfig) -> str:
+    async def _ensure_venv(self, handler_dir: Path, spec: UploadSpec) -> str:
         """Create a per-agent venv (if absent) and install project + requirements.
 
         Order mirrors the cluster Dockerfile (§7.2/§7.3): framework, then the
@@ -241,10 +240,10 @@ class SubprocessBackend(ContainerBackend):
             # Install the framework (editable) so `import agent_skeleton` works even
             # if the system site-packages don't already carry it.
             await _run([str(py), "-m", "pip", "install", "--quiet", "-e", str(_AGENT_SKELETON_DIR)])
-        if config.install_project and _has_build_metadata(handler_dir):
+        if spec.install_project and _has_build_metadata(handler_dir):
             await _run([str(py), "-m", "pip", "install", "--quiet", str(handler_dir)])
-        if config.requirements:
-            await _run([str(py), "-m", "pip", "install", "--quiet", *config.requirements])
+        if spec.requirements:
+            await _run([str(py), "-m", "pip", "install", "--quiet", *spec.requirements])
         return str(py)
 
     async def stop(self, agent_id: str) -> None:

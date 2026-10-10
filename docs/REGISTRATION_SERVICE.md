@@ -8,16 +8,36 @@ Run/dev: `FAKE_DB=1 PYTHONPATH=. pytest registration_service/tests` (see [`CLAUD
 
 ## Handler types
 
-An agent's `handler_type` (stored in the `agents` row) selects how it runs:
+An agent's `handler_type` (stored in the `agents` row) selects **who runs the loop**.
+There are three, consolidated from five in 2026-07:
 
 | Type | Config (`models.py`) | Runs as | Approval? |
 |---|---|---|---|
-| `llm` | `LLMConfig` (system_prompt, model, tools) | `LLMAgentExecutor` — single-turn Chat Completions | auto |
-| `api_proxy` | `APIProxyConfig` (upstream_url, auth_header) | `APIProxyExecutor` — forwards the A2A task to an upstream HTTP/JSON-RPC service | auto |
+| `llm` | `LLMConfig` (system_prompt, model, **tools**) | `LLMAgentExecutor` over an `AgentSpec` built from `tools` | auto, **unless** `tools.source == "upload"` |
+| `proxy` | `ProxyConfig` (upstream_url, auth_header) | `APIProxyExecutor` — forwards the A2A task to an upstream HTTP/JSON-RPC service; no LLM | auto |
 | `custom` | `CustomConfig` (class_name, entry_file, requirements, system_packages, credentials, …) | a user-uploaded `AgentHandler` subclass run via the skeleton `HandlerExecutor` | **admin** |
 
-`runner.py` dispatches on `handler_type`. `llm`/`api_proxy` spawn immediately on `POST /agents`;
-`custom` is staggered (upload → approve → spawn).
+`LLMConfig.tools` is a discriminated union on `source` — `none` (a single turn),
+`presets` (built-in catalog), `upload` (author-uploaded tool bodies), `http` (one typed
+tool per API operation), `raw` (schemas with no bodies; runs prompt-only). This axis
+used to be three separate handler types: `tool_loop` is now `upload` and
+`endpoint_ops` is now `http`, because neither was ever a different *runtime* from
+`llm` — `tool_loop_handler.py` reuses `llm_handler`'s executor and card builder
+verbatim; only the spec differed.
+
+`runner.py` dispatches on the canonical type and, for `llm`, on `tools.source`.
+The **approval gate is a property of the config, not the type name**:
+`models.carries_upload(config)` is true for `custom` and for `llm` + `upload`, and
+those are the agents that are staggered (register → upload → approve → spawn).
+Everything else spawns immediately on `POST /agents`.
+`models.upload_spec(config)` normalizes both uploaded-code shapes into one set of
+build parameters, so a single `generate_dockerfile` serves both.
+
+**Legacy names** (`api_proxy`, `tool_loop`, `endpoint_ops`) and their old flat config
+shapes are still accepted and still parse; a registration under a legacy name is
+persisted under the canonical one. Existing rows keep their old `handler_type` *and*
+old config JSON and are normalized **on read** — never rewritten — so
+`agents_handler_type_check` permits both sets.
 
 ## HTTP surface (`server.py`)
 
@@ -46,11 +66,13 @@ Admin auth (`_require_admin`) is the SSO-identity `ADMIN_EMAILS` allowlist (dev-
 
 ## Lifecycle
 
-**Auto (llm / api_proxy):** `POST /agents` → insert (`approved=TRUE`) → `assign_port` →
+**Auto (any config that ships no code — `proxy`, and `llm` with tools.source
+`none`/`presets`/`http`/`raw`):** `POST /agents` → insert (`approved=TRUE`) → `assign_port` →
 `supervisor.spawn_and_publish` → backend spawns → wait for `/health` → build card
 (`_build_agent_card`) → `publisher.publish(card)` sets `ads_cid` → `status='live'`.
 
-**Custom (staggered):**
+**Uploaded code (staggered — `custom`, and `llm` with tools.source `upload`;
+`models.carries_upload(config)` is the gate):**
 1. `POST /agents` → insert `approved=FALSE`, `status='registered'`.
 2. `POST /agents/{id}/handler` → store the upload under `HANDLER_FILES_DIR/{id}/` (a `.py` entry
    file, or a `.zip` unpacked to a tree — detected by suffix or PK magic), AST-validate the entry
@@ -102,7 +124,7 @@ in the planner.
 | `db.py` / `fake_db.py` | schema + pool; in-memory dev/test swap |
 | `supervisor.py` / `fake_supervisor.py` | spawn/publish/health lifecycle; GitHub commit on approval |
 | `backend.py` | `SubprocessBackend` (local) vs `ClusterBackend` (srun) |
-| `runner.py` | dispatch by `handler_type` |
+| `runner.py` | dispatch by canonical type + `tools.source` |
 | `handlers/custom_handler.py` | wires an uploaded handler into `HandlerExecutor` + serves it |
 | `validator.py` | AST-only upload check (advisory) |
 | `port_pool.py` | port allocation |
