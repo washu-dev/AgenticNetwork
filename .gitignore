@@ -2,6 +2,8 @@ __pycache__/
 *.py[cod]
 *$py.class
 *.egg-info/
+# setuptools output (e.g. agent_skeleton/build/ from a non-editable install)
+build/
 
 .pytest_cache/
 *.log
