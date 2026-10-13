@@ -6,6 +6,10 @@ it*. For project direction and working rules see [`AGENTS.md`](AGENTS.md); for
 the component index see [`README.md`](README.md). Each component also has its own
 `README.md` with authoritative install/run steps.
 
+> **Current focus (2026-10-12): open-source release prep.** Scope, the
+> `agent_skeleton` subtree plan, sprint priorities, and the full-chain test and
+> one-command start goals are in [`docs/OPEN_SOURCE_RELEASE.md`](docs/OPEN_SOURCE_RELEASE.md).
+
 ---
 
 ## 1. What this is
@@ -433,13 +437,25 @@ auth-unaware.
 
 ## 10. Testing & validation
 
-```bash
-# Planner (no network, no ADS, no OpenAI key — uses ScriptedLLMClient + fake ADS)
-PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 planner_agent/.venv/bin/python -m pytest planner_agent/tests -q
+Unit suites run from the repo root, offline (no Docker, Postgres, `dirctl` or API
+key); CI runs the same per component in `.github/workflows/tests.yml`. Counts as of
+2026-10-12. Do not set `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`: registration needs the
+`pytest-asyncio` plugin, and most of its suite fails without it.
 
-# ADS package tests + import smoke (per AGENTS.md)
-PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 agent_directory_service/.venv/bin/python -m pytest agent_directory_service/tests -q
-agent_directory_service/.venv/bin/python -m agent_directory_service.scripts.print_versions
+```bash
+# Planner: 76 tests (no network, no ADS, no OpenAI key — uses ScriptedLLMClient + fake ADS)
+planner_agent/.venv/bin/python -m pytest planner_agent/tests -q
+
+# Registration: 219 tests (registration_service/tests/conftest.py sets FAKE_DB=1)
+registration_service/.venv/bin/python -m pytest registration_service/tests -q
+
+# Agent skeleton (in-repo copy): 45 tests
+registration_service/.venv/bin/python -m pytest agent_skeleton/tests -q
+
+# ADS package: 22 tests (dirctl mocked). There is no agent_directory_service/.venv;
+# they pass in either venv above. print_versions lists the deps of the venv running it.
+registration_service/.venv/bin/python -m pytest agent_directory_service/tests -q
+registration_service/.venv/bin/python -m agent_directory_service.scripts.print_versions
 
 # Planner end-to-end self-check (env, dirctl, ADS reachability, server, OpenAI, tests)
 planner_agent/scripts/doctor.sh
@@ -451,6 +467,10 @@ agent_directory_service/run_ads.sh -list | -raw-list | -diag | -watch | -repair 
 python -m agent_directory_service.scripts.validate_agent_endpoint \
   --card <card.json> --skill <skill> --prompt "..." --endpoint http://host:port/
 ```
+
+Local dev stack (start/stop/status, mock LLM, seed agents): [`docs/DEVSTACK.md`](docs/DEVSTACK.md).
+Full-chain test (start from nothing → user → prompt → specialist answer via the
+planner): `tests/pipeline/`.
 
 ---
 
@@ -498,7 +518,7 @@ python -m agent_directory_service.scripts.validate_agent_endpoint \
 | `registration_service/supervisor.py` | Subprocess lifecycle, ADS publish/unpublish, health loop; `FAKE_DB=1` swaps in `fake_supervisor.py` |
 | `registration_service/fake_db.py` | In-memory drop-in for the asyncpg pool — used by `FAKE_DB=1` dev mode and tests |
 | `registration_service/fake_supervisor.py` | No-op supervisor used by `FAKE_DB=1` dev mode and tests |
-| `registration_service/tests/` | pytest suite (19 tests); run with `FAKE_DB=1 PYTHONPATH=. pytest registration_service/tests` |
+| `registration_service/tests/` | pytest suite (219 tests as of 2026-10-12); run from the repo root with `registration_service/.venv/bin/python -m pytest registration_service/tests -q` (its conftest sets `FAKE_DB=1`) |
 | `AGENTS.md` | Project direction + working rules + validation |
 
 **[`agent-directory`](https://github.com/washu-dev/agent-directory) repo:**

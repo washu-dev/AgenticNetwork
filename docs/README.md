@@ -26,6 +26,7 @@ decisions, and rationale.
 | [TESTING_CHANGES.md](TESTING_CHANGES.md) | test a change on your own throwaway instance instead of the shared prod deployment. |
 | [BUG_REPORTING_AND_FEEDBACK_PLAN.md](BUG_REPORTING_AND_FEEDBACK_PLAN.md) | understand the bug-report / agent-creation-feedback → GitHub-issue paths (implemented) and their staged-deployment test runbook. |
 | [WRAPPER_PRESETS_AND_ENDPOINT_MANAGER_PLAN.md](WRAPPER_PRESETS_AND_ENDPOINT_MANAGER_PLAN.md) | add preset tools to the LLM wrapper or a multi-endpoint "manager" to a custom agent (partially implemented). |
+| [OPEN_SOURCE_RELEASE.md](OPEN_SOURCE_RELEASE.md) | work on the open-source release — what ships, the `agent_skeleton` subtree plan, sprint priorities, and the full-chain test and one-command start goals (in progress, 2026-10). |
 
 ## Related root docs
 - [`CLAUDE.md`](../CLAUDE.md) — system guide + operating manual (agent- and human-facing).

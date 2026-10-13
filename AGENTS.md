@@ -1,5 +1,10 @@
 # AGENTS.md
 
+**Current focus (2026-10-12): open-source release prep.** See
+[`docs/OPEN_SOURCE_RELEASE.md`](docs/OPEN_SOURCE_RELEASE.md) for scope, the
+`agent_skeleton` subtree plan, sprint priorities, and the full-chain test and
+one-command start goals.
+
 ## Project Direction
 
 The system is split across two repos:
