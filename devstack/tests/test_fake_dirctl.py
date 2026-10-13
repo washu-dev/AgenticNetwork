@@ -1,15 +1,14 @@
 """Fake dirctl, driven as a black box through devstack/bin/dirctl.
 
 Covers the commands the repository calls (push, pull, routing publish/list/
-search/unpublish/info, search, delete, events listen), the stored-vs-routed
-distinction, the routing delay and concurrent writers.
+search/unpublish/info, search), the stored-vs-routed distinction, the routing
+delay and concurrent writers.
 """
 
 from __future__ import annotations
 
 import json
 import os
-import select
 import subprocess
 import sys
 import time
@@ -101,17 +100,15 @@ def test_routing_search_filters_by_skill(env, tmp_path):
     assert len(search(limit="1")) == 1
 
 
-def test_unpublish_keeps_the_record_and_delete_removes_it(env, tmp_path):
+def test_unpublish_keeps_the_record(env, tmp_path):
     cid = push(env, tmp_path, record("alpha"))
     dirctl(env, "routing", "publish", cid)
     dirctl(env, "routing", "unpublish", cid)
     assert routed_cids(env) == []
     assert json.loads(dirctl(env, "pull", cid, "--output", "json").stdout)["name"] == "alpha"
 
-    dirctl(env, "delete", cid, "--output", "json")
-    missing = dirctl(env, "pull", cid, "--output", "json", check=False)
+    missing = dirctl(env, "pull", "bae-missing", "--output", "json", check=False)
     assert missing.returncode == 1 and missing.stderr.startswith("Error:") and missing.stdout == ""
-    assert json.loads(dirctl(env, "search", "--output", "json").stdout) == []
 
 
 def test_route_delay_keeps_a_published_record_pending(env, tmp_path):
@@ -158,20 +155,3 @@ def test_concurrent_pushes_from_many_processes_all_land(env, tmp_path):
     stored = json.loads(dirctl(env, "search", "--output", "json").stdout)
     assert sorted(stored) == sorted(cids)
     json.loads(Path(env["FAKE_DIRCTL_STATE"]).read_text())  # still valid JSON
-
-
-def test_events_listen_streams_publications(env, tmp_path):
-    cid = push(env, tmp_path, record("alpha"))
-    listener = subprocess.Popen(
-        [sys.executable, str(SHIM), *ADDR, "events", "listen", "--types", "RECORD_PUBLISHED", "--output", "jsonl"],
-        env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-    )
-    try:
-        time.sleep(0.5)  # let it record the starting event id
-        dirctl(env, "routing", "publish", cid)
-        assert select.select([listener.stdout], [], [], 10)[0], "no event within 10 s"
-        event = json.loads(listener.stdout.readline())
-        assert event["type"] == "EVENT_TYPE_RECORD_PUBLISHED" and event["resource_id"] == cid
-    finally:
-        listener.terminate()
-        listener.wait(timeout=10)

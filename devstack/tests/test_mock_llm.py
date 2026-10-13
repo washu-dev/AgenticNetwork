@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import threading
+import urllib.error
 import urllib.request
 
 import pytest
@@ -128,13 +129,6 @@ def test_specialist_echo_is_deterministic_and_short():
     assert len(first["choices"][0]["message"]["content"]) < 400
 
 
-def test_stream_chunks_carry_tool_call_and_finish():
-    chunks = mock_llm.stream_chunks(mock_llm.build_completion(planner_body("hi", [])))
-    assert chunks[0]["choices"][0]["delta"]["role"] == "assistant"
-    assert chunks[1]["choices"][0]["delta"]["tool_calls"][0]["function"]["name"] == "list_agents"
-    assert chunks[2]["choices"][0]["finish_reason"] == "tool_calls"
-
-
 @pytest.fixture()
 def server(tmp_path, monkeypatch):
     monkeypatch.setenv("MOCK_LLM_LOG", str(tmp_path / "requests.jsonl"))
@@ -146,31 +140,26 @@ def server(tmp_path, monkeypatch):
     srv.server_close()
 
 
-def post(url: str, body: dict) -> tuple[int, bytes, str]:
+def post(url: str, body: dict) -> tuple[int, bytes]:
     req = urllib.request.Request(url, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=5) as resp:
-        return resp.status, resp.read(), resp.headers.get("Content-Type", "")
+        return resp.status, resp.read()
 
 
-def test_http_models_completions_stream_and_log(server):
+def test_http_models_completions_and_log(server):
     base, log = server
     with urllib.request.urlopen(f"{base}/v1/models", timeout=5) as resp:
         assert {m["id"] for m in json.loads(resp.read())["data"]} >= {"mock-planner", "mock-specialist"}
 
-    status, raw, _ = post(f"{base}/v1/chat/completions", planner_body("hi", []))
+    status, raw = post(f"{base}/v1/chat/completions", planner_body("hi", []))
     assert status == 200 and json.loads(raw)["object"] == "chat.completion"
 
-    status, raw, ctype = post(
-        f"{base}/v1/chat/completions",
-        {"model": "m", "stream": True, "messages": [{"role": "user", "content": "ping"}]},
-    )
-    assert ctype.startswith("text/event-stream")
-    events = [line[6:] for line in raw.decode().splitlines() if line.startswith("data: ")]
-    assert events[-1] == "[DONE]"
-    text = "".join(
-        c["choices"][0]["delta"].get("content", "") for c in map(json.loads, events[:-1]) if c["choices"]
-    )
-    assert text == "[mock-llm] Echo: ping"
+    status, raw = post(f"{base}/v1/chat/completions", {"model": "m", "messages": [{"role": "user", "content": "ping"}]})
+    assert status == 200 and json.loads(raw)["choices"][0]["message"]["content"] == "[mock-llm] Echo: ping"
+
+    with pytest.raises(urllib.error.HTTPError) as streamed:
+        post(f"{base}/v1/chat/completions", {"model": "m", "stream": True, "messages": []})
+    assert streamed.value.code == 400
 
     entries = [json.loads(line) for line in log.read_text().splitlines()]
     assert [e["kind"] for e in entries] == ["planner", "specialist"]
@@ -189,8 +178,3 @@ def test_openai_sdk_parses_replies(server):
 
     specialist = client.chat.completions.create(model="mock-specialist", messages=[{"role": "user", "content": "yo"}])
     assert specialist.choices[0].message.content == "[mock-llm] Echo: yo"
-
-    stream = client.chat.completions.create(
-        model="mock-specialist", messages=[{"role": "user", "content": "yo"}], stream=True
-    )
-    assert "".join(c.choices[0].delta.content or "" for c in stream if c.choices) == "[mock-llm] Echo: yo"

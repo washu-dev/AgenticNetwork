@@ -13,8 +13,9 @@ check identity handling, shut down.
     PIPELINE_PORT_OFFSET  added to every stack port (default 20000), so the suite can run
                           next to a stack on the default ports
     PIPELINE_STATE_DIR    the stack's state dir (default <repo>/.devstack-pipeline). It is
-                          reset (down, then deleted) at the start; afterwards the stack is
-                          stopped with this same dir and its logs/ are kept for debugging.
+                          reset (down, then the stack's files deleted) at the start; afterwards
+                          the stack is stopped with this same dir and its logs/ are kept for
+                          debugging.
 """
 
 from __future__ import annotations
@@ -212,7 +213,7 @@ def _terminated(signum: int, frame: Any) -> None:
 @pytest.fixture(scope="module")
 def stack() -> Any:
     """The stack, started from nothing. Always stopped with the same state dir, even when
-    `up` or a test fails or the run is terminated; the dir is only deleted by the next
+    `up` or a test fails or the run is terminated; the dir is only cleared by the next
     run's `reset`, which stops whatever it still records first."""
     if STATE_DIR.exists():
         reset = stack_cli("reset")
@@ -310,8 +311,8 @@ def test_5_stream_sends_progress_then_one_final_event(first_turn):
     assert progress == tools(final) and {"list_agents", "call_agent"} <= set(progress), progress
 
 
-def test_6_registered_agent_receives_the_prompt_that_matches_it(stack):
-    definition = STATE_DIR / "zebra_scout.json"
+def test_6_registered_agent_receives_the_prompt_that_matches_it(stack, tmp_path):
+    definition = tmp_path / "zebra_scout.json"
     definition.write_text(json.dumps(ZEBRA, indent=2), encoding="utf-8")
     added = stack_json("add-agent", str(definition))
     assert added["listed_by_planner"] and added["ads_cid"], added

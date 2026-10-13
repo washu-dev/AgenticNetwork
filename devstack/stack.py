@@ -41,6 +41,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -55,6 +56,9 @@ DIRCTL_SHIM = PACKAGE_DIR / "bin" / "dirctl"
 DEFAULT_STATE_DIR = REPO / ".devstack"
 ENV_FILE = REPO / ".devstack.env"
 STATE_MARKER = ".devstack-state"
+# What `up` and the services create in a state dir; `reset` deletes only these.
+STATE_DIRS = ("logs", "pids", "agents", "uploads", "uploaded_handlers")
+STATE_FILES = ("directory.json", "directory.json.lock", "stack.json", ".gitignore")
 
 EXIT_OK = 0
 EXIT_NOT_READY = 1
@@ -319,7 +323,8 @@ def tail_lines(path: Path, n: int) -> list[str]:
 def port_in_use(port: int) -> bool:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.settimeout(0.3)
-        if sock.connect_ex(("127.0.0.1", port)) == 0:
+        # In the ephemeral range a connect can land on itself (TCP self-connect).
+        if sock.connect_ex(("127.0.0.1", port)) == 0 and sock.getsockname()[1] != port:
             return True
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -354,6 +359,15 @@ def listening_pids(first: int, last: int) -> dict[int, set[int]] | None:
 def process_command(pid: int) -> str:
     result = subprocess.run(["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True, check=False)
     return result.stdout.strip()
+
+
+def process_stdout(pid: int) -> Path | None:
+    """The file ``pid`` writes its stdout to (via lsof), or None."""
+    if not shutil.which("lsof"):
+        return None
+    result = subprocess.run(["lsof", "-a", "-p", str(pid), "-d", "1", "-Fn"], capture_output=True, text=True, check=False)
+    names = [line[1:] for line in result.stdout.splitlines() if line.startswith("n/")]
+    return Path(names[0]) if names else None
 
 
 def process_alive(pid: int) -> bool:
@@ -443,24 +457,23 @@ def _service_specs(cfg: StackConfig) -> dict[str, ServiceSpec]:
         ),
         "registration": ServiceSpec(
             name="registration",
-            command=[
-                registration_python(), "-m", "devstack.serve_asgi", "registration_service.server:app",
-                "--host", "127.0.0.1", "--port", str(cfg.port("registration")),
-            ],
+            command=[registration_python(), "-m", "registration_service.server"],
             env={
                 **base_env(),
                 **directory_env(cfg),
                 **llm_env(cfg),
                 "FAKE_DB": "1",
                 "FAKE_SUPERVISOR": "0",
+                "REGISTRATION_SERVICE_HOST": "127.0.0.1",
                 "REGISTRATION_SERVICE_PORT": str(cfg.port("registration")),
+                "AGENT_BIND_HOST": "127.0.0.1",  # spawned agents inherit this env
                 "CUSTOM_AGENT_PORT_START": str(first_agent_port),
                 "CUSTOM_AGENT_PORT_END": str(last_agent_port),
                 "AGENT_LOG_DIR": str(cfg.agent_logs_dir),
                 "HANDLER_FILES_DIR": str(cfg.state_dir / "uploaded_handlers"),
                 "ADMIN_EMAILS": cfg.dev_user,
             },
-            marker="registration_service.server:app",
+            marker="registration_service.server",
             url=cfg.url("registration"),
             probe=lambda: probe_ready(cfg.url("registration")),
             # Registration terminates its spawned agents on shutdown; give it time.
@@ -638,23 +651,44 @@ def stop_service(cfg: StackConfig, spec: ServiceSpec) -> str | None:
     return problem
 
 
-def sweep_agents(cfg: StackConfig) -> list[str]:
-    """Stop agent processes we spawned that still listen in our agent port range.
+def stray_services(cfg: StackConfig, name: str, marker: str) -> list[tuple[int, Path]]:
+    """Devstack ``name`` services on our port that no pid file here names (a stack at
+    this offset started from another state dir): [(pid, that state dir)]."""
+    found = []
+    for pid in sorted(listening_pids(cfg.port(name), cfg.port(name)) or {}):
+        if marker not in process_command(pid):
+            continue
+        log = process_stdout(pid)
+        if log is not None and log.name == f"{name}.log" and (log.parent.parent / STATE_MARKER).exists():
+            found.append((pid, log.parent.parent))
+    return found
 
-    Returns descriptions of anything still listening there afterwards."""
+
+def sweep_agents(cfg: StackConfig) -> list[str]:
+    """Stop this stack's agents that still listen in its agent port range.
+
+    An agent is ours when it runs an agent entry point and writes to this state dir's
+    agent logs; anything else there (another stack's agents) is left alone.
+    Returns descriptions of our agents still listening afterwards."""
     first, last = cfg.agent_ports
     holders = listening_pids(first, last)
     if holders is None:
         return ["lsof not found: cannot check the agent port range for leftover agents"]
-    for pid in sorted(holders):
-        command = process_command(pid)
-        if any(marker in command for marker in AGENT_PROCESS_MARKERS):
-            stop_pid(pid, group=False, grace=3.0)
-    leftovers = listening_pids(first, last) or {}
-    return [
-        f"pid {pid} listening on {sorted(ports)}: {short(process_command(pid), 160)}"
-        for pid, ports in sorted(leftovers.items())
-    ]
+    ours = {
+        pid for pid in holders
+        if any(marker in process_command(pid) for marker in AGENT_PROCESS_MARKERS)
+        and getattr(process_stdout(pid), "parent", None) == cfg.agent_logs_dir
+    }
+    for pid in sorted(ours):
+        stop_pid(pid, group=False, grace=3.0)
+    problems = []
+    for pid, ports in sorted((listening_pids(first, last) or {}).items()):
+        line = f"pid {pid} listening on {sorted(ports)}: {short(process_command(pid), 160)}"
+        if pid in ours:
+            problems.append(line)
+        else:
+            print(f"devstack: not this stack's, left alone: {line}", file=sys.stderr)
+    return problems
 
 
 # ── Agents (seeds and add-agent) ──────────────────────────────────────────────
@@ -720,33 +754,68 @@ def register_agent(cfg: StackConfig, body: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def agent_answers(endpoint: str) -> bool:
+    """True if the agent at ``endpoint`` serves its card (reached on 127.0.0.1)."""
+    parts = urllib.parse.urlsplit(endpoint)
+    if not parts.port:
+        return False
+    base = parts._replace(netloc=f"127.0.0.1:{parts.port}").geturl().rstrip("/")
+    return http_request("GET", f"{base}/.well-known/agent-card.json", timeout=2.0)[0] == 200
+
+
+def unreachable_agents(listed: list[dict[str, Any]], names: list[str]) -> list[str]:
+    """Those of ``names`` the planner lists whose endpoint does not answer."""
+    wanted = {n.lower() for n in names}
+    return [
+        str(a.get("name")) for a in listed
+        if str(a.get("name", "")).lower() in wanted and not agent_answers(str(a.get("endpoint") or ""))
+    ]
+
+
 def wait_until_listed(cfg: StackConfig, names: list[str], deadline: float) -> list[dict[str, Any]]:
-    """Wait until the planner's GET /agents lists every name; return its list."""
+    """Wait until the planner's GET /agents lists every name and each answers; return its list."""
     wanted = {n.lower() for n in names}
     last: list[str] = []
+    silent: list[str] = []
     while True:
         agents = planner_agents(cfg)
         if agents is not None:
             last = [str(a.get("name", "")) for a in agents]
             if wanted <= {n.lower() for n in last}:
-                return agents
+                silent = unreachable_agents(agents, names)
+                if not silent:
+                    return agents
         if time.monotonic() >= deadline:
             missing = sorted(wanted - {n.lower() for n in last})
             raise StackError(
-                f"the planner does not list {missing} (it lists {last or 'nothing'})",
-                EXIT_SERVICE, service="agents", log=cfg.log_file("planner"),
+                f"the planner does not list {missing} (it lists {last or 'nothing'})" if missing
+                else f"the planner lists {silent} but they do not answer at their endpoints",
+                EXIT_SERVICE, service="agents", log=cfg.log_file("planner" if missing else "registration"),
             )
         time.sleep(0.5)
+
+
+def restart_agent(cfg: StackConfig, agent: dict[str, Any]) -> None:
+    status, raw = http_request("POST", f"{cfg.url('registration')}/agents/{agent.get('id')}/restart", timeout=120.0)
+    if status != 200:
+        raise StackError(
+            f"restarting {agent.get('name')!r}: {status or 'no response'}: {short(raw, 600)}",
+            EXIT_SERVICE, service="agents", log=cfg.log_file("registration"),
+        )
 
 
 def ensure_agents(cfg: StackConfig, deadline: float) -> list[str]:
     files = expected_agent_files(cfg)
     bodies = [load_agent_body(path, cfg) for path in files]
-    existing = {str(a.get("name", "")).lower() for a in registered_agents(cfg)}
+    existing = {str(a.get("name", "")).lower(): a for a in registered_agents(cfg)}
     for body in bodies:
-        if body["name"].lower() not in existing:
+        agent = existing.get(body["name"].lower())
+        if agent is None:
             print(f"devstack: registering agent {body['name']!r}", file=sys.stderr)
             register_agent(cfg, body)
+        elif agent.get("status") != "live":
+            print(f"devstack: restarting agent {body['name']!r} (status {agent.get('status')!r})", file=sys.stderr)
+            restart_agent(cfg, agent)
     names = [b["name"] for b in bodies]
     if names:
         wait_until_listed(cfg, names, deadline)
@@ -790,8 +859,9 @@ def collect_status(cfg: StackConfig) -> dict[str, Any]:
             expected.append(load_agent_body(path, cfg)["name"])
     listed_lower = {a.lower() for a in agents}
     missing = [n for n in expected if n.lower() not in listed_lower]
+    unreachable = unreachable_agents(listed or [], expected)
     return {
-        "ready": all_ready and not missing,
+        "ready": all_ready and not missing and not unreachable,
         "mode": "native",
         "llm": cfg.llm,
         "llm_base_url": cfg.llm_base_url,
@@ -802,6 +872,7 @@ def collect_status(cfg: StackConfig) -> dict[str, Any]:
         "services": services,
         "agents": agents,
         "missing_agents": missing,
+        "unreachable_agents": unreachable,
     }
 
 
@@ -824,6 +895,8 @@ def print_status(status: dict[str, Any], *, as_json: bool) -> None:
     print(f"  agents: {', '.join(status['agents']) or '(none listed)'}")
     if status["missing_agents"]:
         print(f"  missing agents: {', '.join(status['missing_agents'])}")
+    if status["unreachable_agents"]:
+        print(f"  agents not answering: {', '.join(status['unreachable_agents'])}")
     if status["ready"]:
         print(f"  chat UI: {status['chat_url']}  (signed in as {status['dev_user']})")
 
@@ -867,6 +940,14 @@ def preflight(cfg: StackConfig, running: dict[str, int | None]) -> list[str]:
 
 def cmd_up(args: argparse.Namespace) -> int:
     cfg = build_up_config(args)
+    if cfg.state_dir.exists() and not (cfg.state_dir / STATE_MARKER).exists() and (
+        not cfg.state_dir.is_dir() or any(cfg.state_dir.iterdir())
+    ):
+        raise StackError(
+            f"refusing to use {cfg.state_dir} as a state dir: it exists, is not empty and has no "
+            f"{STATE_MARKER} marker. Pick a new or empty dir.",
+            EXIT_USAGE,
+        )
     saved = load_saved_config(cfg.state_dir)
     specs = _service_specs(cfg)
     probe_cfg = saved or cfg
@@ -949,14 +1030,30 @@ def wait_ready(
 
 
 def cmd_down(args: argparse.Namespace) -> int:
-    cfg = config_for_existing(state_dir_from(args.state_dir))
+    state_dir = state_dir_from(args.state_dir)
+    saved = load_saved_config(state_dir)
+    cfg = saved or StackConfig(state_dir=state_dir)
+    specs = _service_specs(cfg)
     problems = []
-    for name, spec in reversed(list(_service_specs(cfg).items())):
+    for name, spec in reversed(list(specs.items())):
         if service_pid(cfg, name, spec.marker) is not None:
             print(f"devstack: stopping {name}", file=sys.stderr)
         problem = stop_service(cfg, spec)
         if problem:
             problems.append(problem)
+    if saved is None:
+        # Without stack.json the ports are unknown, so touch nothing a pid file did not name.
+        print(f"devstack: no stack recorded in {state_dir} (no stack.json); stopped only what its pid files named",
+              file=sys.stderr)
+        if problems:
+            print("devstack: left running:\n  - " + "\n  - ".join(problems), file=sys.stderr)
+        return EXIT_NOT_READY if problems else EXIT_OK
+    for name, spec in reversed(list(specs.items())):
+        for pid, other in stray_services(cfg, name, spec.marker):
+            print(f"devstack: stopping {name} (pid {pid}) of the stack in {other}", file=sys.stderr)
+            with contextlib.suppress(ProcessLookupError):
+                if not stop_pid(pid, group=os.getpgid(pid) == pid, grace=spec.stop_grace):
+                    problems.append(f"{name} (pid {pid}) did not exit after SIGKILL")
     problems.extend(sweep_agents(cfg))
     # The registry was in memory; its directory records point at stopped agents.
     with contextlib.suppress(FileNotFoundError):
@@ -1027,7 +1124,8 @@ def cmd_reset(args: argparse.Namespace) -> int:
     state_dir = state_dir_from(args.state_dir)
     # Check before stopping anything: a wrong --state-dir must change nothing.
     if state_dir.exists() and (
-        state_dir in {REPO, Path.home().resolve(), Path("/")} or not (state_dir / STATE_MARKER).exists()
+        state_dir in {REPO, Path.home().resolve(), Path("/")}
+        or (not (state_dir / STATE_MARKER).exists() and any(state_dir.iterdir()))
     ):
         raise StackError(
             f"refusing to delete {state_dir}: it is not a devstack state dir (no {STATE_MARKER} marker)",
@@ -1035,9 +1133,24 @@ def cmd_reset(args: argparse.Namespace) -> int:
         )
     code = cmd_down(args)
     if state_dir.exists():
-        shutil.rmtree(state_dir)
-        print(f"devstack: removed {state_dir}", file=sys.stderr)
+        remove_state(state_dir)
     return code
+
+
+def remove_state(state_dir: Path) -> None:
+    """Delete what the stack created in ``state_dir``, then the dir if that empties it."""
+    for name in STATE_DIRS:
+        shutil.rmtree(state_dir / name, ignore_errors=True)
+    for path in [*(state_dir / name for name in STATE_FILES), *state_dir.glob(".fake-dirctl-*")]:
+        with contextlib.suppress(OSError):
+            path.unlink()
+    left = sorted(p.name for p in state_dir.iterdir() if p.name != STATE_MARKER)
+    if left:  # keep the marker so the dir stays usable by `up` and `reset`
+        print(f"devstack: cleared {state_dir}; kept what the stack did not create: {', '.join(left)}", file=sys.stderr)
+    else:
+        (state_dir / STATE_MARKER).unlink(missing_ok=True)
+        state_dir.rmdir()
+        print(f"devstack: removed {state_dir}", file=sys.stderr)
 
 
 def cmd_smoke(args: argparse.Namespace) -> int:
@@ -1229,7 +1342,10 @@ def build_parser() -> argparse.ArgumentParser:
     up.add_argument("--llm", choices=LLM_MODES, help="mock (default, offline) or openai (any OpenAI-compatible API).")
     up.add_argument("--no-seed", action="store_true", help="Do not register the seed agents.")
     up.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT, help="Seconds to wait for readiness (default 120).")
-    up.add_argument("--port-offset", type=int, default=0, help="Add N to every port.")
+    up.add_argument(
+        "--port-offset", type=int, default=0,
+        help="Add N to every port. Stacks running at once need offsets at least 100 apart.",
+    )
     up.add_argument("--json", action="store_true", help="Print the final status as JSON.")
     up.add_argument("--keep-on-failure", action="store_true", help="Leave started services running if up fails.")
     up.set_defaults(func=cmd_up)
@@ -1247,7 +1363,7 @@ def build_parser() -> argparse.ArgumentParser:
     logs.add_argument("-f", "--follow", action="store_true")
     logs.set_defaults(func=cmd_logs)
 
-    reset = sub.add_parser("reset", parents=[common], help="down, then delete all state (logs, directory, added agents).")
+    reset = sub.add_parser("reset", parents=[common], help="down, then delete the state it created (logs, directory, added agents).")
     reset.set_defaults(func=cmd_reset)
 
     smoke = sub.add_parser("smoke", parents=[common], help="Send one prompt through the front door and check the answer.")

@@ -50,10 +50,10 @@ scripts/stack doctor                # checks Python, both venvs, the fake dirctl
 | agents | 19200–19299 | Agents spawned by the registration service. |
 | `directory` | none | A fake `dirctl` (`devstack/bin/dirctl`) that keeps the agent directory in one JSON file. Like the real directory, a record is only discoverable after `routing publish`. |
 
-The services listen on `127.0.0.1` only. Spawned agents currently bind all interfaces
-(the registration service's handlers choose that), so on an untrusted network keep your
-firewall on. `--port-offset N` adds `N` to every port, so you can run a second stack
-next to the first (give it its own `--state-dir` too).
+The services and the agents they spawn listen on `127.0.0.1` only. `--port-offset N`
+adds `N` to every port, so you can run a second stack next to the first. Give it its own
+`--state-dir` too, and keep the offsets of stacks that run at the same time at least 100
+apart: the agent range is 100 ports wide.
 
 After the services are ready, `up` registers the seed agents in `devstack/seeds/` through
 the real `POST /agents` path. It waits until the planner's `GET /agents` lists them.
@@ -67,16 +67,18 @@ again.
 
 | Command | What it does |
 |---|---|
-| `up [--llm mock\|openai] [--no-seed] [--timeout S] [--port-offset N] [--json]` | Start whatever is not already running, wait until everything is ready, then register the agents. Safe to run again: if everything is up, it changes nothing. |
-| `status [--json]` | What is running and ready, with URLs, pids, log paths and the agents the planner lists. Exits 0 only when everything is ready. |
+| `up [--llm mock\|openai] [--no-seed] [--timeout S] [--port-offset N] [--json]` | Start whatever is not already running, wait until everything is ready, then register the agents (and restart any that are not live). Safe to run again: if everything is up, it changes nothing. |
+| `status [--json]` | What is running and ready, with URLs, pids, log paths and the agents the planner lists. An agent that is listed but does not answer counts as not ready. Exits 0 only when everything is ready. |
 | `smoke [--prompt TEXT] [--json]` | Sends one prompt through the front door. Checks that a specialist answered and that the conversation was saved. |
 | `logs SERVICE [-n N] [-f]` | Shows a log: `proxy`, `planner`, `registration`, `mock-llm`, `directory` (every dirctl call), `mock-llm-requests` (every LLM request and reply), or an agent's name or id. |
 | `add-agent FILE.json` | Registers an agent from a registration body (see below). |
-| `down` | Stops every service and every spawned agent, and reports anything still listening on our ports. |
-| `reset` | `down`, then deletes `.devstack/` for a clean start. |
+| `down` | Stops this stack's services and spawned agents, and reports anything still listening on its ports. It also stops a stack on the same ports that was started from another state dir. Other stacks' agents are left alone. |
+| `reset` | `down`, then deletes what the stack created in `.devstack/` for a clean start. It removes the dir itself only if nothing else is in it. |
 | `doctor [--json]` | Checks the setup without starting anything. |
 
 Every command accepts `--state-dir DIR` (default `.devstack/`, or `$DEVSTACK_STATE_DIR`).
+`up` refuses a dir that is not empty and was not created by the stack. `down` in a dir
+with no `stack.json` (a stack that never started) stops only what its pid files name.
 
 **Exit codes:** 0 ok; 1 not ready (`status`) or something left running (`down`);
 2 usage error; 3 preflight failed (a missing venv, a busy port or a missing setting);
@@ -148,7 +150,8 @@ Services run straight from your checkout. After editing code, restart with
 
 ## How it fits with the tests
 
-- `devstack/tests/` covers the mock LLM, the fake `dirctl` and the identity proxy:
+- `devstack/tests/` covers the mock LLM, the fake `dirctl`, the identity proxy and the
+  stack CLI's safety checks; CI runs it with the unit suites:
   `registration_service/.venv/bin/python -m pytest devstack/tests -q -p no:cacheprovider`.
 - `scripts/stack smoke` is a one-prompt version of the full-chain test (Goal 1). The
   full-chain test drives the same commands (`up`, `status --json`, `down`) and treats

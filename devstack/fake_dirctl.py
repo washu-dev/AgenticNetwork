@@ -7,30 +7,27 @@ gives them one shared directory without a running ``dir`` daemon.
 
 It models the part of the real directory that bites in practice: a record is
 *stored* by ``push`` but only *discoverable* once ``routing publish`` has routed
-it. ``routing unpublish`` unroutes (the record stays stored) and ``delete``
-removes it. ``FAKE_DIRCTL_ROUTE_DELAY_SECONDS`` delays routing to imitate the
-daemon's scheduler and indexer.
+it, and ``routing unpublish`` unroutes it (the record stays stored).
+``FAKE_DIRCTL_ROUTE_DELAY_SECONDS`` delays routing to imitate the daemon's
+scheduler and indexer.
 
-Supported commands (every one the repository calls):
+Supported commands (the ones the dev stack's services call):
 
     push FILE                      store a record, print its CID
     pull CID                       print a stored record
-    delete CID                     remove a record (stored and routed)
     search [filters]               storage search (stored records)
     routing publish CID            route a stored record
     routing unpublish CID          unroute a record
     routing list [--cid] [filters] routed records on this node
     routing search [filters]       network search (this node only)
     routing info                   counts
-    events listen [--types T,..]   stream routing events as JSON lines
     version | daemon start|stop|status
 
 Global flags: ``--server-addr`` (accepted and logged, never contacted) and
-``--output``/``-o`` (``json``, ``jsonl``, ``raw`` or text when omitted). The
-JSON shapes follow the real CLI (``routing list`` returns
-``[{"record_ref": {"cid": ...}, "labels": [...]}]``), which is what
-``planner_agent/main_agent/directory/backends.py``, ``ads_utils/publisher.py``,
-``agent_skeleton/serve.py`` and ``agent_directory_service/scripts`` parse.
+``--output``/``-o`` (``json``; anything else prints text). The JSON shapes follow the
+real CLI (``routing list`` returns ``[{"record_ref": {"cid": ...}, "labels": [...]}]``),
+which is what ``planner_agent/main_agent/directory/backends.py`` and
+``ads_utils/publisher.py`` parse.
 
 Concurrent processes are safe: every command holds an ``fcntl`` lock on
 ``<state>.lock`` and writes the state file atomically.
@@ -48,7 +45,6 @@ import fnmatch
 import hashlib
 import json
 import os
-import signal
 import sys
 import tempfile
 import time
@@ -59,30 +55,27 @@ FAKE_VERSION = "v1.2.0-devstack-fake"
 STATE_ENV = "FAKE_DIRCTL_STATE"
 LOG_ENV = "FAKE_DIRCTL_LOG"
 ROUTE_DELAY_ENV = "FAKE_DIRCTL_ROUTE_DELAY_SECONDS"
-MAX_EVENTS = 1000
 
 # Flags that take a value, per command: the ones the repository uses. Anything
 # else is rejected the way the real CLI rejects an unknown flag, so a caller
 # using a flag this fake does not model fails loudly instead of silently getting
 # wrong results.
-_FILTER_FLAGS = ("--skill", "--domain", "--module", "--locator")
+_FILTER_FLAGS = ("--skill",)
 _COMMAND_FLAGS: Dict[Tuple[str, ...], Tuple[str, ...]] = {
     ("push",): (),
     ("pull",): (),
-    ("delete",): (),
     ("search",): _FILTER_FLAGS + ("--limit",),
     ("routing", "publish"): (),
     ("routing", "unpublish"): (),
     ("routing", "list"): _FILTER_FLAGS + ("--cid", "--limit"),
     ("routing", "search"): _FILTER_FLAGS + ("--limit",),
     ("routing", "info"): (),
-    ("events", "listen"): ("--types",),
     ("version",): (),
     ("daemon", "start"): ("--config",),
     ("daemon", "stop"): (),
     ("daemon", "status"): (),
 }
-_GROUPS = {"routing", "events", "daemon"}
+_GROUPS = {"routing", "daemon"}
 
 
 class DirctlError(Exception):
@@ -160,7 +153,7 @@ def parse_args(argv: List[str]) -> Invocation:
 
 
 def _usage() -> str:
-    lines = ["Usage: dirctl [--server-addr ADDR] [--output json|jsonl|raw] COMMAND", "", "Commands (fake):"]
+    lines = ["Usage: dirctl [--server-addr ADDR] [--output json] COMMAND", "", "Commands (fake):"]
     for command, flags in _COMMAND_FLAGS.items():
         lines.append(f"  {' '.join(command):<20} {' '.join(flags)}".rstrip())
     return "\n".join(lines)
@@ -177,7 +170,7 @@ def _state_path() -> str:
 
 
 def empty_state() -> Dict[str, Any]:
-    return {"version": 1, "records": {}, "events": [], "next_event": 1}
+    return {"version": 1, "records": {}}
 
 
 @contextlib.contextmanager
@@ -234,15 +227,6 @@ def init_state(path: str) -> None:
         state.update(empty_state())
 
 
-def _emit_event(state: Dict[str, Any], event_type: str, cid: str) -> None:
-    seq = int(state.get("next_event", 1))
-    state["next_event"] = seq + 1
-    state["events"].append(
-        {"id": seq, "type": f"EVENT_TYPE_{event_type}", "resource_id": cid, "timestamp": _now_iso()}
-    )
-    del state["events"][:-MAX_EVENTS]
-
-
 # ── Records, labels and matching ──────────────────────────────────────────────
 
 
@@ -263,15 +247,6 @@ def record_labels(record: Dict[str, Any]) -> List[str]:
                 labels.append(f"/skills/{skill['id']}")
         elif isinstance(skill, str):
             labels.append(f"/skills/{skill}")
-    for domain in record.get("domains") or []:
-        if isinstance(domain, dict) and (domain.get("name") or domain.get("id") is not None):
-            labels.append(f"/domains/{domain.get('name') or domain.get('id')}")
-    for module in record.get("modules") or []:
-        if isinstance(module, dict) and module.get("name"):
-            labels.append(f"/modules/{module['name']}")
-    for locator in record.get("locators") or []:
-        if isinstance(locator, dict) and locator.get("type"):
-            labels.append(f"/locators/{locator['type']}")
     return list(dict.fromkeys(labels))
 
 
@@ -291,21 +266,14 @@ def _label_matches(labels: List[str], kind: str, pattern: str) -> List[str]:
 
 
 def _filter_matches(entry: Dict[str, Any], inv: Invocation) -> Optional[List[str]]:
-    """Matched labels if ``entry`` passes every filter flag, else None.
+    """Matched labels if ``entry`` passes the ``--skill`` filter, else None.
 
-    Repeated values of one flag are alternatives (OR); different flags must all
-    match (AND)."""
-    labels = entry["labels"]
-    matched: List[str] = []
-    for flag, kind in (("--skill", "skills"), ("--domain", "domains"), ("--module", "modules"), ("--locator", "locators")):
-        patterns = inv.flag_all(flag)
-        if not patterns:
-            continue
-        hits = [hit for pattern in patterns for hit in _label_matches(labels, kind, pattern)]
-        if not hits:
-            return None
-        matched.extend(hits)
-    return list(dict.fromkeys(matched))
+    Repeated ``--skill`` values are alternatives (OR)."""
+    patterns = inv.flag_all("--skill")
+    if not patterns:
+        return []
+    hits = [hit for pattern in patterns for hit in _label_matches(entry["labels"], "skills", pattern)]
+    return list(dict.fromkeys(hits)) if hits else None
 
 
 def _is_routed(entry: Dict[str, Any], now: float) -> bool:
@@ -368,7 +336,6 @@ def cmd_push(inv: Invocation, path: str) -> str:
                 "stored_at": _now_iso(),
                 "routed_visible_at": None,
             }
-            _emit_event(state, "RECORD_PUSHED", cid)
     if inv.output == "json":
         return json.dumps({"cid": cid})
     return cid
@@ -378,25 +345,14 @@ def cmd_pull(inv: Invocation, path: str) -> str:
     cid = _require_cid(inv)
     with locked_state(path, write=False) as state:
         record = _get_entry(state, cid)["record"]
-    return json.dumps(record, indent=2 if inv.output not in ("json", "raw") else None)
-
-
-def cmd_delete(inv: Invocation, path: str) -> str:
-    cid = _require_cid(inv)
-    with locked_state(path, write=True) as state:
-        _get_entry(state, cid)
-        del state["records"][cid]
-        _emit_event(state, "RECORD_DELETED", cid)
-    return json.dumps({"cid": cid, "deleted": True}) if inv.output == "json" else f"Deleted record {cid}"
+    return json.dumps(record, indent=None if inv.output == "json" else 2)
 
 
 def cmd_search(inv: Invocation, path: str) -> str:
     with locked_state(path, write=False) as state:
         cids = [cid for cid, entry in state["records"].items() if _filter_matches(entry, inv) is not None]
     cids = _limit(cids, inv)
-    if inv.output in ("json", "jsonl"):
-        return json.dumps(cids) if inv.output == "json" else "\n".join(json.dumps(c) for c in cids)
-    return "\n".join(cids)
+    return json.dumps(cids) if inv.output == "json" else "\n".join(cids)
 
 
 def cmd_routing_publish(inv: Invocation, path: str) -> str:
@@ -406,7 +362,6 @@ def cmd_routing_publish(inv: Invocation, path: str) -> str:
         entry = _get_entry(state, cid)
         if entry.get("routed_visible_at") is None:
             entry["routed_visible_at"] = time.time() + delay
-            _emit_event(state, "RECORD_PUBLISHED", cid)
     if inv.output == "json":
         return json.dumps({"cid": cid, "status": "published" if delay <= 0 else "queued"})
     return f"Successfully submitted publication request for record {cid}"
@@ -418,7 +373,6 @@ def cmd_routing_unpublish(inv: Invocation, path: str) -> str:
         entry = _get_entry(state, cid)
         if entry.get("routed_visible_at") is not None:
             entry["routed_visible_at"] = None
-            _emit_event(state, "RECORD_UNPUBLISHED", cid)
     if inv.output == "json":
         return json.dumps({"cid": cid, "status": "unpublished"})
     return f"Successfully unpublished record {cid}"
@@ -452,10 +406,6 @@ def _routed_items(inv: Invocation, path: str, *, network: bool) -> List[Dict[str
 def _render_routed(items: List[Dict[str, Any]], inv: Invocation, title: str) -> str:
     if inv.output == "json":
         return json.dumps(items)
-    if inv.output == "jsonl":
-        return "\n".join(json.dumps(item) for item in items)
-    if inv.output == "raw":
-        return "\n".join(item["record_ref"]["cid"] for item in items)
     lines = [f"{title}: {len(items)} record(s)"]
     for item in items:
         lines.append(f"  CID: {item['record_ref']['cid']}")
@@ -492,43 +442,13 @@ def cmd_routing_info(inv: Invocation, path: str) -> str:
         "labels": label_counts,
         "fake": True,
     }
-    if inv.output in ("json", "jsonl", "raw"):
+    if inv.output == "json":
         return json.dumps(info)
     return f"Routed records: {routed}\nPending records: {pending}\nStored records: {stored}"
 
 
-def cmd_events_listen(inv: Invocation, path: str) -> Optional[str]:
-    """Stream new events as JSON lines until interrupted (like the real CLI)."""
-    wanted = set()
-    for value in inv.flag_all("--types"):
-        for item in value.split(","):
-            item = item.strip()
-            if item:
-                wanted.add(item if item.startswith("EVENT_TYPE_") else f"EVENT_TYPE_{item}")
-    with locked_state(path, write=False) as state:
-        last_seen = int(state.get("next_event", 1)) - 1
-    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
-    try:
-        while True:
-            with locked_state(path, write=False) as state:
-                events = [e for e in state["events"] if int(e["id"]) > last_seen]
-            for event in events:
-                last_seen = max(last_seen, int(event["id"]))
-                if wanted and event["type"] not in wanted:
-                    continue
-                if inv.output == "json":
-                    print(json.dumps(event, indent=2), flush=True)
-                elif inv.output == "jsonl":
-                    print(json.dumps(event), flush=True)
-                else:
-                    print(f"{event['timestamp']} {event['type']} {event['resource_id']}", flush=True)
-            time.sleep(0.2)
-    except KeyboardInterrupt:
-        return None
-
-
 def cmd_version(inv: Invocation, path: Optional[str]) -> str:
-    if inv.output in ("json", "jsonl"):
+    if inv.output == "json":
         return json.dumps({"version": FAKE_VERSION, "fake": True})
     return f"dirctl version {FAKE_VERSION} (devstack fake dirctl)"
 
@@ -544,14 +464,12 @@ def cmd_daemon(inv: Invocation, path: Optional[str]) -> str:
 _HANDLERS = {
     ("push",): cmd_push,
     ("pull",): cmd_pull,
-    ("delete",): cmd_delete,
     ("search",): cmd_search,
     ("routing", "publish"): cmd_routing_publish,
     ("routing", "unpublish"): cmd_routing_unpublish,
     ("routing", "list"): cmd_routing_list,
     ("routing", "search"): cmd_routing_search,
     ("routing", "info"): cmd_routing_info,
-    ("events", "listen"): cmd_events_listen,
 }
 # Commands that work without a state file.
 _STATELESS = {

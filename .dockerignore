@@ -19,6 +19,7 @@ Local
 **/logs
 **/*.log
 .devstack
+.devstack-pipeline
 .devstack.env
 .deck_build
 .enroot
@@ -33,9 +34,19 @@ docs/dev
 !**/.env.example
 **/*secrets*.env
 **/env.local
+**/*.local.env
 **/*.pem
 **/*.key
+**/*.p12
+**/*credentials*.json
+**/*service-account*.json
+**/token.json
+**/.hf_token
 **/google_credentials
+# Local databases
+**/*.db
+**/*.sqlite
+**/*.sqlite3
 
 # Test, lint and editor caches
 **/.pytest_cache

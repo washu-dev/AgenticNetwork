@@ -1,9 +1,8 @@
 """Deterministic OpenAI-compatible mock LLM for the dev stack and the full-chain test.
 
-Serves ``GET /v1/models`` and ``POST /v1/chat/completions`` (plain JSON, or an SSE
-stream when the request sets ``"stream": true``). Each reply is computed from the
-request alone, so the server is stateless: both callers resend the whole
-conversation every step.
+Serves ``GET /v1/models`` and ``POST /v1/chat/completions`` (plain JSON). Each reply
+is computed from the request alone, so the server is stateless: both callers resend
+the whole conversation every step.
 
 Two kinds of caller:
 
@@ -156,44 +155,6 @@ def build_completion(body: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def stream_chunks(completion: dict[str, Any]) -> list[dict[str, Any]]:
-    """The completion as ``chat.completion.chunk`` objects (role, content/tool call, finish)."""
-    choice = completion["choices"][0]
-    message = choice["message"]
-    base = {
-        "id": completion["id"],
-        "object": "chat.completion.chunk",
-        "created": completion["created"],
-        "model": completion["model"],
-    }
-
-    def chunk(delta: dict[str, Any], finish_reason: str | None = None) -> dict[str, Any]:
-        return {**base, "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason, "logprobs": None}]}
-
-    chunks = [chunk({"role": "assistant", "content": ""})]
-    if message.get("tool_calls"):
-        call = message["tool_calls"][0]
-        chunks.append(
-            chunk(
-                {
-                    "tool_calls": [
-                        {
-                            "index": 0,
-                            "id": call["id"],
-                            "type": "function",
-                            "function": {"name": call["function"]["name"], "arguments": call["function"]["arguments"]},
-                        }
-                    ]
-                }
-            )
-        )
-    elif message.get("content"):
-        chunks.append(chunk({"content": message["content"]}))
-    chunks.append(chunk({}, choice["finish_reason"]))
-    final = {**base, "choices": [], "usage": completion["usage"]}
-    return chunks + [final]
-
-
 def models_payload() -> dict[str, Any]:
     return {
         "object": "list",
@@ -298,12 +259,12 @@ class _Handler(BaseHTTPRequestHandler):
         except ValueError as exc:
             self._send_json(400, {"error": {"message": f"invalid JSON body: {exc}", "type": "invalid_request_error"}})
             return
+        if body.get("stream"):
+            self._send_json(400, {"error": {"message": "mock-llm does not support stream=true", "type": "invalid_request_error"}})
+            return
         completion = build_completion(body)
         self._log({"request": body, "response": completion})
-        if body.get("stream"):
-            self._send_stream(completion)
-        else:
-            self._send_json(200, completion)
+        self._send_json(200, completion)
 
     def _send_json(self, status: int, payload: dict[str, Any]) -> None:
         data = json.dumps(payload).encode("utf-8")
@@ -312,19 +273,6 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
-
-    def _send_stream(self, completion: dict[str, Any]) -> None:
-        self.send_response(200)
-        self.send_header("Content-Type", "text/event-stream")
-        self.send_header("Cache-Control", "no-cache")
-        self.send_header("Connection", "close")
-        self.end_headers()
-        self.close_connection = True
-        for item in stream_chunks(completion):
-            self.wfile.write(f"data: {json.dumps(item)}\n\n".encode("utf-8"))
-            self.wfile.flush()
-        self.wfile.write(b"data: [DONE]\n\n")
-        self.wfile.flush()
 
     def _log(self, entry: dict[str, Any]) -> None:
         log_path = os.environ.get("MOCK_LLM_LOG", "").strip()
