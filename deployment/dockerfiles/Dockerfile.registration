@@ -7,7 +7,6 @@ FROM ghcr.io/agntcy/dir-ctl:v1.2.0 AS dirctl-src
 FROM python:3.11-slim-bookworm
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        postgresql-15 \
         curl \
     && rm -rf /var/lib/apt/lists/*
 

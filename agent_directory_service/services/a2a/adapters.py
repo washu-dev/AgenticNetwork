@@ -30,7 +30,6 @@ from agent_directory_service.services.common.models import (
     A2ATaskRequest,
     A2ATaskResult,
     A2ATaskState,
-    AgentCapability,
     DiscoveredAgent,
 )
 from agent_directory_service.services.directory.card_oasf_converter import (

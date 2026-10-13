@@ -5,7 +5,6 @@ from importlib.metadata import PackageNotFoundError, version
 
 PACKAGES = [
     "a2a-sdk",
-    "agntcy-app-sdk",
     "agntcy-dir",
     "protobuf",
     "pydantic",

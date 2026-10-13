@@ -31,7 +31,7 @@ Commands:
 Examples:
   agent_directory_service/run_ads.sh -list
   agent_directory_service/run_ads.sh -diag
-  agent_directory_service/run_ads.sh -publish email_agent/email_agent.card.json
+  agent_directory_service/run_ads.sh -publish ../agent-directory/email_agent/email_agent.card.json
   agent_directory_service/run_ads.sh -remove bae...
   agent_directory_service/run_ads.sh --server-addr 127.0.0.1:8888 -raw-list
 EOF

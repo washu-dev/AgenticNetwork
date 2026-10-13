@@ -24,7 +24,6 @@ import time
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 from a2a.types import AgentCard
 

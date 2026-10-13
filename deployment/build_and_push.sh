@@ -14,7 +14,7 @@
 #   IMAGE_TAG=dev-alice bash deployment/build_and_push.sh planner
 #
 # To build specialist agents, run from the agent-directory repo root:
-#   bash deployment/build_and_push.sh  (once that repo has its own copy of this script)
+#   bash build_and_push.sh
 
 set -euo pipefail
 

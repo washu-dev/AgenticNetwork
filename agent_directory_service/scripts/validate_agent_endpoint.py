@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import sys
 from pathlib import Path
 from typing import Any, Sequence
 from uuid import uuid4
@@ -12,7 +11,6 @@ import httpx
 from a2a.types import AgentCard
 
 from agent_directory_service.services.a2a.adapters import a2a_agent_card_to_discovered_agent
-from agent_directory_service.services.a2a.client import A2AClient
 from agent_directory_service.services.a2a.transport import HTTPA2ATransport
 from agent_directory_service.services.common.models import A2AMessage, A2APart, A2ATaskRequest
 from agent_directory_service.services.directory.card_oasf_converter import (
@@ -114,8 +112,8 @@ async def _send_external_task(
     timeout: float,
 ) -> Any:
     async with httpx.AsyncClient(timeout=timeout) as http_client:
-        client = A2AClient(HTTPA2ATransport(http_client=http_client))
-        return await client.send_task(a2a_agent_card_to_discovered_agent(card), request)
+        transport = HTTPA2ATransport(http_client=http_client)
+        return await transport.send_task(a2a_agent_card_to_discovered_agent(card), request)
 
 
 def _request(

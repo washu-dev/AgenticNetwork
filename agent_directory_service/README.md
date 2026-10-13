@@ -117,5 +117,6 @@ python -m agent_directory_service.scripts.validate_agent_endpoint \
 ## Tests
 
 ```bash
-PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest agent_directory_service/tests -q
+# the registration venv matches the a2a-sdk 0.3.2 pin; dirctl is mocked
+registration_service/.venv/bin/python -m pytest agent_directory_service/tests -q -p no:cacheprovider
 ```
