@@ -63,3 +63,60 @@ docs/dev/
 # working data (ADS store / postgres / etc.). Anchored so nested data/ stays trackable.
 /.enroot/
 /data/
+
+# Personal laptop-only deploy scaffolding. Also in .git/info/exclude locally;
+# listed here so a fresh clone is protected too.
+/Local/
+
+# Dev stack state (python3 -m devstack): pids, logs, fake directory, env overrides
+/.devstack/
+/.devstack.env
+
+# Packaging output
+dist/
+*.whl
+
+# More secrets: env variants, keys, credential and token files. The *.example
+# templates stay tracked.
+.env.*
+!.env.example
+*secrets*.env
+*.local.env
+env.local
+*.pem
+*.key
+*.p12
+*credentials*.json
+*service-account*.json
+token.json
+
+# Model weights and slide decks (large binaries, never source)
+*.pt
+*.pth
+*.safetensors
+*.gguf
+*.onnx
+*.ckpt
+*.pptx
+
+# Local databases, exports and deploy state. state/ is anchored because
+# planner_agent/main_agent/state/ is source.
+*.sqlite
+*.sqlite3
+*.db
+exports/
+/state/
+**/deploy/state/
+
+# Test, lint and notebook caches
+.coverage
+.coverage.*
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+node_modules/
+.ipynb_checkpoints/
+*.swp
+Thumbs.db

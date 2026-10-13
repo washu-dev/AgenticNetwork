@@ -1,0 +1,49 @@
+# Build context is the repo root (deployment/dockerfiles/Dockerfile.* COPY
+# component dirs from it). Patterns are root-relative, so nested matches need **/.
+
+# VCS and personal laptop-only scaffolding
+.git
+.github
+Local
+
+# Virtualenvs, bytecode and packaging output
+**/.venv
+**/__pycache__
+**/*.py[cod]
+**/build
+**/dist
+**/*.egg-info
+
+# Runtime output and local state (never source)
+**/uploaded_handlers
+**/logs
+**/*.log
+.devstack
+.devstack.env
+.deck_build
+.enroot
+data
+
+# Development/planning docs (not part of any image)
+docs/dev
+
+# Secrets must never be baked into an image; the *.example templates are harmless
+**/.env
+**/.env.*
+!**/.env.example
+**/*secrets*.env
+**/env.local
+**/*.pem
+**/*.key
+**/google_credentials
+
+# Test, lint and editor caches
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+**/.coverage
+**/htmlcov
+**/.DS_Store
+**/.claude
+.vscode
+.idea
