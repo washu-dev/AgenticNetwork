@@ -21,6 +21,8 @@ from a2a.types import (
     TextPart,
 )
 
+from registration_service.handlers.heartbeat import await_with_heartbeat
+
 logger = logging.getLogger(__name__)
 
 _PROXY_TIMEOUT_SECONDS = 120.0
@@ -59,14 +61,9 @@ class APIProxyExecutor(AgentExecutor):
         }
 
         try:
-            async with httpx.AsyncClient(timeout=_PROXY_TIMEOUT_SECONDS) as client:
-                resp = await client.post(
-                    self._upstream_url,
-                    json=payload,
-                    headers=headers,
-                )
-                resp.raise_for_status()
-                result = resp.json()
+            # The upstream may take up to _PROXY_TIMEOUT_SECONDS; heartbeats keep
+            # a streaming caller connected meanwhile.
+            result = await await_with_heartbeat(updater, self._forward(payload, headers))
         except Exception as exc:
             logger.exception("api_proxy_failed agent_id=%s upstream=%s", self._agent_id, self._upstream_url)
             await updater.complete(
@@ -90,6 +87,12 @@ class APIProxyExecutor(AgentExecutor):
         await updater.complete(
             message=updater.new_agent_message([Part(root=TextPart(text=reply_text))])
         )
+
+    async def _forward(self, payload: dict[str, Any], headers: dict[str, str]) -> Any:
+        async with httpx.AsyncClient(timeout=_PROXY_TIMEOUT_SECONDS) as client:
+            resp = await client.post(self._upstream_url, json=payload, headers=headers)
+            resp.raise_for_status()
+            return resp.json()
 
     async def cancel(self, context: Any, event_queue: Any) -> None:
         pass
@@ -137,7 +140,8 @@ def build_agent_card(agent_id: str, name: str, description: str, port: int) -> A
         description=description,
         url=f"http://localhost:{port}/",
         version="1.0.0",
-        capabilities=AgentCapabilities(streaming=False),
+        # Must match the published card (streaming=True); see llm_handler.
+        capabilities=AgentCapabilities(streaming=True),
         skills=[
             AgentSkill(
                 id=f"{agent_id}/proxy",

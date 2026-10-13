@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import socket
 
 import asyncpg
 
@@ -34,6 +35,30 @@ async def seed_ports(
     return len(rows)
 
 
+def port_free_on_host(port: int) -> bool:
+    """True if an agent could bind ``port`` and no other listener holds it.
+
+    The DB only knows which ports it handed out; an orphaned agent from an earlier
+    run or an unrelated program can still hold one, and the new agent would then
+    fail to bind while the old listener answered its readiness probe.
+
+    Agents (uvicorn) bind 0.0.0.0 with SO_REUSEADDR and the readiness probe goes
+    to 127.0.0.1, so test both addresses that way. SO_REUSEADDR matters: a plain
+    bind also fails on TIME_WAIT leftovers of closed connections, which an agent's
+    bind ignores, so every port would look busy for a minute after its agent
+    stopped. With it, a bind still fails on a listener (on Linux, any listener on
+    the port; on macOS, one on the same address, hence both addresses).
+    """
+    for host in ("0.0.0.0", "127.0.0.1"):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                sock.bind((host, port))
+            except OSError:
+                return False
+    return True
+
+
 async def assign_port(conn: asyncpg.Connection, agent_id: str) -> int:
     """Claim a free port and associate it with agent_id.
 
@@ -46,20 +71,35 @@ async def assign_port(conn: asyncpg.Connection, agent_id: str) -> int:
     churn or a restart-time recovery that re-seats rows). Consulting the
     authoritative table here prevents handing out a port that's actually taken
     (which would 500 on the UNIQUE(port) constraint).
+
+    A port the DB considers free but the OS reports in use is skipped (and stays
+    free in the pool, so it is retried once its holder exits).
     """
-    row = await conn.fetchrow(
-        """
-        SELECT port FROM port_pool
-        WHERE in_use = false
-          AND port NOT IN (SELECT port FROM agents WHERE port IS NOT NULL)
-        ORDER BY port
-        LIMIT 1
-        FOR UPDATE SKIP LOCKED
-        """,
-    )
-    if row is None:
-        raise RuntimeError("No free ports available in pool")
-    port: int = row["port"]
+    busy: list[int] = []
+    while True:
+        row = await conn.fetchrow(
+            """
+            SELECT port FROM port_pool
+            WHERE in_use = false
+              AND port NOT IN (SELECT port FROM agents WHERE port IS NOT NULL)
+              AND NOT (port = ANY($1::int[]))
+            ORDER BY port
+            LIMIT 1
+            FOR UPDATE SKIP LOCKED
+            """,
+            busy,
+        )
+        if row is None:
+            if busy:
+                raise RuntimeError(
+                    f"No free ports available in pool ({len(busy)} skipped: in use on this host)"
+                )
+            raise RuntimeError("No free ports available in pool")
+        port: int = row["port"]
+        if port_free_on_host(port):
+            break
+        logger.warning("port_busy_on_host port=%d agent_id=%s skipping", port, agent_id)
+        busy.append(port)
     await conn.execute(
         "UPDATE port_pool SET in_use = true, agent_id = $1 WHERE port = $2",
         agent_id,

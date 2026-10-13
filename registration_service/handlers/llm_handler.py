@@ -31,6 +31,7 @@ from a2a.types import (
 
 from agent_skeleton.llm_loop import run_agent
 from agent_skeleton.spec import AgentSpec, llm_wrapper_spec
+from registration_service.handlers.heartbeat import await_with_heartbeat
 
 logger = logging.getLogger(__name__)
 
@@ -59,9 +60,13 @@ class LLMAgentExecutor(AgentExecutor):
             return
 
         try:
-            # run_agent is a blocking (sync OpenAI) tool loop; keep the loop free.
-            result = await asyncio.to_thread(
-                run_agent, {"prompt": user_text}, spec=self._spec, model=self._model
+            # run_agent is a blocking (sync OpenAI) tool loop; keep the loop free,
+            # and keep a streaming caller's connection alive while it runs.
+            result = await await_with_heartbeat(
+                updater,
+                asyncio.to_thread(
+                    run_agent, {"prompt": user_text}, spec=self._spec, model=self._model
+                ),
             )
         except Exception as exc:
             logger.exception("llm_handler_failed agent_id=%s", self._agent_id)
@@ -103,7 +108,10 @@ def build_agent_card(agent_id: str, name: str, description: str, port: int) -> A
         description=description,
         url=f"http://localhost:{port}/",
         version="1.0.0",
-        capabilities=AgentCapabilities(streaming=False),
+        # Must match the card the supervisor publishes (streaming=True): the
+        # planner picks message/stream from the published card, and the A2A SDK
+        # rejects message/stream when the served card says False.
+        capabilities=AgentCapabilities(streaming=True),
         skills=[
             AgentSkill(
                 id=f"{agent_id}/respond",

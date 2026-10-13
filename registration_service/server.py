@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -12,9 +13,10 @@ from typing import Any
 
 import asyncpg
 from fastapi import FastAPI, File, HTTPException, Request, Response, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from ads_utils.publisher import DirectoryPublisher
 from registration_service import db
 from registration_service.archive import ArchiveError, _clear_dir, list_tree, unpack_archive, zip_tree
 from registration_service.backend import _image_slug
@@ -32,6 +34,7 @@ from registration_service.models import (
     upload_spec,
 )
 from registration_service.credential_catalog import CATALOG as CREDENTIAL_CATALOG
+from registration_service.flags import fake_db_enabled, fake_supervisor_enabled
 from registration_service.oasf_skills import OASF_SKILLS, has_routable_skill
 from registration_service.port_pool import assign_port
 from registration_service.supervisor import get_supervisor
@@ -97,7 +100,7 @@ def _require_admin(request: Request) -> None:
     no admins. Dev/test escape hatch: FAKE_DB=1 leaves it open (no Shibboleth locally).
     The shared MAIN_AGENT_ADMIN_TOKEN is retired.
     """
-    if os.getenv("FAKE_DB") == "1":
+    if fake_db_enabled():
         return
     email = next(
         (request.headers.get(h, "").strip().lower() for h in _SHIB_HEADER_PRIORITY
@@ -125,7 +128,71 @@ app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
 
 @app.get("/health", tags=["ops"])
 async def health() -> dict[str, str]:
+    """Liveness only: the process answers HTTP. See /ready for dependencies."""
     return {"status": "ok"}
+
+
+# /ready probe timeouts (the planner's values). dirctl is a subprocess, so the
+# directory check gets longer.
+_READY_DB_TIMEOUT_SECONDS = 2.0
+_READY_DIRECTORY_TIMEOUT_SECONDS = 5.0
+
+
+def _check_error(exc: BaseException, timeout: float) -> str:
+    if isinstance(exc, asyncio.TimeoutError):
+        return f"timed out after {timeout:g}s"
+    return " ".join(f"{type(exc).__name__}: {exc}".split())[:500]
+
+
+async def _check_db() -> dict[str, Any]:
+    """The store answers a trivial query (postgres, or the in-memory fake)."""
+    backend = "fake" if fake_db_enabled() else "postgres"
+
+    async def probe() -> None:
+        async with (await get_pool()).acquire() as conn:
+            await conn.fetchval("SELECT 1")
+
+    try:
+        await asyncio.wait_for(probe(), timeout=_READY_DB_TIMEOUT_SECONDS)
+    except Exception as exc:
+        return {"status": "error", "backend": backend,
+                "error": _check_error(exc, _READY_DB_TIMEOUT_SECONDS)}
+    return {"status": "ok", "backend": backend}
+
+
+async def _check_directory() -> dict[str, Any]:
+    """The directory answers one cheap dirctl read, when agents get published."""
+    if fake_supervisor_enabled():
+        return {"status": "not_configured", "reason": "FAKE_SUPERVISOR: agents are not published"}
+    publisher = DirectoryPublisher()
+    if not publisher.server_addr:
+        # Agents then go live unpublished (ads_cid null); that is a configuration
+        # choice, not an outage, so it doesn't fail readiness.
+        return {"status": "not_configured"}
+    timeout = _READY_DIRECTORY_TIMEOUT_SECONDS
+    try:
+        # healthcheck's own subprocess timeout kills a hung dirctl.
+        await asyncio.to_thread(publisher.healthcheck, timeout=timeout)
+    except Exception as exc:
+        return {"status": "error", "server_addr": publisher.server_addr,
+                "error": _check_error(exc, timeout)}
+    return {"status": "ok", "server_addr": publisher.server_addr}
+
+
+@app.get("/ready", tags=["ops"])
+async def ready() -> JSONResponse:
+    """Readiness, in the planner's shape: 200 when no check is in error, else 503.
+
+    ``{"ready": bool, "checks": {"db": {...}, "directory": {...}}}``; each check has
+    ``status`` ("ok", "not_configured" or "error") and, on error, ``error``. A
+    dependency that is not configured is reported but does not fail readiness.
+    """
+    db_check, directory_check = await asyncio.gather(_check_db(), _check_directory())
+    checks = {"db": db_check, "directory": directory_check}
+    is_ready = all(check["status"] != "error" for check in checks.values())
+    return JSONResponse(
+        {"ready": is_ready, "checks": checks}, status_code=200 if is_ready else 503
+    )
 
 
 # ── Web UI ─────────────────────────────────────────────────────────────────────

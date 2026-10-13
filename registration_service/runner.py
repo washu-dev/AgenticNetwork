@@ -17,6 +17,8 @@ import json
 import logging
 import os
 import sys
+import threading
+import time
 
 logging.basicConfig(
     level=logging.INFO,
@@ -33,7 +35,33 @@ def _handler_file_path() -> str:
     return path
 
 
+def _exit_with_parent() -> None:
+    """Exit when the registration service that spawned this agent is gone.
+
+    SubprocessBackend starts each agent in its own session, so the service's
+    shutdown can stop agents in order and a terminal Ctrl-C reaches only the
+    service. The cost: if the service is SIGKILLed or crashes, no signal reaches
+    the agents. The backend passes its pid in AGENT_PARENT_PID; once this process
+    has been re-parented, the service has died, so exit rather than linger as an
+    orphan holding the port.
+    """
+    raw = os.getenv("AGENT_PARENT_PID")
+    if not raw:
+        return
+    parent = int(raw)
+
+    def watch() -> None:
+        while os.getppid() == parent:
+            time.sleep(1.0)
+        logger.warning("runner_parent_exited parent_pid=%d", parent)
+        os._exit(0)
+
+    threading.Thread(target=watch, name="parent-watch", daemon=True).start()
+
+
 def main() -> None:
+    _exit_with_parent()
+
     from registration_service.models import (
         LLMConfig,
         ProxyConfig,

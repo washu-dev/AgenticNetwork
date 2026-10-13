@@ -1,16 +1,26 @@
 """In-memory drop-in for the asyncpg pool — used when FAKE_DB=1.
 
 Implements exactly the subset of asyncpg's Pool/Connection API that the
-registration service actually calls.  No real DB, no network, no migration.
+registration service actually calls — both with the no-op FakeSupervisor and with
+the real Supervisor (FAKE_SUPERVISOR=0: register, spawn, publish, restart,
+delete, startup recovery). No real DB, no network, no migration. A statement it
+does not recognise raises instead of silently succeeding, so a new query surfaces
+here rather than as wrong state later.
 """
 
 from __future__ import annotations
 
+import copy
 import json
+import logging
 import os
 import uuid
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, NoReturn
+
+from registration_service.port_pool import port_free_on_host
+
+logger = logging.getLogger(__name__)
 
 # Kept in sync with port_pool.py — env-configurable so a test instance can offset
 # its custom-agent port range. See docs/MULTI_CONTRIBUTOR.md.
@@ -39,12 +49,33 @@ class FakeRecord(dict):
     """dict that mimics asyncpg.Record attribute/key access."""
 
 
+def _unhandled(method: str, sql: str) -> NoReturn:
+    logger.warning("fake_db_unhandled_sql method=%s sql=%s", method, sql)
+    raise NotImplementedError(f"fake_db does not handle this SQL ({method}): {sql}")
+
+
 class FakeTransaction:
+    """Rolls the store back if the block raises, as asyncpg's transaction does.
+
+    Without this, a failure after the INSERT (e.g. 503 "no free ports") left a
+    half-registered row behind whose name then 409'd every retry.
+    """
+
+    def __init__(self, store: "FakeStore") -> None:
+        self._store = store
+        self._snapshot: tuple[dict, dict] | None = None
+
     async def __aenter__(self) -> "FakeTransaction":
+        self._snapshot = copy.deepcopy((self._store.agents, self._store.port_pool))
         return self
 
-    async def __aexit__(self, *args: Any) -> None:
-        pass
+    async def __aexit__(self, exc_type: Any, *args: Any) -> None:
+        if exc_type is not None and self._snapshot is not None:
+            agents, ports = self._snapshot
+            self._store.agents.clear()
+            self._store.agents.update(agents)
+            self._store.port_pool.clear()
+            self._store.port_pool.update(ports)
 
 
 class FakeStore:
@@ -60,6 +91,16 @@ class FakeStore:
         for p in range(_PORT_RANGE_START, _PORT_RANGE_END + 1):
             self.port_pool[p] = {"port": p, "in_use": False, "agent_id": None}
 
+    def free_ports(self, skip: Any = ()) -> list[int]:
+        """Free pool ports in order, minus any an agents row holds (assign_port's
+        NOT IN subquery) and minus ``skip`` (ports the OS reported busy)."""
+        held = {a["port"] for a in self.agents.values() if a["port"] is not None}
+        skipped = set(skip or ())
+        return [
+            p for p, info in sorted(self.port_pool.items())
+            if not info["in_use"] and p not in held and p not in skipped
+        ]
+
 
 class FakeConnection:
     """Handles the specific SQL statements used by the registration service."""
@@ -68,7 +109,7 @@ class FakeConnection:
         self._s = store
 
     def transaction(self) -> FakeTransaction:
-        return FakeTransaction()
+        return FakeTransaction(self._s)
 
     async def execute(self, sql: str, *args: Any) -> None:
         s = " ".join(sql.split()).lower()
@@ -169,11 +210,16 @@ class FakeConnection:
                     p["in_use"] = False
                     p["agent_id"] = None
 
+        else:
+            _unhandled("execute", s)
+
     async def executemany(self, sql: str, args_list: list) -> None:
         s = " ".join(sql.split()).lower()
         if "insert into port_pool" in s:
             for port, in_use, agent_id in args_list:
                 self._s.port_pool[port] = {"port": port, "in_use": in_use, "agent_id": agent_id}
+            return
+        _unhandled("executemany", s)
 
     async def fetchrow(self, sql: str, *args: Any) -> FakeRecord | None:
         s = " ".join(sql.split()).lower()
@@ -189,12 +235,12 @@ class FakeConnection:
             return FakeRecord(row) if row else None
 
         if "select port from port_pool" in s:
-            for p, info in sorted(self._s.port_pool.items()):
-                if not info["in_use"]:
-                    return FakeRecord({"port": p})
-            return None
+            # assign_port: lowest free port, excluding agent-held ports and the
+            # ports it already found busy on the host ($1).
+            free = self._s.free_ports(args[0] if args else ())
+            return FakeRecord({"port": free[0]}) if free else None
 
-        return None
+        _unhandled("fetchrow", s)
 
     async def fetch(self, sql: str, *args: Any) -> list[FakeRecord]:
         s = " ".join(sql.split()).lower()
@@ -220,7 +266,7 @@ class FakeConnection:
                 if v["status"] == "live"
             ]
 
-        return []
+        _unhandled("fetch", s)
 
     async def fetchval(self, sql: str, *args: Any) -> Any:
         s = " ".join(sql.split()).lower()
@@ -231,7 +277,10 @@ class FakeConnection:
         if "select count(*) from port_pool" in s:
             return len(self._s.port_pool)
 
-        return None
+        if s == "select 1":
+            return 1  # /ready probe
+
+        _unhandled("fetchval", s)
 
 
 class _FakeConnCtx:
@@ -329,16 +378,13 @@ def fake_create_agent(
 ) -> dict:
     s = _store()
     s.seed_ports()
-    # Claim the lowest free port.
-    port = None
-    for p, info in sorted(s.port_pool.items()):
-        if not info["in_use"]:
-            port = p
-            info["in_use"] = True
-            break
+    # Claim the lowest free port, with assign_port's rules (skip agent-held
+    # ports and ports the OS reports busy).
+    port = next((p for p in s.free_ports() if port_free_on_host(p)), None)
     uid = uuid.uuid4()
     now = _now()
     if port is not None:
+        s.port_pool[port]["in_use"] = True
         s.port_pool[port]["agent_id"] = str(uid)
     row = {
         "id": uid,

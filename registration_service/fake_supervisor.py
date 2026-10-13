@@ -1,4 +1,4 @@
-"""No-op supervisor used when FAKE_DB=1.
+"""No-op supervisor used when FAKE_SUPERVISOR is on (default: the value of FAKE_DB).
 
 Skips subprocess spawning and ADS publishing; updates the in-memory DB to
 reflect what the real supervisor would do so callers see consistent status.
@@ -70,6 +70,9 @@ class FakeSupervisor:
         pass
 
     async def stop_build_poll_loop(self) -> None:
+        pass
+
+    async def shutdown(self) -> None:
         pass
 
     async def delete_github_context(self, name: str) -> None:

@@ -52,6 +52,9 @@ class DirectoryPublisher:
             ADS_SERVER_ADDR / ADS_URL env vars if not provided.
         dirctl_path: Path to the dirctl binary. Defaults to DIRCTL_BIN env var
             or "dirctl" (searched on PATH).
+
+    Each dirctl call is bounded by DIRCTL_TIMEOUT_SECONDS (default 60): a hung
+    daemon connection surfaces as DirectoryUnavailable instead of blocking forever.
     """
 
     def __init__(
@@ -127,6 +130,11 @@ class DirectoryPublisher:
         finally:
             temp_path.unlink(missing_ok=True)
 
+    def healthcheck(self, timeout: float = 3.0) -> None:
+        """Raise DirectoryUnavailable unless the directory answers a cheap read
+        within ``timeout`` seconds (the same probe the planner's backend uses)."""
+        self._run(["routing", "list", "--output", "json"], timeout=timeout)
+
     def unpublish(self, cid: str | None) -> bool:
         """Remove a record from the ADS routing index.
 
@@ -155,15 +163,25 @@ class DirectoryPublisher:
                 "Pass server_addr= or set ADS_SERVER_ADDR / ADS_URL."
             )
 
-    def _run(self, args: list[str]) -> subprocess.CompletedProcess[str]:
+    def _run(
+        self, args: list[str], timeout: float | None = None
+    ) -> subprocess.CompletedProcess[str]:
         self._require_server_addr()
         command = [self.dirctl_path, "--server-addr", self.server_addr, *args]
+        if timeout is None:
+            timeout = float(os.getenv("DIRCTL_TIMEOUT_SECONDS", "60"))
         try:
-            result = subprocess.run(command, text=True, capture_output=True, check=False)
+            result = subprocess.run(
+                command, text=True, capture_output=True, check=False, timeout=timeout
+            )
         except FileNotFoundError as exc:
             raise DirectoryUnavailable(
                 f"dirctl not found at {self.dirctl_path!r}. "
                 "Install it from https://github.com/agntcy/dir/releases."
+            ) from exc
+        except subprocess.TimeoutExpired as exc:
+            raise DirectoryUnavailable(
+                f"dirctl command timed out after {timeout:g}s: {' '.join(command)}"
             ) from exc
         if result.returncode != 0:
             output = (result.stderr or result.stdout).strip()

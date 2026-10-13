@@ -17,6 +17,13 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 
+@pytest.fixture(autouse=True)
+def _agent_logs_in_tmp(monkeypatch, tmp_path):
+    """Spawned agents write logs/agents/<id>.log under the cwd by default; keep
+    tests from leaving those in the checkout."""
+    monkeypatch.setenv("AGENT_LOG_DIR", str(tmp_path / "agent-logs"))
+
+
 @pytest_asyncio.fixture
 async def client():
     """Yield an AsyncClient wired to the FastAPI app with a fresh in-memory DB.

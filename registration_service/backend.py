@@ -29,6 +29,7 @@ import os
 import signal
 import sys
 from abc import ABC, abstractmethod
+from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
@@ -37,8 +38,14 @@ from registration_service.models import AnyConfig, UploadSpec, upload_spec
 
 logger = logging.getLogger(__name__)
 
-_HEALTH_TIMEOUT_SECONDS = 30.0
+_DEFAULT_HEALTH_TIMEOUT_SECONDS = 30.0
 _HEALTH_POLL_INTERVAL_SECONDS = 0.5
+# SIGTERM -> SIGKILL grace when stopping an agent's process group.
+_STOP_GRACE_SECONDS = 5.0
+# A spawned agent is ready once its A2A app serves the agent card. "Anything
+# below 500 on /health" was not enough: the A2A app has no /health, so any
+# listener on the port (an orphan, another program) passed with a 404.
+_READY_PATH = "/.well-known/agent-card.json"
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _AGENT_SKELETON_DIR = _REPO_ROOT / "agent_skeleton"
@@ -51,6 +58,22 @@ _AGENT_SKELETON_DIR = _REPO_ROOT / "agent_skeleton"
 
 def _handler_files_dir() -> Path:
     return Path(os.getenv("HANDLER_FILES_DIR", "./uploaded_handlers"))
+
+
+def _agent_log_dir() -> Path:
+    return Path(os.getenv("AGENT_LOG_DIR", "logs/agents"))
+
+
+def _health_timeout_seconds() -> float:
+    return float(os.getenv("AGENT_SPAWN_HEALTH_TIMEOUT_SECONDS", str(_DEFAULT_HEALTH_TIMEOUT_SECONDS)))
+
+
+def _signal_group(pid: int, sig: int) -> None:
+    """Signal an agent's whole process group (it leads its own session)."""
+    try:
+        os.killpg(pid, sig)
+    except (ProcessLookupError, PermissionError):
+        pass  # already gone (macOS reports EPERM for a zombie leader)
 
 
 def _has_build_metadata(handler_dir: Path) -> bool:
@@ -156,16 +179,26 @@ class ContainerBackend(ABC):
     @abstractmethod
     async def is_alive(self, agent_id: str) -> bool: ...
 
+    async def stop_all(self) -> list[str]:
+        """Stop every agent whose lifetime is tied to this process (service
+        shutdown) and return their ids. Default: none — cluster srun steps and
+        Cloud Run services outlive the registration service."""
+        return []
+
 
 class SubprocessBackend(ContainerBackend):
     """Spawns each registered agent as an asyncio subprocess.
 
     The runner script (registration_service/runner.py) reads agent config from
     the AGENT_CONFIG_JSON environment variable and starts the appropriate handler.
+    Each agent runs in its own session; its stdout+stderr go to
+    ``$AGENT_LOG_DIR/<agent_id>.log`` (default ``logs/agents`` under the cwd).
     """
 
     def __init__(self) -> None:
         self._procs: dict[str, asyncio.subprocess.Process] = {}
+        # agent_id -> (log file, offset where the current run's output starts)
+        self._logs: dict[str, tuple[Path, int]] = {}
 
     async def spawn(
         self,
@@ -176,12 +209,22 @@ class SubprocessBackend(ContainerBackend):
         config: AnyConfig,
         port: int,
     ) -> None:
+        # A second spawn for a running agent (approve twice, a restart racing the
+        # health loop) would orphan the first process, which still holds the port.
+        await self.stop(agent_id)
+
         env = {**os.environ}
         env["AGENT_CONFIG_JSON"] = _config_envelope(
             agent_id, name, description, handler_type, config, port
         )
+        # The runner exits once this process is gone (see runner._exit_with_parent):
+        # agents leave our process group, so a SIGKILL of the service reaches nobody.
+        env["AGENT_PARENT_PID"] = str(os.getpid())
 
         python = sys.executable
+        # The runner imports registration_service and agent_skeleton, which must
+        # resolve whatever the service's cwd is.
+        pythonpath = [str(_REPO_ROOT)]
 
         spec = upload_spec(config)
         if spec is not None:
@@ -196,31 +239,52 @@ class SubprocessBackend(ContainerBackend):
                     "(apt only applies to the cluster image build)",
                     agent_id, spec.system_packages,
                 )
-            # Both roots must be importable: registration_service + agent_skeleton
-            # (framework) via _REPO_ROOT, and the uploaded project root (handler_dir)
-            # so a multi-file handler can `import` its siblings. Single-file handlers
-            # never needed the latter; it's harmless for them.
-            env["PYTHONPATH"] = os.pathsep.join(
-                p for p in [str(handler_dir), str(_REPO_ROOT), env.get("PYTHONPATH", "")] if p
-            )
+            # The uploaded project root (handler_dir) also goes on the path, first,
+            # so a multi-file handler can `import` its siblings. Single-file
+            # handlers never needed it; it's harmless for them.
+            pythonpath.insert(0, str(handler_dir))
             if spec.requirements or (spec.install_project and _has_build_metadata(handler_dir)):
                 python = await self._ensure_venv(handler_dir, spec)
+        env["PYTHONPATH"] = os.pathsep.join(
+            p for p in [*pythonpath, env.get("PYTHONPATH", "")] if p
+        )
 
+        # Output goes to a per-agent file: PIPEs that nobody drains block the
+        # agent once the buffer fills. Appending keeps earlier runs; the offset
+        # marks where this run starts, for the crash report.
+        log_path = _agent_log_dir() / f"{agent_id}.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
         runner_path = os.path.join(os.path.dirname(__file__), "runner.py")
-        proc = await asyncio.create_subprocess_exec(
-            python,
-            runner_path,
-            env=env,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
+        with open(log_path, "ab") as log:
+            started = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            log.write(f"--- spawn agent_id={agent_id} port={port} at {started} ---\n".encode())
+            log.flush()
+            offset = log.tell()
+            proc = await asyncio.create_subprocess_exec(
+                python,
+                runner_path,
+                env=env,
+                stdout=log,
+                stderr=asyncio.subprocess.STDOUT,
+                # Own session and process group: stop() signals the whole group,
+                # and a Ctrl-C aimed at the service doesn't hit the agents before
+                # the service's shutdown stops them.
+                start_new_session=True,
+            )
         self._procs[agent_id] = proc
+        self._logs[agent_id] = (log_path, offset)
         logger.info(
-            "subprocess_spawned agent_id=%s pid=%d port=%d handler_type=%s",
-            agent_id, proc.pid, port, handler_type,
+            "subprocess_spawned agent_id=%s pid=%d port=%d handler_type=%s log=%s",
+            agent_id, proc.pid, port, handler_type, log_path,
         )
 
-        await self._wait_for_health(agent_id, port)
+        try:
+            await self._wait_for_health(agent_id, port)
+        except BaseException:
+            # A spawn reported as failed must not leave its process holding the
+            # port (and possibly coming up later, unpublished).
+            await self.stop(agent_id)
+            raise
 
     async def _ensure_venv(self, handler_dir: Path, spec: UploadSpec) -> str:
         """Create a per-agent venv (if absent) and install project + requirements.
@@ -248,18 +312,22 @@ class SubprocessBackend(ContainerBackend):
 
     async def stop(self, agent_id: str) -> None:
         proc = self._procs.pop(agent_id, None)
+        self._logs.pop(agent_id, None)
         if proc is None:
             return
-        try:
-            proc.send_signal(signal.SIGTERM)
+        if proc.returncode is None:
+            _signal_group(proc.pid, signal.SIGTERM)
             try:
-                await asyncio.wait_for(proc.wait(), timeout=5.0)
+                await asyncio.wait_for(proc.wait(), timeout=_STOP_GRACE_SECONDS)
             except asyncio.TimeoutError:
-                proc.kill()
+                _signal_group(proc.pid, signal.SIGKILL)
                 await proc.wait()
-            logger.info("subprocess_stopped agent_id=%s pid=%d", agent_id, proc.pid)
-        except ProcessLookupError:
-            pass
+        logger.info("subprocess_stopped agent_id=%s pid=%d code=%s", agent_id, proc.pid, proc.returncode)
+
+    async def stop_all(self) -> list[str]:
+        agent_ids = list(self._procs)
+        await asyncio.gather(*(self.stop(a) for a in agent_ids), return_exceptions=True)
+        return agent_ids
 
     async def is_alive(self, agent_id: str) -> bool:
         proc = self._procs.get(agent_id)
@@ -267,38 +335,56 @@ class SubprocessBackend(ContainerBackend):
             return False
         return proc.returncode is None
 
+    def _log_tail(self, agent_id: str, limit: int = 2000) -> str:
+        """This run's output so far (the end of it), for error messages."""
+        path, offset = self._logs.get(agent_id, (None, 0))
+        if path is None:
+            return ""
+        try:
+            with open(path, "rb") as fh:
+                fh.seek(offset)
+                data = fh.read()
+        except OSError:
+            return ""
+        return data.decode(errors="replace")[-limit:]
+
     async def _wait_for_health(self, agent_id: str, port: int) -> None:
-        url = f"http://localhost:{port}/health"
-        deadline = asyncio.get_event_loop().time() + _HEALTH_TIMEOUT_SECONDS
+        url = f"http://127.0.0.1:{port}{_READY_PATH}"
+        timeout = _health_timeout_seconds()
+        log_path = self._logs.get(agent_id, (None, 0))[0]
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
         async with httpx.AsyncClient() as client:
-            while asyncio.get_event_loop().time() < deadline:
+            while loop.time() < deadline:
                 proc = self._procs.get(agent_id)
-                if proc is not None and proc.returncode is not None:
-                    stderr_bytes = b""
-                    if proc.stderr:
-                        try:
-                            stderr_bytes = await asyncio.wait_for(proc.stderr.read(), timeout=2.0)
-                        except Exception:
-                            pass
-                    stderr_tail = stderr_bytes.decode(errors="replace")[-2000:]
+                if proc is None:
+                    raise RuntimeError(f"Agent {agent_id} was stopped while starting")
+                if proc.returncode is not None:
+                    output_tail = self._log_tail(agent_id)
                     logger.error(
-                        "subprocess_crashed agent_id=%s code=%d stderr=%s",
-                        agent_id, proc.returncode, stderr_tail,
+                        "subprocess_crashed agent_id=%s code=%d log=%s output=%s",
+                        agent_id, proc.returncode, log_path, output_tail,
                     )
                     raise RuntimeError(
-                        f"Agent process exited with code {proc.returncode} before becoming healthy. "
-                        f"stderr: {stderr_tail[-500:]}"
+                        f"Agent process exited with code {proc.returncode} before becoming healthy "
+                        f"(log: {log_path}). output: {output_tail[-500:]}"
                     )
                 try:
                     resp = await client.get(url, timeout=2.0)
-                    if resp.status_code < 500:
+                    if resp.status_code == 200:
                         logger.info("subprocess_healthy agent_id=%s port=%d", agent_id, port)
                         return
-                except (httpx.ConnectError, httpx.TimeoutException):
+                except httpx.TransportError:
                     pass
                 await asyncio.sleep(_HEALTH_POLL_INTERVAL_SECONDS)
+        output_tail = self._log_tail(agent_id)
+        logger.error(
+            "subprocess_health_timeout agent_id=%s port=%d log=%s output=%s",
+            agent_id, port, log_path, output_tail,
+        )
         raise RuntimeError(
-            f"Agent {agent_id} did not become healthy within {_HEALTH_TIMEOUT_SECONDS}s on port {port}"
+            f"Agent {agent_id} did not serve {_READY_PATH} within {timeout:g}s on port {port} "
+            f"(log: {log_path}). output: {output_tail[-500:]}"
         )
 
 

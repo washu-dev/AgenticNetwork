@@ -40,6 +40,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     await supervisor.stop_health_loop()
     await supervisor.stop_build_poll_loop()
+    # Before close_db: shutdown reads the rows of the agents it stops.
+    await supervisor.shutdown()
     await close_db()
 
     logger.info("registration_service_stopped")

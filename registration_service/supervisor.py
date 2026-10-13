@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import logging
 import os
@@ -29,7 +30,8 @@ from registration_service.backend import (
     cluster_srun_argv,
     make_backend,
 )
-from registration_service.db import get_pool, list_agents_by_status, update_agent
+from registration_service.db import get_agent, get_pool, list_agents_by_status, update_agent
+from registration_service.flags import fake_supervisor_enabled
 from registration_service.models import (
     AnyConfig,
     carries_upload,
@@ -86,6 +88,15 @@ class Supervisor:
         self._publisher = publisher or DirectoryPublisher()
         self._health_task: asyncio.Task[None] | None = None
         self._build_task: asyncio.Task[None] | None = None
+        # Health-loop restarts in flight, one per agent: backoff plus spawn can
+        # outlast a health poll, and a second restart would kill the first's
+        # half-started process. Held here so the tasks aren't garbage-collected
+        # and can be cancelled on shutdown.
+        self._restart_tasks: dict[str, asyncio.Task[None]] = {}
+        # dirctl calls are blocking subprocess runs: they go to a worker thread so
+        # /health stays responsive, one at a time (a sqlite-backed dir daemon
+        # answers SQLITE_BUSY to concurrent writes, e.g. recovery's gather).
+        self._directory_lock = asyncio.Lock()
 
     # ── Public API ─────────────────────────────────────────────────────────────
 
@@ -165,6 +176,15 @@ class Supervisor:
                 "'upload'). Register it with the local subprocess backend instead."
             )
 
+        # A re-spawn (health-loop restart, startup recovery) still has the previous
+        # process's card in the directory. Drop it first: it points at a dead
+        # process, and the new card may hash to the same CID, so unpublishing
+        # after the new publish could remove the new one. If the directory is
+        # down the row keeps the CID: the card is still there, and the next
+        # publish (or a later stop) replaces or retries it.
+        if agent.get("ads_cid") and await self._unpublish(agent_id, agent["ads_cid"]):
+            await update_agent(agent_id, ads_cid=None)
+
         try:
             await self._backend.spawn(
                 agent_id=agent_id,
@@ -208,13 +228,47 @@ class Supervisor:
 
         ads_cid: str | None = None
         try:
-            record = self._publisher.publish(card, advertise_url=endpoint_url)
+            record = await self._directory_call(
+                self._publisher.publish, card, advertise_url=endpoint_url
+            )
             ads_cid = record.backend_ref
             logger.info("ads_published agent_id=%s cid=%s", agent_id, ads_cid)
         except DirectoryUnavailable as exc:
             logger.warning("ads_publish_skipped agent_id=%s reason=%s", agent_id, str(exc).replace("\n", " | "))
 
         await _set_status(agent_id, "live", endpoint_url=endpoint_url, ads_cid=ads_cid)
+
+    async def _directory_call(self, fn: Any, *args: Any, **kwargs: Any) -> Any:
+        async with self._directory_lock:
+            return await asyncio.to_thread(fn, *args, **kwargs)
+
+    async def _unpublish(self, agent_id: str, ads_cid: str) -> bool:
+        """Best-effort card removal; True if the directory confirmed it. A
+        directory outage is logged, not raised."""
+        try:
+            return bool(await self._directory_call(self._publisher.unpublish, ads_cid))
+        except DirectoryUnavailable as exc:
+            logger.warning("ads_unpublish_failed agent_id=%s cid=%s error=%s", agent_id, ads_cid, exc)
+            return False
+
+    async def shutdown(self) -> None:
+        """Stop the agent processes this service owns, then drop their cards.
+
+        Subprocess agents die with the service, so their cards would otherwise
+        advertise dead endpoints (or, after the next start reuses the port, a
+        different agent). Rows keep status 'live' so startup recovery re-spawns
+        them; ads_cid is cleared once the card is gone (kept if the directory was
+        down, so recovery retries the unpublish). Backends whose agents outlive
+        this process (cluster, Cloud Run) stop nothing and return [].
+        """
+        stop_all = getattr(self._backend, "stop_all", None)
+        stopped: list[str] = await stop_all() if stop_all else []
+        for agent_id in stopped:
+            agent = await get_agent(agent_id)
+            if agent and agent.get("ads_cid") and await self._unpublish(agent_id, agent["ads_cid"]):
+                await update_agent(agent_id, ads_cid=None)
+        if stopped:
+            logger.info("supervisor_shutdown stopped=%d", len(stopped))
 
     async def stop_and_unpublish(self, agent_id: str) -> None:
         """Unpublish from ADS, stop the subprocess, release the port."""
@@ -230,10 +284,7 @@ class Supervisor:
         port: int | None = row["port"]
 
         if ads_cid:
-            try:
-                self._publisher.unpublish(ads_cid)
-            except DirectoryUnavailable as exc:
-                logger.warning("ads_unpublish_failed agent_id=%s error=%s", agent_id, exc)
+            await self._unpublish(agent_id, ads_cid)
 
         await self._backend.stop(agent_id)
 
@@ -410,12 +461,7 @@ class Supervisor:
             # Service is gone — drop the stale card (best-effort) then redeploy.
             stale_cid = agent.get("ads_cid")
             if stale_cid:
-                try:
-                    self._publisher.unpublish(stale_cid)
-                except DirectoryUnavailable as exc:
-                    logger.warning(
-                        "recovery_stale_unpublish_failed agent_id=%s error=%s", agent_id, exc
-                    )
+                await self._unpublish(agent_id, stale_cid)
             logger.info("recovery_redeploy_cloud agent_id=%s name=%s (service gone)", agent_id, agent["name"])
             await self._deploy_ready_agent(agent)
             redeployed += 1
@@ -450,6 +496,13 @@ class Supervisor:
             except asyncio.CancelledError:
                 pass
             self._health_task = None
+        # A restart still in its backoff would otherwise spawn an agent after
+        # shutdown() stopped the others. Cancelling mid-spawn stops that process.
+        restarts = list(self._restart_tasks.values())
+        for task in restarts:
+            task.cancel()
+        await asyncio.gather(*restarts, return_exceptions=True)
+        self._restart_tasks.clear()
 
     async def _health_loop(self) -> None:
         while True:
@@ -473,12 +526,20 @@ class Supervisor:
             )
         for row in rows:
             agent_id = str(row["id"])
+            if agent_id in self._restart_tasks:
+                continue  # already restarting (backoff + spawn outlast a poll)
             if not await self._backend.is_alive(agent_id):
                 logger.warning("health_check_dead agent_id=%s triggering_restart", agent_id)
-                asyncio.create_task(
+                task = asyncio.create_task(
                     self.restart_with_backoff(agent_id),
                     name=f"restart-{agent_id}",
                 )
+                self._restart_tasks[agent_id] = task
+                task.add_done_callback(functools.partial(self._forget_restart, agent_id))
+
+    def _forget_restart(self, agent_id: str, task: asyncio.Task[None]) -> None:
+        if self._restart_tasks.get(agent_id) is task:
+            del self._restart_tasks[agent_id]
 
     # ── Build-poll loop (cluster custom builds) ──────────────────────────────────
 
@@ -886,8 +947,7 @@ _supervisor: Supervisor | None = None
 def get_supervisor() -> Supervisor:
     global _supervisor
     if _supervisor is None:
-        import os
-        if os.getenv("FAKE_DB"):
+        if fake_supervisor_enabled():
             from registration_service.fake_supervisor import FakeSupervisor
             _supervisor = FakeSupervisor()  # type: ignore[assignment]
         else:
@@ -962,6 +1022,8 @@ def _build_agent_card(
         version="1.0.0",
         # streaming=True so the planner uses SSE and honors the executor's <30s
         # heartbeat (P3) — this is the card the planner actually reads from ADS.
+        # Every handler the subprocess backend runs serves streaming too (their
+        # own cards say so; test_streaming_agents checks they agree).
         capabilities=AgentCapabilities(
             streaming=True,
             extensions=exts or None,

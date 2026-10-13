@@ -8,6 +8,8 @@ from typing import Any
 
 import asyncpg
 
+from registration_service.flags import fake_db_enabled
+
 logger = logging.getLogger(__name__)
 
 _pool: asyncpg.Pool | None = None
@@ -115,7 +117,7 @@ async def init_db() -> None:
     """Create connection pool and run schema migrations."""
     global _pool
 
-    if os.getenv("FAKE_DB"):
+    if fake_db_enabled():
         from registration_service.fake_db import get_fake_pool, init_fake_db
         await init_fake_db()
         _pool = get_fake_pool()  # type: ignore[assignment]
@@ -147,7 +149,7 @@ async def close_db() -> None:
     global _pool
     if _pool is None:
         return
-    if os.getenv("FAKE_DB"):
+    if fake_db_enabled():
         from registration_service.fake_db import close_fake_db
         await close_fake_db()
         _pool = None
@@ -190,7 +192,7 @@ async def create_agent(
     resources: dict | None = None,
 ) -> dict[str, Any]:
     """Insert a new agent row, assign a port, and return the row as a dict."""
-    if os.getenv("FAKE_DB"):
+    if fake_db_enabled():
         from registration_service.fake_db import fake_create_agent
         return fake_create_agent(
             name=name,
@@ -232,7 +234,7 @@ async def create_agent(
 
 
 async def get_agent(agent_id: Any) -> dict[str, Any] | None:
-    if os.getenv("FAKE_DB"):
+    if fake_db_enabled():
         from registration_service.fake_db import fake_get_agent
         return fake_get_agent(agent_id)
     pool = await get_pool()
@@ -251,7 +253,7 @@ async def update_agent(agent_id: Any, **fields: Any) -> None:
     if not fields:
         return
 
-    if os.getenv("FAKE_DB"):
+    if fake_db_enabled():
         from registration_service.fake_db import fake_update_agent
         fake_update_agent(agent_id, **fields)
         return
@@ -272,7 +274,7 @@ async def update_agent(agent_id: Any, **fields: Any) -> None:
 
 
 async def list_agents_by_status(status: str) -> list[dict[str, Any]]:
-    if os.getenv("FAKE_DB"):
+    if fake_db_enabled():
         from registration_service.fake_db import fake_list_agents_by_status
         return fake_list_agents_by_status(status)
     pool = await get_pool()
