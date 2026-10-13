@@ -20,6 +20,7 @@ from registration_service.build_manifest import (
     SCHEMA,
     build_agent_manifest,
 )
+from registration_service.models import LLMConfig, UploadedTools
 
 CANARY = "CANARY_SECRET_zzzzzzzzzz"
 
@@ -359,17 +360,9 @@ def test_real_custom_config_with_secret_in_extra():
     assert "extra" in doc["omitted_fields"]
 
 
-def test_uploaded_tools_shape_if_present():
-    """Under the folded taxonomy the build fields live in a nested tools union member.
-
-    Skipped on the older shape, where uploaded tools are their own handler_type.
-    """
-    models = pytest.importorskip("registration_service.models")
-    UploadedTools = getattr(models, "UploadedTools", None)
-    if UploadedTools is None:
-        pytest.skip("this build predates the folded handler taxonomy")
-
-    config = models.LLMConfig(
+def test_uploaded_tools_shape():
+    """Under the folded taxonomy the build fields live in a nested tools union member."""
+    config = LLMConfig(
         system_prompt=f"prompt containing {CANARY}",
         tools=UploadedTools(entry_file="tools.py", python_version="3.12",
                             requirements=["httpx==0.27.2"], extra={"k": CANARY}),

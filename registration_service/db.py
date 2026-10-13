@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import uuid
 from typing import Any
 
 import asyncpg
@@ -150,8 +152,8 @@ async def close_db() -> None:
     if _pool is None:
         return
     if fake_db_enabled():
-        from registration_service.fake_db import close_fake_db
-        await close_fake_db()
+        from registration_service.fake_db import reset_fake_db
+        reset_fake_db()
         _pool = None
         return
     await _pool.close()
@@ -159,11 +161,6 @@ async def close_db() -> None:
 
 
 # ── Agent helper layer ──────────────────────────────────────────────────────────
-# Used by the custom-handler code paths (upload / approve / reject / build poll).
-# The existing llm/api_proxy paths in server.py keep their inline SQL unchanged.
-
-import json as _json
-import uuid as _uuid
 
 _UPDATABLE_COLUMNS = {
     "status",
@@ -177,8 +174,8 @@ _UPDATABLE_COLUMNS = {
 }
 
 
-def _coerce_uuid(value: Any) -> "_uuid.UUID":
-    return value if isinstance(value, _uuid.UUID) else _uuid.UUID(str(value))
+def _coerce_uuid(value: Any) -> "uuid.UUID":
+    return value if isinstance(value, uuid.UUID) else uuid.UUID(str(value))
 
 
 async def create_agent(
@@ -207,7 +204,7 @@ async def create_agent(
     from registration_service.port_pool import assign_port
 
     pool = await get_pool()
-    agent_id = _uuid.uuid4()
+    agent_id = uuid.uuid4()
     async with pool.acquire() as conn:
         async with conn.transaction():
             await conn.execute(
@@ -220,10 +217,10 @@ async def create_agent(
                 name,
                 description,
                 handler_type,
-                _json.dumps(oasf_skills),
-                _json.dumps(config),
+                json.dumps(oasf_skills),
+                json.dumps(config),
                 approved,
-                _json.dumps(resources) if resources is not None else None,
+                json.dumps(resources) if resources is not None else None,
             )
             port = await assign_port(conn, str(agent_id))
             await conn.execute(

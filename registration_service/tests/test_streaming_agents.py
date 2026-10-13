@@ -21,6 +21,7 @@ pytest.importorskip("uvicorn")
 
 from a2a.types import TaskState  # noqa: E402
 
+from agent_skeleton.container_runner import _tool_loop_card  # noqa: E402
 from registration_service.backend import SubprocessBackend  # noqa: E402
 from registration_service.handlers import api_proxy_handler, custom_handler, llm_handler  # noqa: E402
 from registration_service.handlers.heartbeat import await_with_heartbeat  # noqa: E402
@@ -38,13 +39,14 @@ _SKILLS = [{"name": "nlp/text-summarization", "id": 10101, "key": "nlp/text-summ
 
 
 def test_served_cards_agree_with_published_card() -> None:
-    """Every handler the subprocess backend runs serves the streaming capability
-    the supervisor publishes for it."""
+    """Every handler the subprocess backend runs, and the tool loop the cluster and
+    Cloud Run images run, serves the streaming capability the supervisor publishes."""
     published = _build_agent_card("a1", "Agent", "d", _SKILLS, 19200).capabilities.streaming
     served = {
         "llm": llm_handler.build_agent_card("a1", "Agent", "d", 19200),
         "proxy": api_proxy_handler.build_agent_card("a1", "Agent", "d", 19200),
         "custom": custom_handler.build_agent_card("a1", "Agent", "d", 19200),
+        "tool loop (container)": _tool_loop_card("a1", "Agent", "d", 19200),
     }
     for kind, card in served.items():
         assert card.capabilities.streaming == published, kind

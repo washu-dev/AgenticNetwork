@@ -12,7 +12,7 @@ import uuid
 
 import pytest
 
-from registration_service import db
+from registration_service import db, fake_db, port_pool
 from registration_service.fake_db import get_fake_pool, reset_fake_db
 from registration_service.port_pool import assign_port, port_free_on_host, release_port
 from registration_service.tests.conftest import LLM_PAYLOAD
@@ -95,26 +95,25 @@ async def test_assign_port_skips_ports_held_by_agent_rows() -> None:
     await db.close_db()
 
 
-async def test_assign_port_skips_port_busy_on_host() -> None:
+async def test_assign_port_skips_port_busy_on_host(monkeypatch) -> None:
     pool = await _fresh_db()
     store = get_fake_pool()._store
     lowest = store.free_ports()[0]
-    with socket.socket() as squatter:
-        squatter.bind(("127.0.0.1", lowest))
-        squatter.listen()
-        assert not port_free_on_host(lowest)
-        async with pool.acquire() as conn:
-            port = await assign_port(conn, str(uuid.uuid4()))
-        assert port != lowest
-        # The busy port is skipped, not burned: it stays free in the pool.
-        assert store.port_pool[lowest]["in_use"] is False
-        # db.create_agent's fake path applies the same rule.
-        agent = await db.create_agent(
-            name="Uploaded", description="d", handler_type="custom",
-            oasf_skills=[], config={}, approved=False,
-        )
-        assert agent["port"] not in (lowest, port)
-    assert port_free_on_host(lowest)
+    # Only `lowest` is busy on the host, whatever the real host holds; the probe
+    # itself is tested below on OS-assigned ports.
+    for module in (port_pool, fake_db):
+        monkeypatch.setattr(module, "port_free_on_host", lambda p: p != lowest)
+    async with pool.acquire() as conn:
+        port = await assign_port(conn, str(uuid.uuid4()))
+    assert port != lowest
+    # The busy port is skipped, not burned: it stays free in the pool.
+    assert store.port_pool[lowest]["in_use"] is False
+    # db.create_agent's fake path applies the same rule.
+    agent = await db.create_agent(
+        name="Uploaded", description="d", handler_type="custom",
+        oasf_skills=[], config={}, approved=False,
+    )
+    assert agent["port"] not in (lowest, port)
     await db.close_db()
 
 

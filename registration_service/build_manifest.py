@@ -19,10 +19,10 @@ This module closes that gap with one more committed file while keeping secrets o
 
 Why an allowlist, not a redaction pass
 --------------------------------------
-Some config fields are *designed* to hold secrets. `ToolLoopConfig.extra` is passed
+Some config fields are *designed* to hold secrets. `UploadedTools.extra` is passed
 to the author's `build_tools(config)` factory, which that class's own docstring
 describes as "the closure-safe way to bake in secrets without exposing them as tool
-parameters". `LLMConfig.tools` holds arbitrary dicts. `APIProxyConfig.auth_header`
+parameters". `LLMConfig.tools` holds arbitrary dicts. `ProxyConfig.auth_header`
 may be a literal header value. Free-text fields (`system_prompt`, `model`) can hold
 anything an author pastes in.
 
@@ -51,6 +51,9 @@ from __future__ import annotations
 
 import json
 from typing import Any
+
+from registration_service.credential_catalog import catalog_entry
+from registration_service.models import upload_spec
 
 MANIFEST_FILENAME = "agent.json"
 SCHEMA = "agenticnetwork/agent-manifest@1"
@@ -129,28 +132,19 @@ def _build_fields(config: Any) -> dict[str, Any]:
     Prefers ``models.upload_spec(config)`` — the service's own canonical accessor,
     which knows whether the fields sit on the config root (``CustomConfig``) or
     inside a nested tools union member (``LLMConfig`` + ``UploadedTools``), and so
-    tracks taxonomy changes for free. Falls back to reading the root directly for
-    config shapes that predate that helper. ``extra`` is deliberately not taken from
+    tracks taxonomy changes for free. Falls back to reading the root directly for a
+    plain dict config. ``extra`` is deliberately not taken from
     the spec even though the spec carries it.
     """
-    try:
-        from registration_service.models import upload_spec  # local import: optional
-    except Exception:
-        upload_spec = None  # type: ignore[assignment]
-
-    if upload_spec is not None:
-        try:
-            spec = upload_spec(config)
-        except Exception:
-            spec = None
-        if spec is not None:
-            return {
-                "entry_file": getattr(spec, "entry_file", None),
-                "python_version": getattr(spec, "python_version", None),
-                "requirements": getattr(spec, "requirements", None),
-                "system_packages": getattr(spec, "system_packages", None),
-                "install_project": getattr(spec, "install_project", None),
-            }
+    spec = upload_spec(config)
+    if spec is not None:
+        return {
+            "entry_file": spec.entry_file,
+            "python_version": spec.python_version,
+            "requirements": spec.requirements,
+            "system_packages": spec.system_packages,
+            "install_project": spec.install_project,
+        }
     return {
         "entry_file": _get(config, "entry_file"),
         "python_version": _get(config, "python_version"),
@@ -185,9 +179,8 @@ def _is_identifier(value: str) -> bool:
 def _is_relative_path(value: str) -> bool:
     """A relative path with no traversal, no absolute root and no control characters.
 
-    ``entry_file`` is unvalidated at the model layer; committing it verbatim would
-    publish whatever text a registrant supplied (and a newline would corrupt the
-    file it lands in).
+    Re-checked here although the models already require a bare ``*.py`` name: this
+    file commits it verbatim, and a newline would corrupt the file it lands in.
     """
     if not (0 < len(value) <= 256) or value.startswith(("/", "\\")):
         return False
@@ -248,10 +241,6 @@ def _credential_type_label(value: Any) -> str:
     database and the UI.
     """
     if not isinstance(value, str) or not value:
-        return "<unrecognised>"
-    try:
-        from registration_service.credential_catalog import catalog_entry
-    except Exception:
         return "<unrecognised>"
     if catalog_entry(value) is not None:
         return value

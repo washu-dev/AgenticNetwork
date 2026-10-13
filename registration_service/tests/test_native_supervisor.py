@@ -1,7 +1,7 @@
 """The REAL Supervisor on the in-memory store: FAKE_DB=1 FAKE_SUPERVISOR=0.
 
 This is the native dev stack's mode: no postgres, but real agent processes
-(SubprocessBackend) published through dirctl (here a file-backed fake). The
+(SubprocessBackend) published through dirctl (here the dev stack's fake). The
 first test drives one llm agent through every supervisor path that touches the
 store — register, spawn, publish, live, health-loop restart, manual restart,
 shutdown, startup recovery, delete — and calls it over A2A on the way, so a
@@ -33,10 +33,10 @@ from registration_service.port_pool import port_free_on_host  # noqa: E402
 from registration_service.supervisor import Supervisor  # noqa: E402
 from registration_service.tests.agent_stubs import (  # noqa: E402
     a2a_call,
+    fake_dirctl_env,
     pid_alive,
     routed_cids,
     stub_openai,
-    write_fake_dirctl,
 )
 
 LLM_AGENT = {
@@ -78,12 +78,13 @@ async def _teardown() -> None:
 
 @pytest_asyncio.fixture
 async def native(monkeypatch, tmp_path):
-    dirctl, state = write_fake_dirctl(tmp_path)
+    dirctl_env, state = fake_dirctl_env(tmp_path)
+    for name, value in dirctl_env.items():
+        monkeypatch.setenv(name, value)
     monkeypatch.setenv("FAKE_DB", "1")
     monkeypatch.setenv("FAKE_SUPERVISOR", "0")
     monkeypatch.setenv("SPAWN_BACKEND", "subprocess")
     monkeypatch.setenv("ADS_SERVER_ADDR", "fake-dir:8888")
-    monkeypatch.setenv("DIRCTL_BIN", str(dirctl))
     monkeypatch.setenv("ADS_ROUTING_PUBLISH_POLL_SECONDS", "0.05")
     monkeypatch.delenv("PYTHONPATH", raising=False)  # agents must import the repo themselves
     with stub_openai() as (llm_url, llm_requests):

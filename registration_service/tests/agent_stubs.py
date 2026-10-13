@@ -1,9 +1,9 @@
 """Helpers for tests that spawn REAL agent processes.
 
 Tiny in-thread HTTP stubs for what those agents call out to (an OpenAI-compatible
-LLM, a JSON-RPC upstream for proxy agents), a file-backed fake ``dirctl`` for the
-publisher, and an A2A caller built on the same SDK client the planner uses.
-Not a test module itself.
+LLM, a JSON-RPC upstream for proxy agents), the env for the repo's fake ``dirctl``
+(devstack/bin/dirctl), and an A2A caller built on the same SDK client the planner
+uses. Not a test module itself.
 """
 
 from __future__ import annotations
@@ -11,9 +11,8 @@ from __future__ import annotations
 import json
 import os
 import socket
-import stat
-import sys
 import threading
+import time
 import uuid
 import warnings
 from contextlib import aclosing, contextmanager
@@ -22,6 +21,8 @@ from pathlib import Path
 from typing import Any, Callable, Iterator
 
 import httpx
+
+from devstack import fake_dirctl
 
 
 def free_port() -> int:
@@ -136,59 +137,18 @@ def stub_upstream() -> Iterator[tuple[str, list[dict]]]:
         yield f"{base}/", seen
 
 
-_FAKE_DIRCTL = '''#!{python}
-"""File-backed fake dirctl (test only): push/pull/routing publish|unpublish|list."""
-import fcntl, hashlib, json, sys
-STATE = {state!r}
-argv = sys.argv[1:]
-if argv[:1] == ["--server-addr"]:
-    argv = argv[2:]
-with open(STATE, "a+") as fh:
-    fcntl.flock(fh, fcntl.LOCK_EX)
-    fh.seek(0)
-    raw = fh.read()
-    s = json.loads(raw) if raw.strip() else {{"stored": {{}}, "routed": []}}
-    cmd = argv[:2] if argv[:1] == ["routing"] else argv[:1]
-    if cmd == ["push"]:
-        data = open(argv[1]).read()
-        out = "bafyfake" + hashlib.sha256(data.encode()).hexdigest()[:24]
-        s["stored"][out] = json.loads(data)
-    elif cmd == ["pull"]:
-        if argv[1] not in s["stored"]:
-            sys.exit("not found")
-        out = json.dumps(s["stored"][argv[1]])
-    elif cmd == ["routing", "publish"]:
-        if argv[2] not in s["routed"]:
-            s["routed"].append(argv[2])
-        out = "{{}}"
-    elif cmd == ["routing", "unpublish"]:
-        s["routed"] = [c for c in s["routed"] if c != argv[2]]
-        out = "{{}}"
-    elif cmd == ["routing", "list"]:
-        cid = argv[argv.index("--cid") + 1] if "--cid" in argv else None
-        out = json.dumps([{{"cid": c}} for c in s["routed"] if cid in (None, c)])
-    else:
-        sys.exit("unsupported: " + " ".join(argv))
-    fh.seek(0)
-    fh.truncate()
-    fh.write(json.dumps(s))
-print(out)
-'''
+DIRCTL_SHIM = Path(__file__).resolve().parents[2] / "devstack" / "bin" / "dirctl"
 
 
-def write_fake_dirctl(directory: Path) -> tuple[Path, Path]:
-    """Write an executable fake dirctl; return (binary, state file)."""
-    state = directory / "dirctl-state.json"
-    binary = directory / "dirctl"
-    binary.write_text(_FAKE_DIRCTL.format(python=sys.executable, state=str(state)))
-    binary.chmod(binary.stat().st_mode | stat.S_IXUSR)
-    return binary, state
+def fake_dirctl_env(directory: Path) -> tuple[dict[str, str], Path]:
+    """Env pointing the publisher at the repo's fake dirctl; returns (env, state file)."""
+    state = directory / "directory.json"
+    return {"DIRCTL_BIN": str(DIRCTL_SHIM), "FAKE_DIRCTL_STATE": str(state)}, state
 
 
 def routed_cids(state: Path) -> list[str]:
-    if not state.exists():
-        return []
-    return json.loads(state.read_text() or "{}").get("routed", [])
+    with fake_dirctl.locked_state(str(state), write=False) as s:
+        return [c for c, e in s["records"].items() if fake_dirctl._is_routed(e, time.time())]
 
 
 def _parts_text(parts: Any) -> str:

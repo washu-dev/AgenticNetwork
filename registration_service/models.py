@@ -130,6 +130,18 @@ def _sanitize_apt_list(v: list[str]) -> list[str]:
     return cleaned
 
 
+# The entry module sits at the upload root. It is joined onto the agent's handler
+# dir (server.upload_handler writes it) and into the Dockerfile, so it must be a
+# bare file name: no path separators, no "..", no whitespace or control characters.
+_ENTRY_FILE_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]*\.py")
+
+
+def _check_entry_file(v: str) -> str:
+    if not _ENTRY_FILE_RE.fullmatch(v) or ".." in v:
+        raise ValueError(f"entry_file must be a bare .py file name at the upload root; got {v!r}")
+    return v
+
+
 # ── Tool sources for an `llm` agent ─────────────────────────────────────────────
 # A discriminated union on ``source``. Each member carries exactly the fields that
 # source needs and nothing else, so an impossible combination (e.g. an upload's
@@ -184,6 +196,11 @@ class UploadedTools(BaseModel):
     @classmethod
     def _sanitize_apt(cls, v: list[str]) -> list[str]:
         return _sanitize_apt_list(v)
+
+    @field_validator("entry_file")
+    @classmethod
+    def _bare_entry_file(cls, v: str) -> str:
+        return _check_entry_file(v)
 
 
 class OperationSpec(BaseModel):
@@ -294,17 +311,16 @@ class CustomConfig(BaseModel):
     def _sanitize_apt(cls, v: list[str]) -> list[str]:
         return _sanitize_apt_list(v)
 
+    @field_validator("entry_file")
+    @classmethod
+    def _bare_entry_file(cls, v: str) -> str:
+        return _check_entry_file(v)
 
-# Legacy aliases so `from registration_service.models import APIProxyConfig` and
-# isinstance checks in older code keep resolving.
-APIProxyConfig = ProxyConfig
 
 AnyConfig = LLMConfig | ProxyConfig | CustomConfig
 
 
 # ── Handler-type names ──────────────────────────────────────────────────────────
-
-CANONICAL_HANDLER_TYPES = ("llm", "proxy", "custom")
 
 # Legacy wire/DB names → the canonical type they became. Retained because stored
 # rows and older API clients still use them; ``parse_config`` also knows how to read
@@ -314,8 +330,6 @@ LEGACY_HANDLER_ALIASES = {
     "tool_loop": "llm",       # → LLMConfig(tools=UploadedTools(...))
     "endpoint_ops": "llm",    # → LLMConfig(tools=HttpTools(...))
 }
-
-ALL_HANDLER_TYPES = (*CANONICAL_HANDLER_TYPES, *LEGACY_HANDLER_ALIASES)
 
 HandlerType = Literal["llm", "proxy", "custom", "api_proxy", "tool_loop", "endpoint_ops"]
 

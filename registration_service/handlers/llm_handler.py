@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from typing import Any
 
 import uvicorn
@@ -159,4 +160,4 @@ def run(
         model,
         preset_tools or [],
     )
-    uvicorn.run(app, host="0.0.0.0", port=port, log_level="warning")
+    uvicorn.run(app, host=os.getenv("AGENT_BIND_HOST", "0.0.0.0"), port=port, log_level="warning")

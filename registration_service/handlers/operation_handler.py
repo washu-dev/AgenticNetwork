@@ -12,6 +12,7 @@ is identical; only the spec (typed operation tools) differs.
 from __future__ import annotations
 
 import logging
+import os
 
 import uvicorn
 from a2a.server.apps import A2AStarletteApplication
@@ -73,4 +74,4 @@ def run(
         len(ops),
         base_url,
     )
-    uvicorn.run(app, host="0.0.0.0", port=port, log_level="warning")
+    uvicorn.run(app, host=os.getenv("AGENT_BIND_HOST", "0.0.0.0"), port=port, log_level="warning")

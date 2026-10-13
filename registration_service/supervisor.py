@@ -34,6 +34,7 @@ from registration_service.db import get_agent, get_pool, list_agents_by_status, 
 from registration_service.flags import fake_supervisor_enabled
 from registration_service.models import (
     AnyConfig,
+    CustomConfig,
     carries_upload,
     parse_config,
 )
@@ -959,8 +960,6 @@ def get_supervisor() -> Supervisor:
 
 def _declared_credentials(config: AnyConfig) -> list[dict[str, Any]]:
     """Declared user credentials (P4a) — only custom agents can declare them."""
-    from registration_service.models import CustomConfig
-
     if isinstance(config, CustomConfig):
         return [c.model_dump() for c in config.credentials]
     return []

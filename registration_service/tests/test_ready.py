@@ -8,17 +8,17 @@ unless a check is in error, then 503. /health stays a cheap liveness probe.
 from __future__ import annotations
 
 import registration_service.db as db_mod
-from registration_service.tests.agent_stubs import write_fake_dirctl
+from registration_service.tests.agent_stubs import fake_dirctl_env
 
 
-def _real_supervisor_env(monkeypatch, *, server_addr: str | None, dirctl: str | None = None) -> None:
+def _real_supervisor_env(monkeypatch, *, server_addr: str | None, dirctl_env: dict | None = None) -> None:
     monkeypatch.setenv("FAKE_SUPERVISOR", "0")
     for name in ("ADS_SERVER_ADDR", "ADS_URL", "ADS_SERVER_ADDRESS", "DIRECTORY_CLIENT_SERVER_ADDRESS"):
         monkeypatch.delenv(name, raising=False)
     if server_addr:
         monkeypatch.setenv("ADS_SERVER_ADDR", server_addr)
-    if dirctl:
-        monkeypatch.setenv("DIRCTL_BIN", dirctl)
+    for name, value in (dirctl_env or {}).items():
+        monkeypatch.setenv(name, value)
 
 
 def _assert_shape(body: dict) -> None:
@@ -48,8 +48,8 @@ async def test_directory_without_address_is_not_configured(client, monkeypatch) 
 
 
 async def test_directory_ok_through_dirctl(client, monkeypatch, tmp_path) -> None:
-    dirctl, _ = write_fake_dirctl(tmp_path)
-    _real_supervisor_env(monkeypatch, server_addr="fake-dir:8888", dirctl=str(dirctl))
+    dirctl_env, _ = fake_dirctl_env(tmp_path)
+    _real_supervisor_env(monkeypatch, server_addr="fake-dir:8888", dirctl_env=dirctl_env)
     r = await client.get("/ready")
     assert r.status_code == 200, r.text
     body = r.json()
@@ -59,7 +59,8 @@ async def test_directory_ok_through_dirctl(client, monkeypatch, tmp_path) -> Non
 
 async def test_unreachable_directory_fails_readiness(client, monkeypatch, tmp_path) -> None:
     _real_supervisor_env(
-        monkeypatch, server_addr="fake-dir:8888", dirctl=str(tmp_path / "no-such-dirctl")
+        monkeypatch, server_addr="fake-dir:8888",
+        dirctl_env={"DIRCTL_BIN": str(tmp_path / "no-such-dirctl")},
     )
     r = await client.get("/ready")
     assert r.status_code == 503

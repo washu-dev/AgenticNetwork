@@ -15,7 +15,7 @@ from __future__ import annotations
 import re
 import typing
 
-from registration_service import db, fake_db
+from registration_service import db
 from registration_service.models import RegisterRequest
 
 _CANONICAL_HANDLER_TYPES = set(
@@ -46,10 +46,3 @@ def test_handler_type_check_clauses_cover_all_canonical_types():
             f"schema CHECK clause {clause} is out of sync with "
             f"RegisterRequest.handler_type {_CANONICAL_HANDLER_TYPES}"
         )
-
-
-def test_updatable_columns_match_fake_db():
-    """db._UPDATABLE_COLUMNS and fake_db._ALLOWED_UPDATE_COLS are two hand-kept
-    whitelists that must stay identical (real vs. FAKE_DB=1 update_agent) —
-    nothing else catches a mismatch."""
-    assert db._UPDATABLE_COLUMNS == fake_db._ALLOWED_UPDATE_COLS

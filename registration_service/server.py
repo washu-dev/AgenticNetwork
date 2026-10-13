@@ -14,12 +14,11 @@ from typing import Any
 import asyncpg
 from fastapi import FastAPI, File, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
 
 from ads_utils.publisher import DirectoryPublisher
 from registration_service import db
 from registration_service.archive import ArchiveError, _clear_dir, list_tree, unpack_archive, zip_tree
-from registration_service.backend import _image_slug
+from registration_service.backend import _handler_files_dir, _image_slug
 from registration_service.db import get_pool
 from registration_service.lifespan import lifespan
 from registration_service.models import (
@@ -30,26 +29,14 @@ from registration_service.models import (
     RejectRequest,
     SpawnedReport,
     carries_upload,
-    parse_config,
     upload_spec,
 )
 from registration_service.credential_catalog import CATALOG as CREDENTIAL_CATALOG
 from registration_service.flags import fake_db_enabled, fake_supervisor_enabled
 from registration_service.oasf_skills import OASF_SKILLS, has_routable_skill
 from registration_service.port_pool import assign_port
-from registration_service.supervisor import get_supervisor
+from registration_service.supervisor import _deserialize_config, get_supervisor
 from registration_service.validator import validate_handler, validate_tool_module
-
-
-def _stored_config(agent: dict) -> Any:
-    """Typed config for a stored row, accepting canonical AND legacy shapes.
-
-    asyncpg returns JSONB columns as JSON strings; fake_db returns dicts. Handle
-    both (same guard as _row_to_response / supervisor._deserialize_config).
-    """
-    raw_cfg = agent["config"]
-    cfg_dict = raw_cfg if isinstance(raw_cfg, dict) else json.loads(raw_cfg)
-    return parse_config(agent["handler_type"], cfg_dict)
 
 
 def _uploads_code(agent: dict) -> bool:
@@ -62,13 +49,13 @@ def _uploads_code(agent: dict) -> bool:
     config is treated as "not uploaded code" so these endpoints 404 rather than 500.
     """
     try:
-        return carries_upload(_stored_config(agent))
+        return carries_upload(_deserialize_config(agent))
     except Exception:
         return False
 
 
 def _handler_dir(agent_id: Any) -> Path:
-    return Path(os.getenv("HANDLER_FILES_DIR", "./uploaded_handlers")) / str(agent_id)
+    return _handler_files_dir() / str(agent_id)
 
 
 # ZIP local-file-header magic; used as a fallback when the filename lacks a suffix.
@@ -98,7 +85,6 @@ def _require_admin(request: Request) -> None:
     The planner proxies the approver's requests through, forwarding the Apache-injected
     Shibboleth headers. Admin = that identity ∈ ADMIN_EMAILS; an empty allowlist means
     no admins. Dev/test escape hatch: FAKE_DB=1 leaves it open (no Shibboleth locally).
-    The shared MAIN_AGENT_ADMIN_TOKEN is retired.
     """
     if fake_db_enabled():
         return
@@ -120,8 +106,6 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
-
-app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
 
 
 # ── Health ─────────────────────────────────────────────────────────────────────
@@ -304,15 +288,12 @@ async def register_agent(req: RegisterRequest) -> AgentResponse:
                 uuid.UUID(agent_id),
             )
 
-            row = await conn.fetchrow("SELECT * FROM agents WHERE id = $1", uuid.UUID(agent_id))
-
     try:
         await get_supervisor().spawn_and_publish(agent_id)
     except Exception as exc:
         logger.error("register_agent_spawn_failed agent_id=%s error=%s", agent_id, exc)
         raise HTTPException(status_code=500, detail=f"Agent registered but failed to start: {exc}")
 
-    pool = await get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow("SELECT * FROM agents WHERE id = $1", uuid.UUID(agent_id))
 
@@ -419,7 +400,7 @@ async def upload_handler(agent_id: str, file: UploadFile = File(...)) -> dict:
     if not agent or not _uploads_code(agent):
         raise HTTPException(status_code=404, detail="Uploaded-code agent not found")
 
-    config = _stored_config(agent)
+    config = _deserialize_config(agent)
     entry_file = upload_spec(config).entry_file   # non-None: _uploads_code() passed
 
     raw = await file.read()
@@ -482,7 +463,7 @@ async def get_handler_source(agent_id: str, request: Request) -> dict:
         raise HTTPException(status_code=404, detail="No handler file uploaded")
 
     entry_source = Path(path).read_text(encoding="utf-8", errors="replace")
-    config = _stored_config(agent)
+    config = _deserialize_config(agent)
     spec = upload_spec(config)                    # non-None: _uploads_code() passed
     if isinstance(config, CustomConfig):
         warnings = validate_handler(entry_source, config.class_name).warnings
@@ -630,4 +611,5 @@ if __name__ == "__main__":
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
     port = int(os.getenv("REGISTRATION_SERVICE_PORT", "8091"))
-    uvicorn.run("registration_service.server:app", host="0.0.0.0", port=port, reload=False)
+    host = os.getenv("REGISTRATION_SERVICE_HOST", "0.0.0.0")
+    uvicorn.run("registration_service.server:app", host=host, port=port, reload=False)

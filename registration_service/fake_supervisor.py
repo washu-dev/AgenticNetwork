@@ -54,9 +54,6 @@ class FakeSupervisor:
             )
         logger.info("fake_supervisor stop agent_id=%s", agent_id)
 
-    async def restart_with_backoff(self, agent_id: str) -> None:
-        pass
-
     async def recover_live_agents(self) -> None:
         pass
 

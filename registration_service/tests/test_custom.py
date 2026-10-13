@@ -169,6 +169,18 @@ async def test_upload_zip_zipslip_422(client: AsyncClient, monkeypatch, tmp_path
     assert any("escapes" in e for e in resp.json()["detail"]["errors"])
 
 
+@pytest.mark.parametrize("entry_file", [
+    "../escape.py", "/tmp/abs.py", "sub/handler.py", "..\\escape.py", "handler.py\nRUN id", "handler",
+])
+async def test_entry_file_must_be_bare_name(client: AsyncClient, entry_file: str) -> None:
+    # The single-file upload writes {handler_dir}/{entry_file}, so a path would escape it.
+    custom = {**CUSTOM_PAYLOAD, "config": {**CUSTOM_PAYLOAD["config"], "entry_file": entry_file}}
+    assert (await client.post("/agents", json=custom)).status_code == 422
+    tools = {"source": "upload", "entry_file": entry_file}
+    llm = {**LLM_PAYLOAD, "config": {**LLM_PAYLOAD["config"], "tools": tools}}
+    assert (await client.post("/agents", json=llm)).status_code == 422
+
+
 async def test_upload_zip_bad_structural_entry_422(client: AsyncClient, monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("HANDLER_FILES_DIR", str(tmp_path))
     agent = await _register_custom(client)

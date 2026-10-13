@@ -26,11 +26,11 @@ from registration_service.backend import _REPO_ROOT  # noqa: E402
 from registration_service.port_pool import port_free_on_host  # noqa: E402
 from registration_service.tests.agent_stubs import (  # noqa: E402
     a2a_call,
+    fake_dirctl_env,
     free_port,
     pid_alive,
     routed_cids,
     stub_openai,
-    write_fake_dirctl,
 )
 from registration_service.tests.test_native_supervisor import LLM_AGENT  # noqa: E402
 
@@ -52,7 +52,7 @@ def _wait(predicate, seconds: float) -> bool:
 
 
 async def test_service_process_registers_serves_and_cleans_up_on_sigterm(tmp_path) -> None:
-    dirctl, state = write_fake_dirctl(tmp_path)
+    dirctl_env, state = fake_dirctl_env(tmp_path)
     service_port = free_port()
     base = f"http://127.0.0.1:{service_port}"
     agent_logs = tmp_path / "agent-logs"
@@ -66,12 +66,14 @@ async def test_service_process_registers_serves_and_cleans_up_on_sigterm(tmp_pat
             "FAKE_SUPERVISOR": "0",
             "SPAWN_BACKEND": "subprocess",
             "ADS_SERVER_ADDR": "fake-dir:8888",
-            "DIRCTL_BIN": str(dirctl),
+            **dirctl_env,
             "ADS_ROUTING_PUBLISH_POLL_SECONDS": "0.05",
             "OPENAI_BASE_URL": llm_url,
             "OPENAI_API_KEY": "test-placeholder",
             "AGENT_LOG_DIR": str(agent_logs),
             "REGISTRATION_SERVICE_PORT": str(service_port),
+            "REGISTRATION_SERVICE_HOST": "127.0.0.1",
+            "AGENT_BIND_HOST": "127.0.0.1",
         }
         env.pop("PYTHONPATH", None)
         service = subprocess.Popen(

@@ -189,7 +189,7 @@ async def test_spawn_queue_finalize_and_stop(monkeypatch):
     assert entry["argv"][0] == "srun"
     assert "agent_skeleton.container_runner" in " ".join(entry["argv"])
     assert "AGENT_CONFIG_JSON" in entry["env"]
-    assert f"agenticnetwork-custom-paper-reviewer" in " ".join(entry["argv"])
+    assert "agenticnetwork-custom-paper-reviewer" in " ".join(entry["argv"])
 
     # finalize → live + PID recorded.
     await sup.finalize_spawned(aid, pid=4242)

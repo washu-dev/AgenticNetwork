@@ -16,13 +16,9 @@ import os
 import re
 import shutil
 import stat
+import tomllib
 import zipfile
 from pathlib import Path
-
-try:  # tomllib is stdlib on Python 3.11+ (the service's runtime)
-    import tomllib
-except ModuleNotFoundError:  # pragma: no cover - defensive for <3.11
-    tomllib = None
 
 # Top-level names reserved for platform-injected build-context files. A user
 # archive that carries these at its root would collide with what the builder /
@@ -75,7 +71,7 @@ def _framework_impersonation_reason(
     Only ``pyproject.toml`` is inspected (the framework/template's build system); a
     malformed or absent file is skipped (out of scope — the image build surfaces it).
     """
-    if tomllib is None or "pyproject.toml" not in manifest:
+    if "pyproject.toml" not in manifest:
         return None
     try:
         data = tomllib.loads(zf.read("pyproject.toml").decode("utf-8"))

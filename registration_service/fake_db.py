@@ -13,19 +13,13 @@ from __future__ import annotations
 import copy
 import json
 import logging
-import os
 import uuid
 from datetime import datetime, timezone
 from typing import Any, NoReturn
 
-from registration_service.port_pool import port_free_on_host
+from registration_service.port_pool import _PORT_RANGE_END, _PORT_RANGE_START, port_free_on_host
 
 logger = logging.getLogger(__name__)
-
-# Kept in sync with port_pool.py — env-configurable so a test instance can offset
-# its custom-agent port range. See docs/MULTI_CONTRIBUTOR.md.
-_PORT_RANGE_START = int(os.getenv("CUSTOM_AGENT_PORT_START", "19200"))
-_PORT_RANGE_END = int(os.getenv("CUSTOM_AGENT_PORT_END", "19299"))
 
 
 def _now() -> datetime:
@@ -271,9 +265,6 @@ class FakeConnection:
     async def fetchval(self, sql: str, *args: Any) -> Any:
         s = " ".join(sql.split()).lower()
 
-        if "select 1 from agents where id" in s:
-            return 1 if _coerce_uuid(args[0]) in self._s.agents else None
-
         if "select count(*) from port_pool" in s:
             return len(self._s.port_pool)
 
@@ -335,12 +326,6 @@ async def init_fake_db() -> None:
     )
 
 
-async def close_fake_db() -> None:
-    global _fake_store, _fake_pool
-    _fake_store = None
-    _fake_pool = None
-
-
 def reset_fake_db() -> None:
     """Reset in-memory state — call between tests for isolation."""
     global _fake_store, _fake_pool
@@ -349,18 +334,6 @@ def reset_fake_db() -> None:
 
 
 # ── Helpers backing db.py's agent helper layer in FAKE_DB mode ──────────────────
-
-_ALLOWED_UPDATE_COLS = {
-    "status",
-    "approved",
-    "handler_file_path",
-    "is_archive",
-    "endpoint_url",
-    "ads_cid",
-    "port",
-    "image_ref",
-}
-
 
 def _store() -> FakeStore:
     return get_fake_pool()._store
@@ -418,9 +391,7 @@ def fake_update_agent(agent_id: Any, **fields: Any) -> None:
     row = _store().agents.get(_coerce_uuid(agent_id))
     if row is None:
         return
-    for col, val in fields.items():
-        if col in _ALLOWED_UPDATE_COLS:
-            row[col] = val
+    row.update(fields)  # db.update_agent has already rejected unknown columns
     row["updated_at"] = _now()
 
 

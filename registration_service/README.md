@@ -29,15 +29,17 @@ the loop*:
 > `models.carries_upload(config)` is the single predicate: it is true for `custom`
 > and for `llm` + `tools.source == "upload"`. Those agents are created
 > **not-approved**, must have their code uploaded (`POST /agents/{id}/handler`), and
-> must be approved by an admin before they spawn; on the cluster they go through the
-> GitHub→Docker Hub per-agent image build (see below). `models.upload_spec(config)`
-> returns the shared build parameters, so one `generate_dockerfile` serves both.
+> must be approved by an admin before they spawn; on the cluster and Cloud Run they
+> go through the GitHub→Docker Hub per-agent image build (see below).
+> `models.upload_spec(config)` returns the shared build parameters, so one
+> `generate_dockerfile` serves both.
 
 > **Backend support:** agents that ship no code spawn only via the local
 > `SubprocessBackend`. The cluster `ClusterBackend` supports **uploaded-code agents
 > only** — registering a prompt-only `llm` or a `proxy` while `SPAWN_BACKEND=cluster`
 > is rejected (there is no cluster spawn path, and publishing one would create a
-> ghost-live row the planner would dispatch to).
+> ghost-live row the planner would dispatch to). The Cloud Run `CloudRunBackend`
+> (`SPAWN_BACKEND=cloudrun`) likewise deploys uploaded-code agents only.
 
 ### Legacy type names (still accepted)
 
@@ -63,12 +65,12 @@ registration submitted under a legacy name is *persisted* under the canonical on
 
 | File | Purpose |
 |---|---|
-| `server.py` | FastAPI app — REST endpoints for agent CRUD + static file serving |
+| `server.py` | FastAPI app — REST endpoints for agent CRUD + the web UI at `/` |
 | `models.py` | Pydantic models: `RegisterRequest`, `LLMConfig` (+ the `ToolSource` union), `ProxyConfig`, `CustomConfig`, `AgentResponse`; the handler-type aliases and `carries_upload`/`upload_spec` |
 | `db.py` | asyncpg connection pool, schema migrations, startup cleanup of stale agents |
 | `port_pool.py` | Allocates ports 19200–19299 to spawned agents; `SELECT FOR UPDATE SKIP LOCKED` for concurrency safety |
-| `supervisor.py` | Spawns/publishes agents, waits for health, runs a 30s health-check loop, restarts failed agents with backoff; drives the cluster custom-agent build pipeline |
-| `backend.py` | `SubprocessBackend` (local dev) + `ClusterBackend` (cluster `srun` steps) behind one `ContainerBackend` interface; `make_backend()` picks by `SPAWN_BACKEND` |
+| `supervisor.py` | Spawns/publishes agents, waits for health, runs a 30s health-check loop, restarts failed agents with backoff; drives the cluster and Cloud Run custom-agent build pipeline |
+| `backend.py` | `SubprocessBackend` (local dev), `ClusterBackend` (cluster `srun` steps) and `CloudRunBackend` (Cloud Run services) behind one `ContainerBackend` interface; `make_backend()` picks by `SPAWN_BACKEND` |
 | `runner.py` | Entry point for local subprocess agents; reads `AGENT_CONFIG_JSON` and dispatches on the canonical type + `tools.source` → the right handler |
 | `builder.py` | Generates the per-agent Docker build context (`Dockerfile` + `{slug}.card.json`) committed to the agent-directory repo for cluster custom agents |
 | `handlers/llm_handler.py` | A2A server for the `llm` loop (`none`/`presets` sources); its executor + card builder are reused verbatim by `tool_loop_handler.py` (`upload`) and `operation_handler.py` (`http`) |
@@ -79,7 +81,7 @@ registration submitted under a legacy name is *persisted* under the canonical on
 | `archive.py` | Safe extraction + inspection of uploaded handler archives |
 | `lifespan.py` | FastAPI lifespan: `init_db` → recover live agents → start health/build loops |
 | `oasf_skills.py` | Flat OASF skill taxonomy (~90 skills) served at `GET /oasf-skills` |
-| `fake_db.py` / `fake_supervisor.py` | In-memory drop-ins used by `FAKE_DB=1` dev mode + tests |
+| `fake_db.py` / `fake_supervisor.py` | In-memory drop-ins used by `FAKE_DB=1` dev mode + tests (`flags.py` parses `FAKE_DB` / `FAKE_SUPERVISOR`) |
 | `static/index.html` | Self-contained web UI — registration wizard + live agent table |
 
 ## API
@@ -88,6 +90,7 @@ registration submitted under a legacy name is *persisted* under the canonical on
 |---|---|---|
 | `GET` | `/` | Web UI |
 | `GET` | `/health` | Liveness check |
+| `GET` | `/ready` | Readiness: the DB and the directory (`dirctl`); 503 if either is in error |
 | `GET` | `/oasf-skills` | Full OASF skill list |
 | `GET` | `/credential-catalog` | Known credential types a custom agent may declare |
 | `POST` | `/agents` | Register and start a new agent |
@@ -98,7 +101,7 @@ registration submitted under a legacy name is *persisted* under the canonical on
 | `POST`/`GET` | `/agents/{id}/handler` | Upload / fetch a custom agent's handler code |
 | `GET` | `/agents/{id}/handler/download` | Download an uploaded handler archive |
 | `POST` | `/agents/{id}/approve` \| `/reject` | Admin approval gate for custom agents |
-| `GET`/`POST` | `/internal/{spawn-queue,spawned,stop-queue}` | Host-side cluster spawn-loop coordination (not user-facing) |
+| `GET`/`POST` | `/internal/{spawn-queue,spawned,stop-queue}` | Host-side cluster spawn-loop coordination (not user-facing). No access check in code: keep port 8091 off public networks. The planner's `/register` proxy refuses these paths (see SECURITY.md) |
 
 ## Local development (no postgres, no ADS)
 
@@ -116,7 +119,7 @@ python3 -m venv registration_service/.venv
 registration_service/.venv/bin/pip install -r registration_service/requirements.txt
 
 # Start with fake DB (no postgres, no ADS, no subprocesses)
-FAKE_DB=1 PYTHONPATH=. registration_service/.venv/bin/python -m registration_service.server
+FAKE_DB=1 registration_service/.venv/bin/python -m registration_service.server
 ```
 
 Open **http://localhost:8091/** for the registration wizard.
@@ -129,6 +132,8 @@ In fake mode:
   as normal.
 - All REST endpoints behave identically to production — only the persistence
   and subprocess layers are stubbed.
+- `FAKE_DB=1 FAKE_SUPERVISOR=0` keeps the in-memory DB but spawns and publishes
+  real subprocess agents (what `scripts/stack up` runs; see docs/DEVSTACK.md).
 
 ### Run the tests
 
@@ -136,9 +141,8 @@ The pytest suite drives the full FastAPI app in `FAKE_DB=1` mode and asserts
 on real HTTP responses. No postgres, no ADS, no API keys required.
 
 ```bash
-# From the repo root (PYTHONPATH must include the repo root so ads_utils resolves)
-FAKE_DB=1 PYTHONPATH=. registration_service/.venv/bin/python -m pytest \
-  registration_service/tests -v
+# From the repo root (conftest sets FAKE_DB=1)
+registration_service/.venv/bin/python -m pytest registration_service/tests -q -p no:cacheprovider
 ```
 
 Tests cover: register (every type + tool source, canonical and legacy names — see
@@ -171,10 +175,18 @@ the component you are working on.
 | `OPENAI_BASE_URL` | — | vLLM endpoint for spawned LLM agents |
 | `OPENAI_API_KEY` | — | API key (any non-empty value works with vLLM) |
 | `REGISTRATION_SERVICE_PORT` | `8091` | Port the FastAPI server listens on |
+| `REGISTRATION_SERVICE_HOST` | `0.0.0.0` | Address the FastAPI server binds (`python -m registration_service.server`) |
 | `ADMIN_EMAILS` | — | Comma-separated admin allowlist (matched against SSO identity); fail-closed |
-| `SPAWN_BACKEND` | `subprocess` | `cluster` activates `ClusterBackend` + the GitHub→Docker Hub custom-agent build pipeline |
-| `GITHUB_TOKEN` / `GITHUB_REPO` | — | PAT + repo (`washu-dev/agent-directory`) for the cluster custom-agent build |
-| `HANDLER_FILES_DIR` | — | Where uploaded custom-agent handler files are stored |
+| `SPAWN_BACKEND` | `subprocess` | `subprocess` / `cluster` / `cloudrun`; `cluster` and `cloudrun` add the GitHub→Docker Hub custom-agent build pipeline |
+| `GITHUB_TOKEN` / `GITHUB_REPO` | — | PAT + repo (`washu-dev/agent-directory`) for the cluster / Cloud Run custom-agent build |
+| `HANDLER_FILES_DIR` | `./uploaded_handlers` | Where uploaded custom-agent handler files are stored |
+| `CUSTOM_AGENT_PORT_START` / `CUSTOM_AGENT_PORT_END` | `19200` / `19299` | Port range for spawned agents |
+| `AGENT_BIND_HOST` | `0.0.0.0` | Address subprocess agents bind (the dev stack sets `127.0.0.1`) |
+| `AGENT_LOG_DIR` | `logs/agents` | Per-agent log files of subprocess agents |
+| `AGENT_SPAWN_HEALTH_TIMEOUT_SECONDS` | `30` | How long a subprocess agent may take to answer its first health check |
+| `MAX_ARCHIVE_FILES` / `MAX_ARCHIVE_UNCOMPRESSED` | `2000` / 25 MB | Limits for uploaded handler archives |
+| `FAKE_DB` / `FAKE_SUPERVISOR` | off / = `FAKE_DB` | In-memory DB; no-op supervisor (see Local development) |
+| GCP (`cloudrun`) | — | `GCP_PROJECT`, `GCP_REGION`, `AGENT_RUNTIME_SA`, `PLANNER_INVOKER_SA`, `VPC_CONNECTOR`, `CLOUDRUN_FORWARD_ENV`; see docs/deployment/gcp/ |
 
 ## Deployment (ENGR cluster)
 
@@ -187,3 +199,7 @@ The entrypoint (`deployment/entrypoints/entrypoint-registration.sh`) handles:
 Custom-agent spawning on the cluster uses `SPAWN_BACKEND=cluster`: the container can't call `srun`, so a host-side loop (`deployment/spawn_agent_loop.py`) polls the `/internal/*` endpoints and launches approved agents as `srun --overlap` steps.
 
 The planner proxies `/register/{path}` to `http://localhost:8091` so the UI is reachable through the planner's public port without exposing 8091 externally.
+
+## Deployment (GCP Cloud Run)
+
+With `SPAWN_BACKEND=cloudrun` the service deploys each approved uploaded-code agent as its own Cloud Run service. See [docs/deployment/gcp/README.md](../docs/deployment/gcp/README.md).

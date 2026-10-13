@@ -278,7 +278,6 @@ async def test_build_poll_deploys_and_publishes_run_app_url(monkeypatch):
     monkeypatch.setenv("GITHUB_REPO", "washu-dev/agent-directory")
     await _fresh_db()
     agent = await _make_custom(image_ref=None, status="building")
-    aid = str(agent["id"])
 
     async def yes(image, since=None):
         return True

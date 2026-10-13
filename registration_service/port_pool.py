@@ -42,12 +42,13 @@ def port_free_on_host(port: int) -> bool:
     run or an unrelated program can still hold one, and the new agent would then
     fail to bind while the old listener answered its readiness probe.
 
-    Agents (uvicorn) bind 0.0.0.0 with SO_REUSEADDR and the readiness probe goes
-    to 127.0.0.1, so test both addresses that way. SO_REUSEADDR matters: a plain
-    bind also fails on TIME_WAIT leftovers of closed connections, which an agent's
-    bind ignores, so every port would look busy for a minute after its agent
-    stopped. With it, a bind still fails on a listener (on Linux, any listener on
-    the port; on macOS, one on the same address, hence both addresses).
+    Agents (uvicorn) bind 0.0.0.0 by default, or AGENT_BIND_HOST, with SO_REUSEADDR,
+    and the readiness probe goes to 127.0.0.1, so test both addresses that way.
+    SO_REUSEADDR matters: a plain bind also fails on TIME_WAIT leftovers of closed
+    connections, which an agent's bind ignores, so every port would look busy for a
+    minute after its agent stopped. With it, a bind still fails on a listener (on
+    Linux, any listener on the port; on macOS, one on the same address, hence both
+    addresses).
     """
     for host in ("0.0.0.0", "127.0.0.1"):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:

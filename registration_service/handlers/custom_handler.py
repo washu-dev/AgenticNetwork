@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib.util
 import logging
+import os
 
 import uvicorn
 from a2a.server.apps import A2AStarletteApplication
@@ -93,4 +94,4 @@ def run(
         "custom_handler_starting agent_id=%s port=%d class=%s file=%s",
         agent_id, port, class_name, handler_file_path,
     )
-    uvicorn.run(app, host="0.0.0.0", port=port, log_level="warning")
+    uvicorn.run(app, host=os.getenv("AGENT_BIND_HOST", "0.0.0.0"), port=port, log_level="warning")

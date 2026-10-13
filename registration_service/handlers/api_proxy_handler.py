@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import Any
 
 import httpx
@@ -174,4 +175,4 @@ def run(
         http_handler=request_handler,
     ).build()
     logger.info("api_proxy_starting agent_id=%s port=%d upstream=%s", agent_id, port, upstream_url)
-    uvicorn.run(app, host="0.0.0.0", port=port, log_level="warning")
+    uvicorn.run(app, host=os.getenv("AGENT_BIND_HOST", "0.0.0.0"), port=port, log_level="warning")
