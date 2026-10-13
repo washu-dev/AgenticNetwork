@@ -10,8 +10,7 @@ boundary between A2A and your agent. It:
      artifact + a human-readable text message (the "dual channel" the planner
      reads).
 
-Mirrors disaster_response_agent.py:747-906 and the I/O helpers at 2112-2228,
-generalized and trimmed.
+Mirrors disaster's executor and I/O helpers, generalized and trimmed.
 """
 from __future__ import annotations
 
@@ -50,7 +49,7 @@ def _user_text(context: "RequestContext") -> str:
 
 def _payload_from_context(context: "RequestContext") -> dict[str, Any]:
     """Merge structured input from request metadata + message parts (DataParts).
-    Mirrors disaster's _a2a_payload_from_context (2127-2140)."""
+    Mirrors disaster's _a2a_payload_from_context."""
     payload: dict[str, Any] = dict(getattr(context, "metadata", None) or {})
     message = getattr(context, "message", None)
     if message:

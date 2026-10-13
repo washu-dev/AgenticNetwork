@@ -3,7 +3,7 @@
 Guidance for Claude (and humans) working **inside this template**. For the
 human-facing walkthrough see [`README.md`](README.md); for the surrounding
 system see the repo-root [`../CLAUDE.md`](../CLAUDE.md) and
-[`../deployment/AGENT_INTEGRATION_SPEC.md`](../docs/deployment/AGENT_INTEGRATION_SPEC.md).
+[`../docs/deployment/AGENT_INTEGRATION_SPEC.md`](../docs/deployment/AGENT_INTEGRATION_SPEC.md).
 
 ---
 
@@ -31,7 +31,7 @@ service's custom-agent images (`container_runner.py`) and the generator's output
 | Contract | Role | Here |
 |---|---|---|
 | **Agent Card** (`agent.card.json`) | identity + skills + endpoint | `a2a-sdk` `AgentCard` model |
-| **ADS** (directory) | publish/discover by skill | `dirctl push` + `routing publish` in `serve.py` |
+| **ADS** (directory) | publish/discover by skill | registration supervisor via `ads_utils/publisher.py`, or `publish_agents --card` by hand |
 | **A2A** | the actual call (HTTP/JSON-RPC) | `execute()` in `executor.py` |
 
 ## 3. File map — where to edit, where not to
@@ -49,15 +49,16 @@ only touch lane A.
 | 3 | `llm_loop.py` | copy | generic loop; `run_agent()` wires zones 1/2/4 |
 | 4 | `tools.py` | **WRITE bodies** | tool fns + `TOOL_REGISTRY` + `validate_tool_registry()` |
 | 5 | `executor.py` | copy | `SkeletonAgentExecutor.execute()` + A2A I/O |
-| 6 | `serve.py` | copy | `create_app`, ADS publish, CLI/uvicorn |
+| 6 | `serve.py` | copy | `create_app`, CLI/uvicorn |
 | — | `spec.py` | copy | `AgentSpec` seam: prompt+tools as data; `dispatch()`, `endpoint_wrapper_spec()` |
 | — | `system_tools/call_endpoint.py` | copy | the `call_endpoint` tool used by endpoint-wrapper mode |
 | — | `config.py` | edit defaults | name, host/port, model, ADS addr |
 | — | `a2a_runtime.py` | copy | SDK import guard + `data_part`/`text_part`/`task_updater` |
 | — | `agent.card.json` | **WRITE** | skills, url, version |
 
-**Lane B — uploaded-code / custom-handler path** (what `registration_service`
-runs; the only lane the deployed system exercises):
+**Lane B — uploaded-code / custom-handler path** (what the registration service's
+`custom` handler type runs; its `llm` type, and `container_runner`'s tool-loop
+path, run Lane A's spec engine):
 
 | File | Status | Notes |
 |---|---|---|
@@ -101,19 +102,16 @@ cheaper belt-and-suspenders version; both can coexist.
 ## 6. Gotchas (inherited from the parent system)
 
 - **Stored-but-not-routed:** a card can be pushed to ADS yet not appear in the
-  routing index → invisible to the planner. `serve.py`'s `publish_card_to_ads`
-  polls `routing list` to catch this (disaster does *not*).
-- **OASF record fidelity:** `build_ads_record` is minimal. For real routing,
-  prefer `python -m agent_directory_service.scripts.publish_agents --card ...`
-  or the canonical `card_oasf_converter`.
+  routing index → invisible to the planner. Publish through `ads_utils/publisher.py`
+  (which polls routing) or `python -m agent_directory_service.scripts.publish_agents --card ...`.
 - **Dummy key guards:** `OPENAI_API_KEY` must be non-empty even for vLLM; set a
   placeholder.
 - **vLLM tool calling needs launch flags:** `--enable-auto-tool-choice
   --tool-call-parser <parser>`, or the model silently stops calling tools.
 - **Model-name matching:** raw OpenAI clients send the model string verbatim;
   it must equal vLLM's `--served-model-name`.
-- **Port collisions:** default is `9110`; the parent repo uses `9103-9106`.
-  Reassign if co-hosting.
+- **Port collisions:** default is `9110`; the specialist agents use `9103-9104` and
+  `19105-19108`, registered agents `19200-19299`. Reassign if co-hosting.
 - **No auth:** binds `0.0.0.0` with empty `securitySchemes`. Same posture as the
   rest of the repo — fine for a demo LAN, not for exposure.
 
@@ -122,6 +120,7 @@ cheaper belt-and-suspenders version; both can coexist.
 ```bash
 python -m agent_skeleton.serve check       # schema/function alignment (no deps beyond stdlib)
 python -m py_compile agent_skeleton/*.py   # syntax
+registration_service/.venv/bin/python -m pytest agent_skeleton/tests -q -p no:cacheprovider
 # engine unit test (no a2a-sdk needed): import agent_skeleton.tools and call the fns
 ```
 
@@ -133,5 +132,5 @@ alignment check without installing the SDK; only *serving* requires it.
 
 This template intentionally mirrors the disaster agent's A2A usage. If you fix a
 protocol bug here, note that the parent repo has **~5 divergent copies** of the
-A2A/directory stack (see [`../CLAUDE.md`](../CLAUDE.md) §8) — a fix here does not
+A2A/directory stack (see [`../CLAUDE.md`](../CLAUDE.md) §9, Important realities & caveats) — a fix here does not
 propagate to them.

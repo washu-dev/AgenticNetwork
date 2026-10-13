@@ -34,6 +34,23 @@ def _load_handler_class(path: str, class_name: str):
     return getattr(module, class_name)
 
 
+def _tool_loop_card(agent_id: str, name: str, description: str, port: int):
+    from a2a.types import AgentCapabilities, AgentCard, AgentSkill
+
+    # streaming=True matches the card the supervisor publishes; the planner then
+    # sends message/stream (SkeletonAgentExecutor sends heartbeats).
+    return AgentCard(
+        name=name,
+        description=description,
+        url=f"http://localhost:{port}/",
+        version="1.0.0",
+        capabilities=AgentCapabilities(streaming=True),
+        skills=[AgentSkill(id=f"{agent_id}/respond", name="respond", description=description, tags=[])],
+        default_input_modes=["text"],
+        default_output_modes=["text"],
+    )
+
+
 def _serve_tool_loop(cfg: dict) -> None:
     """Serve an uploaded LLM tool loop (registration ``tool_loop`` type) on the cluster.
 
@@ -42,7 +59,6 @@ def _serve_tool_loop(cfg: dict) -> None:
     SkeletonAgentExecutor — the same engine the local tool_loop_handler uses, but
     without any registration_service import (which isn't in this image)."""
     import uvicorn
-    from a2a.types import AgentCapabilities, AgentCard, AgentSkill
 
     from agent_skeleton.serve import create_app
     from agent_skeleton.spec import load_tool_module, tool_loop_spec
@@ -78,17 +94,7 @@ def _serve_tool_loop(cfg: dict) -> None:
         tool_registry=registry,
         model=model,
     )
-    card = AgentCard(
-        name=name,
-        description=description,
-        url=f"http://localhost:{port}/",
-        version="1.0.0",
-        capabilities=AgentCapabilities(streaming=False),
-        skills=[AgentSkill(id=f"{agent_id}/respond", name="respond", description=description, tags=[])],
-        default_input_modes=["text"],
-        default_output_modes=["text"],
-    )
-    app = create_app(card, model=model, spec=spec)
+    app = create_app(_tool_loop_card(agent_id, name, description, port), model=model, spec=spec)
     uvicorn.run(app, host="0.0.0.0", port=port, log_level="warning")
 
 

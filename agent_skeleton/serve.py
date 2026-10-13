@@ -1,24 +1,19 @@
-"""ZONE 6 — Serve + ADS publishing.  (COPY; rarely edit)
+"""ZONE 6 — Serve.  (COPY; rarely edit)
 
-Wires the executor into an HTTP server and (optionally) registers the agent in
-the directory. The runtime layering:
+Wires the executor into an HTTP server. Directory (ADS) publishing is not done
+here: the registration service's supervisor publishes registered agents, and a
+hand-run agent can be published with
+``python -m agent_directory_service.scripts.publish_agents --card <card.json>``.
+The runtime layering:
 
     uvicorn (HTTP server)
       -> A2AStarletteApplication(card, handler).build()   (Starlette/ASGI app)
         -> DefaultRequestHandler(executor, InMemoryTaskStore())  (A2A protocol)
           -> SkeletonAgentExecutor.execute(context, event_queue)  (your code)
 
-Mirrors disaster_response_agent.py:925-953, 1018-1138, 2391-2452.
-
-Improvement over disaster: publish_card_to_ads() polls `dirctl routing list`
-after publishing to confirm the record actually ROUTED. Disaster skips this,
-which is how an agent can land "stored but not routed" = invisible to the
-planner (see the parent repo CLAUDE.md §2).
-
 Run:
     python -m agent_skeleton.serve check          # validate schemas <-> functions
-    python -m agent_skeleton.serve serve-a2a      # demo tools (no publish)
-    python -m agent_skeleton.serve serve-a2a --publish-ads
+    python -m agent_skeleton.serve serve-a2a      # demo tools
     # the headline path — wrap an external endpoint in an LLM loop:
     python -m agent_skeleton.serve serve-wrapper --card my.card.json \
         --endpoint-url https://api.example.com/run
@@ -26,13 +21,7 @@ Run:
 from __future__ import annotations
 
 import argparse
-import atexit
 import json
-import os
-import subprocess
-import tempfile
-import time
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -46,7 +35,6 @@ from .a2a_runtime import (
 from .config import (
     AGENT_NAME,
     DEFAULT_CARD_PATH,
-    env_ads_addr,
     env_advertise_url,
     env_endpoint_auth_env,
     env_endpoint_method,
@@ -81,106 +69,6 @@ def create_app(agent_card: Any, model: str | None = None, spec: Any = None) -> A
     return A2AStarletteApplication(agent_card=agent_card, http_handler=handler).build()
 
 
-# --- ADS publishing (dirctl) ---------------------------------------------
-
-def _run_dirctl(args: list[str], *, ads_url: str | None) -> subprocess.CompletedProcess[str]:
-    server = ads_url or env_ads_addr()
-    cmd = [os.getenv("DIRCTL_BIN", "dirctl"), "--server-addr", server, *args]
-    try:
-        done = subprocess.run(cmd, text=True, capture_output=True, check=False)
-    except FileNotFoundError as exc:
-        raise RuntimeError("dirctl is not installed or not on PATH.") from exc
-    if done.returncode != 0:
-        raise RuntimeError(f"dirctl failed: {' '.join(cmd)}\n{done.stderr.strip() or done.stdout.strip()}")
-    return done
-
-
-def build_ads_record(card: Any) -> dict[str, Any]:
-    """Minimal OASF record embedding the agent card.
-
-    NOTE: for production-grade conversion use the canonical converter
-    (agent_directory_service.services.directory.card_oasf_converter) or publish
-    via `python -m agent_directory_service.scripts.publish_agents --card ...`.
-    This minimal builder covers the common single-skill case so the template is
-    self-contained.
-    """
-    url = getattr(card, "url", "") or ""
-    created = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-    skills = getattr(card, "skills", None) or []
-    skill_tags = [getattr(s, "id", "") for s in skills if getattr(s, "id", "")]
-    display_name = getattr(card, "name", "") or AGENT_NAME
-    agent_slug = display_name.lower().replace(" ", "-")
-    return {
-        "schema_version": "1.0.0",
-        # Derive identity from the card so each agent publishes under its own name
-        # (this minimal builder is demo-only; emitted agents use ads_utils.publisher).
-        "name": (getattr(card, "url", "") or f"https://example.invalid/agents/{agent_slug}"),
-        "version": getattr(card, "version", "") or "0.1.0",
-        "authors": [display_name],
-        "description": getattr(card, "description", "") or "",
-        "created_at": created,
-        "skills": [{"name": tag} for tag in skill_tags],
-        "domains": [],
-        "locators": [
-            {
-                "type": "source_code",
-                "urls": [url],
-                "annotations": {"a2a.url": url},
-            }
-        ],
-        "modules": [
-            {
-                "name": "integration/a2a",
-                "data": {
-                    "card_schema_version": getattr(card, "protocol_version", None) or "0.3.0",
-                    "card_data": json.loads(card.model_dump_json()) if hasattr(card, "model_dump_json") else {},
-                },
-            }
-        ],
-        "annotations": {"a2a.url": url, "agentic_network.display_name": getattr(card, "name", "")},
-    }
-
-
-def _wait_until_routed(cid: str, *, ads_url: str | None, attempts: int = 10, delay: float = 1.0) -> bool:
-    """Poll `dirctl routing list` until `cid` appears (closes the stored-but-not-routed gap)."""
-    for _ in range(attempts):
-        out = _run_dirctl(["routing", "list"], ads_url=ads_url).stdout
-        if cid in out:
-            return True
-        time.sleep(delay)
-    return False
-
-
-def publish_card_to_ads(card: Any, *, ads_url: str | None = None) -> str:
-    record = build_ads_record(card)
-    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as fh:
-        json.dump(record, fh, indent=2, sort_keys=True)
-        tmp = Path(fh.name)
-    try:
-        cid = _run_dirctl(["push", str(tmp), "--output", "raw"], ads_url=ads_url).stdout.strip()
-        if not cid:
-            raise RuntimeError("dirctl push returned no CID.")
-        _run_dirctl(["routing", "publish", cid], ads_url=ads_url)
-    finally:
-        tmp.unlink(missing_ok=True)
-
-    if _wait_until_routed(cid, ads_url=ads_url):
-        print(f"[ok] {cid} routed and discoverable.")
-    else:
-        print(f"[warn] {cid} pushed but not yet visible in routing (stored-but-not-routed risk).")
-    return cid
-
-
-def unpublish_card_from_ads(cid: str | None, *, ads_url: str | None = None) -> None:
-    if not cid:
-        return
-    try:
-        _run_dirctl(["routing", "unpublish", cid], ads_url=ads_url)
-        print(f"[ok] unpublished {cid}")
-    except Exception as exc:  # best-effort cleanup
-        print(f"[warn] unpublish failed: {exc}")
-
-
 # --- CLI ------------------------------------------------------------------
 
 def _add_serve_args(p: argparse.ArgumentParser) -> None:
@@ -189,8 +77,6 @@ def _add_serve_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--port", type=int, default=env_port())
     p.add_argument("--card", type=Path, default=DEFAULT_CARD_PATH)
     p.add_argument("--advertise-url", default=env_advertise_url())
-    p.add_argument("--publish-ads", action="store_true", help="Publish the card to ADS on startup.")
-    p.add_argument("--ads-url", default=env_ads_addr())
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -234,17 +120,8 @@ def _serve(args: argparse.Namespace, spec: Any = None) -> None:
         except Exception:
             card.url = args.advertise_url
 
-    cid: str | None = None
-    if args.publish_ads:
-        cid = publish_card_to_ads(card, ads_url=args.ads_url)
-        atexit.register(lambda: unpublish_card_from_ads(cid, ads_url=args.ads_url))
-
     print(f"Serving {getattr(card, 'name', AGENT_NAME)} on {args.host}:{args.port} (url={getattr(card, 'url', '')})")
-    try:
-        uvicorn.run(create_app(card, model=args.model, spec=spec), host=args.host, port=args.port)
-    finally:
-        if cid:
-            unpublish_card_from_ads(cid, ads_url=args.ads_url)
+    uvicorn.run(create_app(card, model=args.model, spec=spec), host=args.host, port=args.port)
 
 
 def main() -> None:

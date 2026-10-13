@@ -2,8 +2,8 @@
 
 A minimal, **copy-to-start template** for building an agent that plugs into
 **AgenticNetwork** (the "Internet of Agents"). It is a faithful, trimmed-down
-distillation of the reference agent `disaster_response_agent.py` (~2,456 lines;
-now in the separate [`agent-directory`](https://github.com/washu-dev/agent-directory)
+distillation of the reference agent `disaster_response_agent.py` (now in the
+separate [`agent-directory`](https://github.com/washu-dev/agent-directory)
 repo alongside the other specialist agents) split into small, labeled
 files — so you can see, at a glance, the few pieces you actually write versus the
 plumbing you just keep.
@@ -40,7 +40,7 @@ tasks to you. Adding your agent needs **zero planner code changes**.
 | 3 | [`llm_loop.py`](llm_loop.py) | The generic LLM tool-calling loop | copy |
 | 4 | [`tools.py`](tools.py) | Tool functions + `{name: fn}` registry + alignment check | **WRITE** bodies |
 | 5 | [`executor.py`](executor.py) | The A2A executor (`execute()` + I/O helpers) | copy |
-| 6 | [`serve.py`](serve.py) | Serve (uvicorn) + ADS publish/unpublish + CLI | copy |
+| 6 | [`serve.py`](serve.py) | Serve (uvicorn) + CLI | copy |
 | — | [`agent.card.json`](agent.card.json) | Your skills & endpoint | **WRITE** |
 | — | `config.py` | Constants & env vars | edit defaults |
 | — | `a2a_runtime.py` | `a2a-sdk` import guard + Part/TaskUpdater wrappers | copy |
@@ -72,11 +72,10 @@ python -m agent_skeleton.serve serve-a2a
 ```
 
 To make it **discoverable** by the planner, publish the card to the directory
-(needs the `dirctl` binary and a running ADS daemon):
+(needs the `dirctl` binary and a running ADS daemon). Agents registered through
+the registration service are published by its supervisor instead.
 
 ```bash
-python -m agent_skeleton.serve serve-a2a --publish-ads --ads-url 127.0.0.1:8888
-# (recommended alternative for production-grade OASF conversion:)
 python -m agent_directory_service.scripts.publish_agents --card agent_skeleton/agent.card.json
 ```
 
@@ -109,11 +108,14 @@ Beyond the copy-to-start template above, `agent_skeleton` now also provides a
     --answers agent_skeleton/generator/examples/weather_bridge.answers.json \
     --dest ../agent-directory
   ```
-  (`agent-directory/weather-bridge-agent/` is a worked output.)
 
 - **Uploaded-code path.** For arbitrary user code, subclass `AgentHandler` (`base.py`)
   and implement `handle_structured()`; `HandlerExecutor` / `container_runner.py` run it
   — this is the lane the registration service's `custom` handler uses.
+
+- **Preset tools and other specs.** `system_tools/preset_tools.py` (`calculator`,
+  `current_time`) is resolved by `spec.llm_wrapper_spec`; per-operation and
+  multi-endpoint wrappers use `operation_wrapper_spec` and `multi_endpoint_wrapper_spec`.
 
 ---
 
@@ -221,8 +223,8 @@ for the even-stronger option (generate schemas *from* typed functions).
 
 Every zone maps back to the reference implementation, `disaster_response_agent.py`
 — its tool schemas, `_call_model` loop, `_run_tool` dispatch, `execute` executor,
-`create_disaster_a2a_app` serve, and ADS publish helpers. That agent now lives in
+and `create_disaster_a2a_app` serve. That agent now lives in
 the separate [`agent-directory`](https://github.com/washu-dev/agent-directory) repo
 (the specialist agents were extracted there). Background contracts:
-[`../deployment/AGENT_INTEGRATION_SPEC.md`](../docs/deployment/AGENT_INTEGRATION_SPEC.md)
+[`../docs/deployment/AGENT_INTEGRATION_SPEC.md`](../docs/deployment/AGENT_INTEGRATION_SPEC.md)
 and [`../CLAUDE.md`](../CLAUDE.md).

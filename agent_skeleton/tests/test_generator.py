@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 import py_compile
 import tempfile
-from pathlib import Path
 
 from agent_skeleton.generator.card_builder import build_card
 from agent_skeleton.generator.models import AgentAnswers, SkillAnswer, slugify

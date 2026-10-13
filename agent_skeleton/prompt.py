@@ -1,10 +1,9 @@
 """ZONE 2 — System prompt + result normalization.  ★ WRITE THIS ★
 
 - SYSTEM_PROMPT: the instructions that define your agent's behavior and the
-  exact output contract you want from the model. Mirror
-  disaster_response_agent.py:380-435.
+  exact output contract you want from the model.
 - normalize_result(): turn the model's final text into the STABLE structured
-  dict your agent returns. Mirror disaster's _normalize_plan (720-744).
+  dict your agent returns. Mirror disaster's _normalize_plan.
 
 Why a stable shape matters: the planner reads the structured DataPart artifact
 your agent emits, so downstream callers depend on these keys always existing.

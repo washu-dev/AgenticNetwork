@@ -1,7 +1,6 @@
 """Shared configuration & constants.
 
 SUPPORT FILE — you normally only edit the DEFAULT_* values below.
-Mirrors the constants block of disaster_response_agent.py:55-65.
 """
 from __future__ import annotations
 
@@ -13,7 +12,7 @@ AGENT_NAME = "Endpoint Wrapper Agent"
 
 # --- Networking -----------------------------------------------------------
 DEFAULT_HOST = "0.0.0.0"          # bind address (listen on all interfaces)
-DEFAULT_PORT = 9110               # pick a free port (parent repo uses 9103-9106)
+DEFAULT_PORT = 9110               # pick a free port (specialist agents use 9103-9104, 19105-19108)
 
 # --- LLM ------------------------------------------------------------------
 DEFAULT_MODEL = "gpt-4o-mini"     # hosted model name, or your vLLM --served-model-name

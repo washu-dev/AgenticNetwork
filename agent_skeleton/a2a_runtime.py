@@ -1,7 +1,7 @@
 """A2A SDK access — the import guard + thin wrappers around `a2a-sdk` types.
 
 SUPPORT FILE — pure plumbing shared by executor.py and serve.py. You should not
-need to edit it. Mirrors disaster_response_agent.py:30-52, 2015-2105.
+need to edit it.
 
 Why the guard: if `a2a-sdk` is not installed, the executor base class degrades
 to `object` so this package still *imports* (handy for unit-testing the tool
