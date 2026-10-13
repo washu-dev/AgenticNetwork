@@ -33,10 +33,6 @@ from planner_agent.main_agent.models import (
     A2ATaskState,
     DiscoveredAgent,
 )
-from planner_agent.main_agent.directory.card_oasf_converter import (
-    agent_card_to_oasf_record,
-    oasf_record_to_discovered_agent,
-)
 
 
 def _internal_part_to_sdk(part: A2APart) -> Part:
@@ -211,12 +207,6 @@ def a2a_response_to_internal_task_result(response: SendMessageResponse | Task | 
         artifacts=[_sdk_artifact_to_internal(artifact) for artifact in result.artifacts or []],
         structured_output=_structured_output_from_task(result),
     )
-
-
-def a2a_agent_card_to_discovered_agent(card: AgentCard) -> DiscoveredAgent:
-    """Adapt a real A2A Agent Card into the internal discovery model."""
-
-    return oasf_record_to_discovered_agent(agent_card_to_oasf_record(card))
 
 
 def discovered_agent_to_a2a_agent_card(agent: DiscoveredAgent) -> AgentCard:

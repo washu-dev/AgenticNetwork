@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import uuid
-from pathlib import Path
 
 import httpx
 import pytest
@@ -14,6 +13,7 @@ from planner_agent.main_agent.directory.client import DirectoryClient
 from planner_agent.main_agent import conversation_store
 from planner_agent.main_agent.config import MainAgentConfig
 from planner_agent.main_agent.llm_client import ScriptedLLMClient, ToolCall
+from planner_agent.main_agent.models import Channel, PIContext
 from planner_agent.main_agent.server import create_app
 from planner_agent.main_agent.state.store import InMemoryStateStore
 from planner_agent.tests.test_main_agent_runtime import FailA2A, EMAIL_CARD, SpyA2A, _geospatial_card
@@ -279,6 +279,32 @@ async def _register_proxy_allows_non_admin_handler_upload() -> None:
             )
 
 
+def test_register_proxy_never_forwards_internal_routes(monkeypatch) -> None:
+    # Registration's /internal/* (host spawn loop) is unauthenticated; the public
+    # proxy must not reach it. A dead upstream proves nothing was forwarded.
+    monkeypatch.setenv("ADMIN_EMAILS", "admin@wustl.edu")
+    monkeypatch.setenv("REGISTRATION_SERVICE_URL", "http://127.0.0.1:9")
+    asyncio.run(_register_proxy_never_forwards_internal_routes())
+
+
+async def _register_proxy_never_forwards_internal_routes() -> None:
+    app = _final_answer_app()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client:
+        for method, path in [
+            ("GET", "/register/internal/spawn-queue"),
+            ("POST", "/register/internal/spawned"),
+            ("GET", "/register//internal/stop-queue"),
+            ("GET", "/register/agents/%2e%2e/internal/stop-queue"),
+            ("GET", "/register/%2569nternal/spawn-queue"),
+            ("GET", "/register/agents/..%252finternal/stop-queue"),
+            ("POST", "/register/internal/spawned%3F/%2e%2e/%2e%2e/agents"),
+            ("POST", "/register/internal//%2e%2e/spawned"),
+            ("POST", "/register//agents/internal/spawned"),
+        ]:
+            resp = await client.request(method, path, headers={"mail": "admin@wustl.edu"})
+            assert resp.status_code == 404, (path, resp.text)
+
+
 # ---------------------------------------------------------------------------
 # P4e — public landing at / , hard-gated chat UI at /app
 # ---------------------------------------------------------------------------
@@ -524,6 +550,54 @@ async def _confirmations_fail_closed() -> None:
             json={"user_id": "alice@wustl.edu", "channel": "api", "context_id": "c1", "confirmed": False},
         )
     assert resp.status_code == 401, resp.text
+
+
+def test_confirmations_forbid_non_owner(monkeypatch) -> None:
+    # Bob cannot confirm or cancel Alice's pending action by naming her context_id.
+    monkeypatch.delenv("REGISTRATION_DB_DSN", raising=False)
+    asyncio.run(_confirmations_forbid_non_owner())
+
+
+async def _confirmations_forbid_non_owner() -> None:
+    directory = DirectoryClient(fake_ads=True)
+    directory.publish_agent_card(load_agent_card(EMAIL_CARD))
+    store = InMemoryStateStore()
+    store.save_context(
+        PIContext(context_id="c-alice", user_id="alice@wustl.edu", channel=Channel.api, current_goal="send it")
+    )
+    pending = {
+        "skill": "email/send",
+        "task_input": {},
+        "selected_agent": directory.search_agents()[0].model_dump(mode="json"),
+    }
+    store.save_pending_confirmation("c-alice", pending)
+    a2a = SpyA2A()
+    app = create_app(
+        config=_config(),
+        directory_client=directory,
+        a2a_client=a2a,
+        state_store=store,
+        llm_client=ScriptedLLMClient([]),
+    )
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client:
+        for confirmed in (True, False):
+            resp = await client.post(
+                "/confirmations",
+                json={"user_id": "alice@wustl.edu", "context_id": "c-alice", "confirmed": confirmed},
+                headers={"mail": "bob@wustl.edu"},
+            )
+            assert resp.status_code == 403, resp.text
+        assert a2a.calls == []
+        assert store.get_pending_confirmation("c-alice") is pending
+        assert store.get_context("c-alice").conversation_history == []
+        # The owner can still confirm.
+        resp = await client.post(
+            "/confirmations",
+            json={"context_id": "c-alice", "confirmed": True},
+            headers={"mail": "alice@wustl.edu"},
+        )
+    assert resp.status_code == 200, resp.text
+    assert a2a.calls == [("email-agent", "email/send")]
 
 
 # ---------------------------------------------------------------------------

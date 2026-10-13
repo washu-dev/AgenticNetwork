@@ -112,7 +112,7 @@ def test_consent_then_grant_dispatches_scoped():
         assert a2a.requests == []                       # consent first, no dispatch
         assert "yes" in res1.text.lower()
         # user approves
-        res2 = await _msg(rt, text="yes", context_id=res1.context_id, metadata=meta)
+        await _msg(rt, text="yes", context_id=res1.context_id, metadata=meta)
         assert len(a2a.requests) == 1                   # now dispatched
         assert a2a.requests[0].metadata.get("credentials") == OPENAI_CRED  # scoped to the one cred
         assert await gate.list_granted(USER, "cred-bot") == {"openai_api_key"}

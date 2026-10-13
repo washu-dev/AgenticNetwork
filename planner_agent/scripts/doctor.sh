@@ -147,5 +147,4 @@ fi
 echo ""
 echo -e "${BOLD}Summary${RESET}"
 echo "  Server URL:  http://localhost:$PORT/"
-echo "  Logs:        tail -f /tmp/planner_agent_server.log"
-echo "  Handover doc: cat $PLANNER_DIR/HANDOVER.md"
+echo "  Setup guide: $PLANNER_DIR/README.md (Running)"

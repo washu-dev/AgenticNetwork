@@ -26,10 +26,10 @@ from planner_agent.main_agent.llm_client import ScriptedLLMClient, ToolCall
 from planner_agent.main_agent.server import create_app
 
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-EMAIL_CARD = REPO_ROOT / "planner_agent" / "configs" / "agent_cards" / "email_agent.card.json"
-WEATHER_CARD = REPO_ROOT / "planner_agent" / "configs" / "agent_cards" / "weather_agent.card.json"
-CODING_CARD = REPO_ROOT / "planner_agent" / "configs" / "agent_cards" / "coding_agent.card.json"
+CARDS = Path(__file__).resolve().parent / "fixtures" / "agent_cards"
+EMAIL_CARD = CARDS / "email_agent.card.json"
+WEATHER_CARD = CARDS / "weather_agent.card.json"
+CODING_CARD = CARDS / "coding_agent.card.json"
 
 
 # ---------- mock support ----------
@@ -274,16 +274,8 @@ async def _progress_callback_receives_tool_trace_entries() -> None:
     directory.publish_agent_card(load_agent_card(EMAIL_CARD))
     llm = ScriptedLLMClient(
         [
-            ToolCall(
-                tool_name="list_agents",
-                arguments={},
-                reasoning="Need to discover who can help.",
-            ),
-            ToolCall(
-                tool_name="final_answer",
-                arguments={"text": "Done."},
-                reasoning="Now answer with the discovered context.",
-            ),
+            ToolCall(tool_name="list_agents", arguments={}),
+            ToolCall(tool_name="final_answer", arguments={"text": "Done."}),
         ]
     )
     app = create_app(
@@ -307,7 +299,7 @@ async def _progress_callback_receives_tool_trace_entries() -> None:
     assert result.state == A2ATaskState.completed
     assert [entry["tool"] for entry in streamed] == [
         entry["tool"] for entry in result.tool_trace
-    ] == ["reasoning", "list_agents", "reasoning", "final_answer"]
+    ] == ["list_agents", "final_answer"]
 
 
 def test_describe_agent_returns_full_skill_catalog() -> None:
@@ -1290,41 +1282,6 @@ async def _resume_history() -> None:
     history = state_store.get_context(ctx).conversation_history
     assert any("user: yes" in h for h in history), history
     assert any(h.startswith("assistant:") for h in history), history
-
-
-def test_reasoning_summary_surfaces_in_tool_trace() -> None:
-    """Reasoning text from the LLM must appear as a separate 'reasoning' entry
-    in tool_trace before the tool that the LLM chose."""
-    asyncio.run(_reasoning_in_trace())
-
-
-async def _reasoning_in_trace() -> None:
-    llm = ScriptedLLMClient(
-        [
-            ToolCall(
-                tool_name="final_answer",
-                arguments={"text": "Hi."},
-                reasoning="I should greet the user briefly.",
-            ),
-        ]
-    )
-    app = create_app(
-        config=_config(),
-        directory_client=DirectoryClient(fake_ads=True),
-        a2a_client=FailA2A(),
-        llm_client=llm,
-    )
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client:
-        resp = await client.post(
-            "/messages",
-            json={"user_id": "u", "channel": "api", "text": "Hello?"},
-        )
-    payload = resp.json()
-    tools = [t["tool"] for t in payload["tool_trace"]]
-    assert tools == ["reasoning", "final_answer"], tools
-    reasoning_entry = payload["tool_trace"][0]
-    assert reasoning_entry["content"]["text"] == "I should greet the user briefly."
-    assert reasoning_entry["content"]["next_tool"] == "final_answer"
 
 
 def test_openai_chain_state_is_per_turn_not_per_client() -> None:

@@ -156,6 +156,5 @@ async def _issues_github_failure(monkeypatch) -> None:
 
 def test_create_issue_requires_token(monkeypatch) -> None:
     monkeypatch.delenv("GITHUB_ISSUES_TOKEN", raising=False)
-    assert github_issues.is_configured() is False
     with pytest.raises(github_issues.GitHubIssueError):
         asyncio.run(github_issues.create_issue("t", "b", ["l"]))

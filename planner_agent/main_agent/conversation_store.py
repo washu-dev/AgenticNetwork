@@ -25,15 +25,6 @@ def _enabled() -> bool:
     return bool(os.getenv("REGISTRATION_DB_DSN"))
 
 
-def init(path: str | None = None) -> None:
-    """Deprecated no-op.
-
-    The schema now lives in `db._SCHEMA_SQL` and is created by `init_db()`. Kept so
-    existing callers don't break during the SQLite→Postgres transition.
-    """
-    return None
-
-
 def _parse_history(history: list[str]) -> list[tuple[str, str]]:
     """Convert ['user: ...', 'assistant: ...'] → [(role, text), ...]."""
     rows = []

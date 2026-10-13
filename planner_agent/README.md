@@ -1,29 +1,17 @@
 # Planner Agent
 
-A re-write of the main / PI agent for the Internet-of-Agents demo.
+The chat orchestrator: an LLM tool loop that discovers agents in ADS and calls them over A2A.
 
-> **New here?** See [`HANDOVER.md`](./HANDOVER.md) for the 30-second onboarding.
 > One-shot environment self-check: `planner_agent/scripts/doctor.sh`.
 
 The planner agent is standalone: its ADS publishing/discovery helpers, A2A
-transport, state models, state store, and sample Agent Cards live under
-`planner_agent/`. The deprecated v1/v2 PI implementations are not imported by
-the active planner runtime.
+transport, state models and state store live under `planner_agent/`
+(test fixture Agent Cards: `planner_agent/tests/fixtures/agent_cards/`).
 
-## What was wrong with the old PI Agent
+## Design
 
-The v2 `pi_agent/main.py` was ~1700 lines and had a lot of hardcoded
-skill-specific logic (`_extract_available_slots`, `_extract_draft_email`,
-`_extract_weather_forecast`, `_extract_situation_summary`,
-`_extract_coding_output`, …). Whenever someone added a new ADS-registered
-agent with a new skill, the PI agent had no idea how to surface its outputs
-without new Python code. The deterministic router was a giant keyword table
-hard-coded for the known skills.
-
-## Design of the new main agent
-
-The new main agent is **agent-agnostic**. Domain logic lives in the agents
-ADS publishes; the main agent is a thin tool-loop coordinator.
+The planner is **agent-agnostic**. Domain logic lives in the agents
+ADS publishes; the planner is a thin tool-loop coordinator.
 
 The LLM only sees five safe primitives:
 
@@ -50,18 +38,10 @@ This design directly answers the front-end test prompts:
 | "write me a python program"                  | `list_agents` → `call_agent(coding, whole task)` → `final_answer` |
 | "write a program and email it"               | `list_agents` → one `call_agent` to a primary related agent; that agent handles peer A2A |
 
-### LLM reasoning is surfaced
-
-For reasoning models (gpt-5.x, o-series), each tool step is preceded by a
-`{"tool": "reasoning", ...}` entry in `tool_trace`. The chat UI renders it
-as a blue italic block ("thinking → … chose: list_agents") so the user can
-see *why* the LLM picked the next tool, when the model emits a reasoning channel.
-
 ## Layout
 
 ```
 planner_agent/
-├── HANDOVER.md             # 30-second teammate onboarding
 ├── README.md               # this file
 ├── .env.example            # config template (copy to .env.local)
 ├── main_agent/
@@ -69,7 +49,7 @@ planner_agent/
 │   ├── models.py           # planner-local A2A, ADS, policy, and state models
 │   ├── a2a/                # planner-local A2A client, adapters, HTTP transport
 │   ├── directory/          # planner-local fake/real ADS client + card converter
-│   ├── state/              # planner-local in-memory per-request state store
+│   ├── state/              # planner-local in-memory state store (per process)
 │   ├── tools.py            # 5 tool schemas + system prompt
 │   ├── llm_client.py       # OpenAI Chat Completions client + ScriptedLLMClient
 │   ├── runtime.py          # tool loop, ADS, A2A, memory, policy, dedup
@@ -100,6 +80,10 @@ Standalone planner infrastructure:
 
 ## Running
 
+To run the whole system on a laptop (planner, registration service, a seed agent and
+a mock LLM) with one command, use the dev stack instead: `scripts/stack up`
+([`docs/DEVSTACK.md`](../docs/DEVSTACK.md)). The steps below run the planner alone.
+
 ### 1. Install
 
 Run from the repository root:
@@ -119,17 +103,16 @@ different interpreter, set `PYTHON_BIN=/path/to/python`.
 
 ```bash
 cd /path/to/AgenticNetwork
-PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
-  planner_agent/.venv/bin/python -m pytest planner_agent/tests -q
+planner_agent/.venv/bin/python -m pytest -q planner_agent/tests
 ```
 
-27 tests cover: list/describe/call agent flows, write-skill confirmation +
-resume, negative confirmation, undiscovered agent error handling, follow-up
-context across turns, dedup of repeated calls, retry after a failed A2A call,
-empty `task_input` augmentation from user text, reasoning-block in trace,
-per-turn (not per-client) chain state, single-dispatch compound workflow
-guarding, and a dynamic agent (Disaster Agent) added without any change to the
-main agent code.
+The tests use a scripted LLM and the in-process fake ADS. They cover:
+list/describe/call agent flows, write-skill confirmation + resume, negative
+confirmation, undiscovered agent error handling, follow-up context across turns,
+dedup of repeated calls, retry after a failed A2A call, empty `task_input`
+augmentation from user text, per-turn (not per-client) chain state,
+single-dispatch compound workflow guarding, and a dynamic agent (Disaster Agent)
+added without any change to the planner code.
 
 ### 3. Local fake-ADS demo (no real ADS daemon needed)
 
@@ -146,8 +129,8 @@ that auto-loads it:
 
 ```bash
 planner_agent/scripts/start.sh --fake-ads \
-  --card email_agent/email_agent.card.json \
-  --card coding_agent/coding_agent.card.json
+  --card ../agent-directory/email_agent/email_agent.card.json \
+  --card ../agent-directory/coding_agent/coding_agent.card.json
 ```
 
 Use a different env file:
@@ -163,10 +146,13 @@ export OPENAI_API_KEY=sk-...
 export AGENT_NETWORK_FAKE_ADS=true
 planner_agent/.venv/bin/python -m planner_agent.scripts.run_server \
   --fake-ads \
-  --card email_agent/email_agent.card.json
+  --card ../agent-directory/email_agent/email_agent.card.json
 ```
 
-Open `http://localhost:8090/` for the chat UI, or POST to `/messages`:
+The cards come from the sibling `agent-directory` checkout. Agents are discovered
+from them but only answer if they are actually running.
+
+Open `http://localhost:8090/app` for the chat UI, or POST to `/messages`:
 
 ```bash
 curl -s http://localhost:8090/messages \
@@ -198,7 +184,7 @@ planner_agent/.venv/bin/python -m planner_agent.scripts.run_server
 To manually publish a card (e.g. an agent crashed before publishing):
 
 ```bash
-agent_directory_service/run_ads.sh -publish email_agent/email_agent.card.json
+agent_directory_service/run_ads.sh -publish ../agent-directory/email_agent/email_agent.card.json
 ```
 
 The same `/messages` and `/agents` endpoints work; they just hit real ADS
@@ -210,7 +196,7 @@ through `dirctl` instead of the in-process fake.
 | ------------------------------ | ------------- | ------------------------------------------------------------- |
 | `OPENAI_API_KEY`               | —             | Required when LLM enabled                                     |
 | `MAIN_AGENT_LLM_ENABLED`       | `true`        | Set false for purely scripted (test) runs                     |
-| `MAIN_AGENT_LLM_PROVIDER`      | `openai`      | Only `openai` is supported today                              |
+| `MAIN_AGENT_LLM_PROVIDER`      | `openai`      | `openai` (any OpenAI-compatible endpoint) or `vertex` (Vertex AI, ADC token) |
 | `MAIN_AGENT_LLM_MODEL`         | `gpt-4o-mini` | OpenAI model id, or your vLLM `--served-model-name`           |
 | `MAIN_AGENT_MAX_OUTPUT_TOKENS` | `1500`        | Per-turn output cap. Bump to ≥4000 for reasoning models       |
 | `MAIN_AGENT_MAX_STEPS`         | `10`          | Max tool-loop iterations per user message                     |
@@ -220,7 +206,8 @@ through `dirctl` instead of the in-process fake.
 | `AGENT_NETWORK_FAKE_ADS`       | `false`       | Use in-process fake ADS                                       |
 | `ADS_BACKEND`                  | `cli`         | `cli` (uses `dirctl`) or `sdk`                                |
 | `ADS_SERVER_ADDR`              | —             | e.g. `localhost:8888`                                         |
-| `MAIN_AGENT_PORT`              | `8090`        | HTTP port (avoids collision with v2's 8080)                   |
+| `DIRCTL_TIMEOUT_SECONDS`       | `60`          | Per-call limit on `dirctl`; a hung call is killed (`/ready` uses 4s) |
+| `MAIN_AGENT_PORT`              | `8090`        | HTTP port                                                     |
 | `PYTHON_BIN`                   | auto-detected | Optional interpreter override for wrapper scripts             |
 | `REGISTRATION_DB_DSN`          | —             | Postgres DSN for users, conversation history, credentials and pending confirmations. Unset: users live in memory |
 | `OPENAI_BASE_URL`              | —             | OpenAI-compatible endpoint (mock, vLLM, Ollama); `/ready` probes `{base}/models` |
@@ -272,17 +259,14 @@ doesn't break the demo:
 
 ## What is NOT included
 
-- No skill-specific output extractors (`_extract_available_slots`,
-  `_extract_draft_email`, `_extract_weather_forecast`, etc. from v2). The
-  structured outputs are returned to the LLM as-is and rendered through
-  `final_answer`.
-- No deterministic keyword router (v2's `router.py`). The LLM picks the
-  agent.
-- No legacy planner mode. Tool loop only.
-- No in-memory persistence of working state: `InMemoryStateStore` holds only
-  per-request context and resets on restart. Conversation history and pending
-  confirmations **do** persist — to Postgres (`conversation_store` /
-  `pending_store` → `db.py`), keyed by SSO identity.
+- No skill-specific output extractors. Structured outputs are returned to the
+  LLM as-is and rendered through `final_answer`.
+- No deterministic keyword router. The LLM picks the agent.
+- No durable working state: `InMemoryStateStore` lives in the process and resets
+  on restart. With `REGISTRATION_DB_DSN` set, conversation history and pending
+  confirmations also persist to Postgres (`conversation_store` /
+  `pending_store` → `db.py`), keyed by SSO identity; without it they live only
+  in memory.
 
 If a future user prompt needs a domain-specific renderer (a chart, a map,
 etc.), add a renderer in the front-end on top of `structured_outputs` —

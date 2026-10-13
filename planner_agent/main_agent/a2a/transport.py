@@ -216,26 +216,6 @@ class HTTPA2ATransport(A2ATransport):
         return None
 
 
-class SlimA2ATransport(A2ATransport):
-    async def send_task(
-        self,
-        agent: DiscoveredAgent,
-        request: A2ATaskRequest,
-        progress_callback: ProgressCallback | None = None,
-    ) -> A2ATaskResult:
-        raise NotImplementedError("SLIM A2A transport is reserved for Milestone 5")
-
-
-class NatsA2ATransport(A2ATransport):
-    async def send_task(
-        self,
-        agent: DiscoveredAgent,
-        request: A2ATaskRequest,
-        progress_callback: ProgressCallback | None = None,
-    ) -> A2ATaskResult:
-        raise NotImplementedError("NATS A2A transport is reserved for Milestone 5")
-
-
 async def _emit_progress(callback: ProgressCallback, entry: dict[str, Any]) -> None:
     result = callback(entry)
     if inspect.isawaitable(result):

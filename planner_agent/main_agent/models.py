@@ -13,8 +13,6 @@ def utc_now() -> datetime:
 
 
 class Channel(str, Enum):
-    telegram = "telegram"
-    whatsapp = "whatsapp"
     api = "api"
 
 
@@ -49,34 +47,14 @@ class ConfirmationStatus(str, Enum):
     rejected = "rejected"
 
 
-class Attachment(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid4()))
-    kind: Literal["file", "image", "audio", "video", "data"] = "file"
-    content_type: str = "application/octet-stream"
-    uri: str | None = None
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-class UserMessage(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid4()))
-    channel: Channel
-    sender_id: str
-    sender_display_name: str | None = None
-    text: str
-    attachments: list[Attachment] = Field(default_factory=list)
-    received_at: datetime = Field(default_factory=utc_now)
-
-
 class PIContext(BaseModel):
     context_id: str = Field(default_factory=lambda: str(uuid4()))
     user_id: str
     channel: Channel
-    original_message_id: str
     current_goal: str
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
     conversation_history: list[str] = Field(default_factory=list)
-    active_tasks: list[str] = Field(default_factory=list)
 
 
 class OfficialOASFSkill(BaseModel):
@@ -102,12 +80,12 @@ class AgentCapability(BaseModel):
 
 
 class CredentialRequirement(BaseModel):
-    """A user-owned credential an agent declares it needs (P4b, read-only mirror).
+    """A user-owned credential an agent declares it needs.
 
     Parsed from the published card's ``capabilities.extensions`` carrier
     (``agenticnetwork.dev/ext/required-credentials``). Mirrors the registration
     service's model; the planner is a separate deploy unit so it can't import it.
-    ``required`` will drive enforcement in P4c; here it is surfaced read-only.
+    ``required`` credentials are enforced before dispatch (credential_gate).
     """
     type: str
     label: str
@@ -125,7 +103,7 @@ class DiscoveredAgent(BaseModel):
     input_modes: list[str] = Field(default_factory=list)
     output_modes: list[str] = Field(default_factory=list)
     endpoint: str
-    transport: Literal["http", "slim", "nats"] = "http"
+    transport: Literal["http"] = "http"
     auth: dict[str, Any] = Field(default_factory=dict)
     required_scopes: list[str] = Field(default_factory=list)
     trust_level: float = Field(0.5, ge=0, le=1)

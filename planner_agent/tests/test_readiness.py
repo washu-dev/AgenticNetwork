@@ -15,6 +15,7 @@ import pytest
 
 from planner_agent.main_agent import db, server
 from planner_agent.main_agent.config import MainAgentConfig
+from planner_agent.main_agent.directory import backends
 from planner_agent.main_agent.directory.backends import RealADSDirectoryBackend
 from planner_agent.main_agent.directory.client import DirectoryClient
 from planner_agent.main_agent.llm_client import ScriptedLLMClient
@@ -139,6 +140,33 @@ def test_ready_directory_check_times_out(monkeypatch) -> None:
     resp = _ready(_real_directory(runner=runner))
     assert resp.status_code == 503, resp.text
     assert resp.json()["checks"]["directory"]["error"] == "timed out after 0.05s"
+
+
+def test_ready_kills_hung_dirctl(tmp_path, monkeypatch) -> None:
+    # The default runner bounds dirctl itself, so a hung daemon cannot leave a
+    # blocked thread and a dirctl process behind on every /ready probe.
+    monkeypatch.setattr(backends, "_HEALTHCHECK_TIMEOUT_SECONDS", 0.2)
+    dirctl = tmp_path / "dirctl"
+    dirctl.write_text("#!/bin/sh\nexec sleep 30\n")
+    dirctl.chmod(0o755)
+    started = time.monotonic()
+    resp = _ready(_real_directory(dirctl_path=str(dirctl)))
+    assert time.monotonic() - started < 3
+    assert resp.status_code == 503, resp.text
+    assert "dirctl command timed out after 0.2s" in resp.json()["checks"]["directory"]["error"]
+
+
+def test_dirctl_timeout_defaults_to_env(monkeypatch) -> None:
+    timeouts: list[float] = []
+
+    def fake_run(command, **kwargs):
+        timeouts.append(kwargs["timeout"])
+        return subprocess.CompletedProcess(command, 0, stdout="[]", stderr="")
+
+    monkeypatch.setenv("DIRCTL_TIMEOUT_SECONDS", "7")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    RealADSDirectoryBackend(ads_url="127.0.0.1:8888")._run_dirctl(["routing", "list"])
+    assert timeouts == [7.0]
 
 
 def test_ready_reports_reachable_llm(monkeypatch) -> None:

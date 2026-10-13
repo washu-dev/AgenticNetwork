@@ -17,7 +17,6 @@ class ToolCall(BaseModel):
     arguments: dict[str, Any] = Field(default_factory=dict)
     call_id: str | None = None
     token_usage: dict[str, Any] | None = None
-    reasoning: str | None = None
 
 
 class TurnState(BaseModel):
@@ -294,10 +293,8 @@ def _make_client(provider: str, *, base_url: str | None, timeout: float) -> Any:
     primary provider; the fallback passes ``base_url`` explicitly so it can point
     somewhere other than the primary's env-configured endpoint.
     """
-    try:
-        from openai import AsyncOpenAI
-    except Exception as exc:
-        raise RuntimeError(f"openai SDK import failed: {type(exc).__name__}: {exc}") from exc
+    from openai import AsyncOpenAI
+
     kwargs: dict[str, Any] = {"timeout": timeout}
     if base_url:
         kwargs["base_url"] = base_url
@@ -310,10 +307,8 @@ def _is_availability_error(exc: Exception) -> bool:
     """True for errors that mean the provider is *unreachable/unhealthy* (worth a
     failover), as opposed to auth (401) or client (4xx) errors that would fail on
     the fallback too."""
-    try:
-        from openai import APIConnectionError, APIStatusError, APITimeoutError
-    except Exception:
-        return False
+    from openai import APIConnectionError, APIStatusError, APITimeoutError
+
     if isinstance(exc, (APIConnectionError, APITimeoutError)):
         return True
     if isinstance(exc, APIStatusError):

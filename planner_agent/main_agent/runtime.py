@@ -26,7 +26,6 @@ from planner_agent.main_agent.models import (
     PIContext,
     PolicyDecision,
     PolicyDecisionStatus,
-    UserMessage,
     utc_now,
 )
 from planner_agent.main_agent.directory.client import DirectoryClient
@@ -226,23 +225,11 @@ class MainAgentRuntime:
                 )
 
             logger.info(
-                "main_agent_step context_id=%s step=%d tool=%s reasoning_chars=%d",
+                "main_agent_step context_id=%s step=%d tool=%s",
                 context.context_id,
                 step,
                 tool_call.tool_name,
-                len(tool_call.reasoning or ""),
             )
-
-            if tool_call.reasoning:
-                await _record_trace(
-                    tool_trace,
-                    {
-                        "tool": "reasoning",
-                        "status": "ok",
-                        "content": {"text": tool_call.reasoning, "next_tool": tool_call.tool_name},
-                    },
-                    progress_callback,
-                )
 
             terminal = await self._dispatch_tool(
                 tool_call=tool_call,
@@ -681,7 +668,7 @@ class MainAgentRuntime:
         result = await self._send_task(agent, request, progress_callback=remote_progress_callback)
         chosen_skill = _chosen_skill_from_result(result, requested_skill=canonical_hint or requested_skill)
         record_skill = chosen_skill or canonical_hint or requested_skill or "agent/autonomous"
-        self._track_task(context, result)
+        self.store.save_context(context)
         selected_agents.append(
             {
                 "skill": record_skill,
@@ -807,12 +794,7 @@ class MainAgentRuntime:
             credentials=scoped,
         )
         result = await self._send_task(agent, request)
-        confirmed_decision = PolicyDecision(
-            status=PolicyDecisionStatus.allowed,
-            reason=f"User confirmed {skill}.",
-            confirmation_status=ConfirmationStatus.confirmed,
-        )
-        self._track_task(context, result)
+        self.store.save_context(context)
         await self._clear_pending(context_id)
 
         text = _last_text(result) or f"{skill} completed."
@@ -1027,12 +1009,7 @@ class MainAgentRuntime:
             credentials=scoped,
         )
         result = await self._send_task(agent, request)
-        confirmed_decision = PolicyDecision(
-            status=PolicyDecisionStatus.allowed,
-            reason=f"User granted credentials to {agent.agent_id}.",
-            confirmation_status=ConfirmationStatus.confirmed,
-        )
-        self._track_task(context, result)
+        self.store.save_context(context)
 
         text = _last_text(result) or f"{skill or 'The request'} completed."
         context.conversation_history.append(f"assistant: {text}")
@@ -1132,7 +1109,6 @@ class MainAgentRuntime:
             context_id=context_id,
             user_id=owner,
             channel=channel,
-            original_message_id=str(uuid4()),
             current_goal=goal,
             conversation_history=history,
         )
@@ -1145,12 +1121,10 @@ class MainAgentRuntime:
         text: str,
         context_id: str | None = None,
     ) -> PIContext:
-        msg = UserMessage(channel=channel, sender_id=user_id, text=text)
         return PIContext(
             context_id=context_id or str(uuid4()),
             user_id=user_id,
             channel=channel,
-            original_message_id=msg.id,
             current_goal=text,
             conversation_history=[f"user: {text}"],
         )
@@ -1278,14 +1252,6 @@ class MainAgentRuntime:
                 },
                 error=text,
             )
-
-    def _track_task(
-        self,
-        context: PIContext,
-        result: A2ATaskResult,
-    ) -> None:
-        context.active_tasks.append(result.task_id)
-        self.store.save_context(context)
 
     @staticmethod
     def _is_affirmative(text: str) -> bool:

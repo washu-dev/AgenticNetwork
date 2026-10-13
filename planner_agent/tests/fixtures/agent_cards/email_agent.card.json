@@ -109,7 +109,7 @@
       ],
       "examples": [
         "Send this email to Bob.",
-        "Send the test email to wyy0115@outlook.com and tomsonlee13@gmail.com."
+        "Send the test email to alice@example.com and bob@example.com."
       ],
       "inputModes": [
         "text/plain",

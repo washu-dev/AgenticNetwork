@@ -11,6 +11,7 @@ import re
 import time as _time
 from pathlib import Path
 from typing import Any, Sequence
+from urllib.parse import quote
 from uuid import uuid4
 
 import httpx
@@ -196,7 +197,24 @@ def create_app(
         if not is_admin(email):
             raise HTTPException(status_code=403, detail="Admin access required")
 
-    app = FastAPI(title="Planner Agent", version="0.1.0")
+    db_configured = bool(os.getenv("REGISTRATION_DB_DSN"))
+
+    @contextlib.asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        # DB lifecycle is skipped when REGISTRATION_DB_DSN is unset (dev stack, unit tests).
+        if db_configured:
+            await init_db()
+        probe_loop = asyncio.create_task(_health_probe_loop())
+        try:
+            yield
+        finally:
+            probe_loop.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await probe_loop
+            if db_configured:
+                await close_db()
+
+    app = FastAPI(title="Planner Agent", version="0.1.0", lifespan=lifespan)
     app.state.config = cfg
     app.state.runtime = runtime
     app.state.directory = directory
@@ -205,16 +223,6 @@ def create_app(
 
     # Conversation history is persisted in Postgres (table created by init_db);
     # a no-op without a DB, where the in-memory working context serves the session.
-
-    # DB lifecycle (skipped when REGISTRATION_DB_DSN is unset, e.g. in unit tests).
-    if os.getenv("REGISTRATION_DB_DSN"):
-        @app.on_event("startup")
-        async def _startup_db():
-            await init_db()
-
-        @app.on_event("shutdown")
-        async def _shutdown_db():
-            await close_db()
 
     # Auth + credential routers (active whenever the DB is configured).
     if os.getenv("REGISTRATION_DB_DSN"):
@@ -266,6 +274,14 @@ def create_app(
     @app.api_route("/register/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
     async def proxy_registration(path: str, request: Request) -> Response:
         url = f"/{path}"
+        # /internal/* is the host spawn loop's unauthenticated localhost API; never
+        # forward it. Refuse anything upstream could read differently (a leftover
+        # "%XX", dot segments, a leading "//" taken as a host) and forward the
+        # checked path re-quoted so a "?" or "#" in it stays part of the path.
+        segments = path.split("/")
+        if (segments[0] == "internal" or path.startswith("/") or "%" in path
+                or "." in segments or ".." in segments):
+            raise HTTPException(status_code=404, detail="Not Found")
         # P4f: enforce admin at the SSO front door for the approver actions before
         # forwarding. registration_service enforces the same allowlist as defense-in-depth.
         if _is_admin_reg_action(request.method, url):
@@ -274,7 +290,7 @@ def create_app(
         headers = {k: v for k, v in request.headers.items()
                    if k.lower() not in ("host", "content-length")}
         resp = await _reg_client.request(
-            request.method, url,
+            request.method, quote(url, safe="/"),
             content=body, headers=headers, params=request.query_params,
         )
         return Response(content=resp.content, status_code=resp.status_code,
@@ -431,7 +447,10 @@ def create_app(
     @app.post("/confirmations")
     async def post_confirmation(req: ConfirmationRequest, request: Request) -> dict[str, Any]:
         # Same identity rule as /messages: the header identity wins over the body.
-        user_id = _caller_user_id(request, req.user_id)
+        user_id = _resolve_shib_user_id(request, req.user_id)
+        owner = await _conversation_owner(req.context_id)
+        if owner is not None and owner != user_id:
+            raise HTTPException(status_code=403, detail="You do not own this conversation.")
         # P4c: the confirm button must carry the same per-user credentials +
         # auth_user_id as /messages, or a credential-consent resume dispatches
         # with no key and records no grant.
@@ -600,28 +619,25 @@ def create_app(
                 "requests_today": prev.get("requests_today", 0),
             }
 
-    @app.on_event("startup")
-    async def _start_health_probe_loop():
-        async def _loop():
-            # On-demand (scale-to-zero) agents must be excluded from probing: a probe
-            # HTTP-hits the agent's card URL, which cold-starts a min=0 Cloud Run agent
-            # and keeps it warm — defeating scale-to-zero. Skip by agent_id via
-            # HEALTH_PROBE_SKIP_AGENTS (comma-separated).
-            skip = {s.strip() for s in os.getenv("HEALTH_PROBE_SKIP_AGENTS", "").split(",") if s.strip()}
-            while True:
-                try:
-                    agents = directory.search_agents()
-                    tasks = [
-                        _probe_agent(a.agent_id, a.endpoint)
-                        for a in agents
-                        if a.endpoint and a.agent_id not in skip
-                    ]
-                    if tasks:
-                        await asyncio.gather(*tasks, return_exceptions=True)
-                except Exception:
-                    pass
-                await asyncio.sleep(60)
-        asyncio.create_task(_loop())
+    async def _health_probe_loop() -> None:
+        # On-demand (scale-to-zero) agents must be excluded from probing: a probe
+        # HTTP-hits the agent's card URL, which cold-starts a min=0 Cloud Run agent
+        # and keeps it warm — defeating scale-to-zero. Skip by agent_id via
+        # HEALTH_PROBE_SKIP_AGENTS (comma-separated).
+        skip = {s.strip() for s in os.getenv("HEALTH_PROBE_SKIP_AGENTS", "").split(",") if s.strip()}
+        while True:
+            try:
+                agents = directory.search_agents()
+                tasks = [
+                    _probe_agent(a.agent_id, a.endpoint)
+                    for a in agents
+                    if a.endpoint and a.agent_id not in skip
+                ]
+                if tasks:
+                    await asyncio.gather(*tasks, return_exceptions=True)
+            except Exception:
+                pass
+            await asyncio.sleep(60)
 
     @app.get("/admin/agents/health")
     async def admin_agents_health(request: Request, _: None = Depends(_require_admin)) -> dict[str, Any]:
@@ -711,15 +727,13 @@ def create_app(
 
     @app.post("/admin/ads/reset")
     async def admin_ads_reset(request: Request, _: None = Depends(_require_admin)) -> dict[str, bool]:
-        if hasattr(directory, "_cache_ts"):
-            directory._cache_ts = 0
         _agent_health.clear()
         return {"ok": True}
 
     @app.delete("/admin/agents/{agent_id}")
     async def admin_remove_agent(agent_id: str, request: Request, _: None = Depends(_require_admin)) -> dict[str, bool]:
         try:
-            await asyncio.get_event_loop().run_in_executor(None, directory.unpublish_agent, agent_id)
+            await asyncio.to_thread(directory.unpublish_agent, agent_id)
         except Exception:
             logger.warning("admin_remove_agent_unpublish_failed agent_id=%s", agent_id, exc_info=True)
         _agent_health.pop(agent_id, None)
@@ -862,11 +876,12 @@ def _anon_identity_allowed() -> bool:
     return not os.getenv("REGISTRATION_DB_DSN")
 
 
-def _resolve_shib_user_id(request: Request) -> str:
+def _resolve_shib_user_id(request: Request, anonymous: str = "demo-user") -> str:
     """Return the authenticated identity for a request, or fail closed.
 
-    Uses the Shibboleth email when present. When it's missing, returns ``demo-user``
-    only if :func:`_anon_identity_allowed`; otherwise re-raises the 401 from
+    Uses the Shibboleth email when present, so a header identity always wins over a
+    body ``user_id``. When it's missing, returns ``anonymous`` only if
+    :func:`_anon_identity_allowed`; otherwise re-raises the 401 from
     ``get_shib_email`` so anonymous callers can't be silently attributed to a shared
     identity (multi-user hardening F3).
     """
@@ -874,23 +889,7 @@ def _resolve_shib_user_id(request: Request) -> str:
         return get_shib_email(request)
     except HTTPException:
         if _anon_identity_allowed():
-            return "demo-user"
-        raise
-
-
-def _caller_user_id(request: Request, body_user_id: str) -> str:
-    """Return the identity a request that carries a body ``user_id`` acts as.
-
-    An authenticated identity header always wins, so a signed-in caller cannot act as
-    another user by naming them in the body. Without a header the body value is kept
-    (it defaults to ``demo-user``), but only when :func:`_anon_identity_allowed`;
-    otherwise the 401 from ``get_shib_email`` is re-raised.
-    """
-    try:
-        return get_shib_email(request)
-    except HTTPException:
-        if _anon_identity_allowed():
-            return body_user_id
+            return anonymous
         raise
 
 
@@ -929,7 +928,7 @@ async def _incoming_message_from_request(request: Request) -> IncomingMessage:
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=400, detail="Request body must be JSON or multipart/form-data.") from exc
     msg = IncomingMessage.model_validate(payload)
-    msg.user_id = _caller_user_id(request, msg.user_id)
+    msg.user_id = _resolve_shib_user_id(request, msg.user_id)
     return msg
 
 

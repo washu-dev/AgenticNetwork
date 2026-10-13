@@ -36,10 +36,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         os.environ["AGENT_NETWORK_FAKE_ADS"] = "true"
     _configure_logging()
     cfg = load_config()
-    try:
-        import uvicorn
-    except ImportError as exc:
-        raise RuntimeError("uvicorn is required to run the planner agent server.") from exc
+    import uvicorn
+
     directory = DirectoryClient(fake_ads=cfg.fake_ads, ads_url=cfg.ads_server_addr)
     app = create_app(
         config=cfg,

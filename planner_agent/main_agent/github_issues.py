@@ -24,11 +24,6 @@ class GitHubIssueError(RuntimeError):
     """Raised when an issue could not be created (missing token or API failure)."""
 
 
-def is_configured() -> bool:
-    """True when a token is present, so the UI can hide/disable reporting if not."""
-    return bool(os.getenv("GITHUB_ISSUES_TOKEN"))
-
-
 def _repo() -> str:
     return os.getenv("GITHUB_ISSUES_REPO", DEFAULT_REPO).strip() or DEFAULT_REPO
 

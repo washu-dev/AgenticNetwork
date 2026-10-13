@@ -23,6 +23,9 @@ from planner_agent.main_agent.directory.card_oasf_converter import (
 
 logger = logging.getLogger(__name__)
 
+# Below server._READY_DIRECTORY_TIMEOUT_SECONDS, so /ready never leaves a dirctl running.
+_HEALTHCHECK_TIMEOUT_SECONDS = 4.0
+
 
 class DirectoryUnavailable(RuntimeError):
     """Raised when real ADS is requested but unavailable or unconfigured."""
@@ -128,7 +131,7 @@ class RealADSDirectoryBackend:
         self.org_id = org_id or os.getenv("ADS_ORG_ID")
         self.api_key = api_key or os.getenv("ADS_API_KEY")
         self.dirctl_path = dirctl_path or os.getenv("DIRCTL_BIN", "dirctl")
-        self._runner = runner or self._default_runner
+        self._runner = runner
         self._client: Any | None = None
         self._models: Any | None = None
 
@@ -268,7 +271,7 @@ class RealADSDirectoryBackend:
 
     def healthcheck(self) -> bool:
         if self.backend == "cli":
-            self._run_dirctl(["routing", "list", "--output", "json"])
+            self._run_dirctl(["routing", "list", "--output", "json"], timeout=_HEALTHCHECK_TIMEOUT_SECONDS)
             return True
         self._client_and_models()
         return True
@@ -621,11 +624,12 @@ class RealADSDirectoryBackend:
                 None,
             )
 
-    def _run_dirctl(self, args: list[str]) -> subprocess.CompletedProcess[str]:
+    def _run_dirctl(self, args: list[str], timeout: float | None = None) -> subprocess.CompletedProcess[str]:
         self._require_server_address()
         command = [self.dirctl_path, "--server-addr", self.server_address, *args]
         try:
-            completed = self._runner(command)
+            # An injected runner (tests) takes only the command.
+            completed = self._runner(command) if self._runner else self._default_runner(command, timeout)
         except FileNotFoundError as exc:
             raise DirectoryUnavailable(
                 "dirctl is not installed or not on PATH. Install it with: "
@@ -633,13 +637,20 @@ class RealADSDirectoryBackend:
                 "or download the release binary from https://github.com/agntcy/dir/releases. "
                 f"Original error: {exc}"
             ) from exc
+        except subprocess.TimeoutExpired as exc:
+            raise DirectoryUnavailable(
+                f"dirctl command timed out after {exc.timeout:g}s: {' '.join(command)}"
+            ) from exc
         if completed.returncode != 0:
             raise self._command_unavailable(f"dirctl command failed: {' '.join(command)}", completed)
         return completed
 
     @staticmethod
-    def _default_runner(command: list[str]) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(command, text=True, capture_output=True, check=False)
+    def _default_runner(command: list[str], timeout: float | None = None) -> subprocess.CompletedProcess[str]:
+        # Bounded like ads_utils.publisher: on timeout subprocess.run kills the hung dirctl.
+        if timeout is None:
+            timeout = float(os.getenv("DIRCTL_TIMEOUT_SECONDS", "60"))
+        return subprocess.run(command, text=True, capture_output=True, check=False, timeout=timeout)
 
     def _command_unavailable(
         self,
