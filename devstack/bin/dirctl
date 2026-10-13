@@ -1,0 +1,14 @@
+#!/usr/bin/env python3
+"""Fake ``dirctl`` for the native dev stack (see devstack/fake_dirctl.py).
+
+Point DIRCTL_BIN here (or put this folder first on PATH) and set
+FAKE_DIRCTL_STATE to a shared JSON file.
+"""
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__)))))
+
+from devstack.fake_dirctl import main  # noqa: E402
+
+sys.exit(main())

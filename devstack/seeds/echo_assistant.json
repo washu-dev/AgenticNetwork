@@ -1,0 +1,17 @@
+{
+  "name": "Echo Assistant",
+  "description": "Echoes and briefly summarizes any text you send it. A seed agent for the local dev stack: use it to check that a request reaches a specialist agent and comes back.",
+  "handler_type": "llm",
+  "oasf_skills": [
+    {
+      "name": "NLP / Natural Language Generation / Text Summarization",
+      "id": 10202,
+      "key": "nlp/natural_language_generation/text_summarization"
+    }
+  ],
+  "config": {
+    "system_prompt": "You are Echo Assistant, a test agent in a local development stack. Repeat the user's request back in one line, then summarize it in one short sentence. Do not add anything else.",
+    "model": "mock-specialist",
+    "tools": {"source": "none"}
+  }
+}
