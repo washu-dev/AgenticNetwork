@@ -5,7 +5,8 @@
 > scripts) lives in the repo-root [`deployment/`](../../../deployment/).
 
 This runbook covers running the full AgenticNetwork multi-agent system on the WashU Engineering HPC
-cluster (ENGR) using Slurm and Pyxis/enroot.
+cluster (ENGR) using Slurm and Pyxis/enroot. ENGR is the live public deployment
+(`agenticweb.engr.wustl.edu`).
 
 ## Architecture
 
@@ -57,8 +58,10 @@ registration and ADS containers are pure DB clients.
 | `dockerfiles/` | One `Dockerfile.<agent>` per infra service (ADS runs `dirctl` directly, no Dockerfile-side entrypoint script) |
 | `entrypoints/` | `entrypoint-{postgres,registration,planner}.sh` (postgres init / DB + ADS wait / exec); ADS has none — it runs `dirctl daemon start` directly from `submit.sbatch` |
 | `ads_daemon.yaml` | dirctl daemon config (listen address, Postgres backend, data paths) |
-| `AGENT_INTEGRATION_SPEC.md` | Reference for adding a new agent: what fields are required and why |
-| `DOWNSTREAM_CONSIDERATIONS.md` | Forward-looking architecture & scaling decisions (deferred-by-design) |
+
+The full artifact list is in [`deployment/README.md`](../../../deployment/README.md). Related docs:
+[`AGENT_INTEGRATION_SPEC.md`](../AGENT_INTEGRATION_SPEC.md) (what an agent must provide and why) ·
+[`DOWNSTREAM_CONSIDERATIONS.md`](../DOWNSTREAM_CONSIDERATIONS.md) (deferred scaling decisions).
 
 ---
 
@@ -67,7 +70,7 @@ registration and ADS containers are pure DB clients.
 ### 1. Create required directories on the cluster
 
 ```bash
-mkdir -p /engrfs/project/di2/AgenticNetwork/logs
+mkdir -p /engrfs/project/di2/AgenticNetwork/logs/$USER   # Slurm writes the job logs here (logs/%u)
 mkdir -p /engrfs/project/di2/postgres_data   # persistent postgres storage for registration service
 ```
 
@@ -84,7 +87,7 @@ Edit `.env` — the values you may actually change (most have working defaults):
 | `ADMIN_EMAILS` | Comma-separated allowlist of admin emails, matched against SSO identity |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_REDIRECT_URI` | OAuth web-client (non-secret half; the secret is in the secrets file, Step 3) |
 | `GITHUB_REPO` | Repo for the custom-agent build pipeline (default `washu-dev/agent-directory`) |
-| `IMAGE_REGISTRY` | Image namespace (default `di2washu`; see [`../docs/MULTI_CONTRIBUTOR.md`](../../MULTI_CONTRIBUTOR.md)) |
+| `IMAGE_REGISTRY` | Image namespace (default `di2washu`; see [`docs/MULTI_CONTRIBUTOR.md`](../../MULTI_CONTRIBUTOR.md)) |
 | `PGDATABASE` | Registration DB name (default `registration`) |
 
 > `.env` holds **non-secret config only** — it is shared and world-readable on `/engrfs`.
@@ -98,7 +101,7 @@ Edit `.env` — the values you may actually change (most have working defaults):
 ### 3. Create your secrets file
 
 Real secrets (`CREDENTIALS_ENCRYPTION_KEY`, `GITHUB_TOKEN`, `GITHUB_ISSUES_TOKEN`,
-`GOOGLE_CLIENT_SECRET`) live in a restricted file, **not** `.env`. `submit.sbatch` sources it
+`GOOGLE_CLIENT_SECRET`, `VLLM_API_KEY`) live in a restricted file, **not** `.env`. `submit.sbatch` sources it
 after `.env`. Copy the template and set restrictive permissions:
 
 ```bash
@@ -122,15 +125,17 @@ is never committed even though it sits inside the repo tree.
 > labeled `user-submitted` + `bug-report`/`agent-creation-feedback`. If the token is unset the
 > forms fail loud (HTTP 502) — they never silently drop a report. The registration UI's feedback
 > form reaches this endpoint only when served **through the planner** (`/register/…`), which is
-> the deployed path.
+> the deployed path. The token and egress from a cluster node are not yet recorded as tested; see
+> [Verifying bug reporting](#verifying-bug-reporting-not-yet-recorded-as-done) before adding the
+> token to prod.
 
 The vLLM HuggingFace token lives in a separate file (`/workspace/.hf_token`, read by
 `start_vllm.sbatch`) — it's also a secret on shared storage, so `chmod 600` it.
 
-### 4. Set your Slurm account
+### 4. Check your Slurm account
 
-Edit `submit.sbatch` and `start_vllm.sbatch` — replace `engr-lab-<piname>` with
-your actual PI's account name (find it with `sacctmgr show user $USER`).
+`submit.sbatch` and `start_vllm.sbatch` charge `engr-lab-di2` (`#SBATCH -A`). Change it in both
+if you run under a different PI account (find yours with `sacctmgr show user $USER`).
 
 ---
 
@@ -152,7 +157,7 @@ Images are published to `<IMAGE_REGISTRY>/agenticnetwork-<agent>:latest`, where
 `IMAGE_REGISTRY` defaults to `di2washu` and is overridable via the `IMAGE_REGISTRY`
 env var (set it in `deployment/.env`) — `build_and_push.sh`, `submit.sbatch`, and the
 registration service's custom-agent build all read it. Moving this off a personal
-account is tracked in [`../docs/MULTI_CONTRIBUTOR.md`](../../MULTI_CONTRIBUTOR.md).
+account is tracked in [`docs/MULTI_CONTRIBUTOR.md`](../../MULTI_CONTRIBUTOR.md).
 Pyxis caches images by tag — use a new tag (`:v2`, `:v3`, etc.) if you need to
 force a fresh pull on the cluster after pushing a fix to the same tag.
 
@@ -202,19 +207,19 @@ concurrently with a live prod without colliding on ports and *cannot touch prod'
 second deploy of the same instance (two prods, or two tests) is refused across all users by a
 `squeue` preflight in `deploy.sh` (at submit time, so you get an immediate message and no job
 stuck `PENDING`); an in-job preflight and `--dependency=singleton` back it up if you bypass the
-wrapper. Details + known gaps: [`../docs/MULTI_CONTRIBUTOR.md`](../../MULTI_CONTRIBUTOR.md).
+wrapper. Details + known gaps: [`docs/MULTI_CONTRIBUTOR.md`](../../MULTI_CONTRIBUTOR.md).
 
 > Submitting `sbatch deployment/submit.sbatch` directly still works and defaults to prod.
 
 Watch startup:
 
 ```bash
-tail -f /engrfs/project/di2/AgenticNetwork/logs/agenticnetwork-<jobid>.log
+tail -f /engrfs/project/di2/AgenticNetwork/logs/$USER/agenticnetwork-<jobid>.log
 ```
 
 ADS should be ready within ~10 seconds; all agents should be running within ~60 seconds.
-The registration container takes a few extra seconds on first run to initialise the
-postgres data directory.
+The postgres container takes a few extra seconds on first run to initialise its data
+directory.
 
 ### Accessing a test instance (SSH tunnel)
 
@@ -272,6 +277,9 @@ curl http://localhost:8090/health
 # Expected: {"status":"ok","fake_ads":"False","model":"openai/gpt-oss-120b"}
 ```
 
+`/health` is liveness only. `curl http://localhost:8090/ready` (and `:8091/ready`) also checks the
+directory, the database and (planner only) the LLM; it returns 503 and names the failing check.
+
 ### Registration service
 
 ```bash
@@ -283,9 +291,12 @@ The registration web UI is also accessible via the planner at `http://localhost:
 
 ### List available agents
 
+Prod's planner has a database and no anonymous fallback, so `/messages` needs an identity header
+(otherwise 401); a test instance (`PLANNER_ALLOW_ANON=1`) does not.
+
 ```bash
 curl -s http://localhost:8090/messages \
-  -H "Content-Type: application/json" \
+  -H "Content-Type: application/json" -H "mail: <you>@wustl.edu" \
   -d '{"text": "List all available agents."}' | python3 -m json.tool
 ```
 
@@ -295,16 +306,43 @@ A successful response has `"state": "completed"` and lists all specialist agents
 
 ```bash
 curl -s http://localhost:8090/messages \
-  -H "Content-Type: application/json" \
+  -H "Content-Type: application/json" -H "mail: <you>@wustl.edu" \
   -d '{"text": "Give me a brief situational summary about wildfire preparedness."}' \
   | python3 -m json.tool
 ```
+
+### Verifying bug reporting (not yet recorded as done)
+
+The one piece of `POST /issues` not yet recorded as tested is the real token plus egress to
+`api.github.com` from a cluster node (egress was reported available when the feature was planned,
+2026-07-16). Prove it on a test instance before the token goes into prod's secrets.
+
+1. *(Optional, local)* With a PAT that has Issues: write on a sandbox repo you own:
+   `scripts/stack down`, then
+   `DEVSTACK_PASSTHROUGH_ENV=GITHUB_ISSUES_TOKEN,GITHUB_ISSUES_REPO GITHUB_ISSUES_TOKEN=<pat> GITHUB_ISSUES_REPO=<you>/<sandbox> scripts/stack up`,
+   and run the curl from step 3 against `http://localhost:8080`.
+2. Put the token in your **per-user** secrets file (`~/.config/agenticnetwork/secrets.env`, Step 3),
+   not the shared prod one, and run `deployment/deploy.sh test`. Open the tunnel from
+   [Accessing a test instance](#accessing-a-test-instance-ssh-tunnel).
+3. The egress test, through the tunnel:
+   ```bash
+   curl -s http://localhost:18090/issues -H 'Content-Type: application/json' \
+     -d '{"kind":"bug","summary":"smoke test","description":"ignore me"}'
+   # Expected: {"ok":true,"issue_url":"https://github.com/..."}
+   ```
+   A 502 is a failure. If the planner log says `could not reach GitHub`, the node has no egress:
+   stop, because the GitHub-issues approach depends on it.
+4. Check the issue in `GITHUB_ISSUES_REPO`: labels `user-submitted` + `bug-report`, and a readable
+   "Auto-captured context" block. Submit the creation-feedback form at `/register/` and check for an
+   `agent-creation-feedback` issue. Close both.
+5. **Prod, only after 3-4 pass:** add `GITHUB_ISSUES_TOKEN` to the shared prod secrets file (Step 3),
+   redeploy with `deployment/deploy.sh`, file one bug through the live UI, confirm it, then close it.
 
 ---
 
 ## Logs
 
-All logs are written to `/engrfs/project/di2/AgenticNetwork/logs/` and persist
+All logs are written to `/engrfs/project/di2/AgenticNetwork/logs/$USER/` and persist
 after the job exits. The main job log is `agenticnetwork-<jobid>.log`.
 
 | File | Contents |
@@ -390,11 +428,13 @@ Check `ads.log`. If it is empty or shows repeated errors, the dirctl binary may
 have failed to start. Verify the ADS image is up to date (use a new tag to bypass
 Pyxis cache; the ADS image is currently pinned to `:v4` in `submit.sbatch`).
 
-**Registration postgres fails to start**
-Check `registration.err`. Common causes: the `/engrfs/project/di2/postgres_data`
-directory doesn't exist (create it — see One-time Setup), or a previous run left a
-stale `postmaster.pid` (the entrypoint removes it automatically on start, but if
-the data directory is corrupted, delete it and let `initdb` re-initialise on next run).
+**Postgres fails to start**
+Check `postgres.log` (the dedicated postgres container: `Dockerfile.postgres`,
+`entrypoint-postgres.sh`). Common causes: the `/engrfs/project/di2/postgres_data`
+directory doesn't exist (create it — see One-time Setup), or a `postmaster.pid` from an
+earlier run. The entrypoint removes a stale one itself, but refuses to start if its PID is
+still alive (another Postgres owns the data dir, e.g. a double submit). If the data
+directory is corrupted, delete it and let `initdb` re-initialise it on the next run.
 
 **Custom agents don't auto-start on a fresh deployment (unlike the 6 core agents)**
 Known limitation. The 6 core agents are hardcoded as `srun` steps in `submit.sbatch`,
@@ -416,29 +456,31 @@ then `srun`s them. Consequences:
 
 **`ModuleNotFoundError` or wrong Python version in agent logs**
 The cluster auto-mounts its system anaconda (Python 3.7) into containers. All
-entrypoints use absolute paths to the conda env Python to avoid this. If you see
+entrypoints call their Python by absolute path to avoid this. If you see
 this error, check that the relevant entrypoint script still uses the full path.
 
 **vLLM returns 404 or connection errors**
-Confirm the GPU job is still running (`squeue -u $USER`) and that `OPENAI_BASE_URL`
-in `.env` matches the current GPU node hostname. GPU jobs time out and the node
-hostname changes on each new submission.
+Confirm the GPU job is running (`squeue -n agenticnetwork-vllm`) and that the job log shows
+`vLLM discovered: http://<node>:8100/v1`. GPU jobs time out (12 h) and the node changes on each
+submission, so redeploy after restarting vLLM. With `VLLM_AUTODISCOVER=0`, the `.env` value must
+match the current GPU node.
 
 **Pyxis serving a stale image after a fix**
 Pyxis caches images by name and tag. Push to a new tag (e.g. `:v5`) and update
 the image reference in `submit.sbatch` to force a fresh pull.
 
 **Port conflict with another user's job**
-Change the conflicting port via the corresponding env var in `.env`
-(e.g. `DISASTER_AGENT_A2A_PORT=29107`). No rebuild needed.
+`submit.sbatch` sets every port (base + `PORT_OFFSET`) after it reads `.env`, so `.env` port
+values are ignored. Change the base port in `submit.sbatch`; no rebuild needed.
 
 ---
 
 ## Running the network from your laptop (SSH tunnel to cluster vLLM)
 
 You don't have to run the whole stack on the cluster. A common dev loop is: **keep
-heavy LLM inference on the cluster GPU (vLLM), run the lightweight planner (and,
-optionally, specialists) on your laptop**, bridging to vLLM over an SSH tunnel.
+heavy LLM inference on the cluster GPU (vLLM) and run everything else on your laptop**
+with the local dev stack ([`docs/DEVSTACK.md`](../../DEVSTACK.md)), bridging to vLLM over
+an SSH tunnel.
 
 1. **Start vLLM on the cluster** and note its GPU node:
    ```bash
@@ -452,31 +494,23 @@ optionally, specialists) on your laptop**, bridging to vLLM over an SSH tunnel.
    # leave running; if gpu123 isn't reachable from the login node, add a jump:
    #   ssh -N -L 8100:gpu123:8100 -J <you>@<login-node> <you>@gpu123
    ```
-3. **Run the planner locally, pointed at the tunnel** (Tier A — fake directory, no `dirctl`):
+3. **Run the dev stack against the tunnel** (or put the three values in `.devstack.env`):
    ```bash
-   python3 -m venv planner_agent/.venv
-   planner_agent/.venv/bin/pip install -r planner_agent/requirements.txt
-   cp planner_agent/.env.example planner_agent/.env.local
-   # in .env.local:
-   #   OPENAI_BASE_URL=http://localhost:8100/v1
-   #   OPENAI_API_KEY=<VLLM_API_KEY value>      # gated vLLM validates this — must MATCH its --api-key (a dummy 401s)
-   #   MAIN_AGENT_LLM_MODEL=openai/gpt-oss-120b
-   planner_agent/scripts/start.sh --fake-ads \
-     --card ../agent-directory/email_agent/email_agent.card.json \
-     --card ../agent-directory/coding_agent/coding_agent.card.json
+   OPENAI_BASE_URL=http://localhost:8100/v1 \
+   OPENAI_API_KEY=<VLLM_API_KEY value> \
+   MAIN_AGENT_LLM_MODEL=openai/gpt-oss-120b \
+   scripts/stack up --llm openai
    ```
-   Open **http://localhost:8090/**. Agents are *discovered* from the `--card` files;
-   each only *executes* if that specialist is actually running/reachable.
-4. **(Optional) full local network** — instead of `--fake-ads`, install `dirctl`, run a
-   real ADS daemon on `:8888`, and launch each specialist locally pointing at it
-   (the one vLLM tunnel serves them all). See repo-root `CLAUDE.md` §4 Tier B.
+   The gated vLLM validates the key: it must match its `--api-key` (a dummy gets 401).
+   Open **http://localhost:8080/app**. The planner and the seed agent both use the tunnel.
+4. **(Optional) the hand-run specialists** — to run the `agent-directory` specialists against a
+   real ADS daemon on `:8888` (the one vLLM tunnel serves them all), see repo-root `CLAUDE.md`
+   §4 Tier B.
 
-**The inverse** (network on the cluster, browser on your laptop) is just another tunnel
-to the planner — this bypasses Shibboleth and hits the planner directly:
-```bash
-ssh -N -L 8090:<compute-node>:8090 <you>@<login-node>
-# then open http://localhost:8090/
-```
+**The inverse** (network on the cluster, browser on your laptop) is the tunnel in
+[Accessing a test instance](#accessing-a-test-instance-ssh-tunnel). A raw tunnel to prod's
+planner bypasses Shibboleth, so it carries no identity and `/app` returns 401; use the public URL
+for prod.
 
 ---
 
@@ -531,6 +565,6 @@ planner :8090      ← trusts those headers as the user id       ← ephemeral S
 
 ## Security & hazards
 
-See [`../SECURITY.md`](../../../SECURITY.md) for the current security posture, known
+See [`SECURITY.md`](../../../SECURITY.md) for the current security posture, known
 hazards, and the hardening checklist (no auth on specialist ports, the uploaded-code
 trust boundary, `coding_agent` YOLO bash, credential handling, stored-but-not-routed).

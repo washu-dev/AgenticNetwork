@@ -4,12 +4,13 @@
 network: it spawns them, publishes their card to ADS, and monitors health. It is the on-ramp for
 **user-uploaded custom agents** and the home of the approval trust boundary.
 
-Run/dev: `FAKE_DB=1 PYTHONPATH=. pytest registration_service/tests` (see [`CLAUDE.md`](../CLAUDE.md) §12).
+Tests: `registration_service/.venv/bin/python -m pytest registration_service/tests -q -p no:cacheprovider`
+(conftest sets `FAKE_DB=1`). Whole system locally: `scripts/stack up` ([DEVSTACK.md](DEVSTACK.md)).
 
 ## Handler types
 
 An agent's `handler_type` (stored in the `agents` row) selects **who runs the loop**.
-There are three, consolidated from five in 2026-07:
+There are three, consolidated from five on 2026-10-10 ([DECISIONS.md](DECISIONS.md) D13):
 
 | Type | Config (`models.py`) | Runs as | Approval? |
 |---|---|---|---|
@@ -41,15 +42,17 @@ old config JSON and are normalized **on read** — never rewritten — so
 
 ## HTTP surface (`server.py`)
 
-- **Public:** `GET /health`, `GET /` (UI), `GET /oasf-skills`, `GET /credential-catalog`.
+- **Public:** `GET /health`, `GET /ready` (DB + directory; 503 if either errors), `GET /` (UI),
+  `GET /oasf-skills`, `GET /credential-catalog`.
 - **Agent CRUD (public):** `POST /agents` (register), `GET /agents`, `GET /agents/{id}`,
   `DELETE /agents/{id}` (stop + unpublish + delete + clean handler dir),
   `POST /agents/{id}/restart`.
 - **Custom upload/approval (admin-gated by `_require_admin`):** `POST /agents/{id}/handler`
   (upload), `GET /agents/{id}/handler` (review source), `GET /agents/{id}/handler/download`,
   `POST /agents/{id}/approve`, `POST /agents/{id}/reject`.
-- **Internal (localhost, host spawn loop):** `GET /internal/spawn-queue`, `POST /internal/spawned`,
-  `GET /internal/stop-queue`.
+- **Internal (ENGR host spawn loop):** `GET /internal/spawn-queue`, `POST /internal/spawned`,
+  `GET /internal/stop-queue`. No access check in code: they rely on `:8091` not being reachable
+  from outside, and the planner's `/register` proxy refuses them (see [`SECURITY.md`](../SECURITY.md) §2).
 
 Admin auth (`_require_admin`) is the SSO-identity `ADMIN_EMAILS` allowlist (dev-open under
 `FAKE_DB=1`) — see [AUTH.md](AUTH.md) §2.
@@ -63,6 +66,7 @@ Admin auth (`_require_admin`) is the SSO-identity `ADMIN_EMAILS` allowlist (dev-
   (19200–19299) with `FOR UPDATE SKIP LOCKED`; `release_port` frees it.
 - **`FAKE_DB=1`** swaps in an in-memory `FakePool`/`FakeStore` (`fake_db.py`) and a no-op
   `FakeSupervisor` (`fake_supervisor.py`) — used by dev mode and the test suite.
+  `FAKE_DB=1 FAKE_SUPERVISOR=0` keeps the in-memory DB but runs the real supervisor (the dev stack).
 
 ## Lifecycle
 
@@ -76,7 +80,7 @@ Admin auth (`_require_admin`) is the SSO-identity `ADMIN_EMAILS` allowlist (dev-
 1. `POST /agents` → insert `approved=FALSE`, `status='registered'`.
 2. `POST /agents/{id}/handler` → store the upload under `HANDLER_FILES_DIR/{id}/` (a `.py` entry
    file, or a `.zip` unpacked to a tree — detected by suffix or PK magic), AST-validate the entry
-   file, keep `approved=FALSE`.
+   file (a bare `*.py` name; paths are refused at registration), keep `approved=FALSE`.
 3. Admin reviews via `GET /agents/{id}/handler` (source/manifest + warnings + declared
    `system_packages` + declared `credentials`).
 4. `POST /agents/{id}/approve` → `approved=TRUE` → `spawn_and_publish`:
@@ -86,14 +90,20 @@ Admin auth (`_require_admin`) is the SSO-identity `ADMIN_EMAILS` allowlist (dev-
      (`image_ready`); the host loop (`deployment/spawn_agent_loop.py`) polls `/internal/spawn-queue`,
      runs `srun --overlap`, and reports the PID to `/internal/spawned` → `finalize_spawned` publishes
      + `status='live'`.
+   - **Cloud Run** (`SPAWN_BACKEND=cloudrun`): the same GitHub commit and image build; once the
+     image is ready the supervisor calls `CloudRunBackend.spawn` itself (Cloud Run Admin API, no
+     host loop) to deploy a scale-to-zero service, and the card is published so it stays
+     discoverable at zero instances. See
+     [`docs/deployment/gcp/README.md`](deployment/gcp/README.md).
    - **Local** (`SubprocessBackend`): spawn a subprocess directly (venv + `pip install` if
      `requirements`/`install_project`), `PYTHONPATH` = handler dir + repo root, `HANDLER_FILE_PATH`
      set; wait for `/health`; publish; `status='live'`.
 5. `POST /agents/{id}/reject` → `approved=FALSE`, `status='registered'`, reason logged.
 
 Health: the local backend polls `/health` and restarts with backoff (≤3 attempts, then `failed`);
-the cluster lifecycle is owned by Slurm. Stop unpublishes from ADS, kills the process, releases the
-port.
+the cluster and Cloud Run lifecycles are owned by Slurm and Cloud Run. On those two backends
+prompt-only `llm` and `proxy` agents have no spawn path and are marked `failed`. Stop unpublishes
+from ADS, kills the process, releases the port.
 
 ## The custom-agent trust boundary (D2)
 
@@ -123,7 +133,7 @@ in the planner.
 | `server.py` | routes, admin gate, upload/approve flow |
 | `db.py` / `fake_db.py` | schema + pool; in-memory dev/test swap |
 | `supervisor.py` / `fake_supervisor.py` | spawn/publish/health lifecycle; GitHub commit on approval |
-| `backend.py` | `SubprocessBackend` (local) vs `ClusterBackend` (srun) |
+| `backend.py` | `SubprocessBackend` (local) / `ClusterBackend` (srun) / `CloudRunBackend` (Cloud Run) |
 | `runner.py` | dispatch by canonical type + `tools.source` |
 | `handlers/custom_handler.py` | wires an uploaded handler into `HandlerExecutor` + serves it |
 | `validator.py` | AST-only upload check (advisory) |

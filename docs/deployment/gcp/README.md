@@ -1,15 +1,16 @@
 # GCP Deployment
 
 Running AgenticNetwork on **Google Cloud** (project `di2-agenticweb`, region `us-central1`). This is
-the migration target — brought up **additively** alongside the [ENGR cluster](../engr/README.md), which
-stays a working backup. Read side-by-side with the cluster runbook to see how the same system maps onto
-each platform.
+the cloud deployment, brought up **additively** alongside the [ENGR cluster](../engr/README.md), which
+stays the live public deployment. Read side-by-side with the cluster runbook to see how the same system
+maps onto each platform.
 
-> **Status (end of summer 2026): paused at a stable milestone.** The platform + automation are live and
-> proven; the public front door and DNS cutover are **deferred to future development** (scoped below in
-> [Status & deferred work](#status--deferred-work-handoff)). The ENGR cluster stays the public deployment.
+> **Status (2026-10-13): paused since the end of summer 2026.** Running on cloud is a critical leg of the
+> project going forward, so resuming this work is a priority. As of 2026-08-03 the platform and the
+> register→deploy automation were live and proven; re-verify the inventory before relying on it. Next: the
+> public front door and DNS cutover (scoped below in [Status & deferred work](#status--deferred-work-handoff)).
 
-- **Live inventory + control commands:** [DEPLOYED_COMPONENTS.md](DEPLOYED_COMPONENTS.md) (authoritative, current).
+- **Inventory (as of 2026-08-03) + control commands:** [DEPLOYED_COMPONENTS.md](DEPLOYED_COMPONENTS.md).
 - **Design / history / status:** [MIGRATION.md](MIGRATION.md).
 - **The register→deploy automation:** [DESIGN_CLOUDRUN_BACKEND.md](DESIGN_CLOUDRUN_BACKEND.md) · [IMPLEMENTATION_CLOUDRUN_BACKEND.md](IMPLEMENTATION_CLOUDRUN_BACKEND.md).
 
@@ -62,7 +63,7 @@ not the internet. You need `gcloud` authed as a user with `run.invoker` on the s
 ```bash
 gcloud run services proxy planner --project=di2-agenticweb --region=us-central1 --port=8080
 ```
-Then open http://localhost:8080/ (anon is allowed for now — `PLANNER_ALLOW_ANON=1`).
+Then open http://localhost:8080/app (anon is allowed for now — `PLANNER_ALLOW_ANON=1`).
 
 **Registration service:**
 ```bash
@@ -78,7 +79,7 @@ teammate access: `gcloud run services add-iam-policy-binding planner --region=us
 ## Dev workflow
 
 - **Local tests, no cloud:** the registration service runs fully in-memory with `FAKE_DB=1`
-  (`FAKE_DB=1 PYTHONPATH=. registration_service/.venv/bin/python -m pytest registration_service/tests -q`).
+  (`registration_service/.venv/bin/python -m pytest registration_service/tests -q`; conftest sets `FAKE_DB=1`).
   The `CloudRunBackend` is unit-tested against a fake Cloud Run client — no `google-cloud-run` install, no GCP.
 - **Build + push an infra image:** `bash deployment/build_and_push.sh registration` (same script/images as the
   cluster). Redeploy with `gcloud run services update <svc> --image=di2washu/agenticnetwork-<svc>:latest`.
@@ -105,19 +106,19 @@ Pause commands are in [DEPLOYED_COMPONENTS.md](DEPLOYED_COMPONENTS.md#cost--paus
 
 ## Status & deferred work (handoff)
 
-**Where this landed (end of summer 2026).** The GCP migration is at a stable, self-contained milestone:
-the planner + registration service run on Cloud Run against Cloud SQL, and the full
-register→build→deploy→publish automation (`CloudRunBackend`) is **live and proven end-to-end**. It's a
-working system reachable by operators via the proxy (see [How to access](#how-to-access)). The **ENGR
-cluster remains the public-facing deployment** (`agenticweb.engr.wustl.edu`) and a full backup — the GCP
-front-door cutover was **intentionally deferred**, not blocked.
+**Where this landed (end of summer 2026).** The GCP migration reached a stable, self-contained milestone:
+the planner + registration service ran on Cloud Run against Cloud SQL, and the full
+register→build→deploy→publish automation (`CloudRunBackend`) was **live and proven end-to-end**
+(2026-08-03), reachable by operators via the proxy (see [How to access](#how-to-access)). The **ENGR
+cluster remains the live public deployment** (`agenticweb.engr.wustl.edu`) — the GCP front-door cutover
+was **intentionally paused**, not blocked.
 
-**Deferred to future development** (scoped, with the design settled so a successor can execute directly —
-none of this blocks using or developing the GCP stack as-is):
+**Next steps when cloud work resumes** (scoped, with the design settled so a successor can execute
+directly — none of this blocks using or developing the GCP stack as-is):
 
 1. **Public front door.** The planner is anon + proxy-only; it isn't exposed to end users yet. Decided
    approach: **Option A** — the WashU Shibboleth gateway mints a Google ID token to reach the private
-   planner (and drops anon at cutover). The full build runbook is preserved in the CloudRunBackend
+   planner (and drops anon at cutover). The build outline is in the CloudRunBackend
    implementation doc's [Step 10](IMPLEMENTATION_CLOUDRUN_BACKEND.md); the decision + rejected
    alternatives (LB+Cloud Armor / IAP+WIF) are in [DOWNSTREAM_CONSIDERATIONS.md](../DOWNSTREAM_CONSIDERATIONS.md) #4.
 2. **Option-1 cutover** — repoint `agenticweb.engr.wustl.edu` at the GCP planner (a reversible config

@@ -5,6 +5,12 @@ it. Instead you spin up your **own private copy** — a **test** instance — th
 prod but is completely walled off: different ports, its own throwaway database, and no public web
 address.
 
+## Step 0 — Check it locally first
+
+Run your working tree with the dev stack (`scripts/stack up`, then `scripts/stack smoke`; see
+[`DEVSTACK.md`](DEVSTACK.md)) and let CI pass on your branch. The cluster test instance below is
+for deploy and config changes and for checks against the real model.
+
 ## One-time setup
 
 - A Docker login to the shared image account — `docker login -u di2washu` — **only if** you'll
@@ -103,4 +109,4 @@ Commit and push your branch (Step 1), then ask for it to be merged into `main`. 
 ---
 
 More detail on how any of this works: [`MULTI_CONTRIBUTOR.md`](MULTI_CONTRIBUTOR.md) (the design)
-and [`../deployment/README.md`](deployment/engr/README.md) (the full runbook).
+and [`deployment/engr/README.md`](deployment/engr/README.md) (the full runbook).

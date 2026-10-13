@@ -6,8 +6,8 @@ generator) and for anyone reasoning about how the current ENGR-cluster deploy
 differs from a future cloud/scaled one.
 
 It is a companion to three other docs — read them for the surrounding context:
-- [`../CLAUDE.md`](../../CLAUDE.md) — the system overview (architecture, ports, LLM config).
-- [`README.md`](engr/README.md) — how to build/run the cluster deploy.
+- [`CLAUDE.md`](../../CLAUDE.md) (repo root) — the system overview (architecture, ports, LLM config).
+- [`engr/README.md`](engr/README.md) — how to build/run the cluster deploy.
 - [`DOWNSTREAM_CONSIDERATIONS.md`](DOWNSTREAM_CONSIDERATIONS.md) — forward-looking
   scale/cloud decisions; **entries #1–#3 there are the authoritative "what changes
   at scale" companion to §4–§5 of this file.** This spec describes *what is*; that
@@ -338,9 +338,10 @@ The first three are the durable core; the rest are scaffolding.
 - **Two poll timeouts, not one:** the `submit.sbatch` coarse poll waits **30 s**;
   each agent's `entrypoint-*.sh` retries up to **60 s**. (CLAUDE.md §4's "60 s" is the
   entrypoint figure.)
-- **Update *both* endpoint vars each vLLM run:** `OPENAI_BASE_URL` (OpenAI-SDK agents)
-  *and* `OPENAI_API_BASE` (litellm: intelligence, coding) share the `YOURNODE`
-  placeholder. Updating only one strands the litellm agents.
+- **Both endpoint vars:** `OPENAI_BASE_URL` (OpenAI-SDK agents) *and* `OPENAI_API_BASE`
+  (litellm: intelligence, coding). `submit.sbatch` auto-discovers the vLLM node and sets
+  both; the `.env` fallback (`YOURNODE` placeholder) must also set both, or the litellm
+  agents are stranded.
 - **OASF mapping decision:** does the new skill have an official OASF id (add it to
   `KNOWN_OASF_SKILLS`), or stay a custom tag (relies on post-filter matching)?
 - **Advertise-url rewrite:** set the card `url` (or `--advertise-url`) to the address
@@ -365,8 +366,9 @@ separate `agent-directory` repo.
 
 **Start vLLM** (separate GPU job) → `start_vllm.sbatch` serves `gpt-oss-120b` on
 `:8100` with `--enable-auto-tool-choice --tool-call-parser openai
---reasoning-parser openai_gptoss`. The GPU node hostname is **ephemeral** → paste it
-into `.env` (`OPENAI_BASE_URL` **and** `OPENAI_API_BASE`).
+--reasoning-parser openai_gptoss`. The GPU node hostname is **ephemeral** →
+`submit.sbatch` finds the running `agenticnetwork-vllm` job and sets `OPENAI_BASE_URL`
+**and** `OPENAI_API_BASE` (falling back to `.env`; `VLLM_AUTODISCOVER=0` forces `.env`).
 
 **Start the network** (`submit.sbatch`, one CPU node) →
 1. `source .env` (with `set -a` so vars propagate to every `srun` step).
@@ -376,9 +378,9 @@ into `.env` (`OPENAI_BASE_URL` **and** `OPENAI_API_BASE`).
    to **30 s**.
 3. Launch registration, planner, and the 6 specialists as backgrounded
    `srun --overlap` steps running `/entrypoint.sh`.
-4. Each entrypoint waits up to **60 s** for ADS, then `exec`s its server with an
-   absolute conda path; the server **publishes its card on boot**.
-5. `wait` — the job lives as long as the containers (4 h walltime).
+4. Each entrypoint waits up to **60 s** for ADS, then `exec`s its server by an
+   absolute interpreter path; a specialist **publishes its card on boot**.
+5. `wait` — the job lives as long as the containers (up to the partition's time limit).
 
 **Publish** (per agent) → the **canonical verified path** (`RealADSDirectoryBackend`,
 used by `run_ads.sh -publish` → `publish_agents.py`) is **three** dirctl calls:
@@ -459,8 +461,8 @@ health — all externally. The six existing specialist agents do not use this pa
 
 | Path | What |
 |---|---|
-| `<agent>/*.card.json` | the cards (identity, skills, endpoint) |
-| `disaster_response_agent/disaster_response_agent.py` | cleanest executor + serve + self-publish template |
+| agent-directory: `<agent>/*.card.json` | the cards (identity, skills, endpoint) |
+| agent-directory: `disaster_response_agent/disaster_response_agent.py` | cleanest executor + serve + self-publish template |
 | `agent_directory_service/services/directory/card_oasf_converter.py` | Card ↔ OASF record; skill-id mapping; write-policy derivation |
 | `agent_directory_service/services/directory/backends.py` | real/fake ADS backends; canonical publish + routing-poll; stored-vs-routed guard |
 | `agent_directory_service/scripts/publish_agents.py`, `run_ads.sh` | standalone publisher (the decoupling primitive) |
@@ -468,13 +470,13 @@ health — all externally. The six existing specialist agents do not use this pa
 | `planner_agent/main_agent/runtime.py` | tool loop, `call_agent`, policy/write-gating, agent-shaped shims |
 | `planner_agent/main_agent/a2a/`, `directory/` | A2A transport + directory client (the more-evolved fork) |
 | `deployment/dockerfiles/`, `entrypoints/`, `submit.sbatch`, `start_vllm.sbatch`, `build_and_push.sh`, `.env.example`, `ads_daemon.yaml` | the cluster scaffolding |
-| `deployment/DOWNSTREAM_CONSIDERATIONS.md` | what changes at scale (#1 scale-to-zero, #2 per-agent cloud, #3 cross-cutting prerequisites) |
+| `docs/deployment/DOWNSTREAM_CONSIDERATIONS.md` | what changes at scale (#1 scale-to-zero, #2 per-agent cloud, #3 cross-cutting prerequisites) |
 | `registration_service/server.py` | REST API: `POST /agents`, `GET /agents`, `DELETE /agents/{id}`, `POST /agents/{id}/restart` |
 | `registration_service/supervisor.py` | `Supervisor`: spawn, ADS publish, health loop, crash recovery |
 | `registration_service/db.py` | asyncpg pool + schema (`agents`, `port_pool` tables); `FAKE_DB=1` swaps in `fake_db.py` |
-| `registration_service/backend.py` | `SubprocessBackend`: the actual process management layer under `Supervisor` |
-| `registration_service/models.py` | `RegisterRequest`, `LLMConfig`, `APIProxyConfig`, `AgentResponse` |
-| `registration_service/tests/` | pytest suite (19 tests); run with `FAKE_DB=1 PYTHONPATH=. pytest registration_service/tests` |
+| `registration_service/backend.py` | `SubprocessBackend` / `ClusterBackend` (srun) / `CloudRunBackend` (Cloud Run): the process management layer under `Supervisor` |
+| `registration_service/models.py` | `RegisterRequest`, `LLMConfig`, `ProxyConfig`, `CustomConfig`, `AgentResponse` |
+| `registration_service/tests/` | pytest suite; run `registration_service/.venv/bin/python -m pytest registration_service/tests -q` (conftest sets `FAKE_DB=1`) |
 
 ---
 
@@ -514,11 +516,11 @@ and `ads_cid`.
 
 ### Known limitation — card richness
 
-`Supervisor._build_agent_card()` generates a minimal card: skill `tags` are empty and
-`examples` are absent. The planner's LLM uses `description`/`examples`/`tags` to pick
-skills (see §3b). Agents registered this way are discoverable but skill selection may
-be less precise than hand-crafted cards with rich examples. This is a known gap to
-address.
+`supervisor._build_agent_card()` generates a minimal card: each skill carries only its
+`oasf:<name>:<id>` routing tag, and `examples` are absent. The planner's LLM uses
+`description`/`examples`/`tags` to pick skills (see §3b). Agents registered this way are
+discoverable, but skill selection may be less precise than hand-crafted cards with rich
+examples. This is a known gap to address.
 
 ### What the registration service does NOT replace
 

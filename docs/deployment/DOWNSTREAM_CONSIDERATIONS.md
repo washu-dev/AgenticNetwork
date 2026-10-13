@@ -1,7 +1,7 @@
 # Downstream Considerations
 
 Forward-looking architecture and scaling decisions for the AgenticNetwork
-deployment. This is **not** a bug tracker (use `HANDOVER.md` for known issues and
+deployment. This is **not** a bug tracker (use GitHub issues for known issues and
 immediate next steps). Entries here capture design questions that are *fine for
 now* but will matter as the system grows — the reasoning, the deliberate
 deferral, and the path forward — so that a future maintainer inherits the
@@ -154,7 +154,9 @@ Chat Completions (CLAUDE.md §7 is kept current on this).
     its hard `OPENAI_API_KEY` guard to a dummy key (mirror disaster) if not already.
     Remaining work is non-LLM: move Google OAuth creds **out of the image**
     (`Dockerfile.email` `COPY deployment/google_credentials/` → mounted secret /
-    Workload Identity — the TODO is already in that Dockerfile). Externalize the
+    Workload Identity — the TODO is already in that Dockerfile). (Update 2026-10-13:
+    done — agent-directory's `email_agent/Dockerfile` expects them mounted at runtime.)
+    Externalize the
     long-lived per-user OAuth **refresh tokens** (currently a local-disk store) to a
     shared secret/DB so replicas and scale-to-zero restarts don't lose auth state.
   - **disaster.** LLM migration **done**. Remaining work is non-LLM: decouple its
@@ -162,6 +164,8 @@ Chat Completions (CLAUDE.md §7 is kept current on this).
     DNS instead of the hardcoded `10.229.117.223:9104` card URL. Optionally move its
     divergent self-publish helper (no read-back pull, no routing poll) onto the
     verified canonical path so its boot-time publish can't land stored-but-not-routed.
+    (Update 2026-10-13: agent-directory's disaster card now uses an `AGENT_HOST`
+    placeholder; the LAN IP is gone. Stable DNS is still open.)
   - **geospatial — the hardest.** Migrate **both** Responses paths: the
     coordination/scene loop (`geospatial_agent.py`, with `previous_response_id`
     chaining) **and** the geolocation engine
@@ -212,7 +216,7 @@ Chat Completions (CLAUDE.md §7 is kept current on this).
   - Whether to standardize the fleet on **litellm** so endpoint swaps become uniform
     (vs. the current Chat/Responses/litellm/Gemini mix).
   - The `_vendor_v2/` divergence (coding, intelligence) means a publish-semantics fix
-    must be replicated across copies (see CLAUDE.md §8).
+    must be replicated across copies (see CLAUDE.md §9).
 
 - **References.**
   - `../email_agent/email_agent.py` (`_openai_client`, already Chat Completions),
@@ -220,7 +224,7 @@ Chat Completions (CLAUDE.md §7 is kept current on this).
   - `../planner_agent/main_agent/llm_client.py` (Chat-Completions reference),
     `../disaster_response_agent/disaster_response_agent.py` (`build_response`)
   - `../scout_agent/scout/{config.py,network/directory.py,cli.py}`
-  - CLAUDE.md §7 (LLM/self-hosting), §8 (caveats); [`AGENT_INTEGRATION_SPEC.md`](AGENT_INTEGRATION_SPEC.md) §4
+  - CLAUDE.md §7 (LLM/self-hosting), §9 (caveats); [`AGENT_INTEGRATION_SPEC.md`](AGENT_INTEGRATION_SPEC.md) §4
 
 ---
 
@@ -240,10 +244,11 @@ agent inherits, so they are tracked once here rather than repeated per agent.
 - **Card URLs are LAN IPs / `127.0.0.1:<port>`** (single-node `localhost` reach),
   and inconsistent across copies (CLAUDE.md §3).
 - **No auth:** cards have empty `securitySchemes`/`security`, agents bind `0.0.0.0`,
-  and the OASF record's `auth` block is carried but never enforced (CLAUDE.md §8).
+  and the OASF record's `auth` block is carried but never enforced (CLAUDE.md §9).
 - **The vLLM endpoint is an ephemeral SLURM node hostname** pasted into `.env`
   (`OPENAI_BASE_URL` **and** `OPENAI_API_BASE`) every run.
 - **Secrets are env-set or baked** (email Google creds `COPY`'d into the image).
+  (Update 2026-10-13: the email image no longer bakes them; they are mounted at runtime.)
 - **Two directories coexist** — `dirctl` at `:8888` for most agents, scout's gRPC
   `AgentDirectory` at `:8889` — fronted by 5+ near-duplicate ADS-address env vars.
 
@@ -272,7 +277,7 @@ agent inherits, so they are tracked once here rather than repeated per agent.
   - Where auth lives: the planner front door, a service mesh/sidecar, or each agent.
 
 - **References.**
-  - CLAUDE.md §3 (hardcoded card URLs), §7 (ephemeral endpoint), §8 (no auth,
+  - CLAUDE.md §3 (hardcoded card URLs), §7 (ephemeral endpoint), §9 (no auth,
     scout's different directory)
   - `start_vllm.sbatch`, `.env.example`, [`AGENT_INTEGRATION_SPEC.md`](AGENT_INTEGRATION_SPEC.md) §4
   - Entry #1 (scale-to-zero) — the activation model that owns advertised URLs
@@ -281,7 +286,7 @@ agent inherits, so they are tracked once here rather than repeated per agent.
 
 ## 4. Public front-door cutover — routing `agenticweb.engr.wustl.edu` to GCP
 
-- **Status:** Deferred (future development) — 2026-08-03 — **Option 1 (repoint gateway upstream); secure leg = Option A (gateway mints a Google ID token → planner run.app). Design settled, build deferred at end of summer 2026** (a deliberate stop; prereqs 1+2 done — reg service + planner on Cloud SQL). Ready-to-execute runbook: `gcp/IMPLEMENTATION_CLOUDRUN_BACKEND.md` Step 10.
+- **Status:** Deferred (future development) — 2026-08-03 — **Option 1 (repoint gateway upstream); secure leg = Option A (gateway mints a Google ID token → planner run.app). Design settled, build deferred at end of summer 2026** (a deliberate stop; prereqs 1+2 done — reg service + planner on Cloud SQL). Ready-to-execute runbook: `gcp/IMPLEMENTATION_CLOUDRUN_BACKEND.md` Step 10. **Update 2026-10-13:** cloud is a critical leg of the project going forward, so resuming it is a priority; this is the next GCP step. Step 10 in the repo is a build outline, not a full runbook.
 - **Raised:** 2026-07-30 (migration planning)
 - **Scope:** the out-of-repo WashU ENGR gateway (nginx + Apache + `mod_shib`); the GCP planner Cloud Run service (ingress, `PLANNER_ALLOW_ANON`); `main_agent/auth.py` (header trust); Cloud SQL; `docs/deployment/gcp/MIGRATION.md`, `docs/deployment/gcp/IMPLEMENTATION_CLOUDRUN_BACKEND.md` (Steps 9–10 + Go-live)
 
@@ -352,7 +357,7 @@ services proxy`), **no Cloud SQL, no SP in front** — i.e. not yet safe to expo
   - CLAUDE.md §8 (auth chain), [`docs/AUTH.md`](../AUTH.md) (identity/Shibboleth)
   - [`MIGRATION.md`](gcp/MIGRATION.md) "Identity, gateway & auth" (the sidecar/Option-2 sketch) and
     "Login (must-do)" (the header-trust invariant)
-  - [`DEPLOYED_COMPONENTS.md`](gcp/DEPLOYED_COMPONENTS.md) "What's live vs. still to come" (front door + Cloud SQL = "Not yet")
+  - [`DEPLOYED_COMPONENTS.md`](gcp/DEPLOYED_COMPONENTS.md) "What's live vs. deferred" (front door = next step; Cloud SQL live as of 2026-08-03)
   - Entry #3 (cross-cutting cloud prerequisites) — the DNS/auth/gateway substrate this closes out
 
 ---

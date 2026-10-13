@@ -1,10 +1,11 @@
 # GCP Migration — AgenticNetwork
 
-> **Status (end of summer 2026): PAUSED at a stable milestone.** Phases 0-3 and the **Phase-4
-> `CloudRunBackend` automation are live and proven** (planner + registration service on Cloud Run/Cloud
-> SQL; register→build→deploy→publish end-to-end). The **public front door + DNS cutover are deferred to
-> future development** — a deliberate stop, with the design settled and a ready-to-execute runbook
-> preserved. The ENGR cluster stays the public deployment. New here? Start with the handoff summary in
+> **Status (2026-10-13): paused at a stable milestone since the end of summer 2026.** Running on cloud is
+> a critical leg of the project going forward, so resuming this work is a priority. As of 2026-08-03,
+> Phases 0-3 and the **Phase-4 `CloudRunBackend` automation were live and proven** (planner + registration
+> service on Cloud Run/Cloud SQL; register→build→deploy→publish end-to-end). The **public front door + DNS
+> cutover are the next step**, with the design settled and a build outline preserved. The ENGR cluster
+> stays the live public deployment. New here? Start with the handoff summary in
 > [`gcp/README.md`](README.md#status--deferred-work-handoff). This doc is the deeper design/history record.
 
 **Amaan · updated 2026-07-27 · single source of truth for the GCP migration.**
@@ -13,7 +14,7 @@ Supersedes `GCP_MIGRATION_PLAN.md`, `GCP_MIGRATION_PROPOSAL.md`, `GCP_TEST_STATU
 [`gcp_target_architecture.svg`](../../../deployment/gcp_target_architecture.svg). Kept separate (broader than
 GCP): [`DOWNSTREAM_CONSIDERATIONS.md`](../DOWNSTREAM_CONSIDERATIONS.md) (cloud-agnostic scaling
 log), [`AGENT_INTEGRATION_SPEC.md`](../AGENT_INTEGRATION_SPEC.md) (agent-authoring reference),
-[`../CLAUDE.md`](../../../CLAUDE.md) (whole-system overview).
+[`CLAUDE.md`](../../../CLAUDE.md) (whole-system overview).
 
 ---
 

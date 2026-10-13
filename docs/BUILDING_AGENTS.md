@@ -11,9 +11,10 @@ for the registration/approval flow.
 1. **An Agent Card** (`*.card.json`): `name`, `url` (where it listens), `version`, and a `skills[]`
    list — each skill has a slash-namespaced `id` (e.g. `myagent/do_thing`), a `description`, and
    `examples`. Tag side-effecting skills with `write`.
-2. **An executor** — a class that runs `execute(context, event_queue)`: read the user input, do the
-   work, return a **text summary + a structured-data `DataPart` artifact** (the machine-readable
-   channel the planner reads).
+2. **An executor** — a class extending the `a2a-sdk` `AgentExecutor` with
+   `execute(context, event_queue)`: read `context.get_user_input()`, do the work, return a **text
+   summary + a structured-data `DataPart` artifact** (the machine-readable channel the planner
+   reads).
 3. **Served** over A2A (`A2AStarletteApplication` + `DefaultRequestHandler`, uvicorn on a port).
 4. **Published** to ADS on startup (convert card → OASF record, `dirctl push` + `routing publish`,
    poll routing), unpublished on shutdown.
@@ -35,9 +36,7 @@ of agent — this split is the same split as the two credential-sourcing models 
 
 They are independent classes wired by different paths — the uploaded lane via
 `registration_service/handlers/custom_handler.py` + `container_runner.py`; the wrapper lane via
-`serve.py::create_app` (the `serve-a2a` / `serve-wrapper` CLI). *(The wrapper engine + generator
-were consolidated into the skeleton on `main`; they land here on that merge. The uploaded-code lane
-+ its per-user credential seam are current.)*
+`serve.py::create_app` (the `serve-a2a` / `serve-wrapper` CLI).
 
 ## Lane 1 — uploaded custom handler (per-user credentials)
 
@@ -74,6 +73,12 @@ from inside the LLM loop; auth is read at call time from an **env var named on t
 redacted from error bodies. `spec.py`'s `AgentSpec` selects the prompt + tools so one frozen engine
 serves any config via `AGENT_ENDPOINT_*` env vars.
 
+**No code, through the registration UI:** register an `llm` agent with `tools.source = "http"`
+(one typed tool per operation of an API, `spec.operation_wrapper_spec`) or `"presets"` (the
+built-in catalog in `system_tools/preset_tools.py`); the service runs it on this same engine
+([DECISIONS.md](DECISIONS.md) D13). A `proxy` agent forwards each call to an upstream service with
+no LLM.
+
 The **generator** (`generator/`) turns an `answers.json` (see
 `generator/examples/weather_bridge.answers.json`) into a complete, deployable wrapper-agent folder,
 stamping an `oasf:<name>:<id>` routing tag on the card so it's discoverable without editing ADS
@@ -87,8 +92,8 @@ maps (see [AGENT_DIRECTORY.md](AGENT_DIRECTORY.md)).
 
 Copy the simplest template (`disaster_response_agent/`) or the cleanest modern one
 (`scout_agent/`), implement your own `AgentExecutor`, serve it, and publish on startup (copy a
-`publish_*_to_ads` helper). This is what the specialist agents in the `agent-directory` repo do. The
-five steps in [`CLAUDE.md`](../CLAUDE.md) §6 are the canonical walkthrough.
+`publish_*_to_ads` helper). This is what the specialist agents in the `agent-directory` repo do;
+"The one contract" above is the checklist.
 
 ## After it's running
 The planner discovers it automatically on its next `list_agents` — **no planner change needed**.
@@ -104,9 +109,10 @@ python -m agent_directory_service.scripts.validate_agent_endpoint \
 |---|---|
 | `agent_skeleton/base.py` | `AgentHandler` ABC (the `handle_structured` contract + optional `context`) |
 | `agent_skeleton/handler_executor.py` | `HandlerExecutor` — uploaded-code lane + per-user credential seam |
-| `agent_skeleton/container_runner.py` | cluster wiring → `HandlerExecutor` |
+| `agent_skeleton/container_runner.py` | ENTRYPOINT of every built per-agent image (ENGR cluster and Cloud Run) → `HandlerExecutor`, or the tool loop for `llm` + uploaded tools |
 | `agent_skeleton/executor.py` / `spec.py` | `SkeletonAgentExecutor` + `AgentSpec` — endpoint-wrapper lane |
 | `agent_skeleton/system_tools/call_endpoint.py` | external-endpoint tool (operator env-var auth) |
+| `agent_skeleton/system_tools/preset_tools.py` | built-in preset-tool catalog for registration `llm` agents with `tools.source = "presets"` |
 | `agent_skeleton/serve.py` | `create_app`, `serve-a2a` / `serve-wrapper` CLI |
 | `agent_skeleton/generator/` | `answers.json` → deployable wrapper-agent folder |
 | `registration_service/handlers/custom_handler.py` | wires an uploaded handler into `HandlerExecutor` |

@@ -6,10 +6,6 @@ it*. For project direction and working rules see [`AGENTS.md`](AGENTS.md); for
 the component index see [`README.md`](README.md). Each component also has its own
 `README.md` with authoritative install/run steps.
 
-> **Current focus (2026-10-12): open-source release prep.** Scope, the
-> `agent_skeleton` subtree plan, sprint priorities, and the full-chain test and
-> one-command start goals are in [`docs/OPEN_SOURCE_RELEASE.md`](docs/OPEN_SOURCE_RELEASE.md).
-
 ---
 
 ## 1. What this is
@@ -92,7 +88,7 @@ whole `agent_directory_service/scripts/` suite exists to detect and repair this.
 | Component | Role | Default port | Environment | LLM API surface |
 |---|---|---|---|---|
 | `planner_agent` | Orchestrator + chat UI | **8090** | pip venv (`requirements.txt`) | OpenAI **Chat Completions** (vLLM-ready; migrated 2026-06) |
-| `agent_directory_service` | Directory (ADS) operator tooling | dir at **8888** (routing 8999) | conda `agent-directory-service` | n/a (`dirctl`) |
+| `agent_directory_service` | Directory (ADS) operator tooling | dir at **8888** (routing 8999) | pip venv (`requirements.txt`) | n/a (`dirctl`) |
 | `registration_service` | Agent self-registration web UI + manager | **8091** | pip venv (`requirements.txt`) | n/a |
 
 **[`agent-directory`](https://github.com/washu-dev/agent-directory) repo (specialist agents):**
@@ -121,7 +117,15 @@ whole `agent_directory_service/scripts/` suite exists to detect and repair this.
 
 LLM inference is the only thing that needs real horsepower, and it's outsourced
 to an API (hosted OpenAI/Gemini today, or self-hosted vLLM — see §7). Everything
-else runs on a laptop (Tiers A–C); Tier D is the containerized cluster deploy. There are four tiers:
+else runs on a laptop: start with the dev stack. Tiers A–B are older component-level
+setups, Tier D is the live ENGR cluster deploy and Tier E is GCP.
+
+### Dev stack (recommended on a laptop)
+`scripts/stack up` starts the planner, the registration service, a seed agent, a mock LLM
+and a local identity proxy, and returns when everything is ready. Open
+**http://localhost:8080/app** (signed in as `dev@example.test`); `scripts/stack down` stops
+it. No Docker, database, SSO or API key. Setup, a real LLM and adding agents:
+[`docs/DEVSTACK.md`](docs/DEVSTACK.md).
 
 ### Tier A — Planner only, fake directory (pure laptop, no `dirctl`)
 The planner has an in-process fake directory, so you need only Python + an API key.
@@ -134,7 +138,7 @@ planner_agent/scripts/start.sh --fake-ads \
   --card ../agent-directory/email_agent/email_agent.card.json \
   --card ../agent-directory/coding_agent/coding_agent.card.json
 ```
-Open **http://localhost:8090/** for the chat UI. (Agents are "discovered" from the
+Open **http://localhost:8090/app** for the chat UI. (Agents are "discovered" from the
 `--card` files; they only *execute* if actually running.)
 
 ### Tier B — Full local network (laptop, more setup)
@@ -146,11 +150,7 @@ Open **http://localhost:8090/** for the chat UI. (Agents are "discovered" from t
 - Provide API keys per agent (OpenAI; `BRAVE_API_KEY` for scout/intelligence;
   Google OAuth for email).
 
-### Tier C — ~~The lab LAN demo~~ (retired)
-The original LAN demo on `10.229.117.*` is superseded by Tier D. Use Tier B for
-full local testing or Tier D for cluster deployment.
-
-### Tier D — ENGR cluster, containerized (as deployed)
+### Tier D — ENGR cluster, containerized (the live deployment)
 `deployment/` runs the whole system on the WashU **Engineering (ENGR)** cluster via
 Slurm + Pyxis/enroot. As of 2026-06 it is a **multi-container** setup: one Docker image
 per service (`deployment/dockerfiles/Dockerfile.<agent>`, built/pushed by
@@ -163,23 +163,26 @@ to 60 s for it, then `exec`s the agent with an absolute conda path
 (`/opt/conda/envs/<env>/bin/python`). The planner reaches vLLM through
 `OPENAI_BASE_URL`. Full runbook: `docs/deployment/engr/README.md`.
 
-### Tier E — GCP (migration in progress; register→deploy automation live as of 2026-08-03)
-The system is being migrated onto **GCP** (project `di2-agenticweb`, `us-central1`) **additively** —
-Tier D (ENGR cluster) stays a working backup, nothing deleted. **Live today:** the **planner and
-registration service on Cloud Run** wired to **Cloud SQL**, a **real ADS on a GCE VM**, authenticated
-cross-network A2A, LLM = vLLM-primary with automatic **Vertex AI fallback**, and the **`CloudRunBackend`**
-auto-deploying + auto-publishing registered agents end-to-end (register→build→deploy→publish). **Deferred
-to future development** (paused end of summer 2026 at this milestone; ENGR stays the public deployment):
-the public front door (the planner is anon + `gcloud run services proxy`-only) and the DNS cutover. If a
-task touches GCP, start with the **GCP runbook** `docs/deployment/gcp/README.md` (architecture, how to
-access, dev workflow, cluster differences); deeper dives: `docs/deployment/gcp/MIGRATION.md` (design +
-status + gotchas), `.../DEPLOYED_COMPONENTS.md` (live inventory + control commands), and
+### Tier E — GCP Cloud Run (built to a working milestone 2026-08; on hold since)
+Cloud is a critical leg of the project going forward (decided 2026-10-13); the ENGR cluster
+(Tier D) stays the live public deployment. The GCP build (project `di2-agenticweb`,
+`us-central1`) is **additive**; nothing on ENGR was deleted. **Live as of 2026-08-03
+(re-verify):** the **planner and registration service on Cloud Run** wired to **Cloud SQL**, a
+**real ADS on a GCE VM**, authenticated cross-network A2A, LLM = vLLM-primary with automatic
+**Vertex AI fallback**, and the **`CloudRunBackend`** auto-deploying + auto-publishing registered
+agents end-to-end (register→build→deploy→publish). **Not built yet:** the public front door (the
+planner is anon + `gcloud run services proxy`-only) and the DNS cutover. If a task touches GCP,
+start with the **GCP runbook** `docs/deployment/gcp/README.md` (architecture, how to access, dev
+workflow, cluster differences); deeper dives: `docs/deployment/gcp/MIGRATION.md` (design,
+status, gotchas), `.../DEPLOYED_COMPONENTS.md` (inventory + control commands), and
 `.../DESIGN_CLOUDRUN_BACKEND.md` + `.../IMPLEMENTATION_CLOUDRUN_BACKEND.md` (the automation).
 
 ### Interfacing with the running system
-- **Chat UI:** `http://localhost:8090/`
+- **Chat UI:** `http://localhost:8090/app` (public landing at `/`; `http://localhost:8080/app`
+  in the dev stack)
 - **HTTP API:** `POST /messages` (JSON), `POST /messages/stream` (SSE),
-  `GET /agents` (raw directory listing), `GET /health`.
+  `GET /agents` (raw directory listing), `GET /health`, `GET /ready` (per-dependency
+  readiness), `GET /me`.
   ```bash
   curl -s http://localhost:8090/messages -H 'Content-Type: application/json' \
     -d '{"user_id":"demo","channel":"api","text":"What agents are available?"}' | jq
@@ -206,7 +209,7 @@ Python version, even run on a different machine or container.
 | pip venv | `planner_agent` | `python3 -m venv planner_agent/.venv && .../pip install -r planner_agent/requirements.txt` |
 | pip venv | `registration_service` | `python3 -m venv registration_service/.venv && .../pip install -r registration_service/requirements.txt` |
 | pip venv (editable) | `scout_agent` | `python3 -m venv .venv && .venv/bin/pip install -e .` (needs Python ≥3.11) |
-| conda `agent-directory-service` | `agent_directory_service` | `conda env create -f agent_directory_service/environment.yml` |
+| pip venv | `agent_directory_service` | `python3 -m venv agent_directory_service/.venv && .../pip install -r agent_directory_service/requirements.txt` (the venv `run_ads.sh` uses) |
 | conda `email-agent-a2a` (shared) | `email_agent`, `disaster_response_agent`, `geoSpatial_agent` | `conda env create -f email_agent/environment.yml` (the superset) |
 | conda `coding-agent-a2a` | `coding_agent` | `conda env create -f coding_agent/environment.yml` |
 | conda `intelligence-agent-a2a` | `intelligence_agent` | `conda env create -f intelligence_agent/environment.yml` |
@@ -225,28 +228,10 @@ long-running process in its own activated environment.
 
 ## 6. How to build a new agent
 
-Copy the simplest template (`disaster_response_agent/`) or the cleanest modern
-one (`scout_agent/`). Five steps:
-
-1. **Write an Agent Card** (`my_agent.card.json`): `name`, `url` (where it
-   listens), `version`, and a `skills[]` list — each skill has a slash-namespaced
-   `id` (e.g. `myagent/do_thing`), `description`, and `examples`. Tag
-   side-effecting skills with `write`.
-2. **Implement an executor** — a class extending the `a2a-sdk` `AgentExecutor`
-   with `execute(context, event_queue)`. Read `context.get_user_input()`, do the
-   work, return a text summary + a structured-data `DataPart` artifact (that's the
-   channel the planner reads machine-readable output from).
-3. **Serve it** — wrap the executor in `A2AStarletteApplication` +
-   `DefaultRequestHandler` and run with uvicorn on a port.
-4. **Publish to ADS on startup** — convert the card to an OASF record and `dirctl
-   push` + `dirctl routing publish` it (copy a `publish_*_to_ads` helper from an
-   existing agent). Unpublish on shutdown.
-5. **Done** — the planner discovers it automatically on its next `list_agents`;
-   no planner change needed.
-
-Conventions: slash-namespaced skill ids; return structured output as a `DataPart`;
-if work is slow, advertise `capabilities.streaming: true` and emit progress (the
-coding agent uses a ~25s heartbeat to beat the caller's HTTP read timeout).
+See [`docs/BUILDING_AGENTS.md`](docs/BUILDING_AGENTS.md): register one through the
+registration service (`llm` / `proxy` with no code, or a `custom` upload), use the
+`agent_skeleton` engine, or write a standalone A2A agent (card → executor → serve →
+publish). The planner discovers it on its next `list_agents`; no planner change needed.
 
 ---
 
@@ -361,7 +346,10 @@ Browser → https://agenticweb.engr.wustl.edu   (public DNS — WashU ENGR)
 > DNS name and the Shibboleth SP registration. It reverse-proxies to the planner,
 > which runs on an **ephemeral Slurm compute node**, so the gateway's upstream must
 > be repointed (or SSH-tunneled) to the current node each run. Stabilizing this is
-> tracked in [`deployment/DOWNSTREAM_CONSIDERATIONS.md`](docs/deployment/DOWNSTREAM_CONSIDERATIONS.md) #3.
+> tracked in [`docs/deployment/DOWNSTREAM_CONSIDERATIONS.md`](docs/deployment/DOWNSTREAM_CONSIDERATIONS.md) #3.
+
+In the dev stack, a local identity proxy (`devstack/dev_identity_proxy.py`) stands in for the
+gateway: it strips client identity headers and injects `mail: dev@example.test`.
 
 **Key files:**
 | File | Role |
@@ -413,10 +401,10 @@ auth-unaware.
   independent implementation. Library pins drift (`a2a-sdk` 0.3.2 vs 0.3.26). When
   fixing protocol bugs, check whether the fix needs replicating across copies.
 - **Scout uses a different directory.** Every other agent uses `dirctl` at
-  `10.229.117.37:8888`; scout uses `agntcy_app_sdk` `AgentDirectory` at
-  `DIRECTORY_ENDPOINT` (default `127.0.0.1:8889`, gRPC). It is unverified whether
-  these are the same logical directory — if not, scout may not be discoverable by
-  the others.
+  `ADS_SERVER_ADDR` (`localhost:8888` in the ENGR deploy; the ADS VM on GCP); scout uses
+  `agntcy_app_sdk` `AgentDirectory` at `DIRECTORY_ENDPOINT` (default `127.0.0.1:8889`, gRPC).
+  It is unverified whether these are the same logical directory — if not, scout may not be
+  discoverable by the others.
 - **Authentication is planner-only.** The planner (`:8090`) requires WashU
   Shibboleth login (see §8). However, specialist agent ports (9103, 9104, 19105–19108)
   have no auth — agent cards have empty `securitySchemes` and bind `0.0.0.0`. On a
@@ -438,24 +426,31 @@ auth-unaware.
 ## 10. Testing & validation
 
 Unit suites run from the repo root, offline (no Docker, Postgres, `dirctl` or API
-key); CI runs the same per component in `.github/workflows/tests.yml`. Counts as of
-2026-10-12. Do not set `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`: registration needs the
-`pytest-asyncio` plugin, and most of its suite fails without it.
+key); CI runs the same per component in `.github/workflows/tests.yml`, plus a repo-hygiene
+job and the full-chain pipeline. Do not set `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`: registration
+needs the `pytest-asyncio` plugin, and most of its suite fails without it.
 
 ```bash
-# Planner: 76 tests (no network, no ADS, no OpenAI key — uses ScriptedLLMClient + fake ADS)
+# Planner (no network, no ADS, no OpenAI key — uses ScriptedLLMClient + fake ADS)
 planner_agent/.venv/bin/python -m pytest planner_agent/tests -q
 
-# Registration: 219 tests (registration_service/tests/conftest.py sets FAKE_DB=1)
+# Registration (registration_service/tests/conftest.py sets FAKE_DB=1)
 registration_service/.venv/bin/python -m pytest registration_service/tests -q
 
-# Agent skeleton (in-repo copy): 45 tests
+# Agent skeleton (in-repo copy)
 registration_service/.venv/bin/python -m pytest agent_skeleton/tests -q
 
-# ADS package: 22 tests (dirctl mocked). There is no agent_directory_service/.venv;
-# they pass in either venv above. print_versions lists the deps of the venv running it.
+# ADS package (dirctl mocked; the registration venv matches its a2a-sdk 0.3.2 pin).
+# print_versions lists the deps of the venv running it.
 registration_service/.venv/bin/python -m pytest agent_directory_service/tests -q
 registration_service/.venv/bin/python -m agent_directory_service.scripts.print_versions
+
+# Dev stack: mock LLM, fake dirctl, identity proxy, stack CLI safety checks
+registration_service/.venv/bin/python -m pytest devstack/tests -q
+
+# Full chain: starts the dev stack on offset ports (PIPELINE_PORT_OFFSET, default 20000),
+# drives it over HTTP only, then stops it. Needs both service venvs.
+registration_service/.venv/bin/python -m pytest tests/pipeline -q
 
 # Planner end-to-end self-check (env, dirctl, ADS reachability, server, OpenAI, tests)
 planner_agent/scripts/doctor.sh
@@ -468,13 +463,15 @@ python -m agent_directory_service.scripts.validate_agent_endpoint \
   --card <card.json> --skill <skill> --prompt "..." --endpoint http://host:port/
 ```
 
-Local dev stack (start/stop/status, mock LLM, seed agents): [`docs/DEVSTACK.md`](docs/DEVSTACK.md).
-Full-chain test (start from nothing → user → prompt → specialist answer via the
-planner): `tests/pipeline/`.
+`scripts/stack` (`up`, `status --json`, `smoke`, `logs`, `add-agent`, `down`, `reset`,
+`doctor`) is the one start command shared by people, agents and the full-chain test
+([`docs/DEVSTACK.md`](docs/DEVSTACK.md)). `tests/pipeline/test_full_chain.py` runs a first-time
+user's session against it: start from nothing → sign in → prompt → specialist answer via the
+planner → saved history → register an agent → shut down with nothing left running.
 
 ---
 
-## 11. Git, GitHub & OneDrive
+## 11. Git & GitHub
 
 - **Remote:** `origin` → `https://github.com/washu-dev/AgenticNetwork.git`,
   default branch `main`.
@@ -484,12 +481,6 @@ planner): `tests/pipeline/`.
 - **Claude does not commit or push unless explicitly asked.** When asked to make
   changes that should be shared, prefer a **feature branch + Pull Request** over
   committing to `main`.
-- **OneDrive ≠ version control.** This repo lives in a OneDrive-synced folder.
-  OneDrive backs up files to the cloud but is *not* how the team collaborates
-  (that's GitHub), and syncing the hidden `.git/` directory can corrupt the repo
-  or create conflict-copy files. Keep git operations the source of truth; ideally
-  exclude `.git/` from OneDrive sync.
-- `.DS_Store` files should be git-ignored (macOS noise).
 
 ---
 
@@ -515,10 +506,14 @@ planner): `tests/pipeline/`.
 | `docs/deployment/` | Deployment guides: `engr/README.md` (cluster runbook), `gcp/README.md` (GCP runbook) + `gcp/MIGRATION.md`, `gcp/DEPLOYED_COMPONENTS.md`, `gcp/DESIGN_`/`IMPLEMENTATION_CLOUDRUN_BACKEND.md`; agnostic: `AGENT_INTEGRATION_SPEC.md`, `DOWNSTREAM_CONSIDERATIONS.md` |
 | `registration_service/server.py` | FastAPI app — REST API for agent registration + static UI at `/` |
 | `registration_service/db.py` | asyncpg pool + schema migrations; `FAKE_DB=1` swaps in `fake_db.py` |
-| `registration_service/supervisor.py` | Subprocess lifecycle, ADS publish/unpublish, health loop; `FAKE_DB=1` swaps in `fake_supervisor.py` |
+| `registration_service/supervisor.py` | Subprocess lifecycle, ADS publish/unpublish, health loop; `FAKE_SUPERVISOR` (defaults to `FAKE_DB`) swaps in `fake_supervisor.py` |
 | `registration_service/fake_db.py` | In-memory drop-in for the asyncpg pool — used by `FAKE_DB=1` dev mode and tests |
 | `registration_service/fake_supervisor.py` | No-op supervisor used by `FAKE_DB=1` dev mode and tests |
-| `registration_service/tests/` | pytest suite (219 tests as of 2026-10-12); run from the repo root with `registration_service/.venv/bin/python -m pytest registration_service/tests -q` (its conftest sets `FAKE_DB=1`) |
+| `registration_service/tests/` | pytest suite; run from the repo root with `registration_service/.venv/bin/python -m pytest registration_service/tests -q` (its conftest sets `FAKE_DB=1`) |
+| `devstack/` + `scripts/stack` | Native one-command dev stack (mock LLM, fake `dirctl`, identity proxy, seed agents); see `docs/DEVSTACK.md` |
+| `tests/pipeline/` | Full-chain test driving the dev stack over HTTP (Goal 1 in `docs/OPEN_SOURCE_RELEASE.md`) |
+| `.github/workflows/tests.yml` | CI: unit suites, repo hygiene, full-chain pipeline |
+| `docs/OPEN_SOURCE_RELEASE.md` | Open-source release plan and status |
 | `AGENTS.md` | Project direction + working rules + validation |
 
 **[`agent-directory`](https://github.com/washu-dev/agent-directory) repo:**
@@ -537,4 +532,3 @@ planner): `tests/pipeline/`.
 | `<agent>/<agent>.card.json` | Agent Cards (skills, endpoint, capabilities) |
 | `<agent>/Dockerfile` | Per-agent Docker image (build from repo root) |
 | `<agent>/entrypoint.sh` | Container entrypoint (waits for ADS, sets PYTHONPATH, starts agent) |
-```

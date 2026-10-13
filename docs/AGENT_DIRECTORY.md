@@ -26,9 +26,9 @@ storage has matching records but the routing index is empty, it raises **`Direct
 `orphaned` (stored, no publication record).
 
 Publish is therefore a **two-step + poll**: `push` → `routing publish` → poll `routing list --cid`
-until the CID appears. The good publish paths (`ads_utils/publisher.py`, the planner backend,
-`agent_skeleton/serve.py`) all poll; several per-agent inline publishers are fire-and-forget and can
-leave an agent invisible with no error — check them when debugging discovery.
+until the CID appears. The good publish paths (`ads_utils/publisher.py`, the planner backend) both
+poll; several per-agent inline publishers are fire-and-forget and can leave an agent invisible
+with no error — check them when debugging discovery.
 
 ## Backends: real vs. fake
 
@@ -45,7 +45,7 @@ Selection is by env flag (`AGENT_NETWORK_FAKE_ADS`, and the planner's `--fake-ad
 ## `dirctl` commands the backends invoke
 `push` (→ CID), `pull <cid>`, `routing publish <cid>`, `routing list [--cid|--skill]`,
 `routing search [--skill]`, `search --skill` (storage fallback), `routing unpublish <cid>`,
-`delete <cid>`, `routing info`, and `daemon start/stop/status`.
+`routing info`, and `daemon start/stop/status`. The operator scripts also run `delete <cid>`.
 
 ## Card ↔ OASF conversion (`card_oasf_converter.py`)
 
@@ -60,8 +60,7 @@ The bridge between an A2A `AgentCard` and a `dir` record:
   `demo-v2`/`demo-v3` records.
 - **On-card routing tags** (`oasf:<name>:<id>`): a card can declare its own routing skills via a
   skill tag so generator-produced agents are discoverable without editing the hardcoded maps. This
-  lives in `_ads_routing_skills_for_card` + `_oasf_skill_from_tag`. *Note:* this arrived with the
-  agent-skeleton consolidation on `main` and lands here on that merge.
+  lives in `_ads_routing_skills_for_card` + `_oasf_skill_from_tag`.
 
 ## Operator tooling
 

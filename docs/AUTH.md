@@ -22,22 +22,27 @@ Browser → nginx (TLS) → Apache + mod_shib (Shibboleth SP) → reverse-proxy 
 - `auth.py::get_current_user` is the FastAPI dependency (raises 401 if no identity).
 - The gateway (nginx/Apache/Shibboleth) is **persistent infra outside this repo**; it proxies
   to the planner on an ephemeral Slurm node, so its upstream is repointed each run.
+- Locally, the dev stack's identity proxy (`devstack/dev_identity_proxy.py`) plays the gateway:
+  it drops client identity headers and injects `mail: dev@example.test` ([DEVSTACK.md](DEVSTACK.md)).
 
 > **On GCP (front door not built yet).** The GCP planner has **no SSO gateway in front of it**
 > today — it runs `PLANNER_ALLOW_ANON=1` and is reached IAM-privately via `gcloud run services
 > proxy` (operators only). It *is* now on Cloud SQL, so the credential/history persistence and the
 > fail-closed machinery below are live; they just aren't enforced while anon is on. The GCP front door
-> is **deferred to future development** (paused end of summer 2026); the decided approach is **Option A**
+> is not built yet (GCP work has been on hold since end of summer 2026; cloud is a critical leg going
+> forward, 2026-10-13); the decided approach is **Option A**
 > — the same WashU Shibboleth gateway repointed at GCP, minting a Google ID token to reach the private
 > planner (drops anon at cutover). See
-> [`docs/deployment/gcp/README.md`](deployment/gcp/README.md) "How to access" + "Not done yet" and
+> [`docs/deployment/gcp/README.md`](deployment/gcp/README.md) "How to access" + "Status & deferred work (handoff)" and
 > [`docs/deployment/DOWNSTREAM_CONSIDERATIONS.md`](deployment/DOWNSTREAM_CONSIDERATIONS.md) #4.
 
 ### Fail-closed identity (D9)
-`server.py::_resolve_shib_user_id` is the single identity resolver for `/messages` and the data
-endpoints. When no header is present:
+`server.py::_resolve_shib_user_id` is the single identity resolver for `/messages`,
+`/confirmations` and the data endpoints; a header identity always wins over a request-body
+`user_id`. When no header is present:
 - **DB configured** (`REGISTRATION_DB_DSN` set) → **401**, unless `PLANNER_ALLOW_ANON=1`.
-- **No DB** (laptop/tests) → falls back to `demo-user`.
+- **No DB** (laptop/tests) → the body `user_id` on `/messages` and `/confirmations`, `demo-user`
+  elsewhere.
 
 This matters because credentials, grants, context ownership, and admin all key on identity;
 silently collapsing anonymous callers to a shared `demo-user` would misattribute and leak.
@@ -67,7 +72,7 @@ The old shared `X-Admin-Token` / `MAIN_AGENT_ADMIN_TOKEN` and `POST /admin/login
   without identity when a DB is set) — defense-in-depth alongside the Apache SP.
 - Logout (`auth_router.py`) returns through `/Shibboleth.sso/Logout?return=/` to the landing.
 - Making `/` truly anonymous requires an Apache SP carve-out (public `/` + `/health`, protected
-  everything else) — documented in [`deployment/README.md`](deployment/engr/README.md).
+  everything else) — documented in [`docs/deployment/engr/README.md`](deployment/engr/README.md).
 
 ## 4. Per-user credentials
 

@@ -6,6 +6,10 @@
 > ADS gossipsub isolation verified clean (test directory shows only test agents). Remaining work is
 > CI (⏳ — build/push half unblocked by the registry; deploy half hinges on runner reach). Once
 > this merges, promote the durable decisions into `DECISIONS.md` and link back here.
+>
+> **Update 2026-10-13:** an offline test CI (`.github/workflows/tests.yml`: unit suites, repo
+> hygiene, native full-chain pipeline) is on `release-prep/full-chain`; the Phase 3
+> build/push-on-merge and deploy halves are still open.
 
 ## The problem, precisely
 
@@ -75,8 +79,8 @@ Google API keys (`user_credentials`), credential grants, and chat history. There
 
 ## Proposed plan
 
-Sequenced around the fact that **there is no CI yet** (confirmed: no `.github/`, no other CI
-config anywhere). Each phase stands alone and delivers value without the next.
+Sequenced around the fact that **there was no CI** when this was written (2026-07; an offline test
+workflow, `.github/workflows/tests.yml`, has existed since 2026-10). Each phase stands alone and delivers value without the next.
 
 ### Phase 0 — Group registry — ✅ done
 
@@ -144,7 +148,9 @@ can't touch prod. A deployment now runs as one of two **instances**, selected by
   stays on `:latest`. `build_and_push.sh` honors `IMAGE_TAG` for the build side.
 
 The cluster `test` instance is the single pre-ship validation path. (A laptop-local "Tier B"
-tier was considered and **dropped** — not worth maintaining a second story.)
+tier was considered and **dropped** — not worth maintaining a second story.) (Update 2026-10-13:
+a native laptop dev stack now exists — [`DEVSTACK.md`](DEVSTACK.md) — for code-level checks; the
+cluster test instance remains the pre-ship path for deploy changes.)
 
 **Reaching a test instance (no public URL).** The Apache + Shibboleth gateway
 (`agenticweb.engr.wustl.edu`) proxies to exactly **one** upstream — the prod planner at

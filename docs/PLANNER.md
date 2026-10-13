@@ -10,12 +10,17 @@ identity/credentials.
 FastAPI app. Key routes:
 - `GET /` → public landing (`web/landing.html`); `GET /app` → the chat UI, hard-gated (D7).
 - `POST /messages` (JSON) / `POST /messages/stream` (SSE) → the main turn.
-- `GET /agents` → raw directory listing; `GET /health`.
-- `GET /me` → `{email, is_admin}`.
-- `POST /confirmations` → resume a pending write/consent prompt.
+- `GET /agents` → raw directory listing; `GET /health` (liveness); `GET /ready` (200/503 with
+  per-dependency `checks`: directory, db, llm).
+- `GET /me` → `{id, email, is_admin}`; creates the user on first call (in memory without a DB).
+- `POST /confirmations` → resume a pending write/consent prompt (owner only, else 403).
+- `POST /issues` → files a user bug report or agent-creation feedback as a GitHub issue (labels
+  `user-submitted` + `bug-report`/`agent-creation-feedback`; needs `GITHUB_ISSUES_TOKEN`, target
+  `GITHUB_ISSUES_REPO`; returns 502 when unconfigured or GitHub fails, never drops silently).
+  Code: `main_agent/github_issues.py`; decision D12.
 - `GET /sessions`, `GET`/`DELETE /conversations/{context_id}` → per-user data (ownership-enforced).
 - `/admin/*` → admin dashboard data (allowlist-gated); `/register/{path}` → proxy to the
-  registration service (admin subpaths gated).
+  registration service (admin subpaths gated; `internal/*` refused with 404).
 - Auth/credential routers (`auth_router`, `credentials_router`, grants) mount only when
   `REGISTRATION_DB_DSN` is set.
 
@@ -82,7 +87,8 @@ returns a terminal "reply yes/no" (or "Allow"). The resume paths read it back:
 - `handle_message` detects an affirmative/negative reply on a `context_id` with pending state.
 - `_resume_confirmation` (write skill) / `_resume_credential_consent` (records the grant, then
   dispatches) / `_cancel_confirmation` (async; clears pending).
-- `POST /confirmations` (the button path) re-injects credentials and routes by `pending.kind`.
+- `POST /confirmations` (the button path) first checks that the caller owns the conversation
+  (403 otherwise), then re-injects credentials and routes by `pending.kind`.
 
 Because pending state is durable (D11), these resume correctly across processes/restarts.
 
@@ -91,7 +97,9 @@ Because pending state is durable (D11), these resume correctly across processes/
 `DirectoryClient` wraps a real (`dirctl`-shelling) or fake (in-process, `--fake-ads`) backend. The
 planner's converter fork (`card_oasf_converter.py`) additionally parses declared credentials off the
 card (`_required_credentials_from_card`, the read path) and accepts both `demo-v2`/`demo-v3` records.
-See [AGENT_DIRECTORY.md](AGENT_DIRECTORY.md) for ADS mechanics.
+Every `dirctl` call is killed after `DIRCTL_TIMEOUT_SECONDS` (default 60) and surfaces as
+`DirectoryUnavailable`; the `/ready` directory check uses a fixed 4 s limit. See
+[AGENT_DIRECTORY.md](AGENT_DIRECTORY.md) for ADS mechanics.
 
 ## LLM configuration
 
@@ -103,10 +111,8 @@ name. Full matrix in [`CLAUDE.md`](../CLAUDE.md) §7.
 
 `planner_agent/tests` run with no network/DB/OpenAI key (ScriptedLLMClient + fake ADS):
 ```bash
-PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 planner_agent/.venv/bin/python -m pytest planner_agent/tests -q
+planner_agent/.venv/bin/python -m pytest planner_agent/tests -q -p no:cacheprovider
 ```
-Note: a handful of directory-fixture tests are known-failing on a clean checkout, unrelated to the
-auth/multi-user work.
 
 ## Key files
 | Path | Role |

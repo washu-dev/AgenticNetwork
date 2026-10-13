@@ -11,6 +11,29 @@ superseded, mark it and add a new entry rather than editing history.
 
 ---
 
+## D13 — `llm` agents run the shared skeleton engine; tool capability is configuration, not a handler type
+**Decision.** The registration `llm` type runs on the skeleton's spec-driven tool loop
+(`spec.llm_wrapper_spec` + `llm_loop.run_agent`) instead of a single-turn call of its own. Where
+its tools come from is the `tools.source` field (`none`, `presets`, `upload`, `http`, `raw`), not
+a separate handler type. The endpoint-wrapper engine is designed for N endpoints from the start
+(one endpoint is the degenerate case). **Context.** The `llm` type was prompt-only, and tool-using
+variants were growing their own types (`tool_loop`, `endpoint_ops`) that differed only in the
+spec. Chosen in 2026-07 (PR #2, preset tools + endpoint manager); the types were consolidated
+into `llm` / `proxy` / `custom` on 2026-10-10. **Rationale.** One loop to maintain; only the spec
+changes. **Open:** network- or credential-touching preset tools wait for a security-posture
+decision. **Code.** `registration_service/handlers/llm_handler.py`, `models.py` (`LLMConfig.tools`,
+`carries_upload`), `agent_skeleton/spec.py` (`llm_wrapper_spec`, `operation_wrapper_spec`,
+`multi_endpoint_wrapper_spec`), `agent_skeleton/system_tools/preset_tools.py`.
+
+## D12 — User feedback goes to GitHub issues through one planner endpoint
+**Decision.** Bug reports and agent-creation feedback from both UIs go through one planner route,
+`POST /issues`, which files a GitHub issue in `GITHUB_ISSUES_REPO` with `GITHUB_ISSUES_TOKEN`.
+The registration UI reaches it same-origin when it is served through the planner's `/register`
+proxy. **Rationale.** One token holder and no local store or admin viewer to maintain; an
+unconfigured or failing GitHub call returns 502 instead of dropping the report. Implemented
+2026-07-16. **Code.** `planner_agent/main_agent/github_issues.py`, `server.py` (`post_issue`,
+`build_issue_payload`), `main_agent/web/index.html`, `registration_service/static/index.html`.
+
 ## D11 — Conversation history and pending confirmations live in Postgres, not process-local state
 **Decision.** Per-conversation history (`conversation_messages`) and pending write/consent
 confirmations (`pending_confirmations`) are stored in Postgres, write-through cached in the

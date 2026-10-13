@@ -1,6 +1,7 @@
-# Deployed components — what's live on GCP (updated 2026-08-03)
+# Deployed components — what was live on GCP (updated 2026-08-03)
 
-Operator reference for what's currently running on GCP. As of 2026-08-03 this is **Phases 0-3 + the
+Operator reference for what runs on GCP. As of 2026-08-03 (not re-verified since; check with
+`gcloud run services list` and `gcloud compute instances list` before relying on it) this is **Phases 0-3 + the
 CloudRunBackend (Phase 4) live**: planner + real ADS + on-demand agent, **plus the registration service on
 Cloud Run wired to Cloud SQL, auto-deploying agents end-to-end**. Full design/status:
 [`MIGRATION.md`](MIGRATION.md) + [`IMPLEMENTATION_CLOUDRUN_BACKEND.md`](IMPLEMENTATION_CLOUDRUN_BACKEND.md)
@@ -76,11 +77,12 @@ SA** (`267355023116-compute@`, Editor-carrying → hardening follow-up). Capture
 **ENGR vLLM (`gpt-oss-120b` on `h100-2405`)** — *not a GCP resource*; primary LLM via the relay.
 
 ## What's live vs. deferred
-- **Live:** planner (on Cloud SQL) + real ADS + authenticated A2A + on-demand agents + LLM failover, **and
+- **Live (as of 2026-08-03):** planner (on Cloud SQL) + real ADS + authenticated A2A + on-demand agents + LLM failover, **and
   the full register→build→deploy→publish automation** (registration service + CloudRunBackend + Cloud SQL).
-- **Deferred to future development** (paused end of summer 2026; ENGR stays the public deployment): the
-  **public front door** (decided approach Option A, gateway mints an ID token → run.app; ready-to-execute
-  runbook in `IMPLEMENTATION_CLOUDRUN_BACKEND.md` Step 10) and the **Option-1 cutover**
+- **Next when cloud work resumes** (paused since the end of summer 2026; cloud is a critical leg of the
+  project going forward, so resuming it is a priority — ENGR is the live public deployment meanwhile): the
+  **public front door** (decided approach Option A, gateway mints an ID token → run.app; build outline
+  in `IMPLEMENTATION_CLOUDRUN_BACKEND.md` Step 10) and the **Option-1 cutover**
   (`agenticweb.engr.wustl.edu` → GCP). Plus the rest of the specialist agent fleet. Handoff summary:
   [`README.md`](README.md#status--deferred-work-handoff).
 

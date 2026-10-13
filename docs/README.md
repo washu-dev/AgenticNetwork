@@ -18,14 +18,13 @@ decisions, and rationale.
 | [ARCHITECTURE.md](ARCHITECTURE.md) | understand how the pieces fit — the three contracts (Agent Card / ADS / A2A), the end-to-end request lifecycle, and the load-bearing "stored vs. routed" ADS subtlety. |
 | [AUTH.md](AUTH.md) | understand identity (Shibboleth), admin (`ADMIN_EMAILS`), per-user credentials, the two credential-sourcing models, and multi-user isolation. |
 | [DECISIONS.md](DECISIONS.md) | know *why* something is the way it is — the durable architectural decisions and their rationale (ADR log). |
-| [MULTI_CONTRIBUTOR.md](MULTI_CONTRIBUTOR.md) | understand why the build/deploy/test workflow doesn't yet support multiple contributors, and the proposed plan to de-personalize the shared instance + add an isolated test lane (proposal, not yet decided). |
+| [MULTI_CONTRIBUTOR.md](MULTI_CONTRIBUTOR.md) | understand how the shared ENGR instance was de-personalized (group image registry, prod vs isolated test instances, deploy lock) and what is still open (GitHub App, CI build/deploy). |
 | [PLANNER.md](PLANNER.md) | work on the orchestrator — the tool loop, ADS/A2A dispatch, policy gating, context/session persistence. |
 | [REGISTRATION_SERVICE.md](REGISTRATION_SERVICE.md) | work on agent registration, the custom-agent upload lanes, or the approval flow. |
 | [AGENT_DIRECTORY.md](AGENT_DIRECTORY.md) | operate or debug ADS — publishing, the routing index, repair tooling. |
 | [BUILDING_AGENTS.md](BUILDING_AGENTS.md) | build a new agent — the skeleton, the two executor lanes, the answers→agent generator, and cards. |
-| [TESTING_CHANGES.md](TESTING_CHANGES.md) | test a change on your own throwaway instance instead of the shared prod deployment. |
-| [BUG_REPORTING_AND_FEEDBACK_PLAN.md](BUG_REPORTING_AND_FEEDBACK_PLAN.md) | understand the bug-report / agent-creation-feedback → GitHub-issue paths (implemented) and their staged-deployment test runbook. |
-| [WRAPPER_PRESETS_AND_ENDPOINT_MANAGER_PLAN.md](WRAPPER_PRESETS_AND_ENDPOINT_MANAGER_PLAN.md) | add preset tools to the LLM wrapper or a multi-endpoint "manager" to a custom agent (partially implemented). |
+| [DEVSTACK.md](DEVSTACK.md) | run the whole system on a laptop with one command (`scripts/stack up`), switch the LLM, add agents. |
+| [TESTING_CHANGES.md](TESTING_CHANGES.md) | test a change on the ENGR cluster on your own throwaway instance instead of the shared prod deployment. |
 | [OPEN_SOURCE_RELEASE.md](OPEN_SOURCE_RELEASE.md) | work on the open-source release — what ships, the `agent_skeleton` subtree plan, sprint priorities, and the full-chain test and one-command start goals (in progress, 2026-10). |
 
 ## Related root docs
@@ -43,7 +42,7 @@ Deployment guides (the machinery lives in [`../deployment/`](../deployment/)):
 | Doc | Read it when you need to… |
 |---|---|
 | [deployment/README.md](deployment/README.md) | **start here** — the two targets (cluster / GCP) and how to read them side-by-side. |
-| [deployment/engr/README.md](deployment/engr/README.md) | run/operate on the **ENGR cluster** (Slurm + Pyxis/enroot) — the backup deployment. |
-| [deployment/gcp/README.md](deployment/gcp/README.md) | run/operate on **GCP** (Cloud Run + Cloud SQL) — architecture, how to access, dev workflow, cluster differences. |
+| [deployment/engr/README.md](deployment/engr/README.md) | run/operate on the **ENGR cluster** (Slurm + Pyxis/enroot) — the live public deployment. |
+| [deployment/gcp/README.md](deployment/gcp/README.md) | run/operate on **GCP** (Cloud Run + Cloud SQL) — architecture, how to access, dev workflow, cluster differences. Built to a working milestone in 2026-08 and on hold since; cloud is a critical leg going forward (2026-10-13). |
 | [deployment/gcp/MIGRATION.md](deployment/gcp/MIGRATION.md) · [DEPLOYED_COMPONENTS](deployment/gcp/DEPLOYED_COMPONENTS.md) | GCP design/status, and the live inventory. |
 | [deployment/DOWNSTREAM_CONSIDERATIONS.md](deployment/DOWNSTREAM_CONSIDERATIONS.md) · [AGENT_INTEGRATION_SPEC.md](deployment/AGENT_INTEGRATION_SPEC.md) | target-agnostic: forward-looking decisions, and the agent-integration contract. |

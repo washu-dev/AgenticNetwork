@@ -9,7 +9,7 @@ facts"). Manual reference implementation (what this automates): the Phase 1-3 wo
 Each step is independently testable and lands behind the existing `SPAWN_BACKEND` switch, so nothing
 changes for the cluster/subprocess paths until `SPAWN_BACKEND=cloudrun`.
 
-All file refs are under `/Users/amaankhan/Desktop/DTRC/AgenticNetwork/`.
+All file refs are relative to the repo root.
 
 ## Progress (2026-07-30)
 
@@ -21,10 +21,11 @@ to Cloud SQL + the VPC connector, and drove a custom agent end-to-end: register 
 → `CloudRunBackend` auto-deploy (`agent-echo-test`, min=0, as `agent-runtime`) → card published. First live
 Phase-4 loop. Three bugs were found + fixed live (see Step 9 notes below).
 **Steps 0-9 DONE** (Step 9 = reg service + planner both on Cloud Run/Cloud SQL, register→deploy loop proven
-live). **Step 10 (planner front-door) + the Option-1 cutover are DEFERRED to future development** (end of
-summer 2026) — a deliberate stop at a stable milestone, not a blocker. The design is **settled** and the
-full build runbook is **preserved** in Step 10 below, so a successor can execute it directly (no
-re-deciding). The ENGR cluster stays the public deployment meanwhile. Handoff summary:
+live). **Step 10 (planner front-door) + the Option-1 cutover are the next steps**, paused since the end of
+summer 2026 at a stable milestone, not blocked. Cloud is a critical leg of the project going forward, so
+resuming is a priority (2026-10-13). The design is **settled** and the build outline is in Step 10 below,
+so a successor can start without re-deciding. The ENGR cluster stays the live public deployment meanwhile.
+Handoff summary:
 [`gcp/README.md`](README.md#status--deferred-work-handoff).
 
 **Roadmap end-state.** Steps 5–8 finish the agent-onboarding automation; **Steps 9–10** (Cloud SQL
@@ -127,7 +128,8 @@ persists `status="image_ready"` + `image_ref` via `db.update_agent(...)` in one 
 bare `_set_status(...)` call at that one site only — `_set_status` is still used everywhere else).
 Also added a drift-guard test (`test_db_schema.py::test_updatable_columns_match_fake_db`) asserting
 `db._UPDATABLE_COLUMNS == fake_db._ALLOWED_UPDATE_COLS`, two hand-kept whitelists with nothing else
-checking they stay in sync.
+checking they stay in sync. (Removed 2026-10-13: `fake_db` no longer keeps its own whitelist;
+`db.update_agent` checks the columns before the fake runs.)
 
 ## Step 4 — `CloudRunBackend` (the core) — ✅ Done (2026-07-30, with the deploy trigger pulled forward)
 - New class in `registration_service/backend.py` implementing `ContainerBackend`, flags:
@@ -379,11 +381,11 @@ steps are its prerequisites; the cutover itself is a config change on the out-of
   row + a conversation row survive a service restart.
 - **Gates:** DOWNSTREAM #4 prerequisite (1).
 
-## Step 10 — Planner front-door hardening (Option 1 readiness) — ⏸ DEFERRED to future development (design settled 2026-08-03)
+## Step 10 — Planner front-door hardening (Option 1 readiness) — ⏸ next step (design settled 2026-08-03)
 
-> **Handoff note.** This step + the Option-1 cutover were deferred at end of summer 2026. Everything below
-> is a **ready-to-execute runbook** — the approach is decided and the alternatives are recorded, so whoever
-> picks this up can start from the pre-checks without re-litigating the design.
+> **Handoff note.** This step + the Option-1 cutover were deferred at end of summer 2026. The approach is
+> decided and the alternatives are recorded, so whoever picks this up can start from the pre-checks
+> without re-litigating the design. The repo holds only the outline below, not a full runbook.
 
 **Decision (2026-08-03): the secure gateway→planner leg = Option A** (gateway mints a Google ID token →
 planner run.app). Evaluated against Option B (external LB + Cloud Armor): A needs **no org-policy exception**
@@ -392,7 +394,7 @@ so B is gated on an exception or IAP), keeps the existing WashU Shibboleth SP, a
 cert), and puts the work on the gateway we control. IAP+WIF (Option D) is the clean long-term end-state but
 needs org-level GCP access + WashU-IdP re-registration — deferred.
 
-**Option A build outline (review before running — the full runbook lives in this session's notes):**
+**Option A build outline (review before running; this outline is all the repo has):**
 - *Pre-checks:* (1) is SA-key creation allowed? `gcloud org-policies describe
   constraints/iam.disableServiceAccountKeyCreation` — if enforced, use Workload Identity Federation instead
   of a key. (2) planner run.app URL (the token audience): `gcloud run services describe planner

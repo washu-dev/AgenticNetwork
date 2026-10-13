@@ -29,9 +29,9 @@ diagram and the three contracts (Agent Card / ADS / A2A) that hold this together
 |---|---|---|---|
 | [`planner_agent/`](planner_agent/) | Orchestrator + chat UI | 8090 | [README](planner_agent/README.md) |
 | [`agent_directory_service/`](agent_directory_service/) | ADS operator tooling (cluster ops) | — | [README](agent_directory_service/README.md) |
-| [`registration_service/`](registration_service/) | Agent self-registration web UI + manager | — | [README](registration_service/README.md) |
+| [`registration_service/`](registration_service/) | Agent self-registration web UI + manager | 8091 | [README](registration_service/README.md) |
 | [`agent_skeleton/`](agent_skeleton/) | Agent template + endpoint-wrapper engine + generator | — | [README](agent_skeleton/README.md) |
-| [`deployment/`](deployment/) | ENGR cluster containerized deployment | — | [README](docs/deployment/engr/README.md) |
+| [`deployment/`](deployment/) | Deploy machinery: ENGR cluster (live) and GCP Cloud Run | — | [README](docs/deployment/README.md) |
 
 **[`agent-directory`](https://github.com/washu-dev/agent-directory) repo — specialist agents:**
 
@@ -46,26 +46,27 @@ diagram and the three contracts (Agent Card / ADS / A2A) that hold this together
 
 > **5-digit ports (19105–19108)** avoid collisions with other users on shared ENGR cluster nodes. Override via the corresponding `*_PORT` env vars in `deployment/.env`.
 
-## Deployment
+## Run it locally
 
-The system runs on the WashU **ENGR cluster** via Slurm + Pyxis/enroot. Each component is a Docker image; `deployment/submit.sbatch` starts them all as parallel containers on one node, with ADS coming up first and agents self-publishing on startup.
-
-See [`deployment/README.md`](docs/deployment/engr/README.md) for the full cluster runbook.
-
-For local development without the cluster, the planner supports a **fake-ADS mode** that runs an
-in-process directory — useful for testing the planner against specific agent cards without
-standing up the full stack. See [`CLAUDE.md`](CLAUDE.md) §4 "Tier A" for the setup commands; it
-ends with the chat UI at **http://localhost:8090/**.
-
-The registration service has an analogous **fake-DB mode** (`FAKE_DB=1`) that stubs out postgres, ADS publishing, and subprocess spawning — useful for working on the registration UI and API without any external services:
+One command runs the whole system on a laptop: the planner, the registration service, a seed agent, a mock LLM and a local sign-in proxy. From the repo root:
 
 ```bash
-python3 -m venv registration_service/.venv
-registration_service/.venv/bin/pip install -r registration_service/requirements.txt
-FAKE_DB=1 PYTHONPATH=. registration_service/.venv/bin/python -m registration_service.server
+# one-time setup: the two service venvs
+python3 -m venv planner_agent/.venv && planner_agent/.venv/bin/pip install -r planner_agent/requirements.txt
+python3 -m venv registration_service/.venv && registration_service/.venv/bin/pip install -r registration_service/requirements.txt
+
+scripts/stack up                    # returns when everything is ready
+open http://localhost:8080/app      # chat UI, signed in as dev@example.test
+scripts/stack down
 ```
 
-Open **http://localhost:8091/** for the registration wizard. See [`registration_service/README.md`](registration_service/README.md) for details including how to run its test suite.
+No Docker, database, SSO or API key; the LLM is an offline mock by default. Full guide (a real LLM, adding agents, logs, troubleshooting): [`docs/DEVSTACK.md`](docs/DEVSTACK.md). Component-only dev modes (the planner's `--fake-ads`, registration's `FAKE_DB=1`) are in each component's README.
+
+## Deployment
+
+The live system runs on the WashU **ENGR cluster** via Slurm + Pyxis/enroot. Each component is a Docker image; `deployment/submit.sbatch` starts them all as parallel containers on one node, with ADS coming up first and agents self-publishing on startup. See [`docs/deployment/engr/README.md`](docs/deployment/engr/README.md) for the cluster runbook.
+
+Cloud is a critical leg of the project going forward (decided 2026-10-13). A GCP Cloud Run deployment (planner, registration service, on-demand agents) was built to a working milestone in summer 2026 and is on hold; see [`docs/deployment/gcp/README.md`](docs/deployment/gcp/README.md).
 
 ## Environments
 
@@ -74,7 +75,7 @@ Each component is isolated — do not install one component's requirements into 
 | Environment | Components |
 |---|---|
 | pip venv | `planner_agent` |
-| conda `agent-directory-service` | `agent_directory_service` |
+| pip venv | `agent_directory_service` |
 | pip venv | `registration_service` |
 
 Specialist agent environments live in the [`agent-directory`](https://github.com/washu-dev/agent-directory) repo.
@@ -83,16 +84,11 @@ Specialist agent environments live in the [`agent-directory`](https://github.com
 
 Each agent owns its card — a JSON file that describes its name, endpoint URL, and skills. Cards live next to the agent code in the `agent-directory` repo and are published to ADS on startup.
 
-The planner uses ADS to discover agents at runtime. In fake-ADS mode for local dev, pass card paths directly with `--card` (pointing into a checkout of `agent-directory`).
+The planner uses ADS to discover agents at runtime.
 
 ## Adding a new agent
 
-1. Write an Agent Card (`my_agent.card.json`) with a name, URL, and `skills[]` list.
-2. Implement an `AgentExecutor` (extend the `a2a-sdk` class).
-3. Serve it with `A2AStarletteApplication` + uvicorn.
-4. Publish the card to ADS on startup — the planner discovers it automatically.
-
-See [`docs/BUILDING_AGENTS.md`](docs/BUILDING_AGENTS.md) for the full step-by-step guide (and the upload / endpoint-wrapper lanes).
+Register one through the registration service (no code for `llm` and `proxy` agents; upload code for `custom`), or build a standalone A2A agent that publishes its own card. Either way the planner discovers it automatically. See [`docs/BUILDING_AGENTS.md`](docs/BUILDING_AGENTS.md); in the dev stack, `scripts/stack add-agent FILE.json` registers one locally.
 
 ## Further reading
 
@@ -100,4 +96,6 @@ See [`docs/BUILDING_AGENTS.md`](docs/BUILDING_AGENTS.md) for the full step-by-st
 - [`CLAUDE.md`](CLAUDE.md) — system guide + operating manual (run tiers, LLM/vLLM config, caveats)
 - [`SECURITY.md`](SECURITY.md) — security posture + active hazards
 - [`AGENTS.md`](AGENTS.md) — working rules and validation commands for contributors
-- [`deployment/README.md`](docs/deployment/engr/README.md) — ENGR cluster runbook
+- [`docs/DEVSTACK.md`](docs/DEVSTACK.md) — the one-command local stack
+- [`docs/OPEN_SOURCE_RELEASE.md`](docs/OPEN_SOURCE_RELEASE.md) — open-source release plan and status
+- [`docs/deployment/engr/README.md`](docs/deployment/engr/README.md) — ENGR cluster runbook

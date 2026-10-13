@@ -1,6 +1,6 @@
 # AGENTS.md
 
-**Current focus (2026-10-12): open-source release prep.** See
+**Current focus (2026-10-13): open-source release prep.** See
 [`docs/OPEN_SOURCE_RELEASE.md`](docs/OPEN_SOURCE_RELEASE.md) for scope, the
 `agent_skeleton` subtree plan, sprint priorities, and the full-chain test and
 one-command start goals.
@@ -45,6 +45,10 @@ Do not reintroduce the old prototype, milestone demo agents, or PI runtime under
 For ADS changes:
 
 ```bash
-PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 agent_directory_service/.venv/bin/python -m pytest agent_directory_service/tests -q
-agent_directory_service/.venv/bin/python -m agent_directory_service.scripts.print_versions
+registration_service/.venv/bin/python -m pytest -q -p no:cacheprovider agent_directory_service/tests
+registration_service/.venv/bin/python -m agent_directory_service.scripts.print_versions
 ```
+
+The registration venv matches the ADS `a2a-sdk` 0.3.2 pin; `run_ads.sh` uses its own
+`agent_directory_service/.venv`, built from `requirements.txt`. All suites and the dev stack:
+`CLAUDE.md` §10; CI runs them (`.github/workflows/tests.yml`).
