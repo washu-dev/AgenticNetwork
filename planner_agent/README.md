@@ -73,7 +73,7 @@ planner_agent/
 │   ├── tools.py            # 5 tool schemas + system prompt
 │   ├── llm_client.py       # OpenAI Chat Completions client + ScriptedLLMClient
 │   ├── runtime.py          # tool loop, ADS, A2A, memory, policy, dedup
-│   ├── server.py           # FastAPI: /messages /confirmations /agents /health /me /
+│   ├── server.py           # FastAPI: /messages /confirmations /agents /health /ready /me /
 │   ├── auth.py             # Shibboleth SSO identity + get_current_user dependency
 │   ├── auth_router.py      # /auth/* — logout + Google OAuth connect flow
 │   ├── credentials_router.py  # /me/credentials/* — per-user API-key store/list/delete
@@ -174,7 +174,11 @@ curl -s http://localhost:8090/messages \
   -d '{"user_id":"demo","channel":"api","text":"What agents are available?"}' | jq
 ```
 
-`GET /agents` returns the raw ADS listing for inspection.
+`GET /agents` returns the raw ADS listing for inspection. `GET /health` is a cheap
+liveness check; `GET /ready` returns 200 or 503 with a per-dependency `checks` map
+(`directory`, `db`, `llm`; each `ok`, `not_configured` or `error` with an `error`
+string). `GET /me` returns `{id, email, is_admin}` and creates the user on first call.
+An identity header (`mail`, `eppn`, `remote-user`) always wins over a body `user_id`.
 
 ### 4. Real ADS (cluster or tunnel)
 
@@ -218,7 +222,8 @@ through `dirctl` instead of the in-process fake.
 | `ADS_SERVER_ADDR`              | —             | e.g. `localhost:8888`                                         |
 | `MAIN_AGENT_PORT`              | `8090`        | HTTP port (avoids collision with v2's 8080)                   |
 | `PYTHON_BIN`                   | auto-detected | Optional interpreter override for wrapper scripts             |
-| `REGISTRATION_DB_DSN`          | —             | Postgres DSN for conversation history + credentials + pending confirmations |
+| `REGISTRATION_DB_DSN`          | —             | Postgres DSN for users, conversation history, credentials and pending confirmations. Unset: users live in memory |
+| `OPENAI_BASE_URL`              | —             | OpenAI-compatible endpoint (mock, vLLM, Ollama); `/ready` probes `{base}/models` |
 | `CREDENTIALS_ENCRYPTION_KEY`   | —             | 32-byte base64 key for AES-256-GCM credential encryption      |
 | `ADMIN_EMAILS`                 | —             | Comma-separated admin allowlist (matched against SSO identity); fail-closed |
 | `GOOGLE_CLIENT_ID` / `_SECRET` / `_REDIRECT_URI` | — | Google OAuth web client for per-user Google connect |

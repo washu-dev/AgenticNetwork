@@ -10,12 +10,12 @@ import os
 import re
 import time as _time
 from pathlib import Path
-from typing import Annotated, Any, Sequence
+from typing import Any, Sequence
 from uuid import uuid4
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, Response, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from planner_agent.main_agent.a2a.client import A2AClient
@@ -24,14 +24,14 @@ from planner_agent.main_agent.directory.card_oasf_converter import load_agent_ca
 from planner_agent.main_agent.directory.client import DirectoryClient
 from planner_agent.main_agent.state.store import InMemoryStateStore
 
-from planner_agent.main_agent.auth import get_current_user, get_shib_email, is_admin
+from planner_agent.main_agent.auth import get_current_user, get_or_create_user, get_shib_email, is_admin
 from planner_agent.main_agent.auth_router import router as auth_router
 from planner_agent.main_agent.credentials_router import (
     grants_router,
     router as credentials_router,
 )
 from planner_agent.main_agent.config import MainAgentConfig, load_config
-from planner_agent.main_agent.db import close_db, fetch_user_credentials, init_db
+from planner_agent.main_agent.db import close_db, fetch_user_credentials, init_db, ping_db
 from planner_agent.main_agent.llm_client import LLMClient, OpenAIToolLoopClient
 from planner_agent.main_agent.credential_gate import DbCredentialGate
 from planner_agent.main_agent.runtime import ContextOwnershipError, MainAgentRuntime
@@ -223,13 +223,30 @@ def create_app(
         app.include_router(grants_router)
 
     @app.get("/me")
-    async def me(user: Annotated[dict, Depends(get_current_user)]) -> dict[str, Any]:
-        # P4f: the UI shows/hides admin surfaces based on is_admin.
-        return {"email": user["email"], "is_admin": is_admin(user["email"])}
+    async def me(request: Request) -> dict[str, Any]:
+        # P4f: the UI shows/hides admin surfaces based on is_admin. Identity resolves as
+        # on every other route (demo-user when anonymous is allowed), and the first call
+        # creates the user: a users row with a DB, the in-memory store without one.
+        user = await get_or_create_user(_resolve_shib_user_id(request))
+        return {"id": str(user["id"]), "email": user["email"], "is_admin": is_admin(user["email"])}
 
     @app.get("/health")
     async def health() -> dict[str, str]:
         return {"status": "ok", "fake_ads": str(cfg.fake_ads), "model": cfg.llm_model}
+
+    @app.get("/ready")
+    async def ready() -> JSONResponse:
+        # Unlike /health (liveness only), readiness checks what a chat turn depends on.
+        # A dependency that is not configured is reported but does not fail readiness.
+        directory_check, db_check, llm_check = await asyncio.gather(
+            _check_directory(directory), _check_db(), _check_llm()
+        )
+        checks = {"directory": directory_check, "db": db_check, "llm": llm_check}
+        is_ready = all(check["status"] != "error" for check in checks.values())
+        return JSONResponse(
+            status_code=200 if is_ready else 503,
+            content={"ready": is_ready, "checks": checks},
+        )
 
     _reg_base = os.getenv("REGISTRATION_SERVICE_URL", "http://localhost:8091")
     _reg_client = httpx.AsyncClient(base_url=_reg_base, timeout=30.0)
@@ -413,6 +430,8 @@ def create_app(
 
     @app.post("/confirmations")
     async def post_confirmation(req: ConfirmationRequest, request: Request) -> dict[str, Any]:
+        # Same identity rule as /messages: the header identity wins over the body.
+        user_id = _caller_user_id(request, req.user_id)
         # P4c: the confirm button must carry the same per-user credentials +
         # auth_user_id as /messages, or a credential-consent resume dispatches
         # with no key and records no grant.
@@ -425,11 +444,11 @@ def create_app(
             return cancel.to_response()
         if pending.get("kind") == "credential_consent":
             result = await runtime._resume_credential_consent(
-                req.context_id, req.user_id, req.channel, req.metadata, pending
+                req.context_id, user_id, req.channel, req.metadata, pending
             )
         else:
             result = await runtime._resume_confirmation(
-                req.context_id, req.user_id, req.channel, req.metadata
+                req.context_id, user_id, req.channel, req.metadata
             )
         return result.to_response()
 
@@ -723,6 +742,72 @@ def create_app(
     return app
 
 
+# /ready probe timeouts. dirctl is a subprocess, so the directory check gets longer.
+_READY_DIRECTORY_TIMEOUT_SECONDS = 5.0
+_READY_DB_TIMEOUT_SECONDS = 2.0
+_READY_LLM_TIMEOUT_SECONDS = 2.0
+
+
+def _check_error(exc: BaseException, timeout: float) -> str:
+    if isinstance(exc, (asyncio.TimeoutError, httpx.TimeoutException)):
+        return f"timed out after {timeout:g}s"
+    return f"{type(exc).__name__}: {exc}"[:500]
+
+
+async def _check_directory(directory: DirectoryClient) -> dict[str, Any]:
+    """Readiness of the directory: one cheap call through the configured backend."""
+    backend = "fake" if directory.fake_ads else "real"
+    timeout = _READY_DIRECTORY_TIMEOUT_SECONDS
+    try:
+        healthy = await asyncio.wait_for(asyncio.to_thread(directory.healthcheck), timeout)
+    except Exception as exc:
+        return {"status": "error", "backend": backend, "error": _check_error(exc, timeout)}
+    if not healthy:
+        return {"status": "error", "backend": backend, "error": "directory healthcheck failed"}
+    return {"status": "ok", "backend": backend}
+
+
+async def _check_db() -> dict[str, Any]:
+    """Readiness of Postgres; without REGISTRATION_DB_DSN the planner runs DB-less."""
+    if not os.getenv("REGISTRATION_DB_DSN"):
+        return {"status": "not_configured"}
+    timeout = _READY_DB_TIMEOUT_SECONDS
+    try:
+        await asyncio.wait_for(ping_db(), timeout)
+    except Exception as exc:
+        return {"status": "error", "error": _check_error(exc, timeout)}
+    return {"status": "ok"}
+
+
+async def _check_llm() -> dict[str, Any]:
+    """Readiness of the OpenAI-compatible endpoint named by OPENAI_BASE_URL.
+
+    Any HTTP answer below 500 counts as reachable: /models may want other auth than
+    chat (Vertex mints its key per call) or be missing behind some gateways, while
+    chat completions still work. The status code is reported either way.
+    """
+    base_url = os.getenv("OPENAI_BASE_URL", "").strip()
+    if not base_url:
+        return {"status": "not_configured"}
+    url = base_url.rstrip("/") + "/models"
+    api_key = os.getenv("OPENAI_API_KEY")
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    timeout = _READY_LLM_TIMEOUT_SECONDS
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.get(url, headers=headers)
+    except Exception as exc:
+        return {"status": "error", "url": url, "error": _check_error(exc, timeout)}
+    if resp.status_code >= 500:
+        return {
+            "status": "error",
+            "url": url,
+            "status_code": resp.status_code,
+            "error": f"HTTP {resp.status_code} from {url}",
+        }
+    return {"status": "ok", "url": url, "status_code": resp.status_code}
+
+
 async def _refresh_google_token(creds: dict) -> dict:
     """Exchange the stored refresh_token for a fresh access_token."""
     try:
@@ -793,6 +878,22 @@ def _resolve_shib_user_id(request: Request) -> str:
         raise
 
 
+def _caller_user_id(request: Request, body_user_id: str) -> str:
+    """Return the identity a request that carries a body ``user_id`` acts as.
+
+    An authenticated identity header always wins, so a signed-in caller cannot act as
+    another user by naming them in the body. Without a header the body value is kept
+    (it defaults to ``demo-user``), but only when :func:`_anon_identity_allowed`;
+    otherwise the 401 from ``get_shib_email`` is re-raised.
+    """
+    try:
+        return get_shib_email(request)
+    except HTTPException:
+        if _anon_identity_allowed():
+            return body_user_id
+        raise
+
+
 async def _incoming_message_from_request(request: Request) -> IncomingMessage:
     # Use the Shibboleth-authenticated email as user_id (fail-closed when a DB is set).
     shib_user_id = _resolve_shib_user_id(request)
@@ -828,9 +929,7 @@ async def _incoming_message_from_request(request: Request) -> IncomingMessage:
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=400, detail="Request body must be JSON or multipart/form-data.") from exc
     msg = IncomingMessage.model_validate(payload)
-    # Override user_id with authenticated identity unless the caller explicitly set it.
-    if msg.user_id == "demo-user":
-        msg.user_id = shib_user_id
+    msg.user_id = _caller_user_id(request, msg.user_id)
     return msg
 
 

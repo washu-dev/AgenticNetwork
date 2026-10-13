@@ -121,6 +121,13 @@ async def init_db() -> None:
     logger.info("planner_db_init dsn=%s", dsn.split("@")[-1])
 
 
+async def ping_db() -> None:
+    """Run a trivial query; raises if the pool is missing or the DB is unreachable."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.fetchval("SELECT 1")
+
+
 async def fetch_user_credentials(user_id: object) -> dict:
     """Return a dict of {provider: decrypted_payload} for all stored credentials."""
     from planner_agent.main_agent.crypto import decrypt

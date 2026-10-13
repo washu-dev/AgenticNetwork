@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import uuid
 from pathlib import Path
 
 import httpx
@@ -427,3 +429,183 @@ async def _persisted_context_rehydrates_and_enforces_owner() -> None:
         assert ctx.user_id == "alice@wustl.edu"
         history = "\n".join(ctx.conversation_history)
         assert "earlier turn" in history and "continue" in history
+
+
+# ---------------------------------------------------------------------------
+# Identity — the authenticated header wins over a request body's user_id
+# ---------------------------------------------------------------------------
+
+def test_header_identity_wins_over_body_user_id(monkeypatch) -> None:
+    monkeypatch.delenv("REGISTRATION_DB_DSN", raising=False)
+    asyncio.run(_header_identity_wins_over_body_user_id())
+
+
+async def _header_identity_wins_over_body_user_id() -> None:
+    store = InMemoryStateStore()
+    app = create_app(
+        config=_config(),
+        directory_client=DirectoryClient(fake_ads=True),
+        a2a_client=FailA2A(),
+        state_store=store,
+        llm_client=ScriptedLLMClient([ToolCall(tool_name="final_answer", arguments={"text": "hi"})]),
+    )
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client:
+        created = await client.post(
+            "/messages",
+            json={"user_id": "someone-else", "channel": "api", "text": "hello"},
+            headers={"mail": "alice@wustl.edu"},
+        )
+        assert created.status_code == 200, created.text
+        cid = created.json()["context_id"]
+        # The new context belongs to the header identity, not the body's user_id.
+        assert store.get_context(cid).user_id == "alice@wustl.edu"
+        alice = await client.get(f"/conversations/{cid}", headers={"mail": "alice@wustl.edu"})
+        assert alice.status_code == 200, alice.text
+        named = await client.get(f"/conversations/{cid}", headers={"mail": "someone-else"})
+        assert named.status_code == 403, named.text
+        sessions = await client.get("/sessions", headers={"mail": "someone-else"})
+        assert sessions.json()["sessions"] == []
+
+
+def test_body_user_id_cannot_enter_another_users_context(monkeypatch) -> None:
+    monkeypatch.delenv("REGISTRATION_DB_DSN", raising=False)
+    asyncio.run(_body_user_id_cannot_enter_another_users_context())
+
+
+async def _body_user_id_cannot_enter_another_users_context() -> None:
+    app = _final_answer_app()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client:
+        created = await client.post(
+            "/messages", json={"channel": "api", "text": "alice secret"}, headers={"mail": "alice@wustl.edu"}
+        )
+        cid = created.json()["context_id"]
+        # Bob names Alice in the body to append to her conversation: still Bob, still 403.
+        bob = await client.post(
+            "/messages",
+            json={"user_id": "alice@wustl.edu", "channel": "api", "text": "peek", "context_id": cid},
+            headers={"mail": "bob@wustl.edu"},
+        )
+        assert bob.status_code == 403, bob.text
+
+
+def test_body_user_id_kept_without_identity_header(monkeypatch) -> None:
+    # Anonymous dev/no-DB runs keep the body's user_id, as before.
+    monkeypatch.delenv("REGISTRATION_DB_DSN", raising=False)
+    monkeypatch.delenv("PLANNER_ALLOW_ANON", raising=False)
+    asyncio.run(_body_user_id_kept_without_identity_header())
+
+
+async def _body_user_id_kept_without_identity_header() -> None:
+    store = InMemoryStateStore()
+    app = create_app(
+        config=_config(),
+        directory_client=DirectoryClient(fake_ads=True),
+        a2a_client=FailA2A(),
+        state_store=store,
+        llm_client=ScriptedLLMClient([ToolCall(tool_name="final_answer", arguments={"text": "hi"})]),
+    )
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client:
+        resp = await client.post("/messages", json={"user_id": "u", "channel": "api", "text": "hello"})
+    assert resp.status_code == 200, resp.text
+    assert store.get_context(resp.json()["context_id"]).user_id == "u"
+
+
+def test_confirmations_fail_closed_without_identity_when_db(monkeypatch) -> None:
+    monkeypatch.setenv("REGISTRATION_DB_DSN", "postgres://unused")
+    monkeypatch.delenv("PLANNER_ALLOW_ANON", raising=False)
+    asyncio.run(_confirmations_fail_closed())
+
+
+async def _confirmations_fail_closed() -> None:
+    app = _final_answer_app()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client:
+        resp = await client.post(
+            "/confirmations",
+            json={"user_id": "alice@wustl.edu", "channel": "api", "context_id": "c1", "confirmed": False},
+        )
+    assert resp.status_code == 401, resp.text
+
+
+# ---------------------------------------------------------------------------
+# GET /me — creates the user on first call, with or without a DB
+# ---------------------------------------------------------------------------
+
+class _FakeUsersConn:
+    def __init__(self, users: dict[str, dict]):
+        self.users = users
+
+    async def fetchrow(self, query: str, email: str):
+        if query.startswith("SELECT"):
+            return self.users.get(email)
+        self.users[email] = {"id": uuid.uuid4(), "email": email}
+        return self.users[email]
+
+
+class _FakeUsersPool:
+    """The slice of an asyncpg pool that get_or_create_user uses."""
+
+    def __init__(self) -> None:
+        self.users: dict[str, dict] = {}
+
+    @contextlib.asynccontextmanager
+    async def acquire(self):
+        yield _FakeUsersConn(self.users)
+
+
+def test_me_without_db_creates_in_memory_user(monkeypatch) -> None:
+    monkeypatch.delenv("REGISTRATION_DB_DSN", raising=False)
+    monkeypatch.setenv("ADMIN_EMAILS", "admin@wustl.edu")
+    asyncio.run(_me_without_db())
+
+
+async def _me_without_db() -> None:
+    app = _final_answer_app()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client:
+        first = await client.get("/me", headers={"mail": "Carol@WUSTL.edu"})
+        again = await client.get("/me", headers={"mail": "carol@wustl.edu"})
+        other = await client.get("/me", headers={"mail": "dave@wustl.edu"})
+        admin = await client.get("/me", headers={"mail": "admin@wustl.edu"})
+    assert first.status_code == 200, first.text
+    me = first.json()
+    assert set(me) == {"id", "email", "is_admin"}
+    assert me["email"] == "carol@wustl.edu"
+    assert me["is_admin"] is False
+    assert str(uuid.UUID(me["id"])) == me["id"]
+    assert again.json()["id"] == me["id"]
+    assert other.json()["id"] != me["id"]
+    assert admin.json()["is_admin"] is True
+
+
+def test_me_without_db_or_header_is_demo_user(monkeypatch) -> None:
+    monkeypatch.delenv("REGISTRATION_DB_DSN", raising=False)
+    monkeypatch.delenv("PLANNER_ALLOW_ANON", raising=False)
+    resp = asyncio.run(_get(_final_answer_app(), "/me"))
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["email"] == "demo-user"
+
+
+def test_me_fails_closed_without_identity_when_db(monkeypatch) -> None:
+    monkeypatch.setenv("REGISTRATION_DB_DSN", "postgres://unused")
+    monkeypatch.delenv("PLANNER_ALLOW_ANON", raising=False)
+    resp = asyncio.run(_get(_final_answer_app(), "/me"))
+    assert resp.status_code == 401, resp.text
+
+
+def test_me_with_db_returns_users_row(monkeypatch) -> None:
+    from planner_agent.main_agent import db
+
+    pool = _FakeUsersPool()
+    monkeypatch.setenv("REGISTRATION_DB_DSN", "postgres://unused")
+    monkeypatch.setattr(db, "_pool", pool)
+    asyncio.run(_me_with_db(pool))
+
+
+async def _me_with_db(pool: _FakeUsersPool) -> None:
+    app = _final_answer_app()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client:
+        first = await client.get("/me", headers={"mail": "erin@wustl.edu"})
+        again = await client.get("/me", headers={"mail": "erin@wustl.edu"})
+    assert first.status_code == 200, first.text
+    row = pool.users["erin@wustl.edu"]
+    assert first.json() == {"id": str(row["id"]), "email": "erin@wustl.edu", "is_admin": False}
+    assert again.json()["id"] == first.json()["id"]
