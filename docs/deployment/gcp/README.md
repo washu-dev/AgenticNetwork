@@ -5,6 +5,8 @@ the cloud deployment, brought up **additively** alongside the [ENGR cluster](../
 stays the live public deployment. Read side-by-side with the cluster runbook to see how the same system
 maps onto each platform.
 
+**Deploying your own instance?** Follow [DEPLOY_YOUR_OWN.md](DEPLOY_YOUR_OWN.md), a parameterized version of this deployment; this page describes the WashU instance.
+
 > **Status (2026-10-13): paused since the end of summer 2026.** Running on cloud is a critical leg of the
 > project going forward, so resuming this work is a priority. As of 2026-08-03 the platform and the
 > register→deploy automation were live and proven; re-verify the inventory before relying on it. Next: the

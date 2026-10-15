@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 #
 # Step 7 (CloudRunBackend) — one-time GCP IAM setup for the register→deploy pipeline.
-# See deployment/IMPLEMENTATION_CLOUDRUN_BACKEND.md "Step 7 — IAM".
+# See docs/deployment/gcp/IMPLEMENTATION_CLOUDRUN_BACKEND.md "Step 7 — IAM" and
+# docs/deployment/gcp/DEPLOY_YOUR_OWN.md. Usage: GCP_PROJECT=my-project bash deployment/scripts/gcp_iam_step7.sh
 #
 # Creates the two service accounts and grants the registration service the rights
 # to deploy on-demand agents:
@@ -21,7 +22,7 @@
 # resourcemanager.projects.setIamPolicy (Editor/resource-admin roles do NOT include it).
 set -euo pipefail
 
-PROJECT="${GCP_PROJECT:-di2-agenticweb}"
+PROJECT="${GCP_PROJECT:?set GCP_PROJECT to your Google Cloud project id}"
 REGION="${GCP_REGION:-us-central1}"
 AGENT_SA="agent-runtime@${PROJECT}.iam.gserviceaccount.com"
 REG_SA="registration-service@${PROJECT}.iam.gserviceaccount.com"

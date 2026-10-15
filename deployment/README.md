@@ -1,10 +1,11 @@
 # deployment/ — build & run machinery
 
-This directory holds the **artifacts** that build and run AgenticNetwork, shared across both
-deployment targets (ENGR cluster and GCP). **The documentation lives in
+This directory holds the **artifacts** that build and run AgenticNetwork: the ENGR cluster,
+GCP Cloud Run, and Docker Compose on a single host. **The documentation lives in
 [`docs/deployment/`](../docs/deployment/)** — start there:
 
-- **[docs/deployment/README.md](../docs/deployment/README.md)** — deployment overview (the two targets).
+- **[docs/deployment/README.md](../docs/deployment/README.md)** — deployment overview (all targets).
+- **[docs/deployment/COMPOSE.md](../docs/deployment/COMPOSE.md)** — Docker Compose on one host or a cloud VM.
 - **[docs/deployment/engr/](../docs/deployment/engr/README.md)** — ENGR cluster (Slurm + Pyxis/enroot) runbook.
 - **[docs/deployment/gcp/](../docs/deployment/gcp/README.md)** — GCP (Cloud Run + Cloud SQL) runbook + migration.
 
@@ -12,6 +13,7 @@ deployment targets (ENGR cluster and GCP). **The documentation lives in
 
 | Artifact | Target | What it is |
 |---|---|---|
+| `compose/` | single host | Docker Compose stack (`compose.yaml`, `.env.example`, `smoke.sh`, the tier-2 test); guide [docs/deployment/COMPOSE.md](../docs/deployment/COMPOSE.md). |
 | `dockerfiles/` | both | One image per service (`Dockerfile.<svc>`); built by `build_and_push.sh` → `di2washu/agenticnetwork-<svc>`. **The same images run on the cluster and on Cloud Run.** |
 | `entrypoints/` | both | Container entrypoints (`entrypoint-<svc>.sh`). `entrypoint-registration.sh` branches for Cloud Run via `SKIP_STARTUP_WAITS` + `$PORT`. |
 | `build_and_push.sh` | both | Build + push the infra images (`linux/amd64`). |

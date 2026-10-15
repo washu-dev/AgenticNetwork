@@ -426,8 +426,10 @@ auth-unaware.
 ## 10. Testing & validation
 
 Unit suites run from the repo root, offline (no Docker, Postgres, `dirctl` or API
-key); CI runs the same per component in `.github/workflows/tests.yml`, plus a repo-hygiene
-job and the full-chain pipeline. Do not set `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`: registration
+key); CI runs the same per component in `.github/workflows/tests.yml` (with coverage
+summaries), plus a repo-hygiene job and the full-chain and scenario pipeline;
+`.github/workflows/compose.yml` runs tier 2 (the Docker Compose smoke test) on PRs touching
+deployment or service code, weekly and on demand. Do not set `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`: registration
 needs the `pytest-asyncio` plugin, and most of its suite fails without it.
 
 ```bash
@@ -448,9 +450,14 @@ registration_service/.venv/bin/python -m agent_directory_service.scripts.print_v
 # Dev stack: mock LLM, fake dirctl, identity proxy, stack CLI safety checks
 registration_service/.venv/bin/python -m pytest devstack/tests -q
 
-# Full chain: starts the dev stack on offset ports (PIPELINE_PORT_OFFSET, default 20000),
-# drives it over HTTP only, then stops it. Needs both service venvs.
+# Full chain + scenarios (credential scoping, unreachable agent, restart): start the dev stack
+# on offset ports (PIPELINE_PORT_OFFSET, default 20000), drive it over HTTP only, then stop it.
+# Needs both service venvs. Coverage: add --cov=<component> (pytest-cov); docs/TESTING.md.
 registration_service/.venv/bin/python -m pytest tests/pipeline -q
+
+# Tier 2 (Docker): the service images + real Postgres + real dirctl, via Docker Compose
+# Its own project name and port, so `down -v` never touches a long-running Compose instance.
+(cd deployment/compose && export COMPOSE_PROJECT_NAME=agenticnetwork-test FRONT_DOOR_PORT=18081 && docker compose up -d --build && docker compose run --rm seed && ./smoke.sh; docker compose down -v)
 
 # Planner end-to-end self-check (env, dirctl, ADS reachability, server, OpenAI, tests)
 planner_agent/scripts/doctor.sh
@@ -512,7 +519,8 @@ planner → saved history → register an agent → shut down with nothing left 
 | `registration_service/tests/` | pytest suite; run from the repo root with `registration_service/.venv/bin/python -m pytest registration_service/tests -q` (its conftest sets `FAKE_DB=1`) |
 | `devstack/` + `scripts/stack` | Native one-command dev stack (mock LLM, fake `dirctl`, identity proxy, seed agents); see `docs/DEVSTACK.md` |
 | `tests/pipeline/` | Full-chain test driving the dev stack over HTTP (Goal 1 in `docs/OPEN_SOURCE_RELEASE.md`) |
-| `.github/workflows/tests.yml` | CI: unit suites, repo hygiene, full-chain pipeline |
+| `.github/workflows/tests.yml` | CI: unit suites (with coverage), repo hygiene, full-chain + scenario pipeline |
+| `.github/workflows/compose.yml`, `deployment/compose/` | Tier 2: Docker Compose stack and its smoke test ([`docs/deployment/COMPOSE.md`](docs/deployment/COMPOSE.md)) |
 | `docs/OPEN_SOURCE_RELEASE.md` | Open-source release plan and status |
 | `AGENTS.md` | Project direction + working rules + validation |
 

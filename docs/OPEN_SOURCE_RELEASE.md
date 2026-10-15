@@ -1,6 +1,6 @@
 # Open-source release plan
 
-Status as of **2026-10-13**. This is a working document for the maintainers and the
+Status as of **2026-10-15**. This is a working document for the maintainers and the
 agents helping them. Update it as decisions land, and rewrite or remove it before the
 repository goes public.
 
@@ -25,9 +25,20 @@ repository goes public.
 - **Goals 1–3** (below): tier 1 of Goal 1 is done; the full-chain test passed 20 runs in a
   row locally on 2026-10-13. `scripts/stack` covers Goals 2 and 3 for the native tier
   ([`DEVSTACK.md`](DEVSTACK.md)).
+- **2026-10-15 pass (on `release-prep/full-chain`, not yet pushed):** the last open release blocker is fixed
+  (credentials no longer reach skeleton agents' LLM prompts); `down`/`reset` in the dev stack
+  never stop another stack and keep recovery state when a stop fails; three black-box scenarios
+  (credential scoping, unreachable agent, restart) in `tests/pipeline/test_scenarios.py`;
+  coverage summaries in CI; tier 2 runs as a Docker Compose stack
+  ([`deployment/COMPOSE.md`](deployment/COMPOSE.md), `deployment/compose/smoke.sh`, verified
+  locally on arm64, CI workflow `compose.yml` not yet run on GitHub); a generic Cloud Run guide
+  ([`deployment/gcp/DEPLOY_YOUR_OWN.md`](deployment/gcp/DEPLOY_YOUR_OWN.md), not re-run live);
+  public-facing `README.md`, `CONTRIBUTING.md`, [`TESTING.md`](TESTING.md), docs index and
+  `SECURITY.md` (reporting policy first).
 
 ### Decided 2026-10-13 (Ronak)
 
+- At the skeleton merge, drop `generator/` from the merged skeleton.
 - The GCP Cloud Run and ENGR cluster code paths stay. Cloud is a critical leg of the
   project going forward; the ENGR cluster is the live deployment.
 - This pass makes safe cuts only: production behaviour on ENGR and Cloud Run is unchanged
@@ -113,9 +124,9 @@ The two copies have diverged, so they must be reconciled first.
 ## Sprint priorities
 
 1. **The full-chain test, the one-command start and the laptop workflow** (Goals 1–3).
-   Tier 1 and the native stack are done. Still to do: tier 2 (containers, real Postgres
-   and `dirctl`), a tier-3 real-model run, `add-agent` for an agent folder, and the
-   scenarios not yet covered (below).
+   Tier 1, the native stack and tier 2 (Docker Compose, real Postgres and `dirctl`, verified
+   locally 2026-10-15) are done. Still to do: a tier-3 real-model run, `add-agent` for an
+   agent folder, and the scenarios not yet covered (below).
 2. **Security fixes that must land before release**, each with a regression test:
    - Fixed: a request-body `user_id` no longer overrides the logged-in identity (planner
      tests and the full-chain test).
@@ -140,8 +151,13 @@ The two copies have diverged, so they must be reconciled first.
      `test_undeclared_agent_gets_no_credentials`, `test_no_gate_passes_only_declared_types`,
      `test_no_identity_passes_only_declared_types`,
      `test_allowlisted_legacy_agent_gets_full_bundle`).
-   - Open: skeleton-engine agents copy request metadata, injected credentials included,
-     into the LLM prompt (`agent_skeleton/executor.py::_payload_from_context`).
+   - Fixed (2026-10-15, from `washu-dev/agent-skeleton` PR #29 by raneemousa3): skeleton-engine
+     agents strip `credentials`, `authorization`, `secret(s)` and `token` keys from request,
+     message and part metadata and DataPart data before the LLM prompt
+     (`agent_skeleton/executor.py::_model_visible_metadata`; `agent_skeleton/tests/test_executor_metadata.py`).
+     Registration's runner no longer logs a bad config's values (`registration_service/tests/test_prompt_secrets.py`).
+     Still open: the other metadata keys, including `user_id` (the user's email), reach the
+     model provider; an allowlist of model-visible keys would close that.
    - Fixed: user bug reports no longer default to this repo. `GITHUB_ISSUES_REPO` has no
      default; unset, `POST /issues` returns 502 without calling GitHub. Issue bodies still
      include the reporter's email, prompts and trace, so the repo must be private
@@ -245,15 +261,18 @@ directory); no real keys; the same scenarios rerun at higher tiers.
 | Tier | Runs | What is real |
 |---|---|---|
 | 1. Native (done) | Every PR | Planner, registration service and skeleton agents as local processes (`scripts/stack`); mock LLM; in-memory DB; fake `dirctl` |
-| 2. Containers | Every PR or nightly | Tier 1 plus real Postgres (CHECK constraints) and real `dirctl` ("stored ≠ routed") |
+| 2. Containers (done locally) | PRs touching services or deployment, weekly (`compose.yml`) | The service images, real Postgres and the real `dirctl` daemon via Docker Compose (`deployment/compose/smoke.sh`); mock LLM |
 | 3. Real LLM | Manual or nightly, opt-in | One round trip with a hosted or local model |
 
 **Covered by tier 1** (`tests/pipeline/test_full_chain.py`, driving `scripts/stack`): start
 from nothing; the first signed-in request creates the user; a prompt reaches the seed
 agent and the answer is saved for that user only; streaming; a newly registered `llm`
 agent receives the prompt that matches it; a body `user_id` is ignored when a login
-identity exists; `down` leaves nothing running. Unit tests cover the owner-only
-confirmation and the refused `entry_file` and impersonating uploads.
+identity exists; `down` leaves nothing running. `tests/pipeline/test_scenarios.py` adds: a
+declaring agent receives only its scoped credentials and an undeclared one none; an
+unreachable agent (refused or silent) yields a clear error within the A2A timeout; after
+`down` and `up`, a registered agent is listed once and answers. Unit tests cover the
+owner-only confirmation and the refused `entry_file` and impersonating uploads.
 
 **Still to add:**
 
@@ -261,11 +280,8 @@ confirmation and the refused `entry_file` and impersonating uploads.
   Legacy type names normalize on read.
 - An agent built from the skeleton template, through each path (`endpoint_wrapper`,
   `tool_loop`, `custom`), works end to end.
-- Credentials: a declaring agent receives only its scoped credentials; an undeclared
-  agent receives none.
 - `ask_user` and confirmation flows across processes.
-- After the services restart, registered agents are rediscovered.
-- Failures: an unreachable agent yields a clear error, not a hang; the step limit holds.
+- Failures: the step limit holds.
 
 Security scenarios that fail today are added as strict expected failures and flipped
 when their fix lands.

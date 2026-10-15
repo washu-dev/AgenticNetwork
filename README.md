@@ -1,101 +1,133 @@
 # AgenticNetwork
 
-A demo of an **"Internet of Agents"**: independent, LLM-powered services that discover each other through a shared directory and collaborate over a standard agent-to-agent protocol. A user talks to one orchestrator (the **planner**); the planner discovers specialist agents at runtime and delegates tasks to them — with no hardcoded knowledge of which agents exist.
-
-## Using the deployed system
-
-The live system is at **https://agenticweb.engr.wustl.edu**.
-
-1. **Sign in.** Open the site and click **Sign in with WashU** — it uses WashU SSO (Shibboleth); there's no separate password.
-2. **Chat.** Describe a task in plain language ("summarize wildfire preparedness," "send an email to…"). The planner figures out which specialist agent(s) can do it and delegates — you don't pick agents yourself.
-3. **Connect your own accounts/keys** in **Settings → Credentials**. Some agents act on *your* resources (e.g. your Google account) or need an API key. Keys are encrypted, and the planner shares a key only with agents **you've granted** it to, only for **your** requests — you're asked to allow an agent the first time it needs one.
-4. **Admins** (WashU emails in the `ADMIN_EMAILS` allowlist) also get a dashboard — agent health, request traces, and approval of uploaded custom agents. Everyone else never sees admin surfaces.
-
-Building or operating the system rather than using it? See the **developer reference** in [`docs/`](docs/README.md).
+AgenticNetwork is a research system for an **"Internet of Agents"**: independent, LLM-powered
+services that find each other in a shared directory and call each other over a standard
+agent-to-agent protocol. You talk to one orchestrator, the **planner**, which has no skills of its
+own. It searches the directory for agents that can do the task and delegates to them over A2A, so
+adding an agent to the directory makes it usable with no planner code changes.
 
 ## How it works
 
-A user talks to the **planner** (`:8090`), which discovers specialist agents via the **ADS**
-registry (`:8888`) and dispatches tasks to them over **A2A** (HTTP/JSON-RPC). Adding a new agent
-to ADS makes it available to the planner with **zero planner code changes**. For the architecture
-diagram and the three contracts (Agent Card / ADS / A2A) that hold this together, see
-[`CLAUDE.md`](CLAUDE.md) §1–§2.
+```mermaid
+flowchart LR
+    U["Browser"] --> F["Front door<br/>(SSO gateway, or the dev identity proxy)"]
+    F --> P["Planner<br/>chat UI + tool loop"]
+    P <-->|"search by skill, read cards"| D[("Directory (ADS)<br/>AGNTCY dir, via dirctl")]
+    P -->|"A2A task"| A["Specialist agents"]
+    P -->|"/register proxy"| R["Registration service"]
+    R -->|"registers and spawns"| A
+    R -->|"publishes Agent Cards"| D
+    P -.-> L["LLM<br/>(any OpenAI-compatible API)"]
+    A -.-> L
+```
 
-## Components
+The planner's LLM sees five tools: `list_agents`, `describe_agent`, `call_agent`, `ask_user` and
+`final_answer`. A request goes browser → front door (which adds the user's identity) → planner →
+directory search → A2A call to the chosen agent → answer back to the user.
 
-**This repo — infrastructure:**
+**Key ideas**
 
-| Directory | Role | Port | Full docs |
-|---|---|---|---|
-| [`planner_agent/`](planner_agent/) | Orchestrator + chat UI | 8090 | [README](planner_agent/README.md) |
-| [`agent_directory_service/`](agent_directory_service/) | ADS operator tooling (cluster ops) | — | [README](agent_directory_service/README.md) |
-| [`registration_service/`](registration_service/) | Agent self-registration web UI + manager | 8091 | [README](registration_service/README.md) |
-| [`agent_skeleton/`](agent_skeleton/) | Agent template + endpoint-wrapper engine + generator | — | [README](agent_skeleton/README.md) |
-| [`deployment/`](deployment/) | Deploy machinery: ENGR cluster (live) and GCP Cloud Run | — | [README](docs/deployment/README.md) |
+- **Agent Card**: a JSON description of an agent (name, endpoint URL, skills, and any credentials it needs).
+- **Directory (ADS)**: the AGNTCY `dir` service, driven by the `dirctl` CLI; agents publish cards there and the planner searches it by skill.
+- **A2A**: the agent-to-agent protocol (HTTP/JSON-RPC, the `a2a-sdk` package) the planner uses to send a task to an agent.
+- **Credential scoping**: users store API keys and OAuth tokens encrypted; the planner passes an agent only the credential types it declared and the user granted, in the A2A task metadata, never through the LLM.
 
-**[`agent-directory`](https://github.com/washu-dev/agent-directory) repo — specialist agents:**
+Deeper: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and [`docs/AUTH.md`](docs/AUTH.md).
 
-| Agent | Role | Port |
-|---|---|---|
-| `email_agent` | Gmail, Calendar, Docs, Sheets | 9103 |
-| `scout_agent` | OSINT web research | 9104 |
-| `geoSpatial_agent` | Photo geolocation + incident classification | 19105 |
-| `coding_agent` | Code writing via mini-swe-agent | 19106 |
-| `intelligence_agent` | Situational awareness + threat assessment | 19107 |
-| `disaster_response_agent` | Emergency response planning | 19108 |
+## Quickstart (dev stack)
 
-> **5-digit ports (19105–19108)** avoid collisions with other users on shared ENGR cluster nodes. Override via the corresponding `*_PORT` env vars in `deployment/.env`.
-
-## Run it locally
-
-One command runs the whole system on a laptop: the planner, the registration service, a seed agent, a mock LLM and a local sign-in proxy. From the repo root:
+One command runs the whole system on a laptop: the planner, the registration service, a seed
+agent, a mock LLM and a local sign-in proxy. You need Python 3.11 or newer as `python3`. From the
+repo root:
 
 ```bash
-# one-time setup: the two service venvs
+# One-time setup: one venv per service
 python3 -m venv planner_agent/.venv && planner_agent/.venv/bin/pip install -r planner_agent/requirements.txt
 python3 -m venv registration_service/.venv && registration_service/.venv/bin/pip install -r registration_service/requirements.txt
+scripts/stack doctor                # checks Python, both venvs, the fake dirctl and ports
 
 scripts/stack up                    # returns when everything is ready
 open http://localhost:8080/app      # chat UI, signed in as dev@example.test
+scripts/stack smoke                 # optional: one prompt through the front door
 scripts/stack down
 ```
 
-No Docker, database, SSO or API key; the LLM is an offline mock by default. Full guide (a real LLM, adding agents, logs, troubleshooting): [`docs/DEVSTACK.md`](docs/DEVSTACK.md). Component-only dev modes (the planner's `--fake-ads`, registration's `FAKE_DB=1`) are in each component's README.
+Try "Echo this back: hello": the planner finds the seed agent and returns its answer. No Docker,
+database, SSO or API key is needed; the LLM is an offline mock by default. A real LLM, adding
+agents, logs and troubleshooting: [`docs/DEVSTACK.md`](docs/DEVSTACK.md).
 
 ## Deployment
 
-The live system runs on the WashU **ENGR cluster** via Slurm + Pyxis/enroot. Each component is a Docker image; `deployment/submit.sbatch` starts them all as parallel containers on one node, with ADS coming up first and agents self-publishing on startup. See [`docs/deployment/engr/README.md`](docs/deployment/engr/README.md) for the cluster runbook.
+| Where | Guide | What it is |
+|---|---|---|
+| Laptop | [`docs/DEVSTACK.md`](docs/DEVSTACK.md) | Native processes from the checkout, mock LLM, no Docker. For development and trying it out. |
+| One host or a cloud VM | [`docs/deployment/COMPOSE.md`](docs/deployment/COMPOSE.md) | Docker Compose on a single machine. |
+| Google Cloud | [`docs/deployment/gcp/DEPLOY_YOUR_OWN.md`](docs/deployment/gcp/DEPLOY_YOUR_OWN.md) | Your own Google Cloud Run instance. |
+| HPC cluster (example) | [`docs/deployment/engr/README.md`](docs/deployment/engr/README.md) | Slurm + Pyxis/enroot, one container per service: the WashU deployment's runbook. |
 
-Cloud is a critical leg of the project going forward (decided 2026-10-13). A GCP Cloud Run deployment (planner, registration service, on-demand agents) was built to a working milestone in summer 2026 and is on hold; see [`docs/deployment/gcp/README.md`](docs/deployment/gcp/README.md).
+The images, entrypoints and launch scripts are in [`deployment/`](deployment/); an overview of the
+targets is in [`docs/deployment/README.md`](docs/deployment/README.md).
 
-## Environments
+## Testing
 
-Each component is isolated — do not install one component's requirements into another's environment. They communicate only over HTTP (A2A), so dependency versions don't need to align.
+All suites, including a full-chain test of the running stack, run offline (no Docker, database, `dirctl` or API key): see [`docs/TESTING.md`](docs/TESTING.md).
+What to run before a pull request, and what CI checks, is in [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
-| Environment | Components |
+## Repository layout
+
+| Path | What it is |
 |---|---|
-| pip venv | `planner_agent` |
-| pip venv | `agent_directory_service` |
-| pip venv | `registration_service` |
+| [`planner_agent/`](planner_agent/README.md) | The planner: orchestrator, HTTP API and chat UI (port 8090). |
+| [`registration_service/`](registration_service/README.md) | Registers, spawns and monitors agents and publishes their cards; web UI and REST API (port 8091). |
+| [`agent_skeleton/`](agent_skeleton/README.md) | Template and engine that registered agents run on. |
+| [`agent_directory_service/`](agent_directory_service/README.md) | Operator tooling for the directory: publish, inspect, diagnose and repair records (`run_ads.sh`). |
+| [`ads_utils/`](ads_utils/README.md) | Shared code that publishes and unpublishes Agent Cards; used by the registration service. |
+| [`devstack/`](docs/DEVSTACK.md), [`scripts/stack`](scripts/stack) | The dev stack (mock LLM, fake `dirctl`, dev identity proxy, seed agents) and its CLI. |
+| [`tests/pipeline/`](tests/pipeline/) | Full-chain test that drives the dev stack over HTTP. |
+| [`deployment/`](deployment/README.md) | Dockerfiles, entrypoints, Slurm and Google Cloud scripts, config templates. |
+| [`docs/`](docs/README.md) | Documentation. |
+| [`.github/workflows/`](.github/workflows/tests.yml) | CI: unit suites with coverage, repo hygiene, full-chain and scenario tests (`tests.yml`); the Docker Compose smoke test (`compose.yml`). |
 
-Specialist agent environments live in the [`agent-directory`](https://github.com/washu-dev/agent-directory) repo.
+The specialist agents of the WashU deployment (email and calendar, web research, photo
+geolocation, coding, intelligence briefs, disaster response) live in a separate repository,
+[`agent-directory`](https://github.com/washu-dev/agent-directory). This repository runs on its
+own: the dev stack registers a seed agent, and the registration service adds more.
 
-## Agent Cards
+## Documentation
 
-Each agent owns its card — a JSON file that describes its name, endpoint URL, and skills. Cards live next to the agent code in the `agent-directory` repo and are published to ADS on startup.
+Start at [`docs/README.md`](docs/README.md), a map of every doc grouped by audience: users, agent
+builders, contributors and operators. [`CLAUDE.md`](CLAUDE.md) is a single-file system guide
+(written for coding agents, useful to people too) and [`AGENTS.md`](AGENTS.md) holds the working
+rules.
 
-The planner uses ADS to discover agents at runtime.
+## Using the WashU deployment
 
-## Adding a new agent
+WashU runs an instance at **https://agenticweb.engr.wustl.edu** (WashU login required).
 
-Register one through the registration service (no code for `llm` and `proxy` agents; upload code for `custom`), or build a standalone A2A agent that publishes its own card. Either way the planner discovers it automatically. See [`docs/BUILDING_AGENTS.md`](docs/BUILDING_AGENTS.md); in the dev stack, `scripts/stack add-agent FILE.json` registers one locally.
+1. **Sign in** with **Sign in with WashU** (WashU SSO; there is no separate password).
+2. **Chat.** Describe a task in plain language. The planner picks the agents; you don't.
+3. **Connect accounts and keys** in **Settings → Credentials** when an agent needs your Google
+   account or an API key. Keys are encrypted. An agent that declares a key gets it only for your
+   requests, after you allow it the first time; a few older agents are exceptions (see
+   [`SECURITY.md`](SECURITY.md) §2).
+4. **Admins** (emails in the `ADMIN_EMAILS` allowlist) also see a dashboard with agent health,
+   request traces and approval of uploaded custom agents. Other users never see admin pages.
 
-## Further reading
+## Contributing
 
-- [`docs/`](docs/README.md) — **developer reference**: architecture, auth & credentials, per-subsystem deep-dives, and the decision log
-- [`CLAUDE.md`](CLAUDE.md) — system guide + operating manual (run tiers, LLM/vLLM config, caveats)
-- [`SECURITY.md`](SECURITY.md) — security posture + active hazards
-- [`AGENTS.md`](AGENTS.md) — working rules and validation commands for contributors
-- [`docs/DEVSTACK.md`](docs/DEVSTACK.md) — the one-command local stack
-- [`docs/OPEN_SOURCE_RELEASE.md`](docs/OPEN_SOURCE_RELEASE.md) — open-source release plan and status
-- [`docs/deployment/engr/README.md`](docs/deployment/engr/README.md) — ENGR cluster runbook
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for setup, tests, CI and pull requests, and
+[`docs/BUILDING_AGENTS.md`](docs/BUILDING_AGENTS.md) to add an agent.
+
+## Security
+
+Report vulnerabilities privately, as described in [`SECURITY.md`](SECURITY.md), which also covers
+the security model and known limitations. This is research software: read that file before you
+expose an instance to other users.
+
+## License
+
+No license has been chosen yet. A license will be added before the public release.
+
+## Acknowledgements
+
+Built at Washington University in St. Louis.

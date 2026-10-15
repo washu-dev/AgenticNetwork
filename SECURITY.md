@@ -1,17 +1,58 @@
-# Security posture & hazards
+# Security policy
 
-Status of the AgenticNetwork demo as it runs **today** (single trusted Slurm node,
-behind a WashU Shibboleth gateway). This is a **research/demo** posture — several
-things that are fine on a trusted single node become hard requirements before any
-broader exposure. The GCP Cloud Run deployment (on hold since summer 2026; cloud is a
-critical leg going forward) and the local dev stack have their own rows below. Companion
-docs: repo-root [`CLAUDE.md`](CLAUDE.md) §8–§9 (auth + caveats) and
-[`docs/deployment/DOWNSTREAM_CONSIDERATIONS.md`](docs/deployment/DOWNSTREAM_CONSIDERATIONS.md)
-#2–#3 (the at-scale hardening plan). Update this file when the posture changes.
+AgenticNetwork is research software. This file says how to report a vulnerability, which
+versions get fixes, how the system is secured, and the hazards that are known today.
+
+## Reporting a vulnerability
+
+Report vulnerabilities privately through GitHub's private vulnerability reporting: on this
+repository's **Security** tab, choose **Report a vulnerability**. This opens a draft security
+advisory that only the maintainers can see.
+
+- Do not open a public issue, pull request or discussion about a suspected vulnerability.
+- Include the affected component and commit, steps to reproduce, the impact, and a suggested fix
+  if you have one. Use test data only; never send real credentials or personal data.
+- If the Security tab does not offer private reporting, open a public issue that asks a
+  maintainer to contact you, without any details of the vulnerability.
+
+Hazards already listed in §2 below are known; reports that show a new way to exploit one are
+still welcome.
+
+## Supported versions
+
+There are no releases yet. Only the `main` branch is supported, and fixes land there.
 
 ---
 
-## 1. What is protected, and what isn't
+## 1. Security model
+
+This describes the system as it runs **today** in the WashU deployment (single trusted Slurm node,
+behind a WashU Shibboleth gateway). This is a **research/demo** posture — several things that are
+fine on a trusted single node become hard requirements before any broader exposure. The GCP Cloud
+Run deployment (on hold since summer 2026; cloud is a critical leg going forward) and the local
+dev stack have their own rows in the table below. Companion docs: repo-root
+[`CLAUDE.md`](CLAUDE.md) §8–§9 (auth + caveats), [`docs/AUTH.md`](docs/AUTH.md) (the auth model)
+and [`docs/deployment/DOWNSTREAM_CONSIDERATIONS.md`](docs/deployment/DOWNSTREAM_CONSIDERATIONS.md)
+#2–#3 (the at-scale hardening plan). Update this file when the posture changes.
+
+- **Identity at the front door.** Users sign in at one authenticated gateway, which injects
+  identity headers (`eppn`/`mail`/`remote-user`) that the planner trusts (`main_agent/auth.py`).
+  The planner has no authentication of its own, so it must be reachable only through the gateway.
+  It fails closed (401) without an identity when a DB is configured, and a login identity always
+  wins over a request-body `user_id`.
+- **Admin allowlist.** Admin rights come from the signed-in identity: emails in `ADMIN_EMAILS`
+  (`require_admin`: 401 without an identity, 403 if not listed; an empty list means no admins).
+  The planner and the registration service both enforce it.
+- **Credentials: encrypted at rest, scoped per agent.** Per-user API keys and OAuth tokens are
+  AES-256-GCM encrypted (`main_agent/crypto.py`, `CREDENTIALS_ENCRYPTION_KEY`). At request time
+  the planner decrypts them and passes the target agent only the types it declared and the user
+  granted, in the A2A task metadata, never through the LLM ([`docs/AUTH.md`](docs/AUTH.md) §4).
+  The exceptions, and what happens to the credentials after that hop, are in §2.
+- **Network isolation.** Everything behind the gateway trusts everything else. Specialist agents,
+  the directory (ADS), vLLM and the registration service's `/internal/*` routes have no
+  authentication, so they must not be reachable from outside the node or private network.
+
+### What is protected, and what isn't
 
 | Surface | Auth today | Notes |
 |---|---|---|
@@ -23,6 +64,7 @@ docs: repo-root [`CLAUDE.md`](CLAUDE.md) §8–§9 (auth + caveats) and
 | ADS `:8888` / vLLM `:8100` | **None** | Trusted-LAN assumption. |
 | GCP (Cloud Run, on hold) | **IAM-private**: callers need `run.invoker` (operators use `gcloud run services proxy`) | No SSO front door yet; the planner runs `PLANNER_ALLOW_ANON=1`, so per-user identity is not enforced. Agents use internal ingress and are called with Google ID tokens. |
 | Dev stack (`scripts/stack`) | A local proxy on `127.0.0.1:8080` drops client identity headers and injects `mail: dev@example.test` | Every service and spawned agent binds `127.0.0.1` (`REGISTRATION_SERVICE_HOST`, `AGENT_BIND_HOST`). For one developer's machine only; never expose it. |
+| Docker Compose (`deployment/compose/`) | The dev identity proxy (as above) on `127.0.0.1:18080`, unless the operator puts an authenticating proxy in its place ([`docs/deployment/COMPOSE.md`](docs/deployment/COMPOSE.md)) | Only the front door is published. Agents run as subprocesses of `registration` (see the unapproved-agents hazard in §2), so every signed-in user must be trusted. |
 
 **Takeaway:** the security model is *"one authenticated gateway in front of a fully
 trusted node."* Everything inside the node trusts everything else.
@@ -63,9 +105,11 @@ trusted node."* Everything inside the node trusts everything else.
   `agent_id`, the slug of the card name, so an approved custom agent with the same name would
   match too.
   Specialist ports remain unauthenticated, so a rogue local process could still receive whatever
-  was injected for a given call. Skeleton-engine agents also copy the request metadata, injected
-  credentials included, into the LLM prompt (`agent_skeleton/executor.py::_payload_from_context`
-  → `llm_loop`). (Mitigations present: `agent_skeleton/system_tools/call_endpoint.py` reads its
+  was injected for a given call. Skeleton-engine agents strip the `credentials`, `authorization`,
+  `secret(s)` and `token` keys from request, message and part metadata before building the LLM
+  prompt (`agent_skeleton/executor.py::_model_visible_metadata`; `agent_skeleton/tests/test_executor_metadata.py`),
+  but the rest of the planner's metadata, including `user_id` (the user's email), still reaches the
+  model provider. (Mitigations present: `agent_skeleton/system_tools/call_endpoint.py` reads its
   token from an env var at call time — never storing it — and redacts secret-shaped strings from
   error bodies.)
 - **Email agent Google OAuth client files** are no longer baked into the image: the current
@@ -84,6 +128,16 @@ trusted node."* Everything inside the node trusts everything else.
   node; externalize before scaling.
 
 ---
+
+- **On the subprocess backend, any signed-in user can start an agent without approval.** Only
+  uploaded-code agents wait for admin approval (`registration_service/server.py`, `carries_upload`).
+  An `llm` agent with `http` tools, or a `proxy` agent, starts at once as a subprocess of the
+  registration service, with its whole environment (`backend.py`, `env = {**os.environ}`) and its
+  network namespace. Such an agent can send any variable named in `auth_env` (the LLM key
+  included) to any URL, and can call the planner and registration on `localhost` with identity
+  headers of its choosing. This applies to the dev stack and Docker Compose (no `SPAWN_BACKEND`);
+  the cluster and Cloud Run backends refuse non-upload agents (`supervisor.py`). Until approval
+  covers these agents, give accounts only to people you would trust as admins.
 
 ## 3. Reliability hazards (not security, but they bite)
 
