@@ -114,6 +114,26 @@ def test_planner_shaped_request_keeps_identity_out_but_task_input_flows():
     assert executor_mod._skill_from_context(ctx) == "lookup/search"
 
 
+def test_task_input_named_like_identity_still_reaches_model_via_datapart():
+    # A skill whose input has a field literally named `user_id` (here an
+    # upstream account handle). The planner keeps the login identity in
+    # params.metadata["user_id"] and leaves a task-input `user_id` out of the
+    # metadata spread, so the DataPart is its only carrier. Only metadata loses
+    # identity keys; DataPart data must keep them or that input is dropped.
+    a2a_types = pytest.importorskip("a2a.types")
+    message = _msg(
+        parts=[
+            a2a_types.Part(root=a2a_types.TextPart(text="look up this account")),
+            a2a_types.Part(root=a2a_types.DataPart(data={"user_id": "octocat"})),
+        ],
+    )
+    ctx = _ctx(metadata={"user_id": USER_EMAIL, "channel": "web"}, message=message)
+
+    payload = _payload_from_context(ctx)
+    assert payload["user_id"] == "octocat"
+    assert USER_EMAIL not in json.dumps(payload)
+
+
 def test_context_metadata_credentials_not_in_payload():
     ctx = _ctx(metadata={"credentials": {"ncbi_api_key": {"api_key": SENTINEL}}, "prompt": "q"})
     payload = _payload_from_context(ctx)
