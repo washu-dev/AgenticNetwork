@@ -118,3 +118,7 @@ node_modules/
 .ipynb_checkpoints/
 *.swp
 Thumbs.db
+
+# Docker Compose: local overrides and database dumps (docs/deployment/COMPOSE.md)
+deployment/compose/compose.override.yaml
+deployment/compose/*.sql

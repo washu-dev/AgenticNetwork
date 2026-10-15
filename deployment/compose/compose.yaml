@@ -1,0 +1,209 @@
+# AgenticNetwork on one host (a laptop or any cloud VM) with Docker Compose.
+# Guide: docs/deployment/COMPOSE.md. From this directory:
+#
+#   cp .env.example .env
+#   docker compose up -d --build
+#   docker compose run --rm seed # exits 0 once the planner lists the seed agents
+#   ./smoke.sh
+#
+# The service images are the ENGR deployment's (deployment/dockerfiles/). As in
+# deployment/submit.sbatch, every service shares one network namespace (owned by
+# `net`), so the services, and the agents registration spawns, reach each other on
+# localhost with the ENGR defaults unchanged. Only the front door is published.
+
+name: agenticnetwork
+
+# Settings the planner and the registration service share. Spawned agents inherit
+# registration's environment, so they get the same LLM endpoint.
+x-shared-env: &shared-env
+  ADS_SERVER_ADDR: localhost:8888
+  DIRCTL_BIN: /usr/local/bin/dirctl
+  # Routing can lag a push by ~10 s; see deployment/.env.example.
+  ADS_ROUTING_PUBLISH_TIMEOUT_SECONDS: "30"
+  ADS_ROUTING_PUBLISH_POLL_SECONDS: "0.5"
+  REGISTRATION_DB_DSN: postgresql://postgres@localhost:5432/registration
+  OPENAI_BASE_URL: ${OPENAI_BASE_URL:-http://127.0.0.1:8099/v1}
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-mock-key}
+  ADMIN_EMAILS: ${ADMIN_EMAILS:-dev@example.test}
+
+# The dev-only helpers (mock LLM, identity proxy, seeding) run straight from the
+# checkout's devstack/ (standard library only) on the registration image's base.
+x-devstack: &devstack
+  image: python:3.11-slim-bookworm
+  network_mode: service:net
+  working_dir: /app
+  environment:
+    PYTHONDONTWRITEBYTECODE: "1"
+    PYTHONUNBUFFERED: "1"
+  volumes:
+    - ../../devstack:/app/devstack:ro
+  init: true
+  restart: unless-stopped
+
+x-ready: &ready
+  interval: 5s
+  timeout: 10s
+  retries: 6
+  start_period: 180s
+
+services:
+  net:
+    # Owns the shared network namespace and publishes the front door. It runs
+    # nothing else, so it never restarts underneath the services that joined it.
+    image: python:3.11-slim-bookworm
+    command: ["sleep", "infinity"]
+    init: true
+    restart: unless-stopped
+    ports:
+      - "${FRONT_DOOR_BIND:-127.0.0.1}:${FRONT_DOOR_PORT:-18080}:8080"
+
+  postgres:
+    build:
+      context: ../..
+      dockerfile: deployment/dockerfiles/Dockerfile.postgres
+    image: agenticnetwork-postgres:local
+    network_mode: service:net
+    # initdb refuses to run as root (enroot runs it as the job's user on ENGR).
+    user: postgres
+    environment:
+      PGDATA: /var/lib/postgresql/data
+      POSTGRES_READY_FILE: /tmp/postgres_ready
+    volumes:
+      # The image's postgres-owned dir, so the new volume is postgres-owned too. It
+      # also receives the image's unused Debian default cluster (15/main, ~40 MB).
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      # The entrypoint touches the ready file once both databases exist.
+      test: ["CMD-SHELL", "test -f /tmp/postgres_ready && pg_isready -q -h /tmp/postgresql"]
+      <<: *ready
+    init: true
+    restart: unless-stopped
+
+  ads:
+    build:
+      context: ../..
+      dockerfile: deployment/dockerfiles/Dockerfile.ads
+    image: agenticnetwork-ads:local
+    network_mode: service:net
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "bash", "-c", "</dev/tcp/127.0.0.1/8888"]
+      <<: *ready
+    init: true
+    restart: unless-stopped
+
+  registration:
+    build:
+      context: ../..
+      dockerfile: deployment/dockerfiles/Dockerfile.registration
+    image: agenticnetwork-registration:local
+    network_mode: service:net
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ads:
+        condition: service_healthy
+    environment:
+      <<: *shared-env
+      REGISTRATION_SERVICE_HOST: 127.0.0.1
+      AGENT_BIND_HOST: 127.0.0.1
+      HANDLER_FILES_DIR: /var/lib/agenticnetwork/uploaded_handlers
+      AGENT_LOG_DIR: /var/lib/agenticnetwork/logs/agents
+    volumes:
+      - registration-data:/var/lib/agenticnetwork
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:8091/ready"]
+      <<: *ready
+    # Shutdown stops the spawned agents and unpublishes their cards.
+    stop_grace_period: 30s
+    init: true
+    restart: unless-stopped
+
+  planner:
+    build:
+      context: ../..
+      dockerfile: deployment/dockerfiles/Dockerfile.planner
+    image: agenticnetwork-planner:local
+    network_mode: service:net
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ads:
+        condition: service_healthy
+    environment:
+      <<: *shared-env
+      MAIN_AGENT_HOST: 127.0.0.1
+      MAIN_AGENT_LLM_MODEL: ${MAIN_AGENT_LLM_MODEL:-mock-planner}
+      AGENT_NETWORK_FAKE_ADS: "false"
+      REGISTRATION_SERVICE_URL: http://127.0.0.1:8091
+      CREDENTIALS_ENCRYPTION_KEY: ${CREDENTIALS_ENCRYPTION_KEY:-}
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:8090/ready"]
+      <<: *ready
+    init: true
+    restart: unless-stopped
+
+  mock-llm:
+    <<: *devstack
+    command: ["python", "-m", "devstack.mock_llm", "--host", "127.0.0.1", "--port", "8099"]
+
+  proxy:
+    # The front door for local use: signs every request in as DEV_USER_EMAIL. Replace
+    # it with an authenticating proxy for a real deployment (COMPOSE.md).
+    <<: *devstack
+    depends_on:
+      - planner
+    command:
+      - python
+      - -m
+      - devstack.dev_identity_proxy
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - --upstream
+      - http://127.0.0.1:8090
+      - --user
+      - ${DEV_USER_EMAIL:-dev@example.test}
+
+  seed:
+    # One-shot: registers devstack/seeds/*.json that are not registered yet, then
+    # waits until the planner lists them (the dev stack's own code path). In its own
+    # profile so `up` doesn't start it: `docker compose run --rm seed` runs it in the
+    # foreground and returns its exit code. (`wait` errors once a one-shot has exited.)
+    <<: *devstack
+    profiles: ["seed"]
+    restart: "no"
+    depends_on:
+      planner:
+        condition: service_healthy
+      registration:
+        condition: service_healthy
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+      SEED_MODEL: ${DEVSTACK_SPECIALIST_MODEL:-${MAIN_AGENT_LLM_MODEL:-mock-specialist}}
+    command:
+      - python
+      - -c
+      - |
+        import os, sys, time
+        from pathlib import Path
+        from devstack import stack
+        model = os.environ["SEED_MODEL"]
+        cfg = stack.StackConfig(
+            state_dir=Path("/tmp/seed"),
+            llm="mock" if model.startswith("mock-") else "openai",
+            specialist_model=model,
+        )
+        try:
+            names = stack.ensure_agents(cfg, time.monotonic() + 300)
+        except stack.StackError as exc:
+            sys.exit(f"seed: {exc}")
+        print("seed: the planner lists " + ", ".join(names))
+
+volumes:
+  pgdata:
+  registration-data:
