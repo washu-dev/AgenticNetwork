@@ -8,7 +8,8 @@ the two service venvs from docs/DEVSTACK.md; no other packages, network or keys.
 
 The tests share one stack and run in file order, like one session: start from nothing,
 sign in, send a prompt, find it saved, watch it stream, register an agent and reach it,
-check identity handling, shut down.
+check identity handling, shut down. test_scenarios.py reuses these helpers for the
+scenarios beyond that session, on a stack of its own.
 
     PIPELINE_PORT_OFFSET  added to every stack port (default 20000), so the suite can run
                           next to a stack on the default ports
@@ -29,6 +30,7 @@ import socket
 import subprocess
 import sys
 import time
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -61,11 +63,13 @@ ZEBRA_PROMPT = "Where does the zebra migration go across the savanna?"
 # ── The stack CLI ─────────────────────────────────────────────────────────────
 
 
-def stack_cli(command: str, *args: str, timeout: float = 240) -> subprocess.CompletedProcess:
-    """Run `scripts/stack COMMAND --state-dir STATE_DIR ARGS...`."""
+def stack_cli(
+    command: str, *args: str, timeout: float = 240, env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess:
+    """Run `scripts/stack COMMAND --state-dir STATE_DIR ARGS...` with ``env`` (default STACK_ENV)."""
     return subprocess.run(
         [str(STACK), command, "--state-dir", str(STATE_DIR), *args],
-        cwd=REPO, env=STACK_ENV, capture_output=True, text=True, timeout=timeout,
+        cwd=REPO, env=env or STACK_ENV, capture_output=True, text=True, timeout=timeout,
     )
 
 
@@ -75,8 +79,8 @@ def stack_json(command: str, *args: str, expect: int = 0) -> dict[str, Any]:
     return json.loads(proc.stdout)
 
 
-def up() -> subprocess.CompletedProcess:
-    return stack_cli("up", "--json", "--llm", "mock", "--port-offset", OFFSET)
+def up(env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
+    return stack_cli("up", "--json", "--llm", "mock", "--port-offset", OFFSET, env=env)
 
 
 # ── HTTP (http.client never routes through an environment proxy) ──────────────
@@ -102,9 +106,11 @@ def call(method: str, url: str, body: Any = None, headers: dict[str, str] | None
         return resp.status, raw.decode("utf-8", "replace")
 
 
-def stream(url: str, body: Any, headers: dict[str, str] | None = None) -> tuple[int, str, list]:
+def stream(
+    url: str, body: Any, headers: dict[str, str] | None = None, timeout: float = 120,
+) -> tuple[int, str, list]:
     """POST and read a server-sent-event stream: (status, content type, [(event, data)])."""
-    conn, resp = _open("POST", url, body, headers, timeout=120)
+    conn, resp = _open("POST", url, body, headers, timeout=timeout)
     events, name, data = [], "message", []
     with contextlib.closing(conn):
         for raw in resp:
@@ -210,17 +216,18 @@ def _terminated(signum: int, frame: Any) -> None:
     raise KeyboardInterrupt(f"signal {signum}")  # pytest still runs fixture teardown
 
 
-@pytest.fixture(scope="module")
-def stack() -> Any:
-    """The stack, started from nothing. Always stopped with the same state dir, even when
-    `up` or a test fails or the run is terminated; the dir is only cleared by the next
-    run's `reset`, which stops whatever it still records first."""
+@contextlib.contextmanager
+def fresh_stack(env: dict[str, str] | None = None) -> Iterator[dict[str, Any]]:
+    """The stack, started from nothing (with ``env`` for `up`, default STACK_ENV). Always
+    stopped with the same state dir, even when `up` or a test fails or the run is
+    terminated; the dir is only cleared by the next run's `reset`, which stops whatever it
+    still records first."""
     if STATE_DIR.exists():
         reset = stack_cli("reset")
         assert reset.returncode == 0, f"stack reset exited {reset.returncode}:\n{reset.stderr}"
     previous = signal.signal(signal.SIGTERM, _terminated)
     try:
-        started = up()
+        started = up(env)
         assert started.returncode == 0, f"stack up exited {started.returncode}:\n{started.stdout}\n{started.stderr}"
         status = json.loads(started.stdout)
         not_ready = {name: svc["detail"] for name, svc in status["services"].items() if not svc["ready"]}
@@ -236,6 +243,13 @@ def stack() -> Any:
         signal.signal(signal.SIGTERM, previous)
     assert down.returncode == 0, f"stack down exited {down.returncode}:\n{down.stderr}"
     assert not listening(stack_ports(stack_json("status", expect=1))), "stack ports still listening after down"
+
+
+@pytest.fixture(scope="module")
+def stack() -> Any:
+    """This file's stack; see fresh_stack."""
+    with fresh_stack() as started:
+        yield started
 
 
 @pytest.fixture(scope="module")
