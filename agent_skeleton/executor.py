@@ -47,22 +47,46 @@ def _user_text(context: "RequestContext") -> str:
         return ""
 
 
+# Based on washu-dev/agent-skeleton PR #29 by raneemousa3.
+# Reserved metadata keys that carry per-user secrets. The AgenticNetwork planner
+# may inject these into request metadata; they must NEVER enter the model-visible
+# payload (run_tool_loop json.dumps's the payload into the LLM user message, and
+# any provider-side trace would then store the raw secret).
+_PRIVATE_METADATA_KEYS = frozenset({"credentials", "authorization", "secrets", "secret", "token"})
+
+
+def _model_visible_metadata(value: object) -> dict[str, Any]:
+    """Return a dict copy with reserved private keys removed (case-insensitive).
+
+    Non-dict input yields an empty dict. Credential context is isolated at the A2A
+    boundary and is intentionally not forwarded to the LLM."""
+    if not isinstance(value, dict):
+        return {}
+    return {
+        key: item
+        for key, item in value.items()
+        if str(key).lower() not in _PRIVATE_METADATA_KEYS
+    }
+
+
 def _payload_from_context(context: "RequestContext") -> dict[str, Any]:
     """Merge structured input from request metadata + message parts (DataParts).
-    Mirrors disaster's _a2a_payload_from_context."""
-    payload: dict[str, Any] = dict(getattr(context, "metadata", None) or {})
+    Mirrors disaster's _a2a_payload_from_context.
+
+    All metadata and data sources are passed through ``_model_visible_metadata``
+    so reserved credential keys cannot reach the model-visible payload."""
+    payload: dict[str, Any] = _model_visible_metadata(getattr(context, "metadata", None))
     message = getattr(context, "message", None)
     if message:
-        msg_meta = getattr(message, "metadata", None)
-        if isinstance(msg_meta, dict):
-            payload.update(msg_meta)
+        payload.update(_model_visible_metadata(getattr(message, "metadata", None)))
         for part in getattr(message, "parts", []) or []:
             root = part.root
             part_meta = getattr(root, "metadata", None) or getattr(part, "metadata", None)
-            if isinstance(part_meta, dict):
-                payload.update(part_meta)
+            payload.update(_model_visible_metadata(part_meta))
             if is_data_part(root) and isinstance(getattr(root, "data", None), dict):
-                payload.update(root.data)
+                # DataPart.data is intended structured input, but strip reserved
+                # keys here too so a nested credential injection can't slip through.
+                payload.update(_model_visible_metadata(root.data))
     return payload
 
 

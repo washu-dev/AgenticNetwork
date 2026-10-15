@@ -62,6 +62,8 @@ def _exit_with_parent() -> None:
 def main() -> None:
     _exit_with_parent()
 
+    from pydantic import ValidationError
+
     from registration_service.models import (
         LLMConfig,
         ProxyConfig,
@@ -93,6 +95,16 @@ def main() -> None:
     try:
         config = parse_config(wire_type, {k: v for k, v in raw_config.items()
                                          if k not in ("name", "description")})
+    except ValidationError as exc:
+        # Log field locations and messages only: str(exc) echoes input values, and
+        # a missing-field error echoes the whole config, which can hold a proxy
+        # auth_header or secrets in a custom agent's `extra`.
+        problems = "; ".join(
+            f"{'.'.join(str(p) for p in err['loc']) or '<config>'}: {err['msg']}"
+            for err in exc.errors(include_url=False, include_input=False)
+        )
+        logger.error("runner_bad_config handler_type=%s error=%s", wire_type, problems)
+        sys.exit(1)
     except Exception as exc:
         logger.error("runner_bad_config handler_type=%s error=%s", wire_type, exc)
         sys.exit(1)
