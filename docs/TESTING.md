@@ -33,7 +33,7 @@ The request path (user → planner → directory → A2A → agent → answer) a
 | Registration | `registration_service/.venv/bin/python -m pytest registration_service/tests -q` | 293 | 79% | The API, upload checks, the image build manifest, the native supervisor and agent processes, the Cloud Run backend (mocked), streaming and tool-loop agents, credentials, the fake database |
 | Agent skeleton | `registration_service/.venv/bin/python -m pytest agent_skeleton/tests -q` | 65 | 67% | The spec-driven engine, the `call_endpoint` tool and its secret redaction, per-operation tools, preset tools, the multi-endpoint manager, the generator, credentials kept out of the LLM prompt, the tool-schema and handler contract |
 | Directory tooling | `registration_service/.venv/bin/python -m pytest agent_directory_service/tests -q` | 22 | 50% | Card ↔ record conversion, the `dirctl` CLI backend (mocked), route summaries and routing wake-up |
-| Dev stack | `registration_service/.venv/bin/python -m pytest devstack/tests -q` | 48 | 50% | The mock LLM, the fake `dirctl`, the identity proxy, the stack CLI's checks that need no running services |
+| Dev stack | `registration_service/.venv/bin/python -m pytest devstack/tests -q` | 49 | 50% | The mock LLM, the fake `dirctl`, the identity proxy, the stack CLI's checks that need no running services |
 | Pipeline | `registration_service/.venv/bin/python -m pytest tests/pipeline -q` | 12 | — | The running system, end to end (next section) |
 
 Counts and coverage were measured on 2026-10-15 with the local venvs; both move as tests are

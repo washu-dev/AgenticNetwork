@@ -135,6 +135,16 @@ def listener(log: Path, marker: str, *, session: bool = False) -> tuple[subproce
     return proc, int(log.read_text().split()[0])
 
 
+def test_process_command_is_not_truncated():
+    # Markers come at the end of long command lines (venv paths, agent entry points).
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)", "x" * 200, "end-marker"])
+    try:
+        assert stack.process_command(proc.pid).endswith("end-marker")
+    finally:
+        proc.kill()
+        proc.wait()
+
+
 @needs_lsof
 @pytest.mark.parametrize("own", [True, False])
 def test_sweep_stops_only_this_stacks_agents(tmp_path, own):

@@ -358,7 +358,9 @@ def listening_pids(first: int, last: int) -> dict[int, set[int]] | None:
 
 
 def process_command(pid: int) -> str:
-    result = subprocess.run(["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True, check=False)
+    # -ww: never truncate. Linux procps cuts the line to 80 columns when it is not writing
+    # to a terminal (e.g. under pytest or a script), dropping markers at the end.
+    result = subprocess.run(["ps", "-ww", "-o", "command=", "-p", str(pid)], capture_output=True, text=True, check=False)
     return result.stdout.strip()
 
 
