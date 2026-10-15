@@ -10,7 +10,8 @@ command") use the same start command.
 
 ## Quick start
 
-You need Python 3.11 or newer as `python3`, and the two service venvs (one-time setup
+You need Python 3.11 or newer as `python3`, `lsof` (preinstalled on macOS; `down` and `reset`
+use it to find leftover processes), and the two service venvs (one-time setup
 below). From the repo root:
 
 ```bash
@@ -72,15 +73,15 @@ again.
 | `smoke [--prompt TEXT] [--json]` | Sends one prompt through the front door. Checks that a specialist answered and that the conversation was saved. |
 | `logs SERVICE [-n N] [-f]` | Shows a log: `proxy`, `planner`, `registration`, `mock-llm`, `directory` (every dirctl call), `mock-llm-requests` (every LLM request and reply), or an agent's name or id. |
 | `add-agent FILE.json` | Registers an agent from a registration body (see below). |
-| `down` | Stops this stack's services and spawned agents, and reports anything still listening on its ports. It also stops a stack on the same ports that was started from another state dir. Other stacks' agents are left alone. |
-| `reset` | `down`, then deletes what the stack created in `.devstack/` for a clean start. It removes the dir itself only if nothing else is in it. |
+| `down [--json]` | Stops this stack's services and spawned agents, and reports anything still listening on its ports. A service of this stack whose pid file was lost is found by its log path and stopped too. It never stops another stack's services or agents: if a stack started from another state dir holds these ports, `down` names it (pid, port, state dir), prints the command that stops it and exits 1. `--json` prints the same report on stdout. |
+| `reset` | `down`, then deletes what the stack created in `.devstack/` for a clean start. It removes the dir itself only if nothing else is in it. If `down` leaves anything running, `reset` exits 1 and deletes nothing, so the pid files and logs stay for the next try. |
 | `doctor [--json]` | Checks the setup without starting anything. |
 
 Every command accepts `--state-dir DIR` (default `.devstack/`, or `$DEVSTACK_STATE_DIR`).
 `up` refuses a dir that is not empty and was not created by the stack. `down` in a dir
 with no `stack.json` (a stack that never started) stops only what its pid files name.
 
-**Exit codes:** 0 ok; 1 not ready (`status`) or something left running (`down`);
+**Exit codes:** 0 ok; 1 not ready (`status`) or something left running (`down`, `reset`);
 2 usage error; 3 preflight failed (a missing venv, a busy port or a missing setting);
 5 a service did not become ready; 6 smoke test failed. When `up` fails it names the
 service and prints the last 40 lines of its log. `up --json` and `status --json` print
@@ -135,7 +136,8 @@ Services run straight from your checkout. After editing code, restart with
 ## Troubleshooting
 
 - **`up` exits 3, "port ... is in use":** another program (or a stack from another
-  `--state-dir`) holds the port. Stop it, or use `--port-offset 1000`.
+  `--state-dir`) holds the port. Stop it (`scripts/stack down --state-dir <that dir>` for
+  a stack), or use `--port-offset 1000`.
 - **`up` exits 5:** the message names the service and shows the end of its log. Read
   the full log with `scripts/stack logs <service>`. `up --keep-on-failure` leaves the
   started services running so you can poke at them.
@@ -144,7 +146,9 @@ Services run straight from your checkout. After editing code, restart with
   `scripts/stack logs directory` to see whether `routing publish` ran.
 - **An odd answer with the mock LLM:** `scripts/stack logs mock-llm-requests` shows every
   request and reply, for both the planner and the agents.
-- **Something is still running after `down`:** `down` lists it with its pid and command.
+- **Something is still running after `down`:** `down` lists it with its pid and command
+  (for another stack's service, the command that stops it). A service that did not stop
+  keeps its pid file, so running `down` again retries it.
   `lsof -nP -iTCP:19200-19299 -sTCP:LISTEN` shows anything in the agent port range.
 - **Anything else:** `scripts/stack reset`, then `scripts/stack up`.
 
@@ -161,7 +165,8 @@ Services run straight from your checkout. After editing code, restart with
 
 ## Future work
 
-- **Docker tier:** the same commands, backed by containers with the source mounted, plus
-  real Postgres and a real `dir` daemon (tier 2 in `OPEN_SOURCE_RELEASE.md`).
+- **Docker tier:** done separately as the Docker Compose stack, with real Postgres and a real
+  `dir` daemon ([`deployment/COMPOSE.md`](deployment/COMPOSE.md)). Running these same `scripts/stack`
+  commands against containers is not planned.
 - **Agent folders:** `add-agent` takes a JSON registration body today. Running a folder
   from the `agent-directory` repo (a `custom` upload) through the same path comes next.

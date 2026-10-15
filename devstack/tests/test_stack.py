@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shlex
 import shutil
 import socket
 import subprocess
@@ -122,10 +123,11 @@ def test_listed_agent_that_does_not_answer_is_unreachable():
         assert stack.unreachable_agents(listed, ["echo", "other"]) == ["Echo"]
 
 
-def listener(log: Path, marker: str) -> tuple[subprocess.Popen, int]:
+def listener(log: Path, marker: str, *, session: bool = False) -> tuple[subprocess.Popen, int]:
+    """``session`` makes it a process-group leader, as `up` starts services."""
     log.parent.mkdir(parents=True, exist_ok=True)
     with log.open("w") as out:
-        proc = subprocess.Popen([sys.executable, "-c", LISTENER, marker], stdout=out)
+        proc = subprocess.Popen([sys.executable, "-c", LISTENER, marker], stdout=out, start_new_session=session)
     deadline = time.monotonic() + 10
     while not log.read_text().strip():
         assert time.monotonic() < deadline, "listener did not start"
@@ -151,14 +153,88 @@ def test_sweep_stops_only_this_stacks_agents(tmp_path, own):
 
 
 @needs_lsof
-def test_down_finds_a_service_started_from_another_state_dir(tmp_path):
-    other = tmp_path.resolve() / "other"
-    proc, port = listener(other / "logs" / "mock-llm.log", "devstack.mock_llm")
+def test_holder_logging_outside_any_state_dir_gets_a_kill_command(tmp_path):
+    state, handrun = tmp_path.resolve() / "state", tmp_path.resolve() / "handrun"  # handrun has no marker
+    proc, port = listener(handrun / "logs" / "mock-llm.log", "devstack.mock_llm")
     try:
-        cfg = stack.StackConfig(state_dir=tmp_path.resolve() / "state", port_offset=port - stack.BASE_PORTS["mock-llm"])
-        assert stack.stray_services(cfg, "mock-llm", "devstack.mock_llm") == []  # not a state dir
-        (other / stack.STATE_MARKER).touch()
-        assert stack.stray_services(cfg, "mock-llm", "devstack.mock_llm") == [(proc.pid, other)]
+        cfg = stack.StackConfig(state_dir=state, port_offset=port - stack.BASE_PORTS["mock-llm"])
+        ours, foreign = stack.stray_services(cfg, "mock-llm", "devstack.mock_llm")
+        assert ours == []
+        assert [(f["pid"], f["state_dir"], f["stop_command"]) for f in foreign] == [(proc.pid, None, f"kill {proc.pid}")]
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+@needs_lsof
+def test_down_adopts_only_services_that_log_into_its_own_state_dir(tmp_path):
+    state, other = tmp_path.resolve() / "state", tmp_path.resolve() / "other"
+    stack.ensure_state_dir(stack.StackConfig(state_dir=other))  # another stack's state dir
+    for log, owned in ((other / "logs" / "mock-llm.log", False), (state / "logs" / "mock-llm.log", True)):
+        proc, port = listener(log, "devstack.mock_llm")
+        try:
+            cfg = stack.StackConfig(state_dir=state, port_offset=port - stack.BASE_PORTS["mock-llm"])
+            ours, foreign = stack.stray_services(cfg, "mock-llm", "devstack.mock_llm")
+            if owned:  # ours, but its pid file was lost
+                assert (ours, foreign) == ([proc.pid], [])
+            else:
+                assert ours == [] and [(f["pid"], f["port"], f["state_dir"]) for f in foreign] == [
+                    (proc.pid, port, str(other))
+                ]
+        finally:
+            proc.kill()
+            proc.wait()
+
+
+@needs_lsof
+def test_down_reports_but_never_stops_another_stacks_service(tmp_path, monkeypatch, capsys):
+    state, other = tmp_path.resolve() / "state", tmp_path.resolve() / "other"
+    stack.ensure_state_dir(stack.StackConfig(state_dir=other))
+    proc, port = listener(other / "logs" / "mock-llm.log", "devstack.mock_llm", session=True)
+    # The agent port range may run past 65535 at this offset; agent sweeping has its own test.
+    monkeypatch.setattr(stack, "sweep_agents", lambda cfg: [])
+    try:
+        cfg = stack.StackConfig(state_dir=state, port_offset=port - stack.BASE_PORTS["mock-llm"])
+        stack.ensure_state_dir(cfg)
+        cfg.config_file.write_text(json.dumps(cfg.saved()), encoding="utf-8")
+        assert stack.main(["down", "--json", "--state-dir", str(state)]) == stack.EXIT_NOT_READY
+        assert proc.poll() is None  # still running
+        out = capsys.readouterr()
+        report = json.loads(out.out)
+        stop_command = f"scripts/stack down --state-dir {shlex.quote(str(other))}"
+        holder = {"service": "mock-llm", "pid": proc.pid, "port": port, "state_dir": str(other)}
+        assert report["ok"] is False and report["foreign"] == [{**holder, "stop_command": stop_command}]
+        assert f"pid {proc.pid}" in out.err and stop_command in out.err
+        # Its ports are not free, so reset deletes nothing either.
+        assert stack.main(["reset", "--state-dir", str(state)]) == stack.EXIT_NOT_READY
+        assert proc.poll() is None and cfg.config_file.exists()
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+@needs_lsof
+def test_failed_shutdown_keeps_recovery_state(tmp_path, monkeypatch):
+    """A service that will not stop keeps its pid file, its log and the stack's config, and
+    reset deletes nothing; once it stops, reset removes only what the stack created."""
+    state = tmp_path.resolve() / "state"
+    cfg = stack.StackConfig(state_dir=state, port_offset=13000)  # ports below the usual ephemeral ranges
+    stack.ensure_state_dir(cfg)
+    cfg.config_file.write_text(json.dumps(cfg.saved()), encoding="utf-8")
+    (state / "notes.txt").write_text("keep me", encoding="utf-8")
+    proc, _ = listener(cfg.log_file("mock-llm"), "devstack.mock_llm", session=True)
+    cfg.pid_file("mock-llm").write_text(json.dumps({"pid": proc.pid}), encoding="utf-8")
+    stop_pid = stack.stop_pid
+    try:
+        monkeypatch.setattr(stack, "stop_pid", lambda *args, **kwargs: False)  # it survives SIGKILL
+        for command in ("down", "reset"):
+            assert stack.main([command, "--state-dir", str(state)]) == stack.EXIT_NOT_READY
+            assert proc.poll() is None
+            assert cfg.config_file.exists() and cfg.pid_file("mock-llm").exists() and cfg.log_file("mock-llm").exists()
+        monkeypatch.setattr(stack, "stop_pid", stop_pid)
+        assert stack.main(["reset", "--state-dir", str(state)]) == stack.EXIT_OK
+        assert proc.poll() is not None
+        assert sorted(p.name for p in state.iterdir()) == [stack.STATE_MARKER, "notes.txt"]
     finally:
         proc.kill()
         proc.wait()

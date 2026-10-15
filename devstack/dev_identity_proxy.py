@@ -4,7 +4,9 @@ In production an Apache/Shibboleth service provider authenticates the user and
 passes their identity to the planner in the ``mail`` / ``eppn`` / ``remote-user``
 headers. On a laptop this proxy plays that role: it drops any identity headers
 the client sent (so nobody can claim another identity through it) and injects
-``mail: <DEV_USER_EMAIL>`` (default ``dev@example.test``).
+``mail: <DEV_USER_EMAIL>`` (default ``dev@example.test``). It answers only requests
+addressed to a loopback name (``localhost``, ``*.localhost``, ``127.0.0.1``, ``[::1]``),
+so a web page that rebinds its own DNS name to this port cannot drive it.
 
 It forwards every method and body unchanged (JSON, multipart uploads) and
 streams responses through as they arrive, so the chat UI's SSE stream from
@@ -28,6 +30,15 @@ from urllib.parse import urlsplit
 
 DEFAULT_USER = "dev@example.test"
 IDENTITY_HEADERS = frozenset({"mail", "eppn", "remote-user"})
+LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+def loopback_host(host_header: str | None) -> bool:
+    """True when the request's Host names this machine's loopback (or is absent)."""
+    if not host_header:
+        return True
+    host = (urlsplit(f"//{host_header}").hostname or "").lower()
+    return host in LOOPBACK_HOSTS or host.endswith(".localhost")
 # Hop-by-hop headers (RFC 9110 section 7.6.1) are never forwarded.
 HOP_BY_HOP = frozenset(
     {
@@ -103,6 +114,10 @@ class ProxyHandler(BaseHTTPRequestHandler):
         return self.rfile.read(int(length))
 
     def _proxy(self) -> None:
+        if not loopback_host(self.headers.get("Host")):
+            self.close_connection = True
+            self._error(403, "the dev identity proxy only answers requests to localhost")
+            return
         try:
             body = self._read_body()
         except (ValueError, OSError):

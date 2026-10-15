@@ -114,6 +114,24 @@ def test_sse_is_streamed_as_it_arrives(proxy_port):
     assert (first + rest).count(b"event: trace") == 3
 
 
+@pytest.mark.parametrize("host", ["attacker.example:8080", "192.168.1.20:8080", "localhost.attacker.example"])
+def test_non_loopback_host_is_refused(proxy_port, host):
+    response, conn = request(proxy_port, "GET", "/me", headers={"Host": host})
+    body = json.loads(response.read())
+    conn.close()
+    assert response.status == 403
+    assert "localhost" in body["detail"]
+
+
+@pytest.mark.parametrize("host", ["localhost:8080", "127.0.0.1:8080", "[::1]:8080", "app.localhost"])
+def test_loopback_hosts_are_proxied(proxy_port, host):
+    response, conn = request(proxy_port, "GET", "/me", headers={"Host": host})
+    seen = json.loads(response.read())
+    conn.close()
+    assert response.status == 200
+    assert seen["headers"]["mail"] == "dev@example.test"
+
+
 def test_unreachable_planner_is_a_502():
     proxy = dev_identity_proxy.make_server("127.0.0.1", 0, "http://127.0.0.1:9", "dev@example.test")
     port = _serve(proxy)

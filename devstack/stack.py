@@ -21,7 +21,7 @@ The tooling treats the system as a black box: it talks to the services only
 through their HTTP APIs and the ``dirctl`` CLI, so the same commands can judge a
 rebuilt component. Service start commands live in ``_service_specs``.
 
-Exit codes: 0 ok; 1 not ready (status) or something left running (down);
+Exit codes: 0 ok; 1 not ready (status) or something left running (down, reset);
 2 usage; 3 preflight failed; 5 a service failed to become ready; 6 smoke failed.
 
 Standard library only (Python >= 3.11).
@@ -34,6 +34,7 @@ import contextlib
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import socket
@@ -641,27 +642,45 @@ def _reap(pid: int) -> bool:
 
 
 def stop_service(cfg: StackConfig, spec: ServiceSpec) -> str | None:
-    """Stop one service; returns a problem description or None."""
+    """Stop one service; returns a problem description or None.
+
+    A service that does not exit keeps its pid file, so a later `down` can retry."""
     pid = service_pid(cfg, spec.name, spec.marker)
-    problem = None
     if pid is not None and not stop_pid(pid, group=True, grace=spec.stop_grace):
-        problem = f"{spec.name} (pid {pid}) did not exit after SIGKILL"
+        return f"{spec.name} (pid {pid}) did not exit after SIGKILL; kept {cfg.pid_file(spec.name)}"
     with contextlib.suppress(OSError):
         cfg.pid_file(spec.name).unlink()
-    return problem
+    return None
 
 
-def stray_services(cfg: StackConfig, name: str, marker: str) -> list[tuple[int, Path]]:
-    """Devstack ``name`` services on our port that no pid file here names (a stack at
-    this offset started from another state dir): [(pid, that state dir)]."""
-    found = []
-    for pid in sorted(listening_pids(cfg.port(name), cfg.port(name)) or {}):
-        if marker not in process_command(pid):
+def stray_services(cfg: StackConfig, name: str, marker: str) -> tuple[list[int], list[dict[str, Any]]]:
+    """Devstack ``name`` services on our port that no pid file here names: (ours, foreign).
+
+    Ours log into this state dir (their pid file was lost); ``down`` stops them. Foreign
+    ones were started from another state dir (or by hand) and are never stopped here:
+    [{service, pid, port, state_dir, stop_command}], ``state_dir`` None when unknown."""
+    port = cfg.port(name)
+    named = (read_pid_file(cfg, name) or {}).get("pid")
+    ours: list[int] = []
+    foreign: list[dict[str, Any]] = []
+    for pid in sorted(listening_pids(port, port) or {}):
+        if pid == named or marker not in process_command(pid):
             continue
         log = process_stdout(pid)
-        if log is not None and log.name == f"{name}.log" and (log.parent.parent / STATE_MARKER).exists():
-            found.append((pid, log.parent.parent))
-    return found
+        if log == cfg.log_file(name):
+            ours.append(pid)
+            continue
+        other = log.parent.parent if log is not None and log.name == f"{name}.log" else None
+        if other is not None and not (other / STATE_MARKER).exists():
+            other = None  # not a state dir: `down --state-dir` there would stop nothing
+        foreign.append({
+            "service": name,
+            "pid": pid,
+            "port": port,
+            "state_dir": str(other) if other else None,
+            "stop_command": f"scripts/stack down --state-dir {shlex.quote(str(other))}" if other else f"kill {pid}",
+        })
+    return ours, foreign
 
 
 def sweep_agents(cfg: StackConfig) -> list[str]:
@@ -673,7 +692,7 @@ def sweep_agents(cfg: StackConfig) -> list[str]:
     first, last = cfg.agent_ports
     holders = listening_pids(first, last)
     if holders is None:
-        return ["lsof not found: cannot check the agent port range for leftover agents"]
+        return ["lsof not found: install lsof; down and reset need it to check for leftover agents"]
     ours = {
         pid for pid in holders
         if any(marker in process_command(pid) for marker in AGENT_PROCESS_MARKERS)
@@ -1041,16 +1060,17 @@ def cmd_down(args: argparse.Namespace) -> int:
         problem = stop_service(cfg, spec)
         if problem:
             problems.append(problem)
+    foreign: list[dict[str, Any]] = []
     if saved is None:
         # Without stack.json the ports are unknown, so touch nothing a pid file did not name.
         print(f"devstack: no stack recorded in {state_dir} (no stack.json); stopped only what its pid files named",
               file=sys.stderr)
-        if problems:
-            print("devstack: left running:\n  - " + "\n  - ".join(problems), file=sys.stderr)
-        return EXIT_NOT_READY if problems else EXIT_OK
+        return finish_down(state_dir, problems, foreign, as_json=getattr(args, "json", False))
     for name, spec in reversed(list(specs.items())):
-        for pid, other in stray_services(cfg, name, spec.marker):
-            print(f"devstack: stopping {name} (pid {pid}) of the stack in {other}", file=sys.stderr)
+        ours, others = stray_services(cfg, name, spec.marker)
+        foreign.extend(others)
+        for pid in ours:
+            print(f"devstack: stopping {name} (pid {pid}), found by its log in {state_dir}", file=sys.stderr)
             with contextlib.suppress(ProcessLookupError):
                 if not stop_pid(pid, group=os.getpgid(pid) == pid, grace=spec.stop_grace):
                     problems.append(f"{name} (pid {pid}) did not exit after SIGKILL")
@@ -1058,9 +1078,24 @@ def cmd_down(args: argparse.Namespace) -> int:
     # The registry was in memory; its directory records point at stopped agents.
     with contextlib.suppress(FileNotFoundError):
         cfg.directory_state.unlink()
+    for holder in foreign:
+        owner = f"of the stack in {holder['state_dir']}" if holder["state_dir"] else "(started outside any state dir)"
+        problems.append(
+            f"port {holder['port']} ({holder['service']}) is held by pid {holder['pid']} {owner}; "
+            f"left alone. To stop it: {holder['stop_command']}"
+        )
+    held = {holder["port"] for holder in foreign}
     for name in cfg.services:
-        if name != "directory" and port_in_use(cfg.port(name)):
+        if name != "directory" and cfg.port(name) not in held and port_in_use(cfg.port(name)):
             problems.append(f"port {cfg.port(name)} ({name}) is still in use by {port_holder(cfg.port(name))}")
+    return finish_down(state_dir, problems, foreign, as_json=getattr(args, "json", False))
+
+
+def finish_down(state_dir: Path, problems: list[str], foreign: list[dict[str, Any]], *, as_json: bool) -> int:
+    """Report what `down` left running (as JSON too with --json); returns its exit code."""
+    if as_json:
+        print(json.dumps({"ok": not problems, "state_dir": str(state_dir), "left_running": problems,
+                          "foreign": foreign}, indent=2))
     if problems:
         print("devstack: left running:\n  - " + "\n  - ".join(problems), file=sys.stderr)
         return EXIT_NOT_READY
@@ -1132,6 +1167,11 @@ def cmd_reset(args: argparse.Namespace) -> int:
             EXIT_USAGE,
         )
     code = cmd_down(args)
+    if code != EXIT_OK:
+        # Keep the config, pid files and logs: they are how a later `down` finds what is left.
+        print(f"devstack: deleted nothing in {state_dir} because down left something running; "
+              "stop what is listed above, then run reset again", file=sys.stderr)
+        return code
     if state_dir.exists():
         remove_state(state_dir)
     return code
@@ -1295,7 +1335,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         check("fake dirctl", result.returncode == 0, short(result.stdout or result.stderr))
     except OSError as exc:
         check("fake dirctl", False, str(exc))
-    check("lsof", shutil.which("lsof") is not None, shutil.which("lsof") or "not found (down cannot sweep agent ports)", warn=True)
+    check("lsof", shutil.which("lsof") is not None, shutil.which("lsof") or "not found (down and reset need it to find leftover processes)")
     for name in cfg.services:
         if name == "directory":
             continue
@@ -1350,7 +1390,8 @@ def build_parser() -> argparse.ArgumentParser:
     up.add_argument("--keep-on-failure", action="store_true", help="Leave started services running if up fails.")
     up.set_defaults(func=cmd_up)
 
-    down = sub.add_parser("down", parents=[common], help="Stop every service and spawned agent.")
+    down = sub.add_parser("down", parents=[common], help="Stop this stack's services and spawned agents.")
+    down.add_argument("--json", action="store_true", help="Print what is left running (and whose it is) as JSON.")
     down.set_defaults(func=cmd_down)
 
     status = sub.add_parser("status", parents=[common], help="Show what is running (exit 0 only when ready).")
@@ -1363,7 +1404,11 @@ def build_parser() -> argparse.ArgumentParser:
     logs.add_argument("-f", "--follow", action="store_true")
     logs.set_defaults(func=cmd_logs)
 
-    reset = sub.add_parser("reset", parents=[common], help="down, then delete the state it created (logs, directory, added agents).")
+    reset = sub.add_parser(
+        "reset", parents=[common],
+        help="down, then delete the state it created (logs, directory, added agents); "
+        "deletes nothing if down leaves anything running.",
+    )
     reset.set_defaults(func=cmd_reset)
 
     smoke = sub.add_parser("smoke", parents=[common], help="Send one prompt through the front door and check the answer.")
