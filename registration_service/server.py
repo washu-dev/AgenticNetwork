@@ -35,23 +35,13 @@ from registration_service.credential_catalog import CATALOG as CREDENTIAL_CATALO
 from registration_service.flags import fake_db_enabled, fake_supervisor_enabled
 from registration_service.oasf_skills import OASF_SKILLS, has_routable_skill
 from registration_service.port_pool import assign_port
-from registration_service.supervisor import _deserialize_config, get_supervisor
+from registration_service.supervisor import _deserialize_config, _uploads_code, get_supervisor
 from registration_service.validator import validate_handler, validate_tool_module
 
 
-def _uploads_code(agent: dict) -> bool:
-    """Whether a stored agent ships uploaded Python — the gate for the whole
-    register-unapproved → upload → approve lifecycle and the handler
-    upload/review/download/approve/reject endpoints below.
-
-    Asks the CONFIG, not the handler_type name: both a ``custom`` handler and an
-    ``llm`` agent whose ``tools.source`` is ``upload`` qualify. A malformed stored
-    config is treated as "not uploaded code" so these endpoints 404 rather than 500.
-    """
-    try:
-        return carries_upload(_deserialize_config(agent))
-    except Exception:
-        return False
+# `_uploads_code(agent)` (from supervisor, shared with cluster startup recovery) is
+# the gate for the whole register-unapproved → upload → approve lifecycle and the
+# handler upload/review/download/approve/reject endpoints below.
 
 
 def _handler_dir(agent_id: Any) -> Path:

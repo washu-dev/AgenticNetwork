@@ -246,13 +246,14 @@ class FakeConnection:
         if "select id from agents where status" in s and "'live'" in s:
             return [FakeRecord({"id": v["id"]}) for v in self._s.agents.values() if v["status"] == "live"]
 
-        # recover_live_agents (cluster): SELECT id, name, handler_type, port, updated_at ...
+        # recover_live_agents (cluster): SELECT id, name, handler_type, config, port, updated_at ...
         if "from agents where status = 'live'" in s:
             return [
                 FakeRecord({
                     "id": v["id"],
                     "name": v["name"],
                     "handler_type": v["handler_type"],
+                    "config": v["config"],
                     "port": v["port"],
                     "updated_at": v["updated_at"],
                 })

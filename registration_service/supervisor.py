@@ -339,9 +339,12 @@ class Supervisor:
         (`dir`) is wiped fresh each deploy — so a persisted status='live' row is a
         *ghost* (no process, not routed, invisible on the planner dashboard). The
         registration container can't re-spawn srun steps itself, but it can
-        reconcile the DB to reality: re-queue custom agents whose image still
-        exists on Docker Hub back to 'image_ready' (the host spawn loop then
-        redeploys + republishes them), and mark the rest 'stopped'.
+        reconcile the DB to reality: re-queue uploaded-code agents (`custom`, or
+        `llm` with uploaded tools: the same `_uploads_code` predicate that gates
+        approval and the image build) whose image still exists on Docker Hub back
+        to 'image_ready' (the host spawn loop then redeploys + republishes them),
+        and mark the rest 'stopped'. Agents that upload no code have no image and
+        no cluster spawn path, so their 'live' rows are always ghosts.
 
         Cloud (`publishes_decoupled`): Cloud Run services and the ADS card (on a
         separate VM) persist independently of this singleton, so a 'live' row is
@@ -376,7 +379,7 @@ class Supervisor:
         # ── Cluster backend: reconcile ghost 'live' rows to reality ──
         async with pool.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT id, name, handler_type, port, updated_at "
+                "SELECT id, name, handler_type, config, port, updated_at "
                 "FROM agents WHERE status = 'live'"
             )
         if not rows:
@@ -397,7 +400,7 @@ class Supervisor:
             # build-poll path (_check_building_agents), where updated_at really is
             # the approval time and a newer image is what we're waiting for.
             redeployable = (
-                row["handler_type"] == "custom"
+                _uploads_code(dict(row))
                 and _oob_build_enabled()
                 and await _image_exists_on_dockerhub(
                     f"{_image_registry()}/agenticnetwork-custom-{_image_slug(row['name'])}",
@@ -416,7 +419,7 @@ class Supervisor:
                         )
                         requeued += 1
                     else:
-                        # Not auto-redeployable (image gone or non-custom): free the
+                        # Not auto-redeployable (image gone or no uploaded code): free the
                         # port and mark stopped. init_db() purges stopped rows next run.
                         if row["port"]:
                             await release_port(conn, row["port"])
@@ -978,6 +981,22 @@ def _deserialize_config(agent: dict[str, Any]) -> AnyConfig:
     raw = agent["config"]
     config_data: dict = raw if isinstance(raw, dict) else json.loads(raw)
     return parse_config(handler_type, config_data)
+
+
+def _uploads_code(agent: dict[str, Any]) -> bool:
+    """Whether a stored agent ships uploaded Python: the gate for admin approval,
+    the per-agent image build, and (on the cluster) redeploy on startup recovery.
+
+    Asks the CONFIG, not the handler_type name: both a ``custom`` handler and an
+    ``llm`` agent whose ``tools.source`` is ``upload`` qualify, including rows
+    stored under a legacy name (normalized by ``_deserialize_config``). A malformed
+    stored config is treated as "not uploaded code" (the API then 404s rather than
+    500s, and recovery does not re-queue it).
+    """
+    try:
+        return carries_upload(_deserialize_config(agent))
+    except Exception:
+        return False
 
 
 def _build_agent_card(

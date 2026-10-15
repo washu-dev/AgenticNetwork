@@ -5,6 +5,8 @@ Exercised with injected fakes — no real GitHub, Docker Hub, ADS, or srun.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from registration_service import db, supervisor as sup_mod
@@ -332,4 +334,151 @@ async def test_recover_live_agent_requeues_not_stops(monkeypatch):
     # And it surfaces to the host spawn loop.
     queue = await sup.spawn_queue()
     assert [e["agent_id"] for e in queue] == [str(agent["id"])]
+    await db.close_db()
+
+
+# An `llm` agent with uploaded tools ships Python exactly like `custom` does: it is
+# approval-gated and built into the same per-agent image (carries_upload). The
+# legacy `tool_loop` name is how rows written before the 2026-07 taxonomy change
+# store that shape, and they are normalized on read.
+_UPLOADED_TOOLS_ROWS = [
+    pytest.param(
+        "llm",
+        {
+            "system_prompt": "Answer with the uploaded tools.",
+            "tools": {"source": "upload", "entry_file": "tools.py", "requirements": []},
+        },
+        id="llm-upload",
+    ),
+    pytest.param(
+        "tool_loop",
+        {
+            "system_prompt": "Answer with the uploaded tools.",
+            "entry_file": "tools.py",
+            "python_version": "3.11",
+            "requirements": [],
+        },
+        id="legacy-tool_loop",
+    ),
+    # asyncpg hands JSONB back as a string (no codec is registered).
+    pytest.param(
+        "llm",
+        json.dumps({
+            "system_prompt": "Answer with the uploaded tools.",
+            "tools": {"source": "upload", "entry_file": "tools.py"},
+        }),
+        id="llm-upload-jsonb-string",
+    ),
+]
+
+
+@pytest.mark.parametrize("handler_type,config", _UPLOADED_TOOLS_ROWS)
+async def test_recover_live_uploaded_tools_agent_requeues(monkeypatch, handler_type, config):
+    """Regression: recovery used to re-queue only handler_type == 'custom', so an
+    `llm` agent with uploaded tools (built into agenticnetwork-custom-<slug> like
+    any other uploaded-code agent) was marked 'stopped' on every cluster redeploy
+    and purged by the next init_db, although its image was still on Docker Hub.
+    """
+    _cluster_env(monkeypatch)
+    monkeypatch.delenv("IMAGE_REGISTRY", raising=False)
+    await _fresh_db()
+    agent = await db.create_agent(
+        name="Tool Runner",
+        description="Runs uploaded tools",
+        handler_type=handler_type,
+        oasf_skills=[{"name": "nlp/text-summarization", "id": 1}],
+        config=config,
+        approved=True,
+    )
+    await db.update_agent(agent["id"], status="live", port=19201, ads_cid="stale-cid")
+
+    checked = []
+
+    async def exists(image, since=None):
+        checked.append(image)
+        return True
+
+    monkeypatch.setattr(sup_mod, "_image_exists_on_dockerhub", exists)
+    sup = Supervisor(backend=ClusterBackend(), publisher=_FakePublisher())
+    await sup.recover_live_agents()
+
+    got = await db.get_agent(agent["id"])
+    assert got["status"] == "image_ready", "uploaded-tools agent should be re-queued"
+    assert got["port"] == 19201 and got["ads_cid"] is None
+    # The image the build poll waited for (and the host loop will srun).
+    assert checked == ["di2washu/agenticnetwork-custom-tool-runner"]
+
+    queue = await sup.spawn_queue()
+    assert [e["agent_id"] for e in queue] == [str(agent["id"])]
+    assert "--container-image=di2washu/agenticnetwork-custom-tool-runner:latest" in queue[0]["argv"]
+    await db.close_db()
+
+
+async def test_recover_live_uploaded_agent_without_image_is_stopped(monkeypatch):
+    """The Docker Hub check still applies: an uploaded-code agent whose image is
+    gone cannot be redeployed, so it is stopped and its port freed."""
+    _cluster_env(monkeypatch)
+    await _fresh_db()
+    agent = await db.create_agent(
+        name="Tool Runner",
+        description="Runs uploaded tools",
+        handler_type="llm",
+        oasf_skills=[{"name": "nlp/text-summarization", "id": 1}],
+        config=_UPLOADED_TOOLS_ROWS[0].values[1],
+        approved=True,
+    )
+    await db.update_agent(agent["id"], status="live")
+
+    async def missing(image, since=None):
+        return False
+
+    monkeypatch.setattr(sup_mod, "_image_exists_on_dockerhub", missing)
+    sup = Supervisor(backend=ClusterBackend(), publisher=_FakePublisher())
+    await sup.recover_live_agents()
+
+    got = await db.get_agent(agent["id"])
+    assert got["status"] == "stopped"
+    assert await sup.spawn_queue() == []
+    await db.close_db()
+
+
+@pytest.mark.parametrize(
+    "handler_type,config",
+    [
+        pytest.param("llm", {"system_prompt": "You are helpful."}, id="llm-no-tools"),
+        pytest.param(
+            "llm",
+            {"system_prompt": "You are helpful.", "tools": {"source": "presets", "names": ["calculator"]}},
+            id="llm-presets",
+        ),
+        pytest.param("proxy", {"upstream_url": "https://example.test/a2a"}, id="proxy"),
+        pytest.param("api_proxy", {"upstream_url": "https://example.test/a2a"}, id="legacy-api_proxy"),
+    ],
+)
+async def test_recover_live_agent_without_upload_is_stopped(monkeypatch, handler_type, config):
+    """Agents that upload no code have no image and no cluster spawn path
+    (spawn_and_publish fails them on an owns_build backend), so a 'live' row is a
+    ghost: recovery stops it without asking Docker Hub."""
+    _cluster_env(monkeypatch)
+    await _fresh_db()
+    agent = await db.create_agent(
+        name="No Upload",
+        description="Uploads no code",
+        handler_type=handler_type,
+        oasf_skills=[{"name": "nlp/text-summarization", "id": 1}],
+        config=config,
+        approved=True,
+    )
+    await db.update_agent(agent["id"], status="live")
+
+    async def exists(image, since=None):
+        raise AssertionError("Docker Hub must not be consulted for an agent with no image")
+
+    monkeypatch.setattr(sup_mod, "_image_exists_on_dockerhub", exists)
+    sup = Supervisor(backend=ClusterBackend(), publisher=_FakePublisher())
+    await sup.recover_live_agents()
+
+    got = await db.get_agent(agent["id"])
+    assert got["status"] == "stopped"
+    assert await sup.spawn_queue() == []
     await db.close_db()

@@ -442,9 +442,10 @@ directory is corrupted, delete it and let `initdb` re-initialise it on the next 
 Known limitation. The 6 core agents are hardcoded as `srun` steps in `submit.sbatch`,
 so they always launch with the job. Custom agents are **not** in that static set — their
 (re)start is driven entirely by the registration service's Postgres DB: on startup
-`Supervisor.recover_live_agents` re-queues only rows with `status='live'` (and whose image
-still exists on Docker Hub) to `image_ready`, and the host spawn loop (`spawn_agent_loop.py`)
-then `srun`s them. Consequences:
+`Supervisor.recover_live_agents` re-queues only uploaded-code rows (`custom`, or `llm` with
+uploaded tools) with `status='live'` (and whose image still exists on Docker Hub) to
+`image_ready`, and the host spawn loop (`spawn_agent_loop.py`) then `srun`s them. Agents that
+upload no code (plain `llm`, `proxy`) have no cluster spawn path at all. Consequences:
 - If the Postgres data dir is fresh/reset, or the custom agent's row isn't `status='live'`
   (e.g. it was `stopped`/`failed`), it will **not** come back up on the next deploy — even
   though its build context is committed in the `agent-directory` GitHub registry and its image
