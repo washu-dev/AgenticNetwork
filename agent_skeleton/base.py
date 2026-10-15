@@ -55,7 +55,7 @@ class AgentHandler(ABC):
 
         class MyHandler(AgentHandler):
             async def handle_structured(
-                self, user_input: str, files: list[FileInput] = []
+                self, user_input: str, files: list[FileInput] | None = None
             ) -> dict:
                 return {"answer": "your response"}
 
@@ -63,9 +63,9 @@ class AgentHandler(ABC):
     time, then accept an optional 3rd ``context`` argument to receive them:
 
         class MyHandler(AgentHandler):
-            async def handle_structured(self, user_input, files=[], context=None):
-                creds = (context or {}).get("credentials", {})
-                api_key = creds.get("openai_api_key", {}).get("api_key")
+            async def handle_structured(self, user_input, files=None, context=None):
+                creds = (context or {}).get("credentials") or {}
+                api_key = (creds.get("openai_api_key") or {}).get("api_key")
                 ...
 
     ``context`` is injected only for handlers that declare the parameter; 2-arg
@@ -81,7 +81,7 @@ class AgentHandler(ABC):
     async def handle_structured(
         self,
         user_input: str,
-        files: list[FileInput] = [],
+        files: list[FileInput] | None = None,
         context: dict | None = None,
     ) -> dict:
         """
@@ -97,7 +97,7 @@ class AgentHandler(ABC):
         """
         ...
 
-    async def handle(self, user_input: str, files: list[FileInput] = []) -> str:
+    async def handle(self, user_input: str, files: list[FileInput] | None = None) -> str:
         """Returns the "answer" from handle_structured. Override if needed."""
-        result = await self.handle_structured(user_input, files)
+        result = await self.handle_structured(user_input, files or [])
         return result.get("answer", str(result))

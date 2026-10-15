@@ -89,8 +89,9 @@ without a network.
 `validate_tool_registry()` (in `tools.py`) is the safety net the real agents
 lack — disaster matches tool names to functions by an `if`-chain with **no**
 verification, so a mismatch fails silently at runtime. The check here verifies
-name coverage (both directions), property↔parameter correspondence, and that
-optional properties have defaults. It runs in `create_app()` and as `serve check`.
+the schema envelope (`"type": "function"`, `parameters.type` `"object"`; a missing
+value only warns), name coverage (both directions), property↔parameter
+correspondence, and that optional properties have defaults. It runs in `create_app()` and as `serve check`.
 
 **Stronger option — make drift impossible:** instead of hand-writing
 `TOOL_SCHEMAS` *and* the function and checking they match, generate the schema

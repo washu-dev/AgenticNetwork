@@ -36,7 +36,11 @@ def env_host() -> str:
 
 
 def env_port() -> int:
-    return int(os.getenv("AGENT_A2A_PORT", str(DEFAULT_PORT)))
+    raw = os.getenv("AGENT_A2A_PORT", str(DEFAULT_PORT))
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise ValueError(f"AGENT_A2A_PORT must be an integer, got {raw!r}") from exc
 
 
 def env_advertise_url() -> str | None:

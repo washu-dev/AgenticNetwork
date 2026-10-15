@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import ast
 import copy
+import math
 import operator
 from datetime import datetime, timezone
 from typing import Any, Callable
@@ -65,6 +66,10 @@ def calculator(*, expression: str) -> dict[str, Any]:
         result = _eval_node(tree)
     except Exception as exc:  # malformed / disallowed input -> tool error, not a crash
         return {"ok": False, "error": f"could not evaluate {expression!r}: {exc}"}
+    # The tool result is json.dumps'd back to the model, so reject values JSON can't
+    # faithfully represent: complex (e.g. (-1) ** 0.5) and non-finite floats (inf/nan).
+    if isinstance(result, complex) or (isinstance(result, float) and not math.isfinite(result)):
+        return {"ok": False, "error": f"result of {expression!r} is not a finite real number"}
     return {"ok": True, "expression": expression, "result": result}
 
 

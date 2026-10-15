@@ -47,17 +47,18 @@ upload/approve flow):
 from agent_skeleton import AgentHandler
 
 class MyHandler(AgentHandler):
-    async def handle_structured(self, user_input, files=[], context=None):
+    async def handle_structured(self, user_input, files=None, context=None):
         # context (optional 3rd param) carries {"credentials": {...}, "user_id": ...}
-        key = (context or {}).get("credentials", {}).get("openai_api_key")
+        creds = (context or {}).get("credentials") or {}
+        api_key = (creds.get("openai_api_key") or {}).get("api_key")
         ...
-        return {"summary": "...", "data": {...}}   # summary + structured data
+        return {"answer": "...", "data": {...}}   # "answer" is required; other keys are structured output
 ```
 
 **The credential seam (P4d):** `HandlerExecutor.execute` inspects your `handle_structured`
 signature — if it accepts a 3rd `context` param (or `**kwargs`), the executor extracts credentials
 from the inbound A2A request metadata and passes `context = {"credentials", "user_id"}`. A 2-arg
-handler (`handle_structured(self, user_input, files=[])`) still works unchanged. The `context` is
+handler (`handle_structured(self, user_input, files=None)`) still works unchanged. The `context` is
 never logged. To *receive* a per-user credential, declare it at registration (a
 `CredentialRequirement` with the `env_var`/`type` you read it under) — the user then grants it and
 the planner scopes + injects it. See [AUTH.md](AUTH.md) §4.

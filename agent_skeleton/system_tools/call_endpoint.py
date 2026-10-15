@@ -56,6 +56,10 @@ _SECRET_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"(?i)(basic)\s+\S+"), r"\1 <redacted>"),
     (re.compile(r"(?i)(api[_-]?key\s*[:=]\s*)\S+"), r"\1<redacted>"),
     (re.compile(r"(?i)(token\s*[:=]\s*)\S+"), r"\1<redacted>"),
+    # JSON bodies: `"api_key": "sk-…"` / `"token":"…"`. The bare patterns above need
+    # the key immediately before :/=, but in JSON a closing quote sits in between, so
+    # they miss it — match the quoted-key form explicitly.
+    (re.compile(r'(?i)("(?:api[_-]?key|token)"\s*:\s*")(?:[^"\\]|\\.)+'), r"\1<redacted>"),
 ]
 
 

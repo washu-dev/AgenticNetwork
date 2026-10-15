@@ -64,6 +64,11 @@ repository goes public.
 - **Stored agents:** `entry_file` must now be a bare `*.py` name, and stored configs are
   validated when read. All 17 registered agents use `handler.py`; before deploying, check
   that no production row has a nested `entry_file`.
+- **Tool schemas (2026-10-15):** agents rebuilt with this skeleton check each tool schema's
+  envelope at startup: top-level `"type": "function"`, and `parameters.type` `"object"` when
+  parameters are given. A wrong value fails startup; a missing one only logs a warning, so an
+  approved upload that omits `"type"` (vLLM tolerates it) keeps starting. Every schema in this
+  repo and `agent-directory` passes.
 - **Registration UI assets:** the unused `/static` mount is gone (the UI is the single
   page served at `/`).
 - **Credential scoping:** agents that declare no credentials now get none (before, the
@@ -169,7 +174,18 @@ The two copies have diverged, so they must be reconciled first.
    (except examples), keys, model weights and the dev-stack state dirs; CI's hygiene job
    checks it.
 5. **Merge the agent_skeleton copies** and bring the standalone history in with
-   `git subtree` (see "Before the subtree merge").
+   `git subtree` (see "Before the subtree merge"). Audit 2026-10-15: no standalone-only fix
+   needs the history merge. The six real bugs fixed only in the standalone copy are now
+   ported into `agent_skeleton/`, each with a test (`tests/test_contract.py`,
+   `test_preset_tools.py`, `test_wrapper.py`): `e40580d` tool-schema envelope check (here
+   `parameters.type` is checked only when `parameters` is non-empty, and a missing `type`
+   only warns, so no-argument tools written as `{}` and uploads that omit `type` keep
+   working), `579996b` redacting quoted-key secrets in JSON error bodies, `3de317f`
+   calculator rejecting complex/inf/nan, `6e4d371` AgentHandler `files=None`
+   defaults and the null-safe credentials example, `3e1dc8c` a clear `AGENT_A2A_PORT` error,
+   `ce70bdc` the `[http-server]` install hint. The standalone `KNOWN_ISSUES.md` #3–#6 are
+   open in both copies. The in-repo copy can now ship as is; the subtree merge would add only
+   the standalone history and its layout, and whether to do it is Ronak's call.
 
 ### Carried over from retired plan docs (2026-10-13)
 

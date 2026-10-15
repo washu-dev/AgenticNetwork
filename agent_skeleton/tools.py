@@ -14,9 +14,12 @@
 from __future__ import annotations
 
 import inspect
+import logging
 from typing import Any, Callable
 
 from .tool_schemas import TOOL_SCHEMAS
+
+_log = logging.getLogger(__name__)
 
 
 # --- Tool bodies  ★ WRITE THESE ★ ----------------------------------------
@@ -49,6 +52,8 @@ def validate_tool_registry(
     """Fail fast if schemas and functions disagree. Called by serve.create_app.
 
     For every tool it checks that:
+      * the envelope is right: top-level `type` is "function" and, when given,
+        `parameters.type` is "object" (a missing value only logs a warning);
       * the schema `name` has a function (and every function has a schema);
       * every schema property is a keyword parameter of the function;
       * every OPTIONAL property's parameter carries a default (so the model may
@@ -72,7 +77,20 @@ def validate_tool_registry(
             continue
         schema_names.append(name)
 
+        # The envelope the OpenAI tools API expects (from agent-skeleton e40580d). A value
+        # that is present and wrong fails; a missing one only warns, because vLLM fills
+        # it in and agents that omit it work there today. A no-argument tool may omit
+        # parameters or give {}.
+        kind = schema.get("type")
+        if kind is None:
+            _log.warning("[%s] tool schema has no top-level 'type'; set it to 'function'", name)
+        elif kind != "function":
+            problems.append(f"[{name}] top-level schema 'type' must be 'function' (got {kind!r})")
         params = fn_spec.get("parameters") or {}
+        if params and params.get("type") is None:
+            _log.warning("[%s] tool schema parameters have no 'type'; set it to 'object'", name)
+        elif params and params.get("type") != "object":
+            problems.append(f"[{name}] schema parameters.type must be 'object' (got {params.get('type')!r})")
         props = set((params.get("properties") or {}).keys())
         required = set(params.get("required") or [])
 

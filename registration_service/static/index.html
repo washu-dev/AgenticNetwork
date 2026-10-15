@@ -1089,7 +1089,7 @@ class MyAgentHandler(AgentHandler):
     async def handle_structured(
         self,
         user_input: str,
-        files: list[FileInput] = []
+        files: list[FileInput] | None = None
     ) -> dict:
         # Access uploaded files:
         #   with files[0].as_tempfile() as path:

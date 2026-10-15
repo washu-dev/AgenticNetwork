@@ -8,11 +8,13 @@ The list of tools your LLM may call, in OpenAI **Chat Completions** shape:
 This is exactly the shape used by the specialist agents (e.g. disaster's
 DISASTER_TOOL_SCHEMAS).
 
-Two rules the startup check enforces (tools.validate_tool_registry):
+Three rules the startup check enforces (tools.validate_tool_registry):
   1. Every `name` here has a matching function in tools.py's TOOL_REGISTRY.
   2. The `parameters` here match that function's signature — each schema
      property is a keyword arg of the function; required properties may or may
      not have a default; OPTIONAL properties must have a default.
+  3. The envelope: `"type": "function"`, and `parameters` with `"type": "object"`
+     (a no-argument tool may omit `parameters`; a missing `type` only warns).
 
 So the schema and the Python signature are two views of one thing. (If you ever
 want this to be impossible to get wrong, generate these schemas FROM the typed

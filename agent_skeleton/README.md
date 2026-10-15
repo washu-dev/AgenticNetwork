@@ -55,7 +55,7 @@ plumbing).
 
 ```bash
 # 1. Install deps into a venv/conda env (NOT another component's env)
-pip install a2a-sdk openai uvicorn
+pip install -e ./agent_skeleton      # from the repo root: a2a-sdk[http-server]==0.3.2, openai, uvicorn
 
 # 2. Point at an LLM (hosted OpenAI, or a self-hosted vLLM endpoint)
 export OPENAI_API_KEY=sk-...            # any non-empty placeholder works for vLLM
@@ -202,9 +202,10 @@ See `_complete` / `_failed` / `_requires_input` in [`executor.py`](executor.py).
 The real agents have **no** check that a tool's JSON schema matches its Python
 function — a mismatch just fails silently at runtime. This template adds
 `validate_tool_registry()` in [`tools.py`](tools.py), run at startup by
-`create_app` and via `serve.py check`. It verifies every schema has a function,
-every property is a parameter, optional properties have defaults, and there are
-no undeclared required parameters. See *CLAUDE.md → "Closing the gap further"*
+`create_app` and via `serve.py check`. It verifies the envelope (`"type": "function"`,
+`parameters.type` `"object"`), that every schema has a function, every property is a
+parameter, optional properties have defaults, and there are no undeclared required
+parameters. See *CLAUDE.md → "Closing the gap further"*
 for the even-stronger option (generate schemas *from* typed functions).
 
 ---

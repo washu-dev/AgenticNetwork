@@ -8,6 +8,8 @@ assembly, which is all the new logic). Run:
 """
 from __future__ import annotations
 
+import pytest
+
 from agent_skeleton.spec import llm_wrapper_spec
 from agent_skeleton.system_tools.preset_tools import (
     PRESET_TOOLS,
@@ -33,6 +35,14 @@ def test_calculator_rejects_non_numeric_and_names() -> None:
         out = calculator(expression=expr)
         assert out["ok"] is False, expr
         assert "error" in out
+
+
+@pytest.mark.parametrize("expr", ["(-1) ** 0.5", "1e308 * 10", "-1e308 * 10", "1e308 * 10 - 1e308 * 10"])
+def test_calculator_rejects_complex_and_non_finite(expr: str) -> None:
+    # Results are json.dumps'd back to the model: complex raises, inf/nan become invalid JSON.
+    out = calculator(expression=expr)
+    assert out["ok"] is False and "finite real" in out["error"]
+    assert calculator(expression="2.5 * 2")["result"] == 5.0
 
 
 def test_calculator_guards_huge_exponent() -> None:

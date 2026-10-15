@@ -189,6 +189,16 @@ def test_run_agent_threads_spec_through_frozen_loop():
     assert result["response_text"] == "done"
 
 
+def test_error_body_redacts_secrets_in_json():
+    # A JSON body puts a closing quote between the key and ':', which the bare patterns miss.
+    from agent_skeleton.system_tools.call_endpoint import _redact
+    masked = _redact('{"error": "bad key", "api_key": "sk-123", "token":"abc", "Api-Key" : "k9"}')
+    assert "sk-123" not in masked and "abc" not in masked and "k9" not in masked
+    assert '"error": "bad key"' in masked
+    escaped = _redact('{"token": "ab\\"cd-tail", "x": 1}')  # JSON-escaped quote inside the value
+    assert "cd-tail" not in escaped and '"x": 1' in escaped
+
+
 def _run_all():
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     for fn in fns:
@@ -199,3 +209,4 @@ def _run_all():
 
 if __name__ == "__main__":
     _run_all()
+

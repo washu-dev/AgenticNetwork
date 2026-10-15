@@ -48,7 +48,10 @@ def require_a2a() -> None:
     if A2A_IMPORT_ERROR is not None:
         raise RuntimeError(
             "a2a-sdk is required to serve this agent. Install it into the agent's "
-            f"environment (pip install a2a-sdk). Original import error: {A2A_IMPORT_ERROR}"
+            "environment: pip install 'a2a-sdk[http-server]==0.3.2' (or, from the repo root, "
+            "`pip install -e ./agent_skeleton`). "
+            "The [http-server] extra is required — it pulls starlette + sse-starlette that "
+            f"A2AStarletteApplication needs. Original import error: {A2A_IMPORT_ERROR}"
         )
 
 
