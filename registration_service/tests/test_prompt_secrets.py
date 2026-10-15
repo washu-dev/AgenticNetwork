@@ -1,13 +1,14 @@
-"""Per-user credentials stay out of LLM prompts and agent logs.
+"""Per-user credentials and the user's identity stay out of LLM prompts and agent logs.
 
 The planner injects each user's credentials into A2A request metadata under
-"credentials". These tests drive the agents registration runs (llm / http
-operation tools via ``LLMAgentExecutor``; proxy via ``APIProxyExecutor``) and the
-runner's config parsing, and check that a sentinel secret never reaches the model,
-a log line or the returned artifact, while an operation tool still authenticates
-with its own token. No network: the LLM client, the upstream opener and the proxy's
-HTTP call are faked. The skeleton's own executor is covered by
-agent_skeleton/tests/test_executor_metadata.py.
+"credentials", and the login identity (an email under SSO) under "user_id". These
+tests drive the agents registration runs (llm / http operation tools via
+``LLMAgentExecutor``; proxy via ``APIProxyExecutor``) and the runner's config
+parsing, and check that a sentinel secret never reaches the model, a log line or
+the returned artifact and the identity never reaches the model or the upstream,
+while an operation tool still authenticates with its own token. No network: the
+LLM client, the upstream opener and the proxy's HTTP call are faked. The
+skeleton's own executor is covered by agent_skeleton/tests/test_executor_metadata.py.
 """
 
 from __future__ import annotations
@@ -41,6 +42,7 @@ from registration_service.handlers.llm_handler import LLMAgentExecutor  # noqa: 
 
 SENTINEL = "TEST_SECRET_DO_NOT_LEAK"
 UPSTREAM_TOKEN = "TEST_UPSTREAM_TOKEN_DO_NOT_LEAK"
+USER_EMAIL = "user@example.test"
 
 
 class _Queue:
@@ -69,7 +71,7 @@ def _context_with_credentials() -> RequestContext:
         request=MessageSendParams(
             message=message,
             metadata={
-                "user_id": "user@example.test",
+                "user_id": USER_EMAIL,
                 "credentials": {"weather_api_key": {"api_key": SENTINEL}},
             },
         ),
@@ -175,6 +177,8 @@ async def test_llm_executor_keeps_credentials_out_of_prompt(
     sent = _dump(completions.calls)
     assert "what is the weather in Paris" in sent
     assert SENTINEL not in sent and UPSTREAM_TOKEN not in sent
+    # Only the user's text reaches the model: no request metadata, so no identity.
+    assert USER_EMAIL not in sent
     assert SENTINEL not in _events_text(q.events)
     assert SENTINEL not in caplog.text
     if tool:
@@ -203,6 +207,7 @@ async def test_proxy_keeps_credentials_out_of_logs_and_artifact(monkeypatch, cap
     # header; it never relays request metadata. Change this deliberately if
     # proxies are ever meant to pass per-user credentials upstream.
     assert SENTINEL not in json.dumps(seen["payload"])
+    assert USER_EMAIL not in json.dumps(seen["payload"])
     assert seen["headers"]["Authorization"] == "Bearer operator"
     assert SENTINEL not in _events_text(q.events)
     assert SENTINEL not in caplog.text

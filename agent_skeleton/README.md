@@ -166,6 +166,13 @@ schema and a function disagree. Then serve.
 read `context.metadata` / DataParts for structured input, and reply through a
 `TaskUpdater`. The wire format is entirely the SDK's job.
 
+What the model sees: the stock [`executor.py`](executor.py) merges request, message and
+part metadata and DataPart data into the JSON user message, minus the credential keys
+(`credentials`, `authorization`, `secret(s)`, `token`) and, from metadata, the user's
+identity (`user_id`, `auth_user_id`, `mail`, `eppn`, `remote_user`, `remote-user`). A tool
+cannot read the user's identity from the prompt; an `AgentHandler` gets `user_id` in its
+`context` argument.
+
 ### The tool loop — why extraction is deterministic
 
 The LLM never free-texts its tool calls. Because the request sends `tools=...`,

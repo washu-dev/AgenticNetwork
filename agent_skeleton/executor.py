@@ -54,27 +54,51 @@ def _user_text(context: "RequestContext") -> str:
 # any provider-side trace would then store the raw secret).
 _PRIVATE_METADATA_KEYS = frozenset({"credentials", "authorization", "secrets", "secret", "token"})
 
+# Reserved metadata keys that say WHO the signed-in user is. They are routing
+# context, not task input, and must not be sent to the model provider either:
+#   user_id       the planner sets it on every A2A call to the login identity,
+#                 which is the user's email under SSO.
+#   auth_user_id  the planner's per-user database id, kept in the same request
+#                 metadata dict (not forwarded today; stripped in case it is).
+#   mail, eppn, remote_user, remote-user
+#                 the SSO identity attributes the planner reads the login from;
+#                 stripped in case a front door or caller copies them into metadata.
+# These are removed from request, message and part METADATA only. DataPart.data
+# is the caller's intended structured input (the planner puts the task input
+# there, never the login identity), so it keeps everything but the credential
+# keys above. A custom AgentHandler still receives user_id in code, through
+# HandlerExecutor's context argument.
+_IDENTITY_METADATA_KEYS = frozenset(
+    {"user_id", "auth_user_id", "mail", "eppn", "remote_user", "remote-user"}
+)
 
-def _model_visible_metadata(value: object) -> dict[str, Any]:
-    """Return a dict copy with reserved private keys removed (case-insensitive).
 
-    Non-dict input yields an empty dict. Credential context is isolated at the A2A
-    boundary and is intentionally not forwarded to the LLM."""
+def _without_keys(value: object, reserved: frozenset[str]) -> dict[str, Any]:
     if not isinstance(value, dict):
         return {}
-    return {
-        key: item
-        for key, item in value.items()
-        if str(key).lower() not in _PRIVATE_METADATA_KEYS
-    }
+    return {key: item for key, item in value.items() if str(key).lower() not in reserved}
+
+
+def _model_visible_metadata(value: object) -> dict[str, Any]:
+    """Return a dict copy without credential or identity keys (case-insensitive).
+
+    Non-dict input yields an empty dict. Credentials and the user's identity are
+    isolated at the A2A boundary and are intentionally not forwarded to the LLM."""
+    return _without_keys(value, _PRIVATE_METADATA_KEYS | _IDENTITY_METADATA_KEYS)
+
+
+def _model_visible_data(value: object) -> dict[str, Any]:
+    """Return a DataPart's data without credential keys (case-insensitive)."""
+    return _without_keys(value, _PRIVATE_METADATA_KEYS)
 
 
 def _payload_from_context(context: "RequestContext") -> dict[str, Any]:
     """Merge structured input from request metadata + message parts (DataParts).
     Mirrors disaster's _a2a_payload_from_context.
 
-    All metadata and data sources are passed through ``_model_visible_metadata``
-    so reserved credential keys cannot reach the model-visible payload."""
+    Every metadata source goes through ``_model_visible_metadata`` and DataPart
+    data through ``_model_visible_data``, so credentials and the user's identity
+    cannot reach the model-visible payload."""
     payload: dict[str, Any] = _model_visible_metadata(getattr(context, "metadata", None))
     message = getattr(context, "message", None)
     if message:
@@ -86,7 +110,7 @@ def _payload_from_context(context: "RequestContext") -> dict[str, Any]:
             if is_data_part(root) and isinstance(getattr(root, "data", None), dict):
                 # DataPart.data is intended structured input, but strip reserved
                 # keys here too so a nested credential injection can't slip through.
-                payload.update(_model_visible_metadata(root.data))
+                payload.update(_model_visible_data(root.data))
     return payload
 
 

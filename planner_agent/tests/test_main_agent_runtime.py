@@ -422,6 +422,46 @@ async def _call_agent_without_skill() -> None:
     assert call_trace["content"]["chosen_skill"] == "agent/autonomous"
 
 
+def test_login_identity_rides_only_in_request_metadata() -> None:
+    """Skeleton-engine agents drop metadata ``user_id`` before their LLM prompt but
+    keep the task-input DataPart (agent_skeleton/executor.py). That is safe only
+    while the planner sends the login identity in params.metadata alone: never in
+    the message text, the message metadata or the DataPart."""
+    asyncio.run(_login_identity_rides_only_in_request_metadata())
+
+
+async def _login_identity_rides_only_in_request_metadata() -> None:
+    from planner_agent.main_agent.a2a.adapters import internal_task_request_to_a2a_request
+
+    identity = "person@example.test"
+    directory = SpyDirectory(fake_ads=True)
+    directory.publish_agent_card(load_agent_card(WEATHER_CARD))
+    a2a = SpyA2A()
+    llm = ScriptedLLMClient(
+        [
+            ToolCall(
+                tool_name="call_agent",
+                arguments={"agent_id": "weather-agent", "task_input": {"location": "Austin"}},
+            ),
+            ToolCall(tool_name="final_answer", arguments={"text": "Done."}),
+        ]
+    )
+    app = create_app(config=_config(), directory_client=directory, a2a_client=a2a, llm_client=llm)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client:
+        resp = await client.post(
+            "/messages",
+            json={"channel": "api", "text": "Ask weather about Austin."},
+            headers={"mail": identity},
+        )
+    assert resp.status_code == 200, resp.text
+    assert len(a2a.requests) == 1
+    params = internal_task_request_to_a2a_request(a2a.requests[0]).params
+    assert params.metadata["user_id"] == identity
+    message = params.message.model_dump_json()
+    assert identity not in message
+    assert "Austin" in message  # the task input still rides in the DataPart
+
+
 def test_uploaded_image_is_attached_to_geospatial_a2a_call(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("MAIN_AGENT_UPLOAD_DIR", str(tmp_path))
     image_path = tmp_path / "flood.jpg"
