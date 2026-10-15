@@ -123,8 +123,8 @@ class MainAgentRuntime:
         self.a2a_client = a2a_client
         self.store = state_store
         self.llm_client = llm_client
-        # P4c: per-agent credential grants. None → enforcement is a pass-through
-        # (no DB configured); see _enforce_credentials.
+        # P4c: per-agent credential grants. None (no DB configured) → grants can't be
+        # checked, so only declared types are injected; see _scope_credentials.
         self.credential_gate = credential_gate
 
     # -------- public API --------
@@ -861,16 +861,30 @@ class MainAgentRuntime:
     ) -> dict[str, Any]:
         """Least-privilege filter: only creds this agent DECLARED and the user GRANTED.
 
-        Carve-out: an agent that declares no credentials gets today's full unscoped
-        dict (email/geo rely on the whole google_oauth bundle until they migrate).
-        Without a gate/identity we cannot enforce, so we pass through unchanged.
+        An agent that declares none gets none. Without a gate/identity grants can't be
+        checked, so only the declared types pass. The one exception is a legacy agent
+        named in ``PLANNER_UNSCOPED_CREDENTIAL_AGENTS`` (see :meth:`_unscoped_legacy`).
         """
         creds = credentials or {}
-        reqs = agent.required_credentials
-        if not reqs or self.credential_gate is None or not auth_user_id:
+        if self._unscoped_legacy(agent, creds):
             return creds
+        declared = {r.type: creds[r.type] for r in agent.required_credentials if r.type in creds}
+        if not declared or self.credential_gate is None or not auth_user_id:
+            return declared
         granted = await self.credential_gate.list_granted(auth_user_id, agent.agent_id)
-        return {r.type: creds[r.type] for r in reqs if r.type in creds and r.type in granted}
+        return {t: v for t, v in declared.items() if t in granted}
+
+    def _unscoped_legacy(self, agent: DiscoveredAgent, creds: dict[str, Any]) -> bool:
+        """True if this agent gets the whole bundle: an opt-in for agents that read
+        credentials (the email agent's ``google_oauth``) without declaring them."""
+        if agent.agent_id not in self.config.unscoped_credential_agents:
+            return False
+        if creds:
+            logger.warning(
+                "credentials_unscoped_legacy_agent agent_id=%s types=%s",
+                agent.agent_id, ",".join(sorted(creds)),
+            )
+        return True
 
     async def _enforce_credentials(
         self,
@@ -888,12 +902,12 @@ class MainAgentRuntime:
         Returns ``(scoped_credentials, None)`` to proceed, or
         ``(None-ish, (obs, terminal_payload))`` to short-circuit with a block or a
         consent prompt. Optional creds never block; they are injected only once
-        granted. See the carve-out in :meth:`_scope_credentials`.
+        granted. With nothing declared, or no gate/identity, see :meth:`_scope_credentials`.
         """
         creds = credentials or {}
         reqs = agent.required_credentials
         if not reqs or self.credential_gate is None or not auth_user_id:
-            return creds, None
+            return await self._scope_credentials(agent, creds, auth_user_id), None
 
         granted = await self.credential_gate.list_granted(auth_user_id, agent.agent_id)
         scoped: dict[str, Any] = {}
@@ -958,7 +972,7 @@ class MainAgentRuntime:
             }
             return {}, (obs, payload)
 
-        return scoped, None
+        return (creds if self._unscoped_legacy(agent, creds) else scoped), None
 
     async def _resume_credential_consent(
         self,

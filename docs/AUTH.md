@@ -103,8 +103,9 @@ idempotent migration in `db.py` rewrites legacy values (`openai`→`openai_api_k
    - required + not stored → **block** with "add it in Settings."
    - required + stored + not granted → **consent prompt** (`kind="credential_consent"`); on
      "yes", a grant is recorded and the call proceeds.
-   - optional-missing → proceed. Agents that declare **no** credentials → unchanged (the
-     email/geo compatibility carve-out).
+   - optional-missing → proceed. Agents that declare **no** credentials get none, unless their
+     id is in `PLANNER_UNSCOPED_CREDENTIAL_AGENTS` (legacy opt-in for the email/geo agents,
+     which get the whole bundle).
 4. **Grant.** `db.py::agent_credential_grants(user_id, agent_id, cred_type)` — persisted,
    revocable via `/me/grants/*`.
 5. **Scope + inject.** `runtime.py::_scope_credentials` selects only the creds that are

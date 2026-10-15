@@ -1,11 +1,13 @@
-"""P4c — credential enforcement: block / consent / scoped injection / carve-out."""
+"""P4c — credential enforcement: block / consent / scoped injection / legacy allowlist."""
 
 from __future__ import annotations
 
 import asyncio
+import logging
 
 from a2a.types import AgentCapabilities, AgentCard, AgentExtension, AgentSkill
 
+from planner_agent.main_agent.config import load_config
 from planner_agent.main_agent.credential_gate import InMemoryCredentialGate
 from planner_agent.main_agent.directory.card_oasf_converter import (
     REQUIRED_CREDENTIALS_EXTENSION_URI,
@@ -61,12 +63,12 @@ def _cred_card(credentials, name="Cred Bot", required=True) -> AgentCard:
     )
 
 
-def _runtime(card, gate, script):
+def _runtime(card, gate, script, config=None):
     directory = SpyDirectory(fake_ads=True)
     directory.publish_agent_card(card)
     a2a = SpyA2A()
     rt = MainAgentRuntime(
-        config=_config(),
+        config=config or _config(),
         directory_client=directory,
         a2a_client=a2a,
         state_store=InMemoryStateStore(),
@@ -167,43 +169,67 @@ def test_optional_missing_proceeds():
     asyncio.run(go())
 
 
-# ── carve-out: agent declares no creds → full unscoped dict passes through ───
+# ── agent declares no creds → nothing injected (no email/geo carve-out) ─────
 
-def test_no_declaration_passes_full_credentials():
+FULL_BUNDLE = {"openai_api_key": {"api_key": "x"}, "google_oauth": {"access_token": "t"}}
+
+
+def _plain_card() -> AgentCard:
+    return AgentCard(
+        name="Plain Bot", description="d", url="http://10.0.0.9:19111/", version="1.0.0",
+        capabilities=AgentCapabilities(streaming=True),
+        defaultInputModes=["text"], defaultOutputModes=["text"],
+        skills=[AgentSkill(id="plain/handle", name="handle", description="x", tags=["plain/handle"])],
+    )
+
+
+_PLAIN_CALL = ToolCall(tool_name="call_agent", arguments={"agent_id": "plain-bot", "skill": "plain/handle", "task_input": {}})
+
+
+def test_undeclared_agent_gets_no_credentials():
     async def go():
-        card = AgentCard(
-            name="Plain Bot", description="d", url="http://10.0.0.9:19111/", version="1.0.0",
-            capabilities=AgentCapabilities(streaming=True),
-            defaultInputModes=["text"], defaultOutputModes=["text"],
-            skills=[AgentSkill(id="plain/handle", name="handle", description="x", tags=["plain/handle"])],
-        )
-        gate = InMemoryCredentialGate()
-        directory = SpyDirectory(fake_ads=True)
-        directory.publish_agent_card(card)
-        a2a = SpyA2A()
-        rt = MainAgentRuntime(
-            config=_config(), directory_client=directory, a2a_client=a2a,
-            state_store=InMemoryStateStore(),
-            llm_client=ScriptedLLMClient([
-                _LIST,
-                ToolCall(tool_name="call_agent", arguments={"agent_id": "plain-bot", "skill": "plain/handle", "task_input": {}}),
-                _FINAL,
-            ]),
-            credential_gate=gate,
-        )
-        full = {"openai_api_key": {"api_key": "x"}, "google_oauth": {"access_token": "t"}}
-        await _msg(rt, metadata={"auth_user_id": USER, "credentials": full})
-        assert a2a.requests[0].metadata.get("credentials") == full   # unchanged (email/geo compat)
+        rt, a2a = _runtime(_plain_card(), InMemoryCredentialGate(), [_LIST, _PLAIN_CALL, _FINAL])
+        await _msg(rt, metadata={"auth_user_id": USER, "credentials": FULL_BUNDLE})
+        assert len(a2a.requests) == 1
+        assert "credentials" not in a2a.requests[0].metadata
+        # the confirm/consent resume paths scope through the same method
+        agent = rt.directory.resolve_agent("plain-bot")
+        assert await rt._scope_credentials(agent, FULL_BUNDLE, USER) == {}
+        assert await rt._scope_credentials(agent, FULL_BUNDLE, None) == {}
     asyncio.run(go())
 
 
-# ── no gate configured → pass-through (P4 inert without a DB) ────────────────
+def test_allowlisted_legacy_agent_gets_full_bundle(caplog):
+    async def go():
+        env = {"MAIN_AGENT_LLM_ENABLED": "false", "PLANNER_UNSCOPED_CREDENTIAL_AGENTS": " plain-bot , email-agent "}
+        allow = load_config(env).unscoped_credential_agents
+        assert allow == ["plain-bot", "email-agent"]
+        config = _config().model_copy(update={"unscoped_credential_agents": allow})
+        rt, a2a = _runtime(_plain_card(), InMemoryCredentialGate(), [_LIST, _PLAIN_CALL, _FINAL], config)
+        await _msg(rt, metadata={"auth_user_id": USER, "credentials": FULL_BUNDLE})
+        assert a2a.requests[0].metadata.get("credentials") == FULL_BUNDLE
+    with caplog.at_level(logging.WARNING, logger="planner_agent.main_agent.runtime"):
+        asyncio.run(go())
+    assert "credentials_unscoped_legacy_agent agent_id=plain-bot" in caplog.text
 
-def test_no_gate_passes_through():
+
+# ── no gate or no identity → only the declared types (never the whole bundle) ─
+
+def test_no_gate_passes_only_declared_types():
     async def go():
         card = _cred_card([{"type": "openai_api_key", "label": "OpenAI key", "required": True}])
         rt, a2a = _runtime(card, None, [_LIST, _CALL, _FINAL])  # gate=None
-        await _msg(rt, metadata={"auth_user_id": USER, "credentials": OPENAI_CRED})
+        await _msg(rt, metadata={"auth_user_id": USER, "credentials": FULL_BUNDLE})
         assert len(a2a.requests) == 1
-        assert a2a.requests[0].metadata.get("credentials") == OPENAI_CRED
+        assert a2a.requests[0].metadata.get("credentials") == {"openai_api_key": {"api_key": "x"}}
+    asyncio.run(go())
+
+
+def test_no_identity_passes_only_declared_types():
+    async def go():
+        card = _cred_card([{"type": "openai_api_key", "label": "OpenAI key", "required": True}])
+        rt, a2a = _runtime(card, InMemoryCredentialGate(), [_LIST, _CALL, _FINAL])
+        await _msg(rt, metadata={"credentials": FULL_BUNDLE})  # no auth_user_id
+        assert len(a2a.requests) == 1
+        assert a2a.requests[0].metadata.get("credentials") == {"openai_api_key": {"api_key": "x"}}
     asyncio.run(go())

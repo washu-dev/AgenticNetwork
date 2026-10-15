@@ -55,6 +55,18 @@ repository goes public.
   that no production row has a nested `entry_file`.
 - **Registration UI assets:** the unused `/static` mount is gone (the UI is the single
   page served at `/`).
+- **Credential scoping:** agents that declare no credentials now get none (before, the
+  whole bundle). The email agent reads `google_oauth` without declaring it, so ENGR's real
+  `deployment/.env` must add `PLANNER_UNSCOPED_CREDENTIAL_AGENTS=email-agent,geospatial-agent`
+  (as in `.env.example`; ids as listed by `GET /agents`), or the email agent stops getting
+  each user's Google token and falls back to its on-disk token file, if any. Check the
+  planner log for `credentials_unscoped_legacy_agent`. The geo agent is listed only to keep
+  today's behaviour: it reads the pre-catalog names `google_api`/`google_maps`, which the
+  planner's DB migration renamed. Cloud Run runs no email or geo agent, so it needs no list.
+- **Bug-report repo:** `GITHUB_ISSUES_REPO` no longer defaults to `washu-dev/AgenticNetwork`.
+  If ENGR's real `.env` still has the old example's value, change it to a private repo (or
+  blank it) before bug reporting is turned on, and before visibility changes. On Cloud Run,
+  set it wherever `GITHUB_ISSUES_TOKEN` is set.
 
 ## What ships
 
@@ -121,14 +133,20 @@ The two copies have diverged, so they must be reconciled first.
      changed together.
    - Fixed: `.dockerignore` keeps `*.local.env`, keys, credential/token JSON and local
      databases out of image build contexts.
-   - Open: agents that declare no credentials still receive the full credential bundle
-     (the `runtime.py::_scope_credentials` carve-out for email/geo).
+   - Fixed: an agent gets only the credential types it declared and the user granted; one
+     that declares none gets none, and without a gate or login identity only the declared
+     types pass. Legacy agents named in `PLANNER_UNSCOPED_CREDENTIAL_AGENTS` still get the
+     whole bundle, with a log line (`test_credential_enforcement.py`:
+     `test_undeclared_agent_gets_no_credentials`, `test_no_gate_passes_only_declared_types`,
+     `test_no_identity_passes_only_declared_types`,
+     `test_allowlisted_legacy_agent_gets_full_bundle`).
    - Open: skeleton-engine agents copy request metadata, injected credentials included,
      into the LLM prompt (`agent_skeleton/executor.py::_payload_from_context`).
-   - Open, release-blocking: user bug reports target this repo. `GITHUB_ISSUES_REPO`
-     defaults to `washu-dev/AgenticNetwork` (`github_issues.py`, `deployment/.env.example`),
-     and issue bodies include the reporter's email, prompts and trace. Point it at a
-     private repo, or strip that content, before visibility changes.
+   - Fixed: user bug reports no longer default to this repo. `GITHUB_ISSUES_REPO` has no
+     default; unset, `POST /issues` returns 502 without calling GitHub. Issue bodies still
+     include the reporter's email, prompts and trace, so the repo must be private
+     (`test_issues_endpoint.py`: `test_create_issue_requires_repo`,
+     `test_issues_without_repo_502_and_no_github_call`).
 3. **CI:** done. `.github/workflows/tests.yml` runs the unit suites (planner, registration,
    skeleton, ADS, devstack), repo hygiene and the native full-chain test.
 4. **Hygiene:** done. The tracked `.gitignore` covers `build/`, `dist/`, `Local/`, `.env*`

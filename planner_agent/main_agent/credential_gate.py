@@ -7,8 +7,8 @@ DB (use ``InMemoryCredentialGate``); production uses ``DbCredentialGate``.
 
 Grants key on the **DB user UUID** (not the Shib email), which the server passes
 to the runtime via request metadata (``auth_user_id``). Until identity is
-fail-closed (P4g/F3), a missing UUID means the gate cannot enforce and the
-runtime falls back to today's pass-through behavior — see runtime._enforce_credentials.
+fail-closed (P4g/F3), a missing UUID means the gate cannot enforce, so the
+runtime injects only the declared types — see runtime._scope_credentials.
 """
 
 from __future__ import annotations

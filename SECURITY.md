@@ -56,9 +56,12 @@ trusted node."* Everything inside the node trusts everything else.
   are AES-256-GCM encrypted at rest (`main_agent/crypto.py`, `CREDENTIALS_ENCRYPTION_KEY`)
   — good — but at request time the planner **decrypts** them and injects them into the
   A2A task context in plaintext (`server.py::_inject_credentials` → task `metadata`).
-  Injection is **scoped** to the creds a user *granted* the target agent
-  (`runtime.py::_scope_credentials`), **except** that an agent declaring no credentials still
-  receives the whole bundle (a carve-out for the email/geo agents until they migrate).
+  Injection is **scoped** to the creds the target agent *declared* and the user *granted*
+  (`runtime.py::_scope_credentials`); an agent declaring none gets none. Since 2026-10-13 the
+  only exception is an opt-in: agents named in `PLANNER_UNSCOPED_CREDENTIAL_AGENTS` (the email
+  and geo agents in `deployment/.env.example`) still get the whole bundle. That list matches on
+  `agent_id`, the slug of the card name, so an approved custom agent with the same name would
+  match too.
   Specialist ports remain unauthenticated, so a rogue local process could still receive whatever
   was injected for a given call. Skeleton-engine agents also copy the request metadata, injected
   credentials included, into the LLM prompt (`agent_skeleton/executor.py::_payload_from_context`
@@ -68,9 +71,9 @@ trusted node."* Everything inside the node trusts everything else.
 - **Email agent Google OAuth client files** are no longer baked into the image: the current
   `email_agent/Dockerfile` (agent-directory) expects `deployment/google_credentials/` mounted at
   runtime. Move them to a secret manager / Workload Identity.
-- **User bug reports target this repo.** `POST /issues` files to `GITHUB_ISSUES_REPO`, which
-  defaults to `washu-dev/AgenticNetwork`, and the issue body includes the reporter's email and
-  recent prompts. Point it at a private repo, or strip that content, before this repo goes public.
+- **User bug reports carry personal data.** `POST /issues` files to `GITHUB_ISSUES_REPO`, and
+  the issue body includes the reporter's email, recent prompts and trace. Since 2026-10-13 the
+  repo has no default (unset → 502, no GitHub call); it must be a private repo.
 - **Policy write-gating can be skipped.** The planner defaults to `policy_mode=permissive`;
   even in `strict`, `runtime.py::_evaluate_policy` only gates a write skill when a precise
   skill hint is present — no hint ⇒ no confirmation. Set `strict` and close the no-hint

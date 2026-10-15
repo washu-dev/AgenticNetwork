@@ -39,6 +39,10 @@ class MainAgentConfig(BaseModel):
     policy_mode: str = "permissive"
     history_limit: int = Field(20, gt=0)
 
+    # Legacy agents (by agent_id) that still get the user's whole credential bundle
+    # instead of only the types they declared and were granted (runtime._scope_credentials).
+    unscoped_credential_agents: list[str] = Field(default_factory=list)
+
 
 def load_config(env: Mapping[str, str] | None = None) -> MainAgentConfig:
     values = env if env is not None else os.environ
@@ -59,6 +63,9 @@ def load_config(env: Mapping[str, str] | None = None) -> MainAgentConfig:
         llm_primary_timeout_seconds=_float(
             values.get("MAIN_AGENT_LLM_PRIMARY_TIMEOUT_SECONDS"), default=20
         ),
+        unscoped_credential_agents=[
+            a.strip() for a in values.get("PLANNER_UNSCOPED_CREDENTIAL_AGENTS", "").split(",") if a.strip()
+        ],
     )
     if config.llm_enabled and config.llm_provider == "openai" and not values.get("OPENAI_API_KEY"):
         raise MainAgentConfigError(

@@ -213,6 +213,8 @@ through `dirctl` instead of the in-process fake.
 | `OPENAI_BASE_URL`              | —             | OpenAI-compatible endpoint (mock, vLLM, Ollama); `/ready` probes `{base}/models` |
 | `CREDENTIALS_ENCRYPTION_KEY`   | —             | 32-byte base64 key for AES-256-GCM credential encryption      |
 | `ADMIN_EMAILS`                 | —             | Comma-separated admin allowlist (matched against SSO identity); fail-closed |
+| `PLANNER_UNSCOPED_CREDENTIAL_AGENTS` | —       | Comma-separated agent ids that get the user's whole credential bundle (legacy agents that read credentials without declaring them; logged). Others get only declared + granted types |
+| `GITHUB_ISSUES_TOKEN` / `_REPO` | —            | Token and target `owner/name` for `POST /issues`. No default repo: use a private one (issues carry the reporter's email, prompts and trace). Either unset → 502 |
 | `GOOGLE_CLIENT_ID` / `_SECRET` / `_REDIRECT_URI` | — | Google OAuth web client for per-user Google connect |
 
 ## Confirmation flow (when `policy_mode=strict`)

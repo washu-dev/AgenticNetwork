@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -80,7 +81,7 @@ async def _issues_success(monkeypatch) -> None:
 
     async def fake_create(title, body, labels):
         captured.update(title=title, body=body, labels=labels)
-        return "https://github.com/washu-dev/AgenticNetwork/issues/42"
+        return "https://github.com/example-org/private-reports/issues/42"
 
     monkeypatch.setattr(github_issues, "create_issue", fake_create)
 
@@ -93,7 +94,7 @@ async def _issues_success(monkeypatch) -> None:
         })
     assert resp.status_code == 200
     assert resp.json() == {"ok": True,
-                           "issue_url": "https://github.com/washu-dev/AgenticNetwork/issues/42"}
+                           "issue_url": "https://github.com/example-org/private-reports/issues/42"}
     assert captured["labels"] == ["user-submitted", "bug-report"]
     # The endpoint snapshots connected agent names into the body.
     assert "Email Agent" in captured["body"] or "email" in captured["body"].lower()
@@ -158,3 +159,55 @@ def test_create_issue_requires_token(monkeypatch) -> None:
     monkeypatch.delenv("GITHUB_ISSUES_TOKEN", raising=False)
     with pytest.raises(github_issues.GitHubIssueError):
         asyncio.run(github_issues.create_issue("t", "b", ["l"]))
+
+
+def _fake_github(monkeypatch) -> list[httpx.Request]:
+    """Point create_issue's HTTP client at a recorder instead of api.github.com."""
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(201, json={"html_url": "https://github.com/example-org/private-reports/issues/1"})
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(github_issues, "httpx", SimpleNamespace(
+        AsyncClient=lambda **kw: real_client(transport=httpx.MockTransport(handler), **kw),
+        HTTPError=httpx.HTTPError,
+    ))
+    return calls
+
+
+def test_create_issue_requires_repo(monkeypatch) -> None:
+    # No default target: issues carry the reporter's email, prompts and trace.
+    calls = _fake_github(monkeypatch)
+    monkeypatch.setenv("GITHUB_ISSUES_TOKEN", "tok")
+    monkeypatch.delenv("GITHUB_ISSUES_REPO", raising=False)
+    with pytest.raises(github_issues.GitHubIssueError, match="GITHUB_ISSUES_REPO"):
+        asyncio.run(github_issues.create_issue("t", "b", ["l"]))
+    assert calls == []
+
+
+def test_create_issue_posts_to_configured_repo(monkeypatch) -> None:
+    calls = _fake_github(monkeypatch)
+    monkeypatch.setenv("GITHUB_ISSUES_TOKEN", "tok")
+    monkeypatch.setenv("GITHUB_ISSUES_REPO", "example-org/private-reports")
+    url = asyncio.run(github_issues.create_issue("t", "b", ["l"]))
+    assert [str(c.url) for c in calls] == ["https://api.github.com/repos/example-org/private-reports/issues"]
+    assert url == "https://github.com/example-org/private-reports/issues/1"
+
+
+def test_issues_without_repo_502_and_no_github_call(monkeypatch) -> None:
+    asyncio.run(_issues_without_repo(monkeypatch))
+
+
+async def _issues_without_repo(monkeypatch) -> None:
+    calls = _fake_github(monkeypatch)
+    monkeypatch.setenv("GITHUB_ISSUES_TOKEN", "tok")
+    monkeypatch.delenv("GITHUB_ISSUES_REPO", raising=False)
+    app = _app()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client:
+        resp = await client.post("/issues", json={
+            "kind": "bug", "summary": "s", "description": "d",
+        })
+    assert resp.status_code == 502
+    assert calls == []

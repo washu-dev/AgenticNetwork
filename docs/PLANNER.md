@@ -15,8 +15,10 @@ FastAPI app. Key routes:
 - `GET /me` → `{id, email, is_admin}`; creates the user on first call (in memory without a DB).
 - `POST /confirmations` → resume a pending write/consent prompt (owner only, else 403).
 - `POST /issues` → files a user bug report or agent-creation feedback as a GitHub issue (labels
-  `user-submitted` + `bug-report`/`agent-creation-feedback`; needs `GITHUB_ISSUES_TOKEN`, target
-  `GITHUB_ISSUES_REPO`; returns 502 when unconfigured or GitHub fails, never drops silently).
+  `user-submitted` + `bug-report`/`agent-creation-feedback`; needs `GITHUB_ISSUES_TOKEN` and
+  `GITHUB_ISSUES_REPO`, which has no default and must be a private repo because issues carry the
+  reporter's email, prompts and trace; returns 502 when either is unset or GitHub fails, never
+  drops silently).
   Code: `main_agent/github_issues.py`; decision D12.
 - `GET /sessions`, `GET`/`DELETE /conversations/{context_id}` → per-user data (ownership-enforced).
 - `/admin/*` → admin dashboard data (allowlist-gated); `/register/{path}` → proxy to the
@@ -53,7 +55,11 @@ entirely out-of-band (§ below).
    gap (see [`SECURITY.md`](../SECURITY.md)).
 3. Enforce **credentials** (`_enforce_credentials`) — declare/grant/consent (see [AUTH.md](AUTH.md)
    §4). Missing-required → block; ungranted → consent prompt; scoped injection via
-   `_scope_credentials`.
+   `_scope_credentials`: only declared + granted types (declared types only when there is no
+   gate or auth identity), so an agent that declares none gets none. Agent ids in
+   `PLANNER_UNSCOPED_CREDENTIAL_AGENTS` (comma-separated; legacy agents that read credentials
+   without declaring them) get the whole bundle instead, logged as
+   `credentials_unscoped_legacy_agent`.
 4. Build + send the A2A request (`_build_a2a_request` → `a2a/`); normalize the result.
 5. **Dedup:** completed calls are fingerprinted per turn so an identical request isn't re-dispatched.
 

@@ -120,10 +120,11 @@ The prod file **must** be named `secrets.env` — that name is gitignored (`**/s
 is never committed even though it sits inside the repo tree.
 
 > **Bug reporting & feedback:** `GITHUB_ISSUES_TOKEN` (secret) + `GITHUB_ISSUES_REPO` (non-secret,
-> in `.env`, default `washu-dev/AgenticNetwork`) power the planner's `POST /issues`, which backs
-> the in-app "Report a bug" button and the agent-creation feedback form. Both file GitHub issues
-> labeled `user-submitted` + `bug-report`/`agent-creation-feedback`. If the token is unset the
-> forms fail loud (HTTP 502) — they never silently drop a report. The registration UI's feedback
+> in `.env`, no default; must be a **private** repo, because issues carry the reporter's email,
+> prompts and trace) power the planner's `POST /issues`, which backs the in-app "Report a bug"
+> button and the agent-creation feedback form. Both file GitHub issues labeled `user-submitted` +
+> `bug-report`/`agent-creation-feedback`. If either is unset the forms fail loud (HTTP 502) — they
+> never silently drop a report. The registration UI's feedback
 > form reaches this endpoint only when served **through the planner** (`/register/…`), which is
 > the deployed path. The token and egress from a cluster node are not yet recorded as tested; see
 > [Verifying bug reporting](#verifying-bug-reporting-not-yet-recorded-as-done) before adding the
@@ -335,8 +336,9 @@ The one piece of `POST /issues` not yet recorded as tested is the real token plu
 4. Check the issue in `GITHUB_ISSUES_REPO`: labels `user-submitted` + `bug-report`, and a readable
    "Auto-captured context" block. Submit the creation-feedback form at `/register/` and check for an
    `agent-creation-feedback` issue. Close both.
-5. **Prod, only after 3-4 pass:** add `GITHUB_ISSUES_TOKEN` to the shared prod secrets file (Step 3),
-   redeploy with `deployment/deploy.sh`, file one bug through the live UI, confirm it, then close it.
+5. **Prod, only after 3-4 pass:** set `GITHUB_ISSUES_REPO` in prod's `.env` to a private repo, add
+   `GITHUB_ISSUES_TOKEN` to the shared prod secrets file (Step 3), redeploy with
+   `deployment/deploy.sh`, file one bug through the live UI, confirm it, then close it.
 
 ---
 
