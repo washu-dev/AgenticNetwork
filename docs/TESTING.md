@@ -29,7 +29,7 @@ The request path (user → planner → directory → A2A → agent → answer) a
 
 | Suite | Command | Tests | Line coverage | What it covers |
 |---|---|---|---|---|
-| Planner | `planner_agent/.venv/bin/python -m pytest planner_agent/tests -q` | 158 (+10) | 64% | The tool loop (scripted LLM, fake directory), the HTTP API (identity, conversation ownership, streaming, confirmations), credential discovery and enforcement, `/ready`, startup, bug reports |
+| Planner | `planner_agent/.venv/bin/python -m pytest planner_agent/tests -q` | 159 (+12) | 64% | The tool loop (scripted LLM, fake directory), the HTTP API (identity, conversation ownership, streaming, confirmations), credential discovery and enforcement, `/ready`, startup, bug reports |
 | Registration | `registration_service/.venv/bin/python -m pytest registration_service/tests -q` | 301 | 80% | The API, upload checks, the image build manifest, the native supervisor and agent processes, the Cloud Run backend (mocked), streaming and tool-loop agents, credentials, the fake database |
 | Agent skeleton | `registration_service/.venv/bin/python -m pytest agent_skeleton/tests -q` | 70 | 73% | The spec-driven engine, the `call_endpoint` tool and its secret redaction, per-operation tools, preset tools, the multi-endpoint manager, the generator, credentials kept out of the LLM prompt, the tool-schema and handler contract |
 | Directory tooling | `registration_service/.venv/bin/python -m pytest agent_directory_service/tests -q` | 22 | 50% | Card ↔ record conversion, the `dirctl` CLI backend (mocked), route summaries and routing wake-up |
@@ -37,7 +37,7 @@ The request path (user → planner → directory → A2A → agent → answer) a
 | Pipeline | `registration_service/.venv/bin/python -m pytest tests/pipeline -q` | 19 | — | The running system, end to end (next section) |
 
 Counts and coverage were measured on 2026-10-15 (planner 2026-10-16) with the local venvs; both
-move as tests are added. The planner's other 10 tests (`test_pending_store_postgres.py`) run the
+move as tests are added. The planner's other 12 tests (`test_pending_store_postgres.py`) run the
 pending-confirmation statements on a real Postgres and are skipped unless
 `PLANNER_TEST_DATABASE_DSN` names a scratch database (each test drops and recreates
 `pending_confirmations` there). One way to get one, from the repo's Postgres image

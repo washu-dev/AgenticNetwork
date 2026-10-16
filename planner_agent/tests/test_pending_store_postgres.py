@@ -3,7 +3,8 @@
 The other confirmation tests use a stand-in that follows these statements; this checks the
 statements themselves: the claim-column migration, a claim matching the payload a JSON
 round trip gives back, refresh/release/finish acting only on their own claim, the claim
-expiry, one winner among concurrent claims, and a refresh ending on a dead connection.
+expiry, one winner among concurrent claims, a claim applied after its release (in either
+order behind a lock), and a refresh ending on a dead connection.
 
 Skipped unless PLANNER_TEST_DATABASE_DSN names a scratch database (each test drops and
 recreates pending_confirmations there), for example a throwaway container from the repo's
@@ -118,7 +119,9 @@ def test_a_new_prompt_replaces_a_claimed_row_and_outlives_its_finish() -> None:
         await pending_store.save("c1", OWNER, PROMPT)
         assert await pending_store.claim("c1", PROMPT, "answer-1")
 
+        await pending_store.release("c1", "answer-0")
         await pending_store.save("c1", OWNER, newer)
+        assert await _sql("SELECT released_claim_ids FROM pending_confirmations") is None  # a fresh list
         for cleanup in (pending_store.refresh, pending_store.finish, pending_store.release):
             await cleanup("c1", "answer-1")  # the old answer's: none touches the new prompt
             assert await pending_store.get("c1") == (newer, False)
@@ -182,7 +185,7 @@ def test_a_release_gives_back_only_its_own_claim() -> None:
         assert await pending_store.get("c1") == (PROMPT, False)
         await pending_store.finish("c1", "answer-1")  # no longer its claim
         assert await pending_store.get("c1") == (PROMPT, False)
-        assert await pending_store.claim("c1", PROMPT, "answer-2")
+        assert await pending_store.claim("c1", PROMPT, "answer-3")
 
     _run(body)
 
@@ -285,6 +288,86 @@ def test_a_refresh_whose_connection_stops_answering_once_it_is_done_still_ends(m
         assert isinstance(attempt.exception(), Exception)
 
     _with_a_stalling_pool(check, reset=reset_stalls)
+
+
+async def _until_waiting_on_a_lock(watch, count, unless=None) -> None:
+    for _ in range(200):
+        if unless is not None and unless.done():
+            return
+        waiting = await watch.fetchval(
+            "SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' "
+            "AND datname = current_database()"
+        )
+        if waiting == count:
+            return
+        await asyncio.sleep(0.01)
+
+
+def test_a_claim_that_reaches_the_row_after_its_release_takes_nothing() -> None:
+    """A claim whose connection dropped can still reach the row after its release, here
+    once someone else's lock on the row is released. Every given-back id is recorded, so
+    even after another answer's release that claim takes nothing."""
+    async def body():
+        await pending_store.save("c1", OWNER, PROMPT)
+        for given_back in ("answer-1", "answer-2"):
+            await pending_store.release("c1", given_back)
+        for late in ("answer-1", "answer-2"):
+            assert not await pending_store.claim("c1", PROMPT, late)
+        assert await pending_store.get("c1") == (PROMPT, False)
+
+        holder, watch = await asyncpg.connect(DSN), await asyncpg.connect(DSN)
+        try:
+            locked = holder.transaction()
+            await locked.start()
+            await holder.execute("SELECT 1 FROM pending_confirmations WHERE context_id = 'c1' FOR UPDATE")
+            releasing = asyncio.ensure_future(pending_store.release("c1", "answer-3"))
+            await _until_waiting_on_a_lock(watch, 1)
+            claiming = asyncio.ensure_future(pending_store.claim("c1", PROMPT, "answer-3"))  # queued after
+            await _until_waiting_on_a_lock(watch, 2)
+            await locked.commit()
+            await asyncio.wait_for(releasing, 2)
+            assert await asyncio.wait_for(claiming, 2) is False
+        finally:
+            await holder.close()
+            await watch.close()
+        assert await pending_store.get("c1") == (PROMPT, False)
+        assert await pending_store.claim("c1", PROMPT, "answer-4")
+
+    _run(body)
+
+
+def test_a_claim_queued_on_the_row_before_its_release_is_given_back() -> None:
+    """A claim whose connection dropped while it waited on someone else's lock on the row
+    is applied once that lock is released. Its release, sent after the drop, waits on the
+    same row and then gives it back, so the prompt ends up unclaimed."""
+    async def body():
+        await pending_store.save("c1", OWNER, PROMPT)
+        holder, watch = await asyncpg.connect(DSN), await asyncpg.connect(DSN)
+        try:
+            locked = holder.transaction()
+            await locked.start()
+            await holder.execute("SELECT 1 FROM pending_confirmations WHERE context_id = 'c1' FOR UPDATE")
+            direct = db._pool
+            db._pool = await asyncpg.create_pool(DSN, min_size=1, max_size=1)
+            claiming = asyncio.ensure_future(pending_store.claim("c1", PROMPT, "answer-1"))
+            await _until_waiting_on_a_lock(watch, 1)
+            db._pool.terminate()  # the claim's connection drops; its statement stays queued
+            db._pool = direct
+            with pytest.raises(Exception):
+                await claiming
+
+            releasing = asyncio.ensure_future(pending_store.release("c1", "answer-1"))
+            await _until_waiting_on_a_lock(watch, 2, unless=releasing)
+            await locked.commit()
+            await asyncio.wait_for(releasing, 2)
+        finally:
+            await holder.close()
+            await watch.close()
+
+        assert await pending_store.get("c1") == (PROMPT, False)
+        assert await pending_store.claim("c1", PROMPT, "answer-2")
+
+    _run(body)
 
 
 def test_of_eight_concurrent_claims_one_wins() -> None:

@@ -412,6 +412,36 @@ def test_a_claim_whose_reply_is_lost_is_given_back(persisted, monkeypatch) -> No
     asyncio.run(go())
 
 
+def test_a_claim_applied_only_after_its_release_takes_nothing(persisted, monkeypatch) -> None:
+    """The claim statement can reach the row after the answer gave up on it and released it
+    (its connection dropped, and the statement was held up, for example behind a table
+    lock). The release recorded its id, so it takes nothing and the owner's next answer runs
+    the action."""
+    conversations, pending_rows = persisted
+    claiming = pending_store.claim
+    sent: list[tuple] = []
+
+    async def not_applied_yet(context_id, payload, claim_id):
+        sent.append((context_id, payload, claim_id))
+        raise ConnectionResetError("connection reset")
+
+    monkeypatch.setattr(pending_store, "claim", not_applied_yet)
+
+    async def go():
+        runtime, a2a = _write_runtime()
+        cid = (await _say(runtime, OWNER, "Send the email.", metadata=OWNER_META)).context_id
+        _refused(await _say(runtime, OWNER, "yes", cid, OWNER_META), "pending_store_unavailable")
+        await asyncio.wait_for(asyncio.gather(*runtime._cleanups), 2)
+
+        assert not await claiming(*sent[0])  # the database applies it now
+        assert pending_rows.waiting(cid) and a2a.calls == []
+        monkeypatch.setattr(pending_store, "claim", claiming)
+        done = await _say(runtime, OWNER, "yes", cid, OWNER_META)
+        assert done.state == A2ATaskState.completed, done.text
+
+    asyncio.run(go())
+
+
 def test_a_claim_stays_in_progress_for_as_long_as_its_call_runs(persisted, monkeypatch) -> None:
     """An agent call can outlast the claim's expiry (registered agents run up to an hour), so
     the answering process keeps refreshing the claim, each attempt bounded so a hung one

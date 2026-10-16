@@ -35,9 +35,8 @@ from planner_agent.main_agent.db import get_pool
 # refreshed, then as gone. The answer refreshes it every CLAIM_REFRESH_SECONDS while its
 # agent call runs (which can take up to an hour), each attempt ending within
 # CLAIM_REFRESH_TIMEOUT_SECONDS, so a live claim expires only when three attempts in a row
-# fail. Otherwise a claim expires only when its process died, its delete or release
-# failed, or the database applied its claim statement after the release (see
-# runtime._release_claim).
+# fail. Otherwise a claim expires only when its process died or its delete or release
+# failed.
 CLAIM_TTL_SECONDS = 120.0
 CLAIM_REFRESH_SECONDS = 20.0
 CLAIM_REFRESH_TIMEOUT_SECONDS = 10.0
@@ -59,7 +58,7 @@ async def save(context_id: str, owner_email: str, payload: dict[str, Any]) -> No
             "VALUES ($1, $2, $3::jsonb) "
             "ON CONFLICT (context_id) DO UPDATE SET "
             "owner_email = EXCLUDED.owner_email, payload = EXCLUDED.payload, created_at = now(), "
-            "claimed_at = NULL, claim_id = NULL",
+            "claimed_at = NULL, claim_id = NULL, released_claim_ids = NULL",
             context_id,
             owner_email,
             json.dumps(payload),
@@ -92,7 +91,8 @@ async def claim(context_id: str, payload: dict[str, Any], claim_id: str) -> bool
 
     One statement, so when two answers race (a double click, a client retry, replies on
     two processes) exactly one of them claims it. Matching the whole payload means an
-    answer can't claim a newer prompt that replaced the one it read.
+    answer can't claim a newer prompt that replaced the one it read. A claim id already
+    given back (``release``) claims nothing.
     """
     if not enabled():
         return False
@@ -101,6 +101,7 @@ async def claim(context_id: str, payload: dict[str, Any], claim_id: str) -> bool
         claimed = await conn.fetchval(
             "UPDATE pending_confirmations SET claimed_at = now(), claim_id = $3 "
             "WHERE context_id = $1 AND claimed_at IS NULL AND payload = $2::jsonb "
+            "AND $3 <> ALL(COALESCE(released_claim_ids, '{}')) "
             "RETURNING true",
             context_id,
             json.dumps(payload),
@@ -120,10 +121,20 @@ async def refresh(context_id: str, claim_id: str) -> None:
 
 
 async def release(context_id: str, claim_id: str) -> None:
-    """Give the claim ``claim_id`` back unused, so a later answer can act on the prompt."""
+    """Give the claim ``claim_id`` back unused, so a later answer can act on the prompt.
+
+    The claim statement may not have been applied yet: its connection dropped and the
+    database still runs it. The release matches the row by context_id, so it takes the
+    row lock whether or not the claim is there: a claim still queued on the row (behind
+    someone else's lock) is applied first and then given back here. And the release
+    records the id as given back, so a claim statement that reaches the row only after
+    the release (for example when waiters on a table lock race) takes nothing."""
     await _execute(
-        "UPDATE pending_confirmations SET claimed_at = NULL, claim_id = NULL "
-        "WHERE context_id = $1 AND claim_id = $2",
+        "UPDATE pending_confirmations SET "
+        "claimed_at = CASE WHEN claim_id = $2 THEN NULL ELSE claimed_at END, "
+        "claim_id = CASE WHEN claim_id = $2 THEN NULL ELSE claim_id END, "
+        "released_claim_ids = array_append(COALESCE(released_claim_ids, '{}'), $2) "
+        "WHERE context_id = $1",
         context_id, claim_id,
     )
 

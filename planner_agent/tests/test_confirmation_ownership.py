@@ -113,11 +113,13 @@ async def _say(runtime, user, text, context_id=None, metadata=None):
 
 
 class PendingRows(dict):
-    """context_id -> (owner, payload), plus ``claimed``: context_id -> (claim time, claim id)."""
+    """context_id -> (owner, payload), plus ``claimed``: context_id -> (claim time, claim id),
+    and ``released``: context_id -> the claim ids given back for the current prompt."""
 
     def __init__(self) -> None:
         super().__init__()
         self.claimed: dict[str, list] = {}
+        self.released: dict[str, set[str]] = {}
 
     def waiting(self, context_id: str) -> bool:
         """A row is there and no answer has claimed it."""
@@ -149,6 +151,7 @@ def persisted(monkeypatch):
     async def save_pending(context_id, owner_email, payload):
         pending_rows[context_id] = (owner_email, dict(payload))
         pending_rows.claimed.pop(context_id, None)
+        pending_rows.released.pop(context_id, None)
 
     async def get_pending(context_id):
         entry = pending_rows.get(context_id)
@@ -164,9 +167,12 @@ def persisted(monkeypatch):
     async def clear_pending(context_id):
         pending_rows.pop(context_id, None)
         pending_rows.claimed.pop(context_id, None)
+        pending_rows.released.pop(context_id, None)
 
     async def claim_pending(context_id, payload, claim_id):
         if not pending_rows.waiting(context_id) or pending_rows[context_id][1] != payload:
+            return False
+        if claim_id in pending_rows.released.get(context_id, ()):
             return False
         pending_rows.claimed[context_id] = [time.monotonic(), claim_id]
         return True
@@ -176,6 +182,8 @@ def persisted(monkeypatch):
             pending_rows.claimed[context_id][0] = time.monotonic()
 
     async def release_pending(context_id, claim_id):
+        if context_id in pending_rows:
+            pending_rows.released.setdefault(context_id, set()).add(claim_id)
         if pending_rows.held_by(context_id, claim_id):
             del pending_rows.claimed[context_id]
 

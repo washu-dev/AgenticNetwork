@@ -243,10 +243,7 @@ The two copies have diverged, so they must be reconciled first.
      adversarial review rounds, whose confirmed findings are fixed: the delete survives a
      closed stream, claims carry an id so only their own answer refreshes, releases or deletes
      them, each refresh is bounded and drops a dead connection, and a claim whose statement
-     failed or was cancelled is released). Known limit, fail-safe: a claim statement the
-     database applies only after its release (its connection dropped while it waited on
-     someone else's lock on the row) leaves a claim that expires, so that prompt can't be
-     answered and the owner asks again (`docs/PLANNER.md`).
+     failed or was cancelled is released, even one the database applies only later).
    - Fixed: an upload's `entry_file` must be a bare `*.py` name; `../x.py`, absolute paths
      and newlines get 422 (`test_custom.py::test_entry_file_must_be_bare_name`).
    - Fixed: the planner's `/register/{path}` proxy no longer forwards registration's

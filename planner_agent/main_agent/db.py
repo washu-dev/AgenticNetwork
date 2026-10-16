@@ -76,9 +76,13 @@ CREATE TABLE IF NOT EXISTS pending_confirmations (
 -- until the claim expires (pending_store.CLAIM_TTL_SECONDS).
 -- claim_id names the answer holding the claim, so only that answer refreshes, releases
 -- or deletes it.
+-- released_claim_ids lists the claims given back unused for the current prompt
+-- (pending_store.release); a claim statement under one of them that reaches the row only
+-- afterwards takes nothing.
 ALTER TABLE pending_confirmations
-    ADD COLUMN IF NOT EXISTS claimed_at TIMESTAMPTZ,
-    ADD COLUMN IF NOT EXISTS claim_id   TEXT;
+    ADD COLUMN IF NOT EXISTS claimed_at         TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS claim_id           TEXT,
+    ADD COLUMN IF NOT EXISTS released_claim_ids TEXT[];
 
 CREATE OR REPLACE FUNCTION planner_update_updated_at()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$

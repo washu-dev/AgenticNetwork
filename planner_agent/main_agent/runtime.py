@@ -1284,9 +1284,10 @@ class MainAgentRuntime:
         dropped. If that statement fails, the answer is refused (PendingStoreUnavailable):
         running the cached copy would leave the row for a later answer, here or on another
         process, to run again. A claim that fails or is cancelled (a closed chat stream) may
-        still have been applied, and nothing will act on it, so it is released by its id,
-        which can't touch another answer's claim. Without a DB the in-memory copy is
-        removed, which no other answer in this process can also do.
+        have been applied, or be applied later, and nothing will act on it, so it is
+        released by its id, which can't touch another answer's claim and makes a later
+        application take nothing. Without a DB the in-memory copy is removed, which no
+        other answer in this process can also do.
         """
         claim_id = uuid4().hex
         if not pending_store.enabled():

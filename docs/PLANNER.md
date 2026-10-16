@@ -102,17 +102,19 @@ D9–D11).
   delete runs to the end even if the answer is cancelled (closing the chat stream cancels it
   mid-call, and the server keeps cancelling it), and so does the release of a claim whose
   statement failed or was cancelled after the database may have applied it
-  (`pending_store.release`). The claim is the one exception to best-effort: if that statement
-  fails, the answer gets `pending_store_unavailable`, because running the cached copy would leave
-  the row for a later answer to run again. A failed delete or release, a process that dies
-  mid-call, or a claim statement the database applies only after its release (its connection
-  dropped while the statement waited on a lock someone else held on the row), leaves the claim:
-  it reads as in progress for up to 2 minutes, then as nothing pending, and it is never claimed
-  again. The row stays until the conversation's next prompt replaces it or the conversation is
-  deleted. Planners before this change (8ea4cfd and earlier) ignore `claimed_at`, so before
-  rolling the planner back past this change, delete the claimed rows (`DELETE FROM
-  pending_confirmations WHERE claimed_at IS NOT NULL`); no deployment runs two planner versions
-  on one database at once.
+  (`pending_store.release`). The database may still apply such a claim statement later. The
+  release matches the row by conversation, so a claim still queued on the row (behind someone
+  else's lock) is applied first and then given back, and it records the claim id as given back
+  (`released_claim_ids`, cleared by the next prompt), so a claim statement that reaches the row
+  only after the release takes nothing. The claim is the one exception to best-effort: if that
+  statement fails, the answer gets `pending_store_unavailable`, because running the cached copy
+  would leave the row for a later answer to run again. A failed delete or release, or a process
+  that dies mid-call, leaves the claim: it reads as in progress for up to 2 minutes, then as
+  nothing pending, and it is never claimed again. The row stays until the conversation's next
+  prompt replaces it or the conversation is deleted. Planners before this change (8ea4cfd and
+  earlier) ignore `claimed_at`, so before rolling the planner back past this change, delete the
+  claimed rows (`DELETE FROM pending_confirmations WHERE claimed_at IS NOT NULL`); no deployment
+  runs two planner versions on one database at once.
 - `GET /sessions` derives from the persistence layer (Postgres when configured, else in-memory
   contexts) keyed on the authenticated principal — no `user_id` query param.
 
