@@ -174,7 +174,8 @@ Tracked in detail in [`docs/deployment/DOWNSTREAM_CONSIDERATIONS.md`](docs/deplo
    to Postgres (see [`docs/AUTH.md`](docs/AUTH.md) §5). Since 2026-10-13 a login identity always
    wins over a request-body `user_id`, and only the conversation owner can answer a pending
    action: `POST /confirmations` and a chat "yes" or "no" both return 403 to anyone else (fixed
-   2026-10-15). Still open here: set a non-permissive `policy_mode` and close the no-hint
+   2026-10-15). An answer claims the pending action before acting, so two answers arriving
+   together (a double click, a retry) run it once (fixed 2026-10-15). Still open here: set a non-permissive `policy_mode` and close the no-hint
    write-gate gap.
 5. **Stable gateway + service DNS/auth** in front of the ephemeral node; unify the two
    directories (dirctl `:8888` vs scout's gRPC `:8889`).

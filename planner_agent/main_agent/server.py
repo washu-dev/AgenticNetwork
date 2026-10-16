@@ -465,20 +465,12 @@ def create_app(
         # auth_user_id as /messages, or a credential-consent resume dispatches
         # with no key and records no grant.
         await _inject_credentials(request, req.metadata)
-        # H2b: read through to Postgres so a confirm can resume a prompt raised on
-        # another process / before a restart.
-        pending = await runtime._get_pending(req.context_id) or {}
-        if not req.confirmed:
-            cancel = await runtime._cancel_confirmation(req.context_id, pending)
-            return cancel.to_response()
-        if pending.get("kind") == "credential_consent":
-            result = await runtime._resume_credential_consent(
-                req.context_id, user_id, req.channel, req.metadata, pending
-            )
-        else:
-            result = await runtime._resume_confirmation(
-                req.context_id, user_id, req.channel, req.metadata
-            )
+        # H2b: _answer_pending reads the pending action through to Postgres, so a confirm
+        # can resume a prompt raised on another process or before a restart, and claims it
+        # right before acting, so a second press or a chat reply racing it runs nothing.
+        result = await runtime._answer_pending(
+            req.context_id, user_id, req.channel, req.metadata, confirmed=req.confirmed,
+        )
         return result.to_response()
 
     @app.post("/feedback")

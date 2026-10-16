@@ -24,3 +24,7 @@ class InMemoryStateStore:
 
     def clear_pending_confirmation(self, context_id: str) -> None:
         self.pending_confirmations.pop(context_id, None)
+
+    def take_pending_confirmation(self, context_id: str) -> dict | None:
+        """Remove and return the pending confirmation, or None if there is none."""
+        return self.pending_confirmations.pop(context_id, None)

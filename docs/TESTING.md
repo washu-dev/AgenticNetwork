@@ -29,12 +29,12 @@ The request path (user → planner → directory → A2A → agent → answer) a
 
 | Suite | Command | Tests | Line coverage | What it covers |
 |---|---|---|---|---|
-| Planner | `planner_agent/.venv/bin/python -m pytest planner_agent/tests -q` | 124 | 63% | The tool loop (scripted LLM, fake directory), the HTTP API (identity, conversation ownership, streaming, confirmations), credential discovery and enforcement, `/ready`, startup, bug reports |
+| Planner | `planner_agent/.venv/bin/python -m pytest planner_agent/tests -q` | 143 | 63% | The tool loop (scripted LLM, fake directory), the HTTP API (identity, conversation ownership, streaming, confirmations), credential discovery and enforcement, `/ready`, startup, bug reports |
 | Registration | `registration_service/.venv/bin/python -m pytest registration_service/tests -q` | 301 | 80% | The API, upload checks, the image build manifest, the native supervisor and agent processes, the Cloud Run backend (mocked), streaming and tool-loop agents, credentials, the fake database |
 | Agent skeleton | `registration_service/.venv/bin/python -m pytest agent_skeleton/tests -q` | 70 | 73% | The spec-driven engine, the `call_endpoint` tool and its secret redaction, per-operation tools, preset tools, the multi-endpoint manager, the generator, credentials kept out of the LLM prompt, the tool-schema and handler contract |
 | Directory tooling | `registration_service/.venv/bin/python -m pytest agent_directory_service/tests -q` | 22 | 50% | Card ↔ record conversion, the `dirctl` CLI backend (mocked), route summaries and routing wake-up |
 | Dev stack | `registration_service/.venv/bin/python -m pytest devstack/tests -q` | 55 | 52% | The mock LLM, the fake `dirctl`, the identity proxy, the stack CLI's checks that need no running services |
-| Pipeline | `registration_service/.venv/bin/python -m pytest tests/pipeline -q` | 18 | — | The running system, end to end (next section) |
+| Pipeline | `registration_service/.venv/bin/python -m pytest tests/pipeline -q` | 19 | — | The running system, end to end (next section) |
 
 Counts and coverage were measured on 2026-10-15 with the local venvs; both move as tests are
 added. Line coverage counts the component's own code, its tests left out. It sees only code that
@@ -85,7 +85,7 @@ then one final event; an agent registered with `add-agent` receives the prompt t
 `user_id` in the request body is ignored when a login identity is present; `down` leaves no
 process or port behind.
 
-**`test_scenarios.py`** (10 tests) runs on a stack whose planner gives up on an agent after
+**`test_scenarios.py`** (11 tests) runs on a stack whose planner gives up on an agent after
 5 seconds (`A2A_HTTP_TIMEOUT_SECONDS`; the default is 30), stops a turn after 6 tool steps
 (`MAIN_AGENT_MAX_STEPS`; the default is 10) and asks before a write skill
 (`MAIN_AGENT_POLICY_MODE=strict`), all passed through with `DEVSTACK_PASSTHROUGH_ENV`. Agents
@@ -111,7 +111,8 @@ fake `dirctl` (`push`, then `routing publish`) and unpublished afterwards.
 - **Confirmation.** A write skill waits for confirmation. Another user's confirm or cancel gets
   403, and another user's chat "yes" or "no" naming the conversation is refused; the owner's
   confirm runs it once with `confirmed` in its metadata; a second confirm fails; a chat "no"
-  cancels it without running it.
+  cancels it without running it. Two confirms sent together, with the agent slowed so the
+  second arrives during the first one's call, run it once, and the other fails.
 - **Restart.** After `down` and `up` on the same state dir, an agent added with `add-agent` is
   listed once, by the same id, and answers its prompt.
 
@@ -166,8 +167,8 @@ fake `dirctl` (`push`, then `routing publish`) and unpublished afterwards.
   for i in 1 2 3 4 5; do registration_service/.venv/bin/python -m pytest tests/pipeline -q -p no:cacheprovider || break; done
   ```
 
-  The full-chain test passed 20 runs in a row on 2026-10-13; the suite with all ten scenario
-  tests passed 5 in a row on 2026-10-15 (about 30 seconds each).
+  The full-chain test passed 20 runs in a row on 2026-10-13; the suite with all eleven scenario
+  tests passed 5 in a row on 2026-10-15 (about 32 seconds each).
 - A `ConnectTimeout` on the first chat after a restart was traced to the planner leaving its LLM
   clients for the garbage collector to close at an arbitrary moment. It showed up when the
   restarted stack registered more agents than the restart test's own. It is fixed (one client per

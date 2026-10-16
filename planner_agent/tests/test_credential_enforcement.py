@@ -121,7 +121,7 @@ def test_consent_then_grant_dispatches_scoped():
     asyncio.run(go())
 
 
-# ── button path: /confirmations calls _resume_credential_consent directly ────
+# ── button path: /confirmations calls _answer_pending directly ───────────────
 
 def test_confirmations_button_resume_grants_and_scopes():
     async def go():
@@ -131,11 +131,12 @@ def test_confirmations_button_resume_grants_and_scopes():
         meta = {"auth_user_id": USER, "credentials": OPENAI_CRED}
         res1 = await _msg(rt, metadata=meta)
         assert a2a.requests == []
-        # Simulate the "Allow" button: server injects creds into metadata, looks up
-        # the pending, and calls _resume_credential_consent (server.py /confirmations).
+        # Simulate the "Allow" button: server injects creds into metadata and calls
+        # _answer_pending, which claims the pending consent (server.py /confirmations).
         pending = rt.store.get_pending_confirmation(res1.context_id)
         assert pending and pending.get("kind") == "credential_consent"
-        await rt._resume_credential_consent(res1.context_id, "u", Channel.api, meta, pending)
+        await rt._answer_pending(res1.context_id, "u", Channel.api, meta, confirmed=True)
+        assert rt.store.get_pending_confirmation(res1.context_id) is None
         assert len(a2a.requests) == 1
         assert a2a.requests[0].metadata.get("credentials") == OPENAI_CRED
         assert await gate.list_granted(USER, "cred-bot") == {"openai_api_key"}

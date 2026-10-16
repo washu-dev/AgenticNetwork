@@ -7,7 +7,7 @@ import json
 import os
 import re
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Iterable
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
@@ -71,6 +71,10 @@ class ContextOwnershipError(Exception):
         self.context_id = context_id
 
 
+class PendingStoreUnavailable(Exception):
+    """Raised when the database is configured but a pending action can't be claimed from it."""
+
+
 class TurnResult(BaseModel):
     context_id: str
     state: A2ATaskState
@@ -126,6 +130,9 @@ class MainAgentRuntime:
         # P4c: per-agent credential grants. None (no DB configured) → grants can't be
         # checked, so only declared types are injected; see _scope_credentials.
         self.credential_gate = credential_gate
+        # context_ids with an answer to their pending action running in this process;
+        # another answer meanwhile gets answer_in_progress (see _answer_pending).
+        self._answering: set[str] = set()
 
     # -------- public API --------
 
@@ -140,20 +147,17 @@ class MainAgentRuntime:
         progress_callback: ProgressCallback | None = None,
     ) -> TurnResult:
         if context_id and (self._is_affirmative(text) or self._is_negative(text)):
-            pending = await self._get_pending(context_id)
-            if pending:
+            # Also while an earlier answer is still running here (a double send, a retry),
+            # checked after the lookup: this one then gets answer_in_progress instead of
+            # starting an LLM turn on "yes".
+            if await self._get_pending(context_id) or context_id in self._answering:
                 # H1: a yes or no acts on the pending action with the caller's
                 # credentials and identity, so the caller must own the conversation,
                 # checked exactly as _open_context checks every other message.
                 await self._owned_context(user_id, channel, context_id)
-                if self._is_negative(text):
-                    return await self._cancel_confirmation(context_id, pending, user_text=text)
-                if pending.get("kind") == "credential_consent":
-                    return await self._resume_credential_consent(
-                        context_id, user_id, channel, metadata or {}, pending, user_text=text,
-                    )
-                return await self._resume_confirmation(
-                    context_id, user_id, channel, metadata or {}, user_text=text,
+                return await self._answer_pending(
+                    context_id, user_id, channel, metadata or {},
+                    confirmed=not self._is_negative(text), user_text=text,
                 )
 
         context = await self._open_context(user_id, channel, text, context_id)
@@ -617,6 +621,9 @@ class MainAgentRuntime:
                 "policy_decision": decision.status.value,
                 "confirmation_status": ConfirmationStatus.pending.value,
                 "selected_agent": agent.model_dump(mode="json"),
+                # The request the owner approves; the resumed call sends this, not
+                # whatever current_goal a later message has set by then.
+                "user_goal": context.current_goal,
             }
             await self._save_pending(context.context_id, context.user_id, pending)
             selected_agents.append(
@@ -746,28 +753,113 @@ class MainAgentRuntime:
 
     # -------- confirmation handling --------
 
+    async def _answer_pending(
+        self,
+        context_id: str,
+        user_id: str,
+        channel: Channel,
+        metadata: dict[str, Any],
+        *,
+        confirmed: bool,
+        user_text: str | None = None,
+    ) -> TurnResult:
+        """Act on the owner's answer to a pending write confirmation or credential consent.
+
+        The one entry point for a chat "yes"/"no" and the confirm button, called after the
+        ownership check. Answers can arrive together: a double click, a client retry, a chat
+        "yes" racing the button, replies on two processes. Each one used to read the action,
+        call the agent and clear the action afterwards, so both ran it. Now:
+
+        - Within this process one answer per conversation runs at a time; another gets
+          ``answer_in_progress`` and leaves the action alone.
+        - Each handler does everything that can fail first (credential lookups), then claims
+          the action (_claim_this) and calls the agent with nothing that can fail in between,
+          so an answer either leaves the action pending or acts on it, never half of each.
+          Across processes the claim decides: the loser gets ``no_pending``.
+        """
+        if context_id in self._answering:
+            return TurnResult(
+                context_id=context_id,
+                state=A2ATaskState.failed,
+                text="Your earlier answer to this is still being handled.",
+                errors=["answer_in_progress"],
+                llm_model=self.config.llm_model,
+            )
+        self._answering.add(context_id)
+        try:
+            user_text = user_text or ("yes" if confirmed else "no")
+            if confirmed and context_id not in self.store.contexts:
+                return self._unknown_context(context_id)
+            pending = await self._get_pending(context_id)
+            if pending is None:
+                return self._no_pending(context_id)
+            if not confirmed:
+                return await self._cancel_confirmation(context_id, user_id, pending, user_text=user_text)
+            if pending.get("kind") == "credential_consent":
+                return await self._resume_credential_consent(
+                    context_id, user_id, channel, metadata, pending, user_text=user_text,
+                )
+            return await self._resume_confirmation(
+                context_id, user_id, channel, metadata, pending, user_text=user_text,
+            )
+        finally:
+            self._answering.discard(context_id)
+
+    async def _claim_this(self, context_id: str, user_id: str, pending: dict[str, Any]) -> TurnResult | None:
+        """Claim the pending action this answer read. None means claimed; otherwise the
+        reply to give, and nothing was claimed: another answer got there first, the database
+        couldn't serve the claim, or a newer prompt had replaced this one (it is put back)."""
+        try:
+            claimed = await self._claim_pending(context_id)
+        except PendingStoreUnavailable:
+            return TurnResult(
+                context_id=context_id,
+                state=A2ATaskState.failed,
+                text="Your answer couldn't be recorded, so nothing was run or cancelled. Try again in a moment.",
+                errors=["pending_store_unavailable"],
+                llm_model=self.config.llm_model,
+            )
+        if claimed is None:
+            return self._no_pending(context_id)
+        if claimed != pending:
+            await self._save_pending(context_id, user_id, claimed)
+            return self._no_pending(context_id)
+        return None
+
+    def _no_pending(self, context_id: str) -> TurnResult:
+        return TurnResult(
+            context_id=context_id,
+            state=A2ATaskState.failed,
+            text="Nothing is waiting for your answer here; it may already have been confirmed or cancelled.",
+            errors=["no_pending"],
+            llm_model=self.config.llm_model,
+        )
+
+    def _unknown_context(self, context_id: str) -> TurnResult:
+        return TurnResult(
+            context_id=context_id,
+            state=A2ATaskState.failed,
+            text=f"Unknown context_id {context_id}.",
+            errors=["unknown_context"],
+            llm_model=self.config.llm_model,
+        )
+
+    # The three handlers below are called by _answer_pending with the pending action it
+    # read; each claims it with _claim_this right before acting.
+
     async def _resume_confirmation(
         self,
         context_id: str,
         user_id: str,
         channel: Channel,
         metadata: dict[str, Any],
+        pending: dict[str, Any],
         user_text: str = "yes",
     ) -> TurnResult:
         try:
             context = self.store.get_context(context_id)
         except KeyError:
-            return TurnResult(
-                context_id=context_id,
-                state=A2ATaskState.failed,
-                text=f"Unknown context_id {context_id}.",
-                errors=["unknown_context"],
-                llm_model=self.config.llm_model,
-            )
-        # Record the user's confirmation turn so future LLM turns can see it.
-        context.conversation_history.append(f"user: {user_text}")
-        context.updated_at = utc_now()
-        pending = await self._get_pending(context_id) or {}
+            return self._unknown_context(context_id)
         agent_data = pending.get("selected_agent")
         if not agent_data:
             return TurnResult(
@@ -790,14 +882,19 @@ class MainAgentRuntime:
             agent=agent,
             skill=skill,
             task_input=task_input,
-            user_text=context.current_goal,
+            user_text=pending.get("user_goal") or context.current_goal,
             confirmed=True,
             uploaded_files=[],
             credentials=scoped,
         )
+        refused = await self._claim_this(context_id, user_id, pending)
+        if refused is not None:
+            return refused
+        # Record the user's confirmation turn so future LLM turns can see it.
+        context.conversation_history.append(f"user: {user_text}")
+        context.updated_at = utc_now()
         result = await self._send_task(agent, request)
         self.store.save_context(context)
-        await self._clear_pending(context_id)
 
         text = _last_text(result) or f"{skill} completed."
         if context.conversation_history is not None:
@@ -832,11 +929,14 @@ class MainAgentRuntime:
     async def _cancel_confirmation(
         self,
         context_id: str,
+        user_id: str,
         pending: dict[str, Any],
         user_text: str = "no",
     ) -> TurnResult:
+        refused = await self._claim_this(context_id, user_id, pending)
+        if refused is not None:
+            return refused
         skill = str(pending.get("skill") or "pending_action")
-        await self._clear_pending(context_id)
         text = f"Cancelled. {skill} was not executed."
         try:
             context = self.store.get_context(context_id)
@@ -860,12 +960,14 @@ class MainAgentRuntime:
         agent: DiscoveredAgent,
         credentials: dict[str, Any] | None,
         auth_user_id: str | None,
+        consented: Iterable[str] = (),
     ) -> dict[str, Any]:
         """Least-privilege filter: only creds this agent DECLARED and the user GRANTED.
 
         An agent that declares none gets none. Without a gate/identity grants can't be
-        checked, so only the declared types pass. The one exception is a legacy agent
-        named in ``PLANNER_UNSCOPED_CREDENTIAL_AGENTS`` (see :meth:`_unscoped_legacy`).
+        checked, so only the declared types pass. ``consented`` types count as granted
+        (a consent being answered now, recorded after the call). The one exception is a
+        legacy agent named in ``PLANNER_UNSCOPED_CREDENTIAL_AGENTS`` (see :meth:`_unscoped_legacy`).
         """
         creds = credentials or {}
         if self._unscoped_legacy(agent, creds):
@@ -873,7 +975,7 @@ class MainAgentRuntime:
         declared = {r.type: creds[r.type] for r in agent.required_credentials if r.type in creds}
         if not declared or self.credential_gate is None or not auth_user_id:
             return declared
-        granted = await self.credential_gate.list_granted(auth_user_id, agent.agent_id)
+        granted = set(await self.credential_gate.list_granted(auth_user_id, agent.agent_id)) | set(consented)
         return {t: v for t, v in declared.items() if t in granted}
 
     def _unscoped_legacy(self, agent: DiscoveredAgent, creds: dict[str, Any]) -> bool:
@@ -953,6 +1055,7 @@ class MainAgentRuntime:
                 "task_input": task_input,
                 "confirmation_status": ConfirmationStatus.pending.value,
                 "selected_agent": agent.model_dump(mode="json"),
+                "user_goal": context.current_goal,
             }
             await self._save_pending(context.context_id, context.user_id, pending)
             labels = ", ".join(f"{r.label} ({r.type})" for r in ungranted)
@@ -985,7 +1088,7 @@ class MainAgentRuntime:
         pending: dict[str, Any],
         user_text: str = "yes",
     ) -> TurnResult:
-        """User approved a credential grant → persist grants, then dispatch the call.
+        """User approved a credential grant → dispatch the call, then persist the grants.
 
         Symmetric to :meth:`_resume_confirmation`. Note: approving the credential
         also proceeds with the call (we do not additionally re-prompt the write
@@ -994,24 +1097,14 @@ class MainAgentRuntime:
         try:
             context = self.store.get_context(context_id)
         except KeyError:
-            return TurnResult(
-                context_id=context_id, state=A2ATaskState.failed,
-                text=f"Unknown context_id {context_id}.", errors=["unknown_context"],
-                llm_model=self.config.llm_model,
-            )
-        context.conversation_history.append(f"user: {user_text}")
-        context.updated_at = utc_now()
+            return self._unknown_context(context_id)
 
         agent = DiscoveredAgent.model_validate(pending["selected_agent"])
         auth_user_id = metadata.get("auth_user_id")
         grant_types = list(pending.get("grant_types") or [])
-        if self.credential_gate is not None and auth_user_id:
-            for cred_type in grant_types:
-                await self.credential_gate.add_grant(auth_user_id, agent.agent_id, cred_type)
-        await self._clear_pending(context_id)
-
         credentials = metadata.get("credentials") or {}
-        scoped = await self._scope_credentials(agent, credentials, auth_user_id)
+        # The consent given now covers this call before it is recorded below.
+        scoped = await self._scope_credentials(agent, credentials, auth_user_id, consented=grant_types)
         skill = pending.get("skill") or pending.get("requested_skill")
         task_input = dict(pending.get("task_input") or {})
         request = self._build_a2a_request(
@@ -1019,13 +1112,27 @@ class MainAgentRuntime:
             agent=agent,
             skill=skill,
             task_input=task_input,
-            user_text=context.current_goal,
+            user_text=pending.get("user_goal") or context.current_goal,
             confirmed=False,
             uploaded_files=[],
             credentials=scoped,
         )
+        refused = await self._claim_this(context_id, user_id, pending)
+        if refused is not None:
+            return refused
+        context.conversation_history.append(f"user: {user_text}")
+        context.updated_at = utc_now()
         result = await self._send_task(agent, request)
         self.store.save_context(context)
+        # Recorded after the call, so nothing that can fail sits between the claim and the
+        # call. If recording fails, the call has still run on the consent just given and
+        # the owner is asked again next time.
+        if self.credential_gate is not None and auth_user_id:
+            try:
+                for cred_type in grant_types:
+                    await self.credential_gate.add_grant(auth_user_id, agent.agent_id, cred_type)
+            except Exception:
+                logger.warning("credential_grant_record_failed agent_id=%s", agent.agent_id, exc_info=True)
 
         text = _last_text(result) or f"{skill or 'The request'} completed."
         context.conversation_history.append(f"assistant: {text}")
@@ -1094,8 +1201,10 @@ class MainAgentRuntime:
     # H2b: pending confirmations are write-through cached in the in-memory store and
     # persisted to Postgres, so a prompt raised on one process can be resumed on another.
     # The Postgres calls are best-effort: if the DB is unreachable, pending state
-    # degrades to the process-local cache rather than failing the turn. When it is
-    # reachable, the row is read on every lookup (see _get_pending).
+    # degrades to the process-local cache rather than failing the turn, except an
+    # answer's claim, which is refused instead (see _claim_pending). When it is
+    # reachable, the row is read on every lookup (see _get_pending) and an answer
+    # removes it before acting (see _claim_pending).
     async def _save_pending(self, context_id: str, owner_email: str, pending: dict) -> None:
         self.store.save_pending_confirmation(context_id, pending)
         try:
@@ -1120,6 +1229,28 @@ class MainAgentRuntime:
         else:
             self.store.save_pending_confirmation(context_id, pending)  # warm the cache
         return pending
+
+    async def _claim_pending(self, context_id: str) -> dict | None:
+        """Remove the pending action and return it, so only one answer acts on it.
+
+        Two answers can arrive together: a double click, a client retry, a chat "yes"
+        and the button, or replies on two processes. When each read the action and
+        cleared it only after the agent call, both ran it. Now an answer runs only an
+        action it took. With a DB the row decides (one DELETE ... RETURNING), and this
+        process's copy is then dropped. If that statement fails, nothing is claimed and
+        PendingStoreUnavailable is raised: running the cached copy would leave the row
+        for a later answer, here or on another process, to run again. Without a DB the
+        in-memory copy is taken, which no other answer in this process can also get.
+        """
+        if not pending_store.enabled():
+            return self.store.take_pending_confirmation(context_id)
+        try:
+            claimed = await pending_store.take(context_id)
+        except Exception as exc:
+            logger.warning("pending_confirmation_claim_failed", exc_info=True)
+            raise PendingStoreUnavailable(context_id) from exc
+        self.store.clear_pending_confirmation(context_id)
+        return claimed
 
     async def _clear_pending(self, context_id: str) -> None:
         self.store.clear_pending_confirmation(context_id)

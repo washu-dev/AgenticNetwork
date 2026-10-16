@@ -38,12 +38,14 @@ repository goes public.
   ([`deployment/gcp/DEPLOY_YOUR_OWN.md`](deployment/gcp/DEPLOY_YOUR_OWN.md), not re-run live);
   public-facing `README.md`, `CONTRIBUTING.md`, [`TESTING.md`](TESTING.md), docs index and
   `SECURITY.md` (reporting policy first).
-- **Engineering finalize pass (2026-10-15, evening):** two more security fixes (another user's
-  chat "yes" or "no" could answer someone's pending action with the replier's credentials; the
-  user's email reached skeleton agents' model provider); the planner reuses one LLM client per
+- **Engineering finalize pass (2026-10-15, evening):** three more security fixes (another user's
+  chat "yes" or "no" could answer someone's pending action with the replier's credentials; two
+  answers to one pending action arriving together both ran it; the user's email reached
+  skeleton agents' model provider); the planner reuses one LLM client per
   endpoint and closes it on shutdown (per-call clients could hang an A2A call); cluster startup
-  recovery keeps `llm` agents with uploaded tools; six more pipeline scenarios (proxy agent,
-  preset tool, step limit, `ask_user`, owner-only confirmation by button and by chat); release
+  recovery keeps `llm` agents with uploaded tools; seven more pipeline scenarios (proxy agent,
+  preset tool, step limit, `ask_user`, owner-only confirmation by button and by chat, two
+  confirmations at once); release
   hygiene (no real addresses in code, tests or templates; no retired-plan references; neutral
   credits; per-project Compose images); a fresh-clone run of the quickstart, dev stack and
   Compose docs; and a history and hygiene audit (below). With this pass the engineering side is
@@ -214,9 +216,20 @@ The two copies have diverged, so they must be reconciled first.
      save failed, so the earlier cancel gap on another process is closed. A pending action
      resumed or cancelled on one planner process is no longer run again from another
      process's in-memory copy: with a database, the pending row is read on every lookup.
-     Still open (small): two confirmations of the same pending action arriving at once
-     (double click, client retry) can both run the write, because the row is read, the call
-     sent, and only then cleared. Fix: claim the row atomically (`DELETE ... RETURNING`).
+   - Fixed: two answers to the same pending action arriving at once (a double click, a client
+     retry, a chat "yes" racing the button, replies on two processes) both ran the write,
+     because each read the action, sent the call and cleared it only afterwards. Now one
+     answer per conversation runs at a time in a process, and an answer claims the action
+     right before the agent call (one `DELETE ... RETURNING` with a database, else it takes the
+     process's in-memory copy), so only one answer acts; the others get `answer_in_progress`
+     or `no_pending` and nothing runs. A claim the database can't serve runs nothing, and the
+     resumed call sends the request the prompt showed (fixed 2026-10-15;
+     `test_confirmation_claim.py`, pipeline `test_9`; two adversarial review rounds). Still
+     open (small): a chat "yes" reaching another planner process during the first answer's
+     agent call is handled as an ordinary message, so the model may call the agent again
+     (fix: mark the claimed row instead of deleting it); and, older than this fix, a confirm
+     names no prompt, so a click on an old prompt answers a newer one saved for the same
+     conversation in the meantime (fix: give each prompt an id and claim only a matching row).
    - Fixed: an upload's `entry_file` must be a bare `*.py` name; `../x.py`, absolute paths
      and newlines get 422 (`test_custom.py::test_entry_file_must_be_bare_name`).
    - Fixed: the planner's `/register/{path}` proxy no longer forwards registration's
@@ -383,7 +396,8 @@ through `add-agent` relays to its upstream; an `llm` agent with the preset `calc
 it; the step limit ends a turn that never answers (`max_steps_exceeded`); `ask_user` pauses a
 turn and the reply continues it with the history; in strict policy mode a write skill runs
 only after its owner confirms (another user gets 403; a chat "no" cancels it), and another
-user's chat "yes" or "no" does not touch the owner's pending action. Unit tests cover the
+user's chat "yes" or "no" does not touch the owner's pending action; two confirmations sent
+together run the write once. Unit tests cover the
 refused `entry_file` and impersonating uploads.
 
 **Still to add:**

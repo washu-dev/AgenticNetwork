@@ -140,6 +140,10 @@ def persisted(monkeypatch):
     async def clear_pending(context_id):
         pending_rows.pop(context_id, None)
 
+    async def take_pending(context_id):
+        entry = pending_rows.pop(context_id, None)
+        return dict(entry[1]) if entry else None
+
     monkeypatch.setattr(conversation_store, "owner", conversation_owner)
     monkeypatch.setattr(conversation_store, "load_history", load_history)
     monkeypatch.setattr(pending_store, "enabled", lambda: True)
@@ -147,6 +151,7 @@ def persisted(monkeypatch):
     monkeypatch.setattr(pending_store, "get", get_pending)
     monkeypatch.setattr(pending_store, "owner", pending_owner)
     monkeypatch.setattr(pending_store, "clear", clear_pending)
+    monkeypatch.setattr(pending_store, "take", take_pending)
     return conversations, pending_rows
 
 

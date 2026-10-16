@@ -8,8 +8,11 @@ This module persists it to Postgres (table `pending_confirmations`, created in
 
 The runtime keeps an in-memory cache, but when a DB is configured the row is the
 source of truth and is read on every lookup: another process may have resumed or
-cancelled the action since this one cached it. The cache answers only when the DB
-is unreachable. When no DB is configured (Tier A/B laptop runs, unit tests) every
+cancelled the action since this one cached it. An answer (yes, no, the confirm
+button) acts only on a row it removed itself with `take`, so two answers arriving
+together cannot both run the action. Lookups fall back to the cache only when the
+DB is unreachable; a claim never does (the runtime refuses the answer instead).
+When no DB is configured (Tier A/B laptop runs, unit tests) every
 function is a no-op and the in-memory cache is the only store.
 """
 from __future__ import annotations
@@ -53,6 +56,27 @@ async def get(context_id: str) -> dict[str, Any] | None:
             "SELECT payload FROM pending_confirmations WHERE context_id = $1",
             context_id,
         )
+    return _payload(row)
+
+
+async def take(context_id: str) -> dict[str, Any] | None:
+    """Remove the pending confirmation for a context_id and return it, or None.
+
+    One statement, so when two answers race (a double click, a client retry, replies on
+    two processes) exactly one of them gets the payload and the other finds no row.
+    """
+    if not enabled():
+        return None
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "DELETE FROM pending_confirmations WHERE context_id = $1 RETURNING payload",
+            context_id,
+        )
+    return _payload(row)
+
+
+def _payload(row: Any) -> dict[str, Any] | None:
     if row is None:
         return None
     payload = row["payload"]

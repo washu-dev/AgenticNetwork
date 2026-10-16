@@ -142,8 +142,13 @@ durable state now lives in Postgres so it scales past one process.
 - **Durable, shared state (D11).** Conversation history (`conversation_store.py` →
   `conversation_messages`) and pending confirmations (`pending_store.py` →
   `pending_confirmations`) are in Postgres, write-through cached and rehydrated on a miss — so a
-  conversation or a mid-flight confirmation resumes on any process or after a restart.
-  Persistence is best-effort (a DB hiccup degrades to the cache, never fails the turn). The only
-  process-local state left is the write-only `invocations` audit.
+  conversation or a mid-flight confirmation resumes on any process or after a restart. An answer
+  to a pending action first removes its row (`DELETE ... RETURNING`), so two answers arriving
+  together, on one process or two, run it once; if that statement fails, the answer is refused
+  (`pending_store_unavailable`) and nothing runs (details: [`PLANNER.md`](PLANNER.md),
+  "Confirmation & consent resume").
+  Persistence is best-effort (a DB hiccup degrades to the cache, never fails the turn), except
+  an answer's claim, which fails closed. The only process-local state left is the write-only
+  `invocations` audit.
 
 See [PLANNER.md](PLANNER.md) for how these fit into the runtime.

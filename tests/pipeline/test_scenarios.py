@@ -32,6 +32,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -167,13 +168,14 @@ def wait_listed(base: str, *names: str, timeout: float = 15) -> dict[str, str]:
 
 class _RecordingAgent(BaseHTTPRequestHandler):
     """A minimal A2A agent: records each JSON-RPC request and answers it with one text
-    message naming the path it arrived at."""
+    message naming the path it arrived at, after the server's ``delay`` seconds."""
 
     protocol_version = "HTTP/1.1"
 
     def do_POST(self) -> None:  # noqa: N802 (http.server naming)
         request = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
         self.server.received.append((self.path, request))
+        time.sleep(self.server.delay)
         reply = {"jsonrpc": "2.0", "id": request.get("id"), "result": {
             "kind": "message", "role": "agent", "messageId": uuid.uuid4().hex,
             "parts": [{"kind": "text", "text": f"{RECORDER_MARKER} {self.path}"}],
@@ -230,6 +232,7 @@ def register(stack: dict[str, Any], tmp_path: Path) -> Iterator[Callable[[dict[s
 def recorder() -> Iterator[ThreadingHTTPServer]:
     server = ThreadingHTTPServer(("127.0.0.1", 0), _RecordingAgent)
     server.received = []
+    server.delay = 0
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
         yield server
@@ -495,7 +498,27 @@ def test_8_another_users_yes_or_no_does_not_touch_a_pending_action(stack, direct
     assert status == 200 and done["state"] == "completed" and len(recorder.received) == 1, done
 
 
-def test_9_registered_agent_is_discoverable_again_after_a_restart(stack, tmp_path):
+def test_9_two_confirmations_at_once_run_the_write_once(stack, directory, recorder):
+    """A double click on the confirm button sends two confirmations together. The agent
+    answers slowly, so the second arrives while the first is still inside its call; only
+    one of them runs the write. The dev stack has one planner process, so the other is
+    refused with answer_in_progress (no_pending if it came after the first had finished)."""
+    cid = ask_to_publish(stack, directory, recorder)["context_id"]
+    confirm = {"user_id": "demo-user", "channel": "api", "context_id": cid, "confirmed": True}
+    recorder.delay = 1
+    try:
+        with ThreadPoolExecutor(2) as pool:
+            answers = list(pool.map(lambda _: call("POST", f"{stack['proxy']}/confirmations", confirm), range(2)))
+    finally:
+        recorder.delay = 0
+    assert [status for status, _ in answers] == [200, 200], answers
+    assert sorted(answer["state"] for _, answer in answers) == ["completed", "failed"], answers
+    [refused] = [answer for _, answer in answers if answer["state"] == "failed"]
+    assert refused["errors"] in (["answer_in_progress"], ["no_pending"]), refused
+    assert len(recorder.received) == 1, recorder.received
+
+
+def test_10_registered_agent_is_discoverable_again_after_a_restart(stack, tmp_path):
     added = add_agent(ZEBRA, tmp_path)
     before = stack_json("status")
 
