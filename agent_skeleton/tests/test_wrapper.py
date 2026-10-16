@@ -189,6 +189,39 @@ def test_run_agent_threads_spec_through_frozen_loop():
     assert result["response_text"] == "done"
 
 
+def test_tool_loop_closes_its_client_after_each_run():
+    class Client:
+        def __init__(self, fail):
+            self.fail, self.closed = fail, False
+            self.chat = self
+            self.completions = self
+
+        def create(self, **_kwargs):
+            if self.fail:
+                raise RuntimeError("provider down")
+            message = type("M", (), {"content": "done", "tool_calls": None})()
+            return type("R", (), {"choices": [type("C", (), {"message": message})()]})()
+
+        def close(self):
+            self.closed = True
+
+    made = []
+    orig = llm_loop.build_openai_client
+    llm_loop.build_openai_client = lambda: made.append(Client(fail=len(made) == 1)) or made[-1]
+    try:
+        loop_args = dict(model="m", system_prompt="s", user_payload={}, tool_schemas=[], dispatch=None)
+        assert llm_loop.run_tool_loop(**loop_args) == ("done", [])
+        try:
+            llm_loop.run_tool_loop(**loop_args)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("the provider error should propagate")
+    finally:
+        llm_loop.build_openai_client = orig
+    assert [c.closed for c in made] == [True, True]  # closed on success and on error
+
+
 def test_error_body_redacts_secrets_in_json():
     # A JSON body puts a closing quote between the key and ':', which the bare patterns miss.
     from agent_skeleton.system_tools.call_endpoint import _redact

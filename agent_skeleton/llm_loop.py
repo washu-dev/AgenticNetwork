@@ -74,47 +74,54 @@ def run_tool_loop(
 ) -> tuple[str, list[dict[str, Any]]]:
     """Run the bounded tool-calling loop. Returns (final_text, tool_log)."""
     client = build_openai_client()
-    messages: list[Any] = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": json.dumps(user_payload, indent=2)},
-    ]
-    request_kwargs: dict[str, Any] = {"model": model, "messages": messages}
-    if tool_schemas:
-        request_kwargs["tools"] = tool_schemas
-        request_kwargs["parallel_tool_calls"] = False
+    try:
+        messages: list[Any] = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": json.dumps(user_payload, indent=2)},
+        ]
+        request_kwargs: dict[str, Any] = {"model": model, "messages": messages}
+        if tool_schemas:
+            request_kwargs["tools"] = tool_schemas
+            request_kwargs["parallel_tool_calls"] = False
 
-    response = client.chat.completions.create(**request_kwargs)
-    tool_log: list[dict[str, Any]] = []
-
-    for _ in range(max_steps):
-        tool_calls = _extract_tool_calls(response)
-        if not tool_calls:
-            break  # the model is done; its content is the final answer
-
-        # Record the assistant turn (WITH its tool_calls) BEFORE the results.
-        messages.append(response.choices[0].message)
-
-        for call in tool_calls:
-            name = call.function.name
-            call_id = call.id
-            try:
-                arguments = json.loads(call.function.arguments or "{}")
-                result = dispatch(name, arguments)
-            except Exception as exc:  # never let a tool crash the loop
-                result = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
-            tool_log.append({"name": name, "arguments": call.function.arguments, "result": result})
-            messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": call_id,
-                    "content": json.dumps(result, default=str),
-                }
-            )
-
-        request_kwargs["messages"] = messages
         response = client.chat.completions.create(**request_kwargs)
+        tool_log: list[dict[str, Any]] = []
 
-    return _final_text(response), tool_log
+        for _ in range(max_steps):
+            tool_calls = _extract_tool_calls(response)
+            if not tool_calls:
+                break  # the model is done; its content is the final answer
+
+            # Record the assistant turn (WITH its tool_calls) BEFORE the results.
+            messages.append(response.choices[0].message)
+
+            for call in tool_calls:
+                name = call.function.name
+                call_id = call.id
+                try:
+                    arguments = json.loads(call.function.arguments or "{}")
+                    result = dispatch(name, arguments)
+                except Exception as exc:  # never let a tool crash the loop
+                    result = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+                tool_log.append({"name": name, "arguments": call.function.arguments, "result": result})
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": call_id,
+                        "content": json.dumps(result, default=str),
+                    }
+                )
+
+            request_kwargs["messages"] = messages
+            response = client.chat.completions.create(**request_kwargs)
+
+        return _final_text(response), tool_log
+    finally:
+        # One client per run: close its connections now rather than whenever the
+        # garbage collector reaches it.
+        close = getattr(client, "close", None)
+        if callable(close):
+            close()
 
 
 # --- High-level engine entry point (wires the AgentSpec into the loop) ----
