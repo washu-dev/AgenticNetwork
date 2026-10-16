@@ -68,7 +68,7 @@ async def _make_custom(approved=True):
 def _cluster_env(monkeypatch):
     monkeypatch.setenv("SPAWN_BACKEND", "cluster")
     monkeypatch.setenv("GITHUB_TOKEN", "tok")
-    monkeypatch.setenv("GITHUB_REPO", "washu-dev/agent-directory")
+    monkeypatch.setenv("GITHUB_REPO", "example-org/agents")
 
 
 # ── Approval → commit → building ─────────────────────────────────────────────────

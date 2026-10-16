@@ -103,10 +103,10 @@ async def _make_custom(image_ref="sha256:deadbeef", status="image_ready", resour
 
 def _cloud_env(monkeypatch):
     monkeypatch.setenv("SPAWN_BACKEND", "cloudrun")
-    monkeypatch.setenv("GCP_PROJECT", "di2-agenticweb")
+    monkeypatch.setenv("GCP_PROJECT", "example-project")
     monkeypatch.setenv("GCP_REGION", "us-central1")
-    monkeypatch.setenv("AGENT_RUNTIME_SA", "agent-runtime@di2-agenticweb.iam.gserviceaccount.com")
-    monkeypatch.setenv("PLANNER_INVOKER_SA", "planner@di2-agenticweb.iam.gserviceaccount.com")
+    monkeypatch.setenv("AGENT_RUNTIME_SA", "agent-runtime@example-project.iam.gserviceaccount.com")
+    monkeypatch.setenv("PLANNER_INVOKER_SA", "planner@example-project.iam.gserviceaccount.com")
     monkeypatch.setenv("VPC_CONNECTOR", "planner-connector")
 
 
@@ -198,7 +198,7 @@ async def test_spawn_deploys_by_digest_and_grants_invoker(monkeypatch):
     assert fake.created[0]["service_account"].startswith("agent-runtime@")
     # Planner SA granted run.invoker on the service.
     assert fake.invokers == [
-        ("agent-paper-reviewer", "serviceAccount:planner@di2-agenticweb.iam.gserviceaccount.com")
+        ("agent-paper-reviewer", "serviceAccount:planner@example-project.iam.gserviceaccount.com")
     ]
     await db.close_db()
 
@@ -275,7 +275,7 @@ async def test_build_poll_deploys_and_publishes_run_app_url(monkeypatch):
     the run.app URL (the cluster path instead defers to the host loop)."""
     _cloud_env(monkeypatch)
     monkeypatch.setenv("GITHUB_TOKEN", "tok")
-    monkeypatch.setenv("GITHUB_REPO", "washu-dev/agent-directory")
+    monkeypatch.setenv("GITHUB_REPO", "example-org/agents")
     await _fresh_db()
     agent = await _make_custom(image_ref=None, status="building")
 
@@ -314,7 +314,7 @@ async def test_build_poll_deploys_and_publishes_run_app_url(monkeypatch):
 async def test_build_poll_marks_failed_when_deploy_raises(monkeypatch):
     _cloud_env(monkeypatch)
     monkeypatch.setenv("GITHUB_TOKEN", "tok")
-    monkeypatch.setenv("GITHUB_REPO", "washu-dev/agent-directory")
+    monkeypatch.setenv("GITHUB_REPO", "example-org/agents")
     await _fresh_db()
     agent = await _make_custom(image_ref="sha256:x", status="building")
 
@@ -347,7 +347,7 @@ async def _deploy_to_live(monkeypatch, fake, publisher):
     Returns (supervisor, agent_row)."""
     _cloud_env(monkeypatch)
     monkeypatch.setenv("GITHUB_TOKEN", "tok")
-    monkeypatch.setenv("GITHUB_REPO", "washu-dev/agent-directory")
+    monkeypatch.setenv("GITHUB_REPO", "example-org/agents")
     await _fresh_db()
     agent = await _make_custom(image_ref="sha256:feed", status="building")
 
@@ -606,7 +606,7 @@ async def test_resources_persist_and_reach_deploy_and_card(monkeypatch):
     spec, and surface on the published card."""
     _cloud_env(monkeypatch)
     monkeypatch.setenv("GITHUB_TOKEN", "tok")
-    monkeypatch.setenv("GITHUB_REPO", "washu-dev/agent-directory")
+    monkeypatch.setenv("GITHUB_REPO", "example-org/agents")
     await _fresh_db()
     agent = await _make_custom(
         image_ref=None, status="building",

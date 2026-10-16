@@ -306,10 +306,10 @@ async def test_require_admin_allowlist(monkeypatch) -> None:
 
     # Production (no FAKE_DB): enforce ADMIN_EMAILS on the forwarded SSO identity.
     monkeypatch.delenv("FAKE_DB", raising=False)
-    monkeypatch.setenv("ADMIN_EMAILS", "admin@wustl.edu")
-    _require_admin(_FakeReq({"mail": "admin@wustl.edu"}))          # allowlisted → ok
+    monkeypatch.setenv("ADMIN_EMAILS", "admin@example.com")
+    _require_admin(_FakeReq({"mail": "admin@example.com"}))          # allowlisted → ok
 
-    for headers in ({"mail": "bob@wustl.edu"}, {}):                # non-admin / no identity
+    for headers in ({"mail": "bob@example.com"}, {}):                # non-admin / no identity
         with pytest.raises(HTTPException) as ei:
             _require_admin(_FakeReq(headers))
         assert ei.value.status_code == 403
@@ -317,7 +317,7 @@ async def test_require_admin_allowlist(monkeypatch) -> None:
     # Empty allowlist → nobody is admin (fail closed).
     monkeypatch.delenv("ADMIN_EMAILS", raising=False)
     with pytest.raises(HTTPException):
-        _require_admin(_FakeReq({"mail": "admin@wustl.edu"}))
+        _require_admin(_FakeReq({"mail": "admin@example.com"}))
 
 
 # ── Internal endpoints (host spawn loop) ─────────────────────────────────────────
