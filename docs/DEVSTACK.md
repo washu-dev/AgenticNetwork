@@ -20,7 +20,7 @@ open http://localhost:8080/app      # chat UI, already signed in as dev@example.
 scripts/stack down                  # stop everything
 ```
 
-`scripts/stack` is a thin wrapper for `python3 -m devstack`; both work the same.
+`scripts/stack` is a thin wrapper for `python3 -m devstack`; both work the same. Set `DEVSTACK_PYTHON` to run it with another interpreter (3.11 or newer).
 
 Try a prompt like "Echo this back: hello". The planner finds the seed agent *Echo
 Assistant*, sends it your request over A2A, and shows its answer. With the mock LLM the
@@ -54,7 +54,9 @@ scripts/stack doctor                # checks Python, both venvs, the fake dirctl
 The services and the agents they spawn listen on `127.0.0.1` only. `--port-offset N`
 adds `N` to every port, so you can run a second stack next to the first. Give it its own
 `--state-dir` too, and keep the offsets of stacks that run at the same time at least 100
-apart: the agent range is 100 ports wide.
+apart: the agent range is 100 ports wide. Pass `--port-offset` to `up` only: the other commands
+read it from the state dir, so give them the same `--state-dir` instead. Before the first `up`,
+`doctor` checks the default ports.
 
 After the services are ready, `up` registers the seed agents in `devstack/seeds/` through
 the real `POST /agents` path. It waits until the planner's `GET /agents` lists them.
@@ -68,11 +70,11 @@ again.
 
 | Command | What it does |
 |---|---|
-| `up [--llm mock\|openai] [--no-seed] [--timeout S] [--port-offset N] [--json]` | Start whatever is not already running, wait until everything is ready, then register the agents (and restart any that are not live). Safe to run again: if everything is up, it changes nothing. |
+| `up [--llm mock\|openai] [--no-seed] [--timeout S] [--port-offset N] [--json] [--keep-on-failure]` | Start whatever is not already running, wait until everything is ready, then register the agents (and restart any that are not live). Safe to run again: if everything is up, it changes nothing. |
 | `status [--json]` | What is running and ready, with URLs, pids, log paths and the agents the planner lists. An agent that is listed but does not answer counts as not ready. Exits 0 only when everything is ready. |
-| `smoke [--prompt TEXT] [--json]` | Sends one prompt through the front door. Checks that a specialist answered and that the conversation was saved. |
+| `smoke [--prompt TEXT] [--timeout S] [--json]` | Sends one prompt through the front door. Checks that a specialist answered and that the conversation was saved. |
 | `logs SERVICE [-n N] [-f]` | Shows a log: `proxy`, `planner`, `registration`, `mock-llm`, `directory` (every dirctl call), `mock-llm-requests` (every LLM request and reply), or an agent's name or id. |
-| `add-agent FILE.json` | Registers an agent from a registration body (see below). |
+| `add-agent FILE.json [--timeout S] [--json]` | Registers an agent from a registration body (see below). |
 | `down [--json]` | Stops this stack's services and spawned agents, and reports anything still listening on its ports. A service of this stack whose pid file was lost is found by its log path and stopped too. It never stops another stack's services or agents: if a stack started from another state dir holds these ports, `down` names it (pid, port, state dir), prints the command that stops it and exits 1. `--json` prints the same report on stdout. |
 | `reset` | `down`, then deletes what the stack created in `.devstack/` for a clean start. It removes the dir itself only if nothing else is in it. If `down` leaves anything running, `reset` exits 1 and deletes nothing, so the pid files and logs stay for the next try. |
 | `doctor [--json]` | Checks the setup without starting anything. |
@@ -129,7 +131,7 @@ The stack does not save the key in `.devstack/`.
 complete example of an `llm` agent:
 
 ```bash
-cp devstack/seeds/echo_assistant.json /tmp/my_agent.json   # edit name, description, prompt
+cp devstack/seeds/echo_assistant.json /tmp/my_agent.json   # change at least the name, then description and prompt
 scripts/stack add-agent /tmp/my_agent.json
 ```
 

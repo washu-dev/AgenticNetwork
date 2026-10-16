@@ -37,8 +37,11 @@ Deeper: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and [`docs/AUTH.md`](docs
 ## Quickstart (dev stack)
 
 One command runs the whole system on a laptop: the planner, the registration service, a seed
-agent, a mock LLM and a local sign-in proxy. You need Python 3.11 or newer as `python3`. From the
-repo root:
+agent, a mock LLM and a local sign-in proxy. It runs on macOS and Linux. You need Python 3.11 or
+newer as `python3` (check with `python3 --version`; macOS's built-in `/usr/bin/python3` is 3.9 and
+fails with "No matching distribution found for a2a-sdk"). If your 3.11+ interpreter has another
+name, such as `python3.12`, use it for the two `-m venv` commands and set `DEVSTACK_PYTHON` to it.
+From the repo root:
 
 ```bash
 # One-time setup: one venv per service
@@ -47,7 +50,7 @@ python3 -m venv registration_service/.venv && registration_service/.venv/bin/pip
 scripts/stack doctor                # checks Python, both venvs, the fake dirctl and ports
 
 scripts/stack up                    # returns when everything is ready
-open http://localhost:8080/app      # chat UI, signed in as dev@example.test
+open http://localhost:8080/app      # chat UI, signed in as dev@example.test (macOS; elsewhere open the URL in a browser)
 scripts/stack smoke                 # optional: one prompt through the front door
 scripts/stack down
 ```
@@ -86,7 +89,7 @@ What to run before a pull request, and what CI checks, is in [`CONTRIBUTING.md`]
 | [`tests/pipeline/`](tests/pipeline/) | Full-chain test that drives the dev stack over HTTP. |
 | [`deployment/`](deployment/README.md) | Dockerfiles, entrypoints, Slurm and Google Cloud scripts, config templates. |
 | [`docs/`](docs/README.md) | Documentation. |
-| [`.github/workflows/`](.github/workflows/tests.yml) | CI: unit suites with coverage, repo hygiene, full-chain and scenario tests (`tests.yml`); the Docker Compose smoke test (`compose.yml`). |
+| [`.github/workflows/`](.github/workflows/) | CI: unit suites with coverage, repo hygiene, full-chain and scenario tests (`tests.yml`); the Docker Compose smoke test (`compose.yml`). |
 
 The specialist agents of the WashU deployment (email and calendar, web research, photo
 geolocation, coding, intelligence briefs, disaster response) live in a separate repository,

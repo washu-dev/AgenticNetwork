@@ -106,10 +106,12 @@ trusted node."* Everything inside the node trusts everything else.
   match too.
   Specialist ports remain unauthenticated, so a rogue local process could still receive whatever
   was injected for a given call. Skeleton-engine agents strip the `credentials`, `authorization`,
-  `secret(s)` and `token` keys from request, message and part metadata before building the LLM
-  prompt (`agent_skeleton/executor.py::_model_visible_metadata`; `agent_skeleton/tests/test_executor_metadata.py`),
-  but the rest of the planner's metadata, including `user_id` (the user's email), still reaches the
-  model provider. (Mitigations present: `agent_skeleton/system_tools/call_endpoint.py` reads its
+  `secret(s)` and `token` keys from request, message and part metadata and DataPart data, and the
+  user's identity (`user_id`, `auth_user_id`, `mail`, `eppn`, `remote_user`/`remote-user`) from
+  metadata, before building the LLM prompt (`agent_skeleton/executor.py::_model_visible_metadata`;
+  `agent_skeleton/tests/test_executor_metadata.py`). Other metadata (channel, skill hints, task
+  input, `user_goal`) still reaches the model provider, and agent images built from a commit
+  before this fix keep the old executor until rebuilt. (Mitigations present: `agent_skeleton/system_tools/call_endpoint.py` reads its
   token from an env var at call time — never storing it — and redacts secret-shaped strings from
   error bodies.)
 - **Email agent Google OAuth client files** are no longer baked into the image: the current
@@ -126,9 +128,6 @@ trusted node."* Everything inside the node trusts everything else.
   `CREDENTIALS_ENCRYPTION_KEY` live in `deployment/.env`. `.dockerignore` keeps `.env`,
   key and credential-file patterns out of this repo's image build contexts. Fine on a trusted
   node; externalize before scaling.
-
----
-
 - **On the subprocess backend, any signed-in user can start an agent without approval.** Only
   uploaded-code agents wait for admin approval (`registration_service/server.py`, `carries_upload`).
   An `llm` agent with `http` tools, or a `proxy` agent, starts at once as a subprocess of the
@@ -138,6 +137,8 @@ trusted node."* Everything inside the node trusts everything else.
   headers of its choosing. This applies to the dev stack and Docker Compose (no `SPAWN_BACKEND`);
   the cluster and Cloud Run backends refuse non-upload agents (`supervisor.py`). Until approval
   covers these agents, give accounts only to people you would trust as admins.
+
+---
 
 ## 3. Reliability hazards (not security, but they bite)
 
@@ -171,8 +172,9 @@ Tracked in detail in [`docs/deployment/DOWNSTREAM_CONSIDERATIONS.md`](docs/deplo
 4. **Per-conversation isolation — DONE.** The shared server context was dropped: contexts are
    per-user-keyed with ownership checks, identity fails closed, and history + pending state moved
    to Postgres (see [`docs/AUTH.md`](docs/AUTH.md) §5). Since 2026-10-13 a login identity always
-   wins over a request-body `user_id`, and `POST /confirmations` returns 403 to anyone but the
-   conversation owner. Still open here: set a non-permissive `policy_mode` and close the no-hint
+   wins over a request-body `user_id`, and only the conversation owner can answer a pending
+   action: `POST /confirmations` and a chat "yes" or "no" both return 403 to anyone else (fixed
+   2026-10-15). Still open here: set a non-permissive `policy_mode` and close the no-hint
    write-gate gap.
 5. **Stable gateway + service DNS/auth** in front of the ephemeral node; unify the two
    directories (dirctl `:8888` vs scout's gRPC `:8889`).

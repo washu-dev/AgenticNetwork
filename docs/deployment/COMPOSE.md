@@ -28,7 +28,9 @@ docker compose run --rm seed      # exits 0 once the planner lists the seed agen
 Open **http://127.0.0.1:18080/app**: the chat UI, signed in as `dev@example.test`. Try
 "Echo this back: hello". With the default mock LLM the answer starts with
 `[mock-llm] Echo:`. `docker compose down` stops everything and keeps the data;
-`docker compose down -v` also deletes it.
+`docker compose down -v` also deletes it. Add `--rmi local` to also remove the images the stack
+built. Stacks built before 2026-10-15 tagged them `agenticnetwork-<service>:local`; remove those
+leftovers with `docker rmi`.
 
 The first build took about 2.5 minutes on a 10-core arm64 Mac with an empty cache (planner
 77 s, registration 52 s, Postgres 18 s, ADS 10 s, base images included). Docker Desktop
@@ -88,7 +90,7 @@ Compose reads `deployment/compose/.env`. Every variable is optional.
 | `MAIN_AGENT_LLM_MODEL` | `mock-planner` | The planner's model name. |
 | `DEVSTACK_SPECIALIST_MODEL` | `MAIN_AGENT_LLM_MODEL` | The model the seed agents are registered with. |
 | `CREDENTIALS_ENCRYPTION_KEY` | empty | 32-byte base64 key that encrypts users' stored credentials. Needed before anyone saves a credential. |
-| `COMPOSE_PROJECT_NAME` | `agenticnetwork` | Compose's own setting. A second stack on the same host needs another name and another `FRONT_DOOR_PORT`; it gets its own containers and volumes. |
+| `COMPOSE_PROJECT_NAME` | `agenticnetwork` | Compose's own setting. A second stack on the same host needs another name and another `FRONT_DOOR_PORT`; it gets its own containers, volumes and built images (named `<project>-<service>`). |
 
 Other settings the services read (for example `GITHUB_ISSUES_REPO` and
 `GITHUB_ISSUES_TOKEN` for bug reports, see `deployment/.env.example`) go under the
@@ -235,8 +237,10 @@ runs each service as a managed Cloud Run service with Cloud SQL.
 - **Publishing may need internet:** `deployment/ads_daemon.yaml` configures the OASF
   validator with `schema_url: https://schema.oasf.outshift.com`. A fully offline start
   was not tested.
-- **Images are built for the host's architecture.** Tested on arm64 (Apple silicon)
-  only; `deployment/build_and_push.sh` builds `linux/amd64` for ENGR.
+- **Images are built for the host's architecture.** Tested on arm64 (Apple silicon), and on
+  `linux/amd64` under Docker Desktop emulation (2026-10-15) with one change: the planner's
+  `mamba create` step hangs under Rosetta, so that run built the planner without conda.
+  `deployment/build_and_push.sh` builds `linux/amd64` for ENGR.
 
 ## Troubleshooting
 
@@ -250,6 +254,7 @@ runs each service as a managed Cloud Run service with Cloud SQL.
 | Port 18080 is in use | Set `FRONT_DOOR_PORT` in `.env`. |
 | Many `Failed to parse enhanced label key` warnings from `ads` | Harmless; they appear in passing runs too. |
 | Start over from nothing | `docker compose down -v` deletes the database and uploads. |
+| An amd64 build on Apple silicon stops at the planner's `mamba create` | A known hang under Rosetta emulation; build on an amd64 host or in CI (`compose.yml`). |
 
 ## The tier-2 smoke test
 

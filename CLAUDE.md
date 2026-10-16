@@ -165,8 +165,8 @@ to 60 s for it, then `exec`s the agent with an absolute conda path
 
 ### Tier E — GCP Cloud Run (built to a working milestone 2026-08; on hold since)
 Cloud is a critical leg of the project going forward (decided 2026-10-13); the ENGR cluster
-(Tier D) stays the live public deployment. The GCP build (project `di2-agenticweb`,
-`us-central1`) is **additive**; nothing on ENGR was deleted. **Live as of 2026-08-03
+(Tier D) stays the live public deployment. The WashU GCP build
+(`us-central1`) is **additive**; nothing on ENGR was deleted. **Live as of 2026-08-03
 (re-verify):** the **planner and registration service on Cloud Run** wired to **Cloud SQL**, a
 **real ADS on a GCE VM**, authenticated cross-network A2A, LLM = vLLM-primary with automatic
 **Vertex AI fallback**, and the **`CloudRunBackend`** auto-deploying + auto-publishing registered
@@ -309,7 +309,7 @@ and email are already done; use them as the reference):** the same shape of chan
 
 **Cross-cutting gotchas:**
 - **Tool calling requires vLLM launch flags** — `--enable-auto-tool-choice
-  --tool-call-parser <parser>` (the RIS example sbatch already sets these). Without
+  --tool-call-parser <parser>` (`deployment/start_vllm.sbatch` sets both). Without
   them, agents silently stop calling tools.
 - **Model-name matching** — raw OpenAI clients send the model string verbatim, so
   it must equal vLLM's served name; litellm strips the leading `openai/`. Launch
@@ -321,8 +321,15 @@ and email are already done; use them as the reference):** the same shape of chan
 - **Relax dummy-key guards** — several agents hard-require `OPENAI_API_KEY`
   (planner `config.py` `load_config`, email `_openai_client` + the CLI guard,
   disaster `_call_model`). Set a non-empty placeholder for vLLM.
+- **LLM client lifetime** — keep one async OpenAI client per endpoint for the life of the process
+  and close it on shutdown; never build one per call and leave it for the garbage collector. The
+  SDK's default async HTTP client closes itself from `__del__` by scheduling `aclose()` on
+  whatever loop is running when it is collected; in the planner that late close was traced to an
+  A2A `ConnectTimeout` on the first chat after a restart. `OpenAIToolLoopClient` caches one client
+  per endpoint and event loop, and the app lifespan closes them. The skeleton's synchronous tool
+  loop builds one client per run and closes it when the run ends.
 
-RIS docs (vLLM sbatch + inference examples) live in the sibling `ris-tips/llms-on-ris/` directory (outside this repo).
+`deployment/start_vllm.sbatch` is a working Slurm launch script for vLLM; for other launch flags see the vLLM documentation (https://docs.vllm.ai).
 
 ---
 
@@ -428,8 +435,8 @@ auth-unaware.
 Unit suites run from the repo root, offline (no Docker, Postgres, `dirctl` or API
 key); CI runs the same per component in `.github/workflows/tests.yml` (with coverage
 summaries), plus a repo-hygiene job and the full-chain and scenario pipeline;
-`.github/workflows/compose.yml` runs tier 2 (the Docker Compose smoke test) on PRs touching
-deployment or service code, weekly and on demand. Do not set `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`: registration
+`.github/workflows/compose.yml` runs tier 2 (the Docker Compose smoke test) on PRs and pushes to
+`main` touching deployment or service code, weekly and on demand. Do not set `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`: registration
 needs the `pytest-asyncio` plugin, and most of its suite fails without it.
 
 ```bash
@@ -450,14 +457,16 @@ registration_service/.venv/bin/python -m agent_directory_service.scripts.print_v
 # Dev stack: mock LLM, fake dirctl, identity proxy, stack CLI safety checks
 registration_service/.venv/bin/python -m pytest devstack/tests -q
 
-# Full chain + scenarios (credential scoping, unreachable agent, restart): start the dev stack
+# Full chain + scenarios (credential scoping, unreachable agent, proxy and preset-tool agents, step limit,
+# ask_user, confirmation, restart): start the dev stack
 # on offset ports (PIPELINE_PORT_OFFSET, default 20000), drive it over HTTP only, then stop it.
 # Needs both service venvs. Coverage: add --cov=<component> (pytest-cov); docs/TESTING.md.
 registration_service/.venv/bin/python -m pytest tests/pipeline -q
 
 # Tier 2 (Docker): the service images + real Postgres + real dirctl, via Docker Compose
-# Its own project name and port, so `down -v` never touches a long-running Compose instance.
-(cd deployment/compose && export COMPOSE_PROJECT_NAME=agenticnetwork-test FRONT_DOOR_PORT=18081 && docker compose up -d --build && docker compose run --rm seed && ./smoke.sh; docker compose down -v)
+# Its own project name and port, so `down -v` never touches a long-running Compose instance;
+# `--rmi local` removes this project's images (<project>-<service>).
+(cd deployment/compose && export COMPOSE_PROJECT_NAME=agenticnetwork-test FRONT_DOOR_PORT=18081 && docker compose up -d --build && docker compose run --rm seed && ./smoke.sh; docker compose down -v --rmi local)
 
 # Planner end-to-end self-check (env, dirctl, ADS reachability, server, OpenAI, tests)
 planner_agent/scripts/doctor.sh

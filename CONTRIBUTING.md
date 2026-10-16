@@ -58,9 +58,10 @@ to `main`, and on demand:
   dev stack logs if either fails.
 
 A separate workflow, `.github/workflows/compose.yml`, builds the Docker images and runs the
-Compose smoke test (`deployment/compose/smoke.sh`) when deployment or service code changes.
+Compose smoke test (`deployment/compose/smoke.sh`) when a pull request or a push to `main` changes
+deployment or service code.
 
-Make sure all three pass on your pull request.
+Make sure the three `tests.yml` jobs (unit, repo hygiene, pipeline) pass on your pull request, and `compose.yml` when your change triggers it.
 
 ## Code conventions
 

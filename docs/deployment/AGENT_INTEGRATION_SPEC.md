@@ -172,7 +172,7 @@ operational info, not just a boolean.
 carries `FilePart` with raw `bytes` and a `kind ∈ {file,image,audio,video}`. The
 planner injects image parts for the geospatial agent. "Accepts images/binary" is
 distinct agent info from a text inputMode and couples to the *served model* (a
-text-only model can't accept images — see §4 and `DOWNSTREAM_CONSIDERATIONS.md` #3).
+text-only model can't accept images — see §4 and `DOWNSTREAM_CONSIDERATIONS.md` #2).
 
 ### 3c. Behavioral contract — the executor
 

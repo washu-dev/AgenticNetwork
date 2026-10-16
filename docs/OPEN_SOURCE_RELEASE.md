@@ -13,28 +13,42 @@ repository goes public.
 - **This week (from 2026-10-12):** a fix-up sprint. It works through the goals already
   set in the maintainers' release checklist, with the **full-pipeline test suite**
   (below) as the main deliverable to ship with the release.
-- **Code state:** branch `release-prep/full-chain`, on top of `main` = `ebf1b55`. Save point
-  `e7d426a` (2026-10-13): release hygiene (`.gitignore`, `.dockerignore`), planner identity
-  and `/ready`, native agent spawning and `/ready` in registration, the dev stack
-  (`scripts/stack`), the full-chain test (`tests/pipeline/`) and CI. The 2026-10-13
-  safe-cuts pass on top of it removes dead code, stale docs and unused dependencies, and
-  lands the security fixes listed below.
-- **Tests:** the component suites, `devstack/tests` and the full-chain test pass offline.
-  CI (`.github/workflows/tests.yml`) runs them, plus a repo-hygiene job, on every PR and
-  push to `main`. Commands: `CLAUDE.md` §10.
+- **Code state:** everything below is on `main`. It holds the 2026-10-13 save point
+  `e7d426a` (release hygiene in `.gitignore` and `.dockerignore`, planner identity and
+  `/ready`, native agent spawning and `/ready` in registration, the dev stack
+  `scripts/stack`, the full-chain test `tests/pipeline/` and CI), the 2026-10-13 safe-cuts
+  pass (dead code, stale docs and unused dependencies removed; the security fixes listed
+  below) and the two 2026-10-15 passes.
+- **Tests:** the component suites, `devstack/tests` and the pipeline suite (full chain and
+  scenarios) pass offline. CI (`.github/workflows/tests.yml`) runs them, plus a repo-hygiene
+  job, on every PR and push to `main`; it first passed on GitHub for `d069aaf` (2026-10-15).
+  The tier-2 workflow (`compose.yml`) now also runs on pushes to `main` that touch service or
+  deployment code. Commands: `CLAUDE.md` §10.
 - **Goals 1–3** (below): tier 1 of Goal 1 is done; the full-chain test passed 20 runs in a
   row locally on 2026-10-13. `scripts/stack` covers Goals 2 and 3 for the native tier
   ([`DEVSTACK.md`](DEVSTACK.md)).
-- **2026-10-15 pass (on `release-prep/full-chain`, not yet pushed):** the last open release blocker is fixed
+- **2026-10-15 pass (on `main` since 2026-10-15):** the last open release blocker is fixed
   (credentials no longer reach skeleton agents' LLM prompts); `down`/`reset` in the dev stack
   never stop another stack and keep recovery state when a stop fails; three black-box scenarios
   (credential scoping, unreachable agent, restart) in `tests/pipeline/test_scenarios.py`;
   coverage summaries in CI; tier 2 runs as a Docker Compose stack
   ([`deployment/COMPOSE.md`](deployment/COMPOSE.md), `deployment/compose/smoke.sh`, verified
-  locally on arm64, CI workflow `compose.yml` not yet run on GitHub); a generic Cloud Run guide
+  locally on arm64, and on emulated amd64 with a conda-free planner image, because the shipped
+  planner Dockerfile hangs at `mamba create` under Rosetta); a generic Cloud Run guide
   ([`deployment/gcp/DEPLOY_YOUR_OWN.md`](deployment/gcp/DEPLOY_YOUR_OWN.md), not re-run live);
   public-facing `README.md`, `CONTRIBUTING.md`, [`TESTING.md`](TESTING.md), docs index and
   `SECURITY.md` (reporting policy first).
+- **Engineering finalize pass (2026-10-15, evening):** two more security fixes (another user's
+  chat "yes" or "no" could answer someone's pending action with the replier's credentials; the
+  user's email reached skeleton agents' model provider); the planner reuses one LLM client per
+  endpoint and closes it on shutdown (per-call clients could hang an A2A call); cluster startup
+  recovery keeps `llm` agents with uploaded tools; six more pipeline scenarios (proxy agent,
+  preset tool, step limit, `ask_user`, owner-only confirmation by button and by chat); release
+  hygiene (no real addresses in code, tests or templates; no retired-plan references; neutral
+  credits; per-project Compose images); a fresh-clone run of the quickstart, dev stack and
+  Compose docs; and a history and hygiene audit (below). With this pass the engineering side is
+  finished for the release candidate. What remains is decisions and access: the license and
+  sign-off, the ops docs, the history approach, and the live checks listed below.
 
 ### Decided 2026-10-13 (Ronak)
 
@@ -58,6 +72,19 @@ repository goes public.
 - **Tool-loop agents** (`llm` + uploaded tools) now advertise streaming, but only in images
   rebuilt with this skeleton. Of the vendored copies in `agent-directory`, only
   `registered_agents/echo-test` has the tool-loop path, and it still says `streaming=False`.
+- **Cluster startup recovery:** on registration startup, `Supervisor.recover_live_agents` now
+  re-queues every `live` row whose config uploads code to `image_ready` if its
+  `agenticnetwork-custom-<slug>` image is still on Docker Hub. That covers `custom`, `llm` with
+  uploaded tools, and legacy `tool_loop` rows. Before, only `handler_type='custom'` was
+  re-queued; the others were stopped and then purged by `init_db`. Plain `llm` and `proxy` rows
+  are still stopped, since they have no cluster spawn path. After the next ENGR deploy, check
+  that any such tool-loop agent comes back `live`, and that its `custom-<id>.log` shows
+  `container_runner_tool_loop_start`.
+- **Identity in agent prompts:** skeleton-engine agents now keep the user's identity out of
+  the model prompt (sprint priority 2). Each per-agent image bakes in `agent_skeleton/` at
+  build time, so uploaded tool-loop images built before this change keep sending the user's
+  email to their model until rebuilt. The same holds for the vendored skeleton copies in
+  `agent-directory/registered_agents/`.
 - **dirctl timeouts:** every planner `dirctl` call is now killed after
   `DIRCTL_TIMEOUT_SECONDS` (default 60 s; before, no limit), and `/ready` kills its probe
   after 4 s. Raise the setting if a slow directory needs longer.
@@ -98,11 +125,52 @@ repository goes public.
   WashU-specific operations details. Open: whether the ops docs (`docs/deployment/engr`,
   `gcp`, `DOWNSTREAM_CONSIDERATIONS`, `MULTI_CONTRIBUTOR`, `TESTING_CHANGES`) ship publicly
   or move to a private ops repo. The code paths stay either way.
-- **Scrub before visibility changes:** the email agent card's send example held two
-  real-looking personal email addresses. The planner fixture now uses `example.com`
-  addresses (2026-10-13), but the originals remain in this repo's history (from `a7786fb`
-  on) and in `agent-directory/email_agent/email_agent.card.json`. Filter them out of the
-  release history and fix that card.
+- **Scrub before visibility changes** (audit 2026-10-15):
+  - Current tree: the planner prompt's email example, the test fixtures, the `.env` templates
+    and the registration UI placeholder now use `example.com` addresses (2026-10-15). If the
+    ops docs ship, scrub their maintainer address, GCP project number, internal IPs and
+    hostnames, and personal Docker Hub namespace first.
+  - History: real-looking personal addresses in the email agent card's examples (from
+    `a7786fb` on) and in old copies of `email_agent.py`, a contributor's address in the
+    planner prompt (from `908f16d`), three YOLO weight files (about 96 MB), cluster logs, the
+    early prototypes, the specialist agents now in `agent-directory`, internal plan documents
+    and 14 author identities. No keys or tokens were found. Publish from a fresh repository
+    (next bullet), not this history.
+  - `agent-directory/email_agent/email_agent.card.json` still holds the two card addresses;
+    fix it there too.
+- **History for the public copy (audit 2026-10-15):** publish a fresh repository whose first
+  commit is the audited release tree, not this repository's history. Filtering the history
+  would still leave 14 author identities and unscrubbed commit messages, and cut the history
+  of moved files anyway. This repository stays private as the development record; credit
+  contributors (with consent) in the README or an `AUTHORS` file. Sketch, to run only after
+  the ops-docs decision and from a clean `main`:
+
+  ```bash
+  OUT="$(mktemp -d)/agenticnetwork-public"; mkdir -p "$OUT"
+  # tracked files only; add one ':(exclude)<path>' per ops doc that moves to a private repo
+  git archive --format=tar main -- . | tar -x -C "$OUT"
+  cd "$OUT" && git init -b main && git add -A && git commit -m "Initial public release"
+  # before adding a remote: no blob over 1 MB, no real addresses, no private paths or IPs
+  git grep -nIE '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}' | grep -viE '@example\.|noreply'
+  ```
+- **Contributor clearance:** the current tree has lines from seven authors, including
+  students, a contributor who committed from a non-WashU address (most of
+  `agent_directory_service/`) and a hackathon participant (the metadata filter in
+  `agent_skeleton/executor.py`). Confirm under WashU's IP policy, and with the non-WashU
+  contributor in writing, that each contribution can be released under the chosen license,
+  and record the copyright line.
+- **Other decisions before visibility changes (audit 2026-10-15):**
+  - The ops docs: about 80 references in 25 shipping files point into them (the README's
+    deployment table, `DEPLOY_YOUR_OWN.md`, `SECURITY.md`, `CLAUDE.md`, `docs/README.md`), so
+    moving them needs a link pass first.
+  - Links to the private `agent-directory` repo (about 9 in shipping docs) 404 for the public:
+    publish that repo after its own scrub, or turn the links into plain text.
+  - WashU defaults in code: `IMAGE_REGISTRY` defaults to `di2washu`, `CLUSTER_WORKSPACE_MOUNT`
+    and the sbatch scripts use `/engrfs` paths, and the landing page says "Sign in with WashU".
+    Either label them as the WashU example and document `IMAGE_REGISTRY` as required, or make
+    it required for the cluster and Cloud Run backends (then check ENGR's real `.env` sets it).
+  - `SECURITY.md` names the live instance next to its open hazards: keep it (none is reachable
+    without node access; say so) or describe the hazards generically.
 
 ### Before the subtree merge
 
@@ -129,15 +197,26 @@ The two copies have diverged, so they must be reconciled first.
 ## Sprint priorities
 
 1. **The full-chain test, the one-command start and the laptop workflow** (Goals 1–3).
-   Tier 1, the native stack and tier 2 (Docker Compose, real Postgres and `dirctl`, verified
-   locally 2026-10-15) are done. Still to do: a tier-3 real-model run, `add-agent` for an
-   agent folder, and the scenarios not yet covered (below).
+   Tier 1 and the native stack are done and pass in CI. Tier 2 (Docker Compose, real Postgres
+   and `dirctl`) passed locally on 2026-10-15 (arm64, and emulated amd64 with a conda-free
+   planner image); its CI workflow runs on pushes to `main`. Still to do: a tier-3 real-model
+   run, `add-agent` for an agent folder, and the scenarios not yet covered (below).
 2. **Security fixes that must land before release**, each with a regression test:
    - Fixed: a request-body `user_id` no longer overrides the logged-in identity (planner
      tests and the full-chain test).
-   - Fixed: `POST /confirmations` returns 403 to anyone but the conversation owner, for
-     confirm and cancel (`test_confirmations_forbid_non_owner`). Small gap: a cancel on
-     another process after a failed best-effort history save is not owner-checked.
+   - Fixed: only the conversation owner can answer a pending write confirmation or
+     credential consent. `POST /confirmations` returns 403 to anyone else, for confirm and
+     cancel (`test_confirmations_forbid_non_owner`), and so does a chat "yes" or "no" naming
+     the owner's `context_id`. That reply used to resume the action with the replier's
+     credentials and record a consent grant under the replier's account (fixed 2026-10-15;
+     `test_confirmation_ownership.py`, pipeline `test_8`). Both paths use one check
+     (`runtime._owned_context`), which falls back to the pending row's owner when the history
+     save failed, so the earlier cancel gap on another process is closed. A pending action
+     resumed or cancelled on one planner process is no longer run again from another
+     process's in-memory copy: with a database, the pending row is read on every lookup.
+     Still open (small): two confirmations of the same pending action arriving at once
+     (double click, client retry) can both run the write, because the row is read, the call
+     sent, and only then cleared. Fix: claim the row atomically (`DELETE ... RETURNING`).
    - Fixed: an upload's `entry_file` must be a bare `*.py` name; `../x.py`, absolute paths
      and newlines get 422 (`test_custom.py::test_entry_file_must_be_bare_name`).
    - Fixed: the planner's `/register/{path}` proxy no longer forwards registration's
@@ -156,23 +235,35 @@ The two copies have diverged, so they must be reconciled first.
      `test_undeclared_agent_gets_no_credentials`, `test_no_gate_passes_only_declared_types`,
      `test_no_identity_passes_only_declared_types`,
      `test_allowlisted_legacy_agent_gets_full_bundle`).
-   - Fixed (2026-10-15, from `washu-dev/agent-skeleton` PR #29 by raneemousa3): skeleton-engine
+   - Fixed (2026-10-15, from a contribution by raneemousa3, agent-skeleton PR #29): skeleton-engine
      agents strip `credentials`, `authorization`, `secret(s)` and `token` keys from request,
      message and part metadata and DataPart data before the LLM prompt
      (`agent_skeleton/executor.py::_model_visible_metadata`; `agent_skeleton/tests/test_executor_metadata.py`).
      Registration's runner no longer logs a bad config's values (`registration_service/tests/test_prompt_secrets.py`).
-     Still open: the other metadata keys, including `user_id` (the user's email), reach the
-     model provider; an allowlist of model-visible keys would close that.
+     Fixed (2026-10-15): they also drop the user's identity (`user_id`, `auth_user_id`, `mail`,
+     `eppn`, `remote_user`/`remote-user`) from request, message and part metadata, so the email
+     no longer reaches the model provider. This is a denylist, not an allowlist, because the
+     planner spreads task input into metadata and direct callers send structured input there.
+     Other metadata (channel, skill hints, task input, `user_goal`, uploaded file names) still
+     reaches the model; DataPart data loses only the credential keys
+     (`test_executor_metadata.py`, which also drives the cluster/Cloud Run tool-loop image's
+     app; the planner side is pinned by `test_login_identity_rides_only_in_request_metadata`).
+     Registration's local `llm`, http-operation and `proxy` agents send only the user's text.
+     Images built before this fix keep the old executor until rebuilt (see the checks above).
    - Fixed: user bug reports no longer default to this repo. `GITHUB_ISSUES_REPO` has no
      default; unset, `POST /issues` returns 502 without calling GitHub. Issue bodies still
      include the reporter's email, prompts and trace, so the repo must be private
      (`test_issues_endpoint.py`: `test_create_issue_requires_repo`,
      `test_issues_without_repo_502_and_no_github_call`).
 3. **CI:** done. `.github/workflows/tests.yml` runs the unit suites (planner, registration,
-   skeleton, ADS, devstack), repo hygiene and the native full-chain test.
+   skeleton, ADS, devstack), repo hygiene, the native full-chain test and the scenario tests;
+   it first passed on GitHub for `d069aaf` (2026-10-15). `compose.yml` (tier 2) runs on PRs and
+   pushes to `main` that touch service or deployment code, weekly and on demand.
 4. **Hygiene:** done. The tracked `.gitignore` covers `build/`, `dist/`, `Local/`, `.env*`
    (except examples), keys, model weights and the dev-stack state dirs; CI's hygiene job
-   checks it.
+   checks it. 2026-10-15: test fixtures, `.env` templates and the registration UI use
+   `example.com` identities (`example-project`, `example-org/agents` in tests); code comments
+   no longer cite the retired plan's D- and §-numbers; Compose images are named per project.
 5. **Merge the agent_skeleton copies** and bring the standalone history in with
    `git subtree` (see "Before the subtree merge"). Audit 2026-10-15: no standalone-only fix
    needs the history merge. The six real bugs fixed only in the standalone copy are now
@@ -277,7 +368,7 @@ directory); no real keys; the same scenarios rerun at higher tiers.
 | Tier | Runs | What is real |
 |---|---|---|
 | 1. Native (done) | Every PR | Planner, registration service and skeleton agents as local processes (`scripts/stack`); mock LLM; in-memory DB; fake `dirctl` |
-| 2. Containers (done locally) | PRs touching services or deployment, weekly (`compose.yml`) | The service images, real Postgres and the real `dirctl` daemon via Docker Compose (`deployment/compose/smoke.sh`); mock LLM |
+| 2. Containers (done locally) | PRs and pushes to `main` touching services or deployment, weekly (`compose.yml`) | The service images, real Postgres and the real `dirctl` daemon via Docker Compose (`deployment/compose/smoke.sh`); mock LLM |
 | 3. Real LLM | Manual or nightly, opt-in | One round trip with a hosted or local model |
 
 **Covered by tier 1** (`tests/pipeline/test_full_chain.py`, driving `scripts/stack`): start
@@ -287,17 +378,22 @@ agent receives the prompt that matches it; a body `user_id` is ignored when a lo
 identity exists; `down` leaves nothing running. `tests/pipeline/test_scenarios.py` adds: a
 declaring agent receives only its scoped credentials and an undeclared one none; an
 unreachable agent (refused or silent) yields a clear error within the A2A timeout; after
-`down` and `up`, a registered agent is listed once and answers. Unit tests cover the
-owner-only confirmation and the refused `entry_file` and impersonating uploads.
+`down` and `up`, a registered agent is listed once and answers; a `proxy` agent registered
+through `add-agent` relays to its upstream; an `llm` agent with the preset `calculator` calls
+it; the step limit ends a turn that never answers (`max_steps_exceeded`); `ask_user` pauses a
+turn and the reply continues it with the history; in strict policy mode a write skill runs
+only after its owner confirms (another user gets 403; a chat "no" cancels it), and another
+user's chat "yes" or "no" does not touch the owner's pending action. Unit tests cover the
+refused `entry_file` and impersonating uploads.
 
 **Still to add:**
 
-- Each handler type: `llm` (presets, HTTP tools, uploaded tools), `proxy`, `custom` upload.
-  Legacy type names normalize on read.
+- Each handler type: `llm` with HTTP tools and uploaded tools, `custom` upload (presets and
+  `proxy` are covered). Legacy type names normalize on read.
 - An agent built from the skeleton template, through each path (`endpoint_wrapper`,
   `tool_loop`, `custom`), works end to end.
-- `ask_user` and confirmation flows across processes.
-- Failures: the step limit holds.
+- Confirmation and `ask_user` resumed on another planner process or after a planner restart
+  (needs Postgres, so tier 2).
 
 Security scenarios that fail today are added as strict expected failures and flipped
 when their fix lands.
@@ -333,6 +429,7 @@ lines removed or rewritten.
 | `dir`/`dirctl` v1.2 → v1.7, then delete the stored-but-not-routed workarounds (planner backend, ADS repair/watch tooling) | 1,550 | re-validating publish and discovery on ENGR and GCP |
 | One `a2a-sdk` line (0.3.26 everywhere, then 1.x), replacing the deprecated `A2AClient` and the skeleton's import guard | 270 | the full-chain test on the new pins; rebuilt agent images |
 | Test-only deps into `requirements-dev.txt`; the planner's pip freeze becomes direct deps plus a lock file | 50 | a locking tool, with CI and docs updated together |
+| Pin `registration_service/requirements.txt` (only minimums today, so a fresh clone gets e.g. openai 3.x where the tested venv has 2.x; all suites passed with both on 2026-10-15), or add a constraints file | 40 | the same locking tool; a registration image rebuild |
 | **Images, deploy config and hygiene** | | |
 | Planner image on `python:3.x-slim` instead of miniconda; one Python version across images | 45 | an ENGR test deploy and a Cloud Run staging deploy |
 | One ADS image tag (`submit.sbatch` pulls `:v4`, `build_and_push.sh` pushes `:latest`) | 2 | confirming they match |
