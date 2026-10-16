@@ -61,3 +61,25 @@ def test_lifespan_skips_db_without_dsn(monkeypatch) -> None:
             assert len(_probe_tasks()) == 1
 
     asyncio.run(go())
+
+
+def test_lifespan_closes_the_llm_client_on_shutdown(monkeypatch) -> None:
+    monkeypatch.delenv("REGISTRATION_DB_DSN", raising=False)
+    events: list[str] = []
+
+    class ClosingLLM(ScriptedLLMClient):
+        async def aclose(self) -> None:
+            events.append("llm closed")
+
+    app = server.create_app(
+        config=MainAgentConfig(llm_enabled=False, llm_model="mock", fake_ads=True),
+        directory_client=DirectoryClient(fake_ads=True),
+        llm_client=ClosingLLM([]),
+    )
+
+    async def go() -> None:
+        async with app.router.lifespan_context(app):
+            events.append("serving")
+
+    asyncio.run(go())
+    assert events == ["serving", "llm closed"]

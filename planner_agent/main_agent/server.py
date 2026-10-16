@@ -211,8 +211,15 @@ def create_app(
             probe_loop.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await probe_loop
-            if db_configured:
-                await close_db()
+            # The LLM client keeps its HTTP clients for the process; close them here
+            # rather than leave them to garbage collection (see OpenAIToolLoopClient).
+            close_llm = getattr(llm_client, "aclose", None)
+            try:
+                if close_llm is not None:
+                    await close_llm()
+            finally:
+                if db_configured:
+                    await close_db()
 
     app = FastAPI(title="Planner Agent", version="0.1.0", lifespan=lifespan)
     app.state.config = cfg

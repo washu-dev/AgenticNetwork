@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import os
 from typing import Any, Protocol
 
 from pydantic import BaseModel, Field
@@ -59,11 +61,66 @@ class OpenAIToolLoopClient:
 
     Stateless across turns: the full message history accumulates on the
     per-turn TurnState, making this safe to share across concurrent requests.
+
+    It owns one AsyncOpenAI client per endpoint (primary, fallback) and event
+    loop, reused for every request and closed by ``aclose()`` at app shutdown.
+    No client is left to the garbage collector: the SDK's default HTTP client
+    closes itself from ``__del__`` by scheduling ``aclose()`` on whatever loop is
+    running when it is collected, and that late transport close can unregister
+    the selector entry of an unrelated socket that has since been given the same
+    file descriptor, such as a pending A2A connect, which then hangs until its
+    timeout.
     """
 
     def __init__(self, config: MainAgentConfig, openai_client: Any | None = None):
         self.config = config
         self._client = openai_client
+        # (event loop, provider, base_url, api_key, timeout) -> AsyncOpenAI.
+        self._clients: dict[tuple[Any, ...], Any] = {}
+
+    async def aclose(self) -> None:
+        """Close the clients this instance opened on the running loop.
+
+        Entries for loops that have already closed are forgotten: their
+        connections cannot be closed from another loop.
+        """
+        loop = asyncio.get_running_loop()
+        self._forget_closed_loops()
+        mine = [key for key in self._clients if key[0] is loop]
+        for key in mine:
+            await self._clients.pop(key).close()
+
+    def _forget_closed_loops(self) -> None:
+        for key in [key for key in self._clients if key[0].is_closed()]:
+            del self._clients[key]
+
+    def _endpoint_client(self, provider: str, *, base_url: str | None, timeout: float) -> Any:
+        """The AsyncOpenAI client for one endpoint on the running event loop.
+
+        A client is bound to the loop it first ran on (its connections belong to
+        that loop), so the cache is keyed by the loop as well as by everything
+        the client is built from; ``base_url=None`` resolves from the environment
+        as the SDK does. Vertex keys are short-lived OAuth tokens: a fresh one is
+        minted per request and sent through ``with_options``, a copy that shares
+        the cached client's connection pool.
+        """
+        loop = asyncio.get_running_loop()
+        self._forget_closed_loops()
+        vertex_token = _vertex_access_token() if provider == "vertex" else None
+        key = (
+            loop,
+            provider,
+            base_url or os.getenv("OPENAI_BASE_URL"),
+            None if vertex_token is not None else os.getenv("OPENAI_API_KEY"),
+            timeout,
+        )
+        client = self._clients.get(key)
+        if client is None:
+            client = _make_client(base_url=base_url, timeout=timeout, api_key=vertex_token)
+            self._clients[key] = client
+        elif vertex_token is not None:
+            client = client.with_options(api_key=vertex_token)
+        return client
 
     async def next_tool_call(self, state: TurnState) -> ToolCall:
         if not state.messages:
@@ -142,7 +199,7 @@ class OpenAIToolLoopClient:
             )
 
         has_fallback = bool(self.config.llm_fallback_provider)
-        primary = _make_client(
+        primary = self._endpoint_client(
             self.config.llm_provider,
             base_url=None,  # primary base_url/api_key come from the environment
             timeout=(
@@ -164,7 +221,7 @@ class OpenAIToolLoopClient:
                 type(exc).__name__,
                 self.config.llm_fallback_provider,
             )
-            fallback = _make_client(
+            fallback = self._endpoint_client(
                 self.config.llm_fallback_provider or "",
                 base_url=self.config.llm_fallback_base_url,
                 timeout=self.config.timeout_seconds,
@@ -284,22 +341,26 @@ def _jsonable_usage_value(value: Any) -> Any:
     return value
 
 
-def _make_client(provider: str, *, base_url: str | None, timeout: float) -> Any:
-    """Build an AsyncOpenAI client for a provider.
+def _make_client(*, base_url: str | None, timeout: float, api_key: str | None = None) -> Any:
+    """Build an AsyncOpenAI client.
 
-    For ``vertex`` the api_key is a freshly-minted, short-lived (~1h) OAuth token from
-    the runtime service account (not a static key). When ``base_url`` is None the SDK
-    reads ``OPENAI_BASE_URL``/``OPENAI_API_KEY`` from the environment — used for the
-    primary provider; the fallback passes ``base_url`` explicitly so it can point
-    somewhere other than the primary's env-configured endpoint.
+    For ``vertex`` the caller passes ``api_key``: a freshly-minted, short-lived (~1h)
+    OAuth token from the runtime service account (not a static key). When ``base_url``
+    or ``api_key`` is None the SDK reads ``OPENAI_BASE_URL``/``OPENAI_API_KEY`` from the
+    environment — used for the primary provider; the fallback passes ``base_url``
+    explicitly so it can point somewhere other than the primary's env-configured endpoint.
+
+    The HTTP client is a plain ``DefaultAsyncHttpxClient`` rather than the SDK's
+    self-closing default (see ``OpenAIToolLoopClient``): it is closed explicitly, and
+    one that is dropped never closes itself late on whatever loop is then running.
     """
-    from openai import AsyncOpenAI
+    from openai import AsyncOpenAI, DefaultAsyncHttpxClient
 
-    kwargs: dict[str, Any] = {"timeout": timeout}
+    kwargs: dict[str, Any] = {"timeout": timeout, "http_client": DefaultAsyncHttpxClient()}
     if base_url:
         kwargs["base_url"] = base_url
-    if provider == "vertex":
-        kwargs["api_key"] = _vertex_access_token()
+    if api_key is not None:
+        kwargs["api_key"] = api_key
     return AsyncOpenAI(**kwargs)
 
 
