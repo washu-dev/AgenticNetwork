@@ -58,6 +58,19 @@ async def get(context_id: str) -> dict[str, Any] | None:
     return json.loads(payload) if isinstance(payload, str) else payload
 
 
+async def owner(context_id: str) -> str | None:
+    """Return the owner_email of a persisted pending confirmation, or None."""
+    if not _enabled():
+        return None
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT owner_email FROM pending_confirmations WHERE context_id = $1",
+            context_id,
+        )
+    return row["owner_email"] if row else None
+
+
 async def clear(context_id: str) -> None:
     """Remove any persisted pending confirmation for a context_id."""
     if not _enabled():

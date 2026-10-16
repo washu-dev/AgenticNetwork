@@ -482,10 +482,6 @@ def test_7_write_skill_runs_only_after_its_owner_confirms(stack, directory, reco
     assert recorder.received == []
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "MainAgentRuntime.handle_message resumes or cancels a pending confirmation on a 'yes' "
-    "or 'no' before _open_context checks who owns the conversation"
-))
 def test_8_another_users_yes_or_no_does_not_touch_a_pending_action(stack, directory, recorder):
     """A chat reply of "yes" or "no" from another signed-in user, naming the owner's
     conversation, is refused like any other message into it, and the action stays pending."""

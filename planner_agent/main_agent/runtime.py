@@ -139,20 +139,22 @@ class MainAgentRuntime:
         metadata: dict[str, Any] | None = None,
         progress_callback: ProgressCallback | None = None,
     ) -> TurnResult:
-        if context_id and self._is_affirmative(text):
+        if context_id and (self._is_affirmative(text) or self._is_negative(text)):
             pending = await self._get_pending(context_id)
-            if pending and pending.get("kind") == "credential_consent":
-                return await self._resume_credential_consent(
-                    context_id, user_id, channel, metadata or {}, pending, user_text=text,
-                )
             if pending:
+                # H1: a yes or no acts on the pending action with the caller's
+                # credentials and identity, so the caller must own the conversation,
+                # checked exactly as _open_context checks every other message.
+                await self._owned_context(user_id, channel, context_id)
+                if self._is_negative(text):
+                    return await self._cancel_confirmation(context_id, pending, user_text=text)
+                if pending.get("kind") == "credential_consent":
+                    return await self._resume_credential_consent(
+                        context_id, user_id, channel, metadata or {}, pending, user_text=text,
+                    )
                 return await self._resume_confirmation(
                     context_id, user_id, channel, metadata or {}, user_text=text,
                 )
-        if context_id and self._is_negative(text):
-            pending = await self._get_pending(context_id)
-            if pending:
-                return await self._cancel_confirmation(context_id, pending, user_text=text)
 
         context = await self._open_context(user_id, channel, text, context_id)
         uploaded_files = _uploaded_files_from_metadata(metadata or {})
@@ -1058,14 +1060,8 @@ class MainAgentRuntime:
     ) -> PIContext:
         # H1: honor the caller-supplied context_id and bind each context to its
         # owner. No global slot — a missing/unknown id starts a fresh, owned context.
-        existing = self.store.contexts.get(context_id) if context_id else None
-        # H2: on an in-memory miss, rehydrate from persisted history so a conversation
-        # survives a restart or lands on a different planner process.
-        if existing is None and context_id:
-            existing = await self._rehydrate_context(context_id, channel)
+        existing = await self._owned_context(user_id, channel, context_id) if context_id else None
         if existing is not None:
-            if existing.user_id != user_id:
-                raise ContextOwnershipError(context_id)  # type: ignore[arg-type]
             existing.channel = channel
             existing.current_goal = text
             existing.updated_at = utc_now()
@@ -1076,6 +1072,24 @@ class MainAgentRuntime:
         # supplied id when present so the browser's session stays continuous.
         context = self._new_context(user_id, channel, text, context_id=context_id)
         return self.store.save_context(context)
+
+    async def _owned_context(self, user_id: str, channel: Channel, context_id: str) -> PIContext | None:
+        """Return the existing context for ``context_id``, or None if none is recorded.
+
+        Raises ContextOwnershipError (HTTP 403) when it belongs to another user. The
+        owner is the in-memory context's; else, H2, the persisted conversation's,
+        rehydrated so a conversation survives a restart or lands on a different planner
+        process; else, H2b, the persisted pending action's, which is written during the
+        turn and so can exist before (or without) the conversation it belongs to. An id
+        with no owner anywhere is unclaimed, and _open_context starts a fresh context.
+        """
+        existing = self.store.contexts.get(context_id)
+        if existing is None:
+            existing = await self._rehydrate_context(context_id, channel)
+        owner = existing.user_id if existing is not None else await pending_store.owner(context_id)
+        if owner is not None and owner != user_id:
+            raise ContextOwnershipError(context_id)
+        return existing
 
     # H2b: pending confirmations are write-through cached in the in-memory store and
     # persisted to Postgres, so a prompt raised on one process can be resumed on another.
