@@ -4,13 +4,21 @@ Same rules as that file: the tests drive the system only through `scripts/stack`
 the dev stack's fake `dirctl`, offline with the mock LLM, and share one stack in file order.
 It is a stack of its own (same PIPELINE_PORT_OFFSET and PIPELINE_STATE_DIR, started after
 test_full_chain.py's has stopped) whose planner gives up on a silent agent after
-A2A_TIMEOUT seconds instead of its default 30.
+A2A_TIMEOUT seconds instead of its default 30, stops a turn after MAX_STEPS tool steps
+instead of 10, and runs the `strict` policy mode, in which a call that names a write skill
+waits for the user's confirmation. The mock planner passes a skill only when the prompt
+names one, so the other scenarios are unaffected.
 
     python -m pytest tests/pipeline/test_scenarios.py -q -p no:cacheprovider
 
 Agents that the tests run themselves are published straight into the stack's directory
 with the fake `dirctl` (`push`, then `routing publish`), as an operator publishes a card;
-the planner discovers them like any other agent. Each test unpublishes them again.
+the planner discovers them like any other agent. Each test unpublishes them again. Agents a
+test registers with `add-agent` (the `register` fixture) stay live until `down`, but their
+saved definitions are deleted afterwards, so the restart test's `up` registers only its own.
+
+Two directives in a prompt script the mock planner (devstack/mock_llm.py): ASK_FIRST makes it
+ask the user before anything else, NEVER_ANSWER makes it list agents at every step.
 """
 
 from __future__ import annotations
@@ -23,26 +31,33 @@ import sys
 import threading
 import time
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
 import pytest
 
 from test_full_chain import (
-    REPO, SEEDS, SEED_AGENT, STACK_ENV, ZEBRA, ZEBRA_PROMPT, assert_delegated, browser_body,
-    call, chat, fresh_stack, listed_agents, listening, service_pids, stack_cli, stack_json,
-    step, stream, up,
+    OTHER_USER, REPO, SEEDS, SEED_AGENT, STACK_ENV, ZEBRA, ZEBRA_PROMPT, assert_delegated,
+    browser_body, call, chat, fresh_stack, listed_agents, listening, service_pids, stack_cli,
+    stack_json, step, stream, tools, up,
 )
 
 A2A_TIMEOUT = 5  # seconds: the planner's A2A_HTTP_TIMEOUT_SECONDS on this file's stack
+MAX_STEPS = 6  # the planner's MAIN_AGENT_MAX_STEPS on this file's stack
+PLANNER_SETTINGS = {
+    "A2A_HTTP_TIMEOUT_SECONDS": str(A2A_TIMEOUT),
+    "MAIN_AGENT_MAX_STEPS": str(MAX_STEPS),
+    "MAIN_AGENT_POLICY_MODE": "strict",
+}
 SCENARIO_ENV = {
     **STACK_ENV,
     "DEVSTACK_PASSTHROUGH_ENV": ",".join(
-        filter(None, [STACK_ENV.get("DEVSTACK_PASSTHROUGH_ENV"), "A2A_HTTP_TIMEOUT_SECONDS"])
+        filter(None, [STACK_ENV.get("DEVSTACK_PASSTHROUGH_ENV"), *PLANNER_SETTINGS])
     ),
-    "A2A_HTTP_TIMEOUT_SECONDS": str(A2A_TIMEOUT),
+    **PLANNER_SETTINGS,
 }
 DIRCTL = REPO / "devstack" / "bin" / "dirctl"
 # How a card declares the user credentials it needs (registration_service/card_credentials.py).
@@ -52,6 +67,36 @@ BUNDLE = {  # one user's stored credentials (placeholder values)
     "brave_api_key": {"api_key": "test-brave-value"},
 }
 RECORDER_MARKER = "[recorder] received at"  # how the recording agent's replies start
+# Mock-LLM directives and the question it asks (devstack/mock_llm.py).
+ASK_FIRST = "[mock-llm: ask first]"
+NEVER_ANSWER = "[mock-llm: never answer]"
+ASK_TEXT = "Before I hand this to an agent: which details matter most to you?"
+
+
+def add_agent(definition: dict[str, Any], tmp_path: Path) -> dict[str, Any]:
+    """Register ``definition`` with `scripts/stack add-agent`; return its summary."""
+    path = tmp_path / f"{definition['name'].lower().replace(' ', '_')}.json"
+    path.write_text(json.dumps(definition, indent=2), encoding="utf-8")
+    added = stack_json("add-agent", str(path))
+    assert added["listed_by_planner"] and added["ads_cid"], added
+    return added
+
+
+def llm_exchanges(kind: str, first_user_text: str) -> list[dict[str, Any]]:
+    """The mock LLM's logged exchanges of ``kind`` ("planner" or "specialist") whose first
+    user message is, or (for a specialist) carries as its prompt, ``first_user_text``."""
+    log = stack_cli("logs", "mock-llm-requests", "-n", "500").stdout.splitlines()
+    found = []
+    for entry in map(json.loads, log):
+        users = [m.get("content") for m in entry["request"]["messages"] if m.get("role") == "user"]
+        try:
+            payload = json.loads(users[0])
+        except (IndexError, TypeError, ValueError):
+            continue
+        if (entry["kind"] == kind and isinstance(payload, dict)
+                and first_user_text in (payload.get("user_text"), payload.get("prompt"))):
+            found.append(entry)
+    return found
 
 
 # ── The directory, through the fake dirctl ───────────────────────────────────
@@ -79,13 +124,15 @@ class Directory:
 
     def publish(
         self, name: str, description: str, url: str, credentials: list[dict[str, Any]] | None = None,
+        skill: str | None = None,
     ) -> None:
-        """Publish a card for an agent at ``url``: the seed agent's record with its card swapped."""
+        """Publish a card for an agent at ``url``: the seed agent's record with its card swapped,
+        and its one skill's id replaced by ``skill`` if given."""
         routed = (self.dirctl("pull", ref["record_ref"]["cid"]) for ref in self.dirctl("routing", "list"))
         record = next(record for record in routed if card_of(record)["name"] == SEED_AGENT)
         card = card_of(record)
         card.update(name=name, description=description, url=url, capabilities={"streaming": False})
-        card["skills"] = [{**card["skills"][0], "description": description}]
+        card["skills"] = [{**card["skills"][0], "description": description, **({"id": skill} if skill else {})}]
         if credentials:
             card["capabilities"]["extensions"] = [
                 {"uri": CREDENTIALS_EXTENSION, "required": False, "params": {"credentials": credentials}}
@@ -159,6 +206,24 @@ def directory(stack: dict[str, Any]) -> Iterator[Directory]:
         yield found
     finally:
         found.unpublish_all()
+
+
+@pytest.fixture
+def register(stack: dict[str, Any], tmp_path: Path) -> Iterator[Callable[[dict[str, Any]], dict[str, Any]]]:
+    """add-agent for one test. Afterwards the saved definition is deleted (as `add-agent`
+    tells a user to drop an agent), so a later `up` does not register the agent again."""
+    saved: list[Path] = []
+
+    def register(definition: dict[str, Any]) -> dict[str, Any]:
+        added = add_agent(definition, tmp_path)
+        saved.append(Path(added["saved_to"]))
+        return added
+
+    try:
+        yield register
+    finally:
+        for path in saved:
+            path.unlink(missing_ok=True)
 
 
 @pytest.fixture(scope="module")
@@ -251,10 +316,191 @@ def test_2_unreachable_agent_ends_the_turn_with_a_clear_error(stack, directory, 
     assert elapsed < (A2A_TIMEOUT if failure == "refused" else A2A_TIMEOUT + 10), elapsed
 
 
-def test_3_registered_agent_is_discoverable_again_after_a_restart(stack, tmp_path):
-    definition = tmp_path / "zebra_scout.json"
-    definition.write_text(json.dumps(ZEBRA, indent=2), encoding="utf-8")
-    added = stack_json("add-agent", str(definition))
+# A `proxy` agent has no LLM: it relays each task to its upstream A2A endpoint.
+RELAY = {
+    "name": "Courier Relay",
+    "description": "Forwards telegrams from the mountain observatory to the duty officer.",
+    "handler_type": "proxy",
+    "oasf_skills": next(seed for seed in SEEDS if seed["name"] == SEED_AGENT)["oasf_skills"],
+}
+RELAY_PROMPT = "Forward this telegram from the mountain observatory: a storm front arrives at dusk."
+
+
+def test_3_proxy_agent_relays_the_task_to_its_upstream(stack, register):
+    """A `proxy` agent registered through the registration path (add-agent: register, spawn,
+    publish) relays the planner's task to its upstream, here the seed agent's A2A endpoint,
+    and the seed agent's answer comes back through it."""
+    status, listing = call("GET", f"{stack['proxy']}/agents")
+    assert status == 200, listing
+    upstream = next(a["endpoint"] for a in listing["agents"] if a["name"] == SEED_AGENT)
+    added = register({**RELAY, "config": {"upstream_url": upstream}})
+
+    final, _ = chat(stack["proxy"], RELAY_PROMPT)
+    assert_delegated(final, added["planner_agent_id"], RELAY_PROMPT)
+    relayed = step(final, "call_agent")["content"]["structured_output"]
+    assert relayed["agent_id"] == added["id"] and relayed["upstream_url"] == upstream.rstrip("/"), relayed
+    # The answer was written by the seed agent's own LLM call, made with its registered prompt.
+    seed_prompt = next(seed for seed in SEEDS if seed["name"] == SEED_AGENT)["config"]["system_prompt"]
+    [exchange] = llm_exchanges("specialist", RELAY_PROMPT)
+    assert exchange["request"]["messages"][0] == {"role": "system", "content": seed_prompt}
+    assert exchange["response"]["choices"][0]["message"]["content"] == final["text"]
+
+
+# An `llm` agent armed with a tool from the preset catalog (agent_skeleton/system_tools).
+TALLYMAN = {
+    "name": "Cargo Tallyman",
+    "description": "Totals crate counts for the cargo dock with a calculator.",
+    "handler_type": "llm",
+    "oasf_skills": RELAY["oasf_skills"],
+    "config": {
+        "system_prompt": "You are Cargo Tallyman. Total crate counts with the calculator.",
+        "model": "mock-specialist",
+        "tools": {"source": "presets", "names": ["calculator"]},
+    },
+}
+TALLY_PROMPT = 'Use the calculator {"expression": "17 * 23"} to total the crates at the cargo dock.'
+
+
+def test_4_llm_agent_uses_its_preset_tool(stack, register):
+    """An `llm` agent registered with the preset `calculator` tool offers it to its model,
+    runs the call the model makes inside the agent, and answers with the result."""
+    added = register(TALLYMAN)
+    final, _ = chat(stack["proxy"], TALLY_PROMPT)
+    assert_delegated(final, added["planner_agent_id"], TALLY_PROMPT)
+    # 17 * 23 was computed by the agent's calculator; the mock LLM only relays the result.
+    result = {"ok": True, "expression": "17 * 23", "result": 391}
+    assert final["text"].endswith(f" | calculator -> {json.dumps(result)}"), final["text"]
+    assert step(final, "call_agent")["content"]["structured_output"]["tools_used"] == ["calculator"]
+    # Two model calls: the first offered the catalog's calculator and got a call back, the
+    # second carried the tool's result.
+    first, second = llm_exchanges("specialist", TALLY_PROMPT)
+    assert first["request"]["messages"][0]["content"].startswith(TALLYMAN["config"]["system_prompt"])
+    assert [t["function"]["name"] for t in first["request"]["tools"]] == ["calculator"]
+    [called] = first["response"]["choices"][0]["message"]["tool_calls"]
+    assert json.loads(called["function"]["arguments"]) == {"expression": "17 * 23"}
+    tool_message = second["request"]["messages"][-1]
+    assert tool_message["role"] == "tool" and json.loads(tool_message["content"]) == result
+
+
+def test_5_step_limit_ends_a_turn_that_never_answers(stack):
+    """A planner model that never calls final_answer is cut off after MAX_STEPS steps: the
+    turn ends with one final event that says so, not a hang or a stream error."""
+    prompt = f"Keep searching the directory for a lighthouse navigator. {NEVER_ANSWER}"
+    started = time.monotonic()
+    status, _, events = stream(f"{stack['proxy']}/messages/stream", browser_body(prompt), timeout=60)
+    elapsed = time.monotonic() - started
+
+    names = [event for event, _ in events]
+    assert status == 200 and names and names[-1] == "final", names
+    assert names.count("final") == 1 and "error" not in names, names
+    final = events[-1][1]
+    assert tools(final) == ["list_agents"] * MAX_STEPS, tools(final)
+    assert final["state"] == "input_required" and final["errors"] == ["max_steps_exceeded"], final
+    assert "maximum number of tool steps" in final["text"] and final["selected_agent"] is None, final
+    # The planner stopped asking its model after MAX_STEPS calls.
+    assert len(llm_exchanges("planner", prompt)) == MAX_STEPS
+    assert elapsed < 30, elapsed
+
+
+def test_6_ask_user_pauses_the_turn_and_the_reply_continues_it(stack):
+    """The planner asks the user a question (ask_user); the turn ends waiting for input. The
+    reply, sent into the same conversation, reaches an agent, and the planner's model sees the
+    question and the first request when it picks one."""
+    question = f"Summarize my notes for me. {ASK_FIRST}"
+    asked, _ = chat(stack["proxy"], question)
+    assert asked["state"] == "input_required" and asked["text"] == ASK_TEXT, asked
+    assert tools(asked) == ["ask_user"] and asked["selected_agent"] is None, asked
+    assert not asked["confirmation_required"], asked
+    cid = asked["context_id"]
+
+    reply = "Echo this back and summarize it: the pier notes reached a specialist agent."
+    status, _, events = stream(f"{stack['proxy']}/messages/stream", browser_body(reply, cid))
+    assert status == 200 and events and events[-1][0] == "final", events
+    final = events[-1][1]
+    assert final["context_id"] == cid
+    assert_delegated(final, listed_agents(stack["proxy"])[SEED_AGENT], reply)
+    first_step = llm_exchanges("planner", reply)[0]["request"]["messages"][1]["content"]
+    assert json.loads(first_step)["conversation_history"] == [
+        f"user: {question}", f"assistant: {ASK_TEXT}", f"user: {reply}",
+    ]
+    status, history = call("GET", f"{stack['proxy']}/conversations/{cid}")
+    assert status == 200, history
+    assert [(m["role"], m["text"]) for m in history["messages"]] == [
+        ("user", question), ("assistant", ASK_TEXT), ("user", reply), ("assistant", final["text"]),
+    ]
+
+
+# An agent with a write skill (its id holds "publish"): strict policy holds such calls.
+NOTICES = ("Harbor Notices", "Posts tide table notices on the harbor board.")
+NOTICE_SKILL = "harbor/publish_notice"
+NOTICE_PROMPT = f"Use {NOTICE_SKILL} to post tomorrow's tide table on the harbor board."
+
+
+def ask_to_publish(stack: dict[str, Any], directory: Directory, recorder: ThreadingHTTPServer) -> dict[str, Any]:
+    """Publish the notices agent and ask for its write skill; return the turn awaiting confirmation."""
+    if not directory.published:
+        url = f"http://127.0.0.1:{recorder.server_address[1]}/notices/"
+        directory.publish(*NOTICES, url, skill=NOTICE_SKILL)
+    agent_id = wait_listed(stack["proxy"], NOTICES[0])[NOTICES[0]]
+    recorder.received.clear()
+    asked, _ = chat(stack["proxy"], NOTICE_PROMPT)
+    assert asked["state"] == "input_required" and asked["confirmation_required"], asked
+    pending = asked["pending_confirmation"]
+    assert (pending["agent_id"], pending["skill"]) == (agent_id, NOTICE_SKILL), pending
+    assert step(asked, "call_agent")["status"] == "confirmation_required" and NOTICE_SKILL in asked["text"]
+    assert recorder.received == []  # nothing ran yet
+    return asked
+
+
+def test_7_write_skill_runs_only_after_its_owner_confirms(stack, directory, recorder):
+    """In strict mode a call to a write skill waits for confirmation. Only the conversation's
+    owner can confirm or cancel it; the confirmed call reaches the agent once, marked as
+    confirmed; a "no" cancels it without reaching the agent."""
+    cid = ask_to_publish(stack, directory, recorder)["context_id"]
+    for confirmed in (True, False):
+        body = {"context_id": cid, "confirmed": confirmed}
+        assert call("POST", f"{stack['planner']}/confirmations", body, headers={"mail": OTHER_USER})[0] == 403
+    assert recorder.received == []
+
+    # The owner confirms, the way the chat UI's confirm button does.
+    confirm = {"user_id": "demo-user", "channel": "api", "context_id": cid, "confirmed": True}
+    status, done = call("POST", f"{stack['proxy']}/confirmations", confirm)
+    assert status == 200 and done["state"] == "completed", done
+    assert done["text"] == f"{RECORDER_MARKER} /notices/" and done["selected_agent"], done
+    [(_, request)] = recorder.received
+    metadata = request["params"]["metadata"]
+    assert metadata["confirmed"] is True and metadata["confirmation_status"] == "confirmed", metadata
+    assert metadata["skill"] == NOTICE_SKILL, metadata
+    # Nothing is pending any more: a second confirm runs nothing.
+    status, again = call("POST", f"{stack['proxy']}/confirmations", confirm)
+    assert status == 200 and again["state"] == "failed" and len(recorder.received) == 1, again
+
+    cid = ask_to_publish(stack, directory, recorder)["context_id"]
+    status, _, events = stream(f"{stack['proxy']}/messages/stream", browser_body("no", cid))
+    assert status == 200 and events and events[-1][0] == "final", events
+    assert events[-1][1]["text"] == f"Cancelled. {NOTICE_SKILL} was not executed.", events[-1]
+    assert recorder.received == []
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    "MainAgentRuntime.handle_message resumes or cancels a pending confirmation on a 'yes' "
+    "or 'no' before _open_context checks who owns the conversation"
+))
+def test_8_another_users_yes_or_no_does_not_touch_a_pending_action(stack, directory, recorder):
+    """A chat reply of "yes" or "no" from another signed-in user, naming the owner's
+    conversation, is refused like any other message into it, and the action stays pending."""
+    cid = ask_to_publish(stack, directory, recorder)["context_id"]
+    for reply in ("yes", "no"):
+        body = {"user_id": OTHER_USER, "channel": "api", "text": reply, "context_id": cid}
+        status, answer = call("POST", f"{stack['planner']}/messages", body, headers={"mail": OTHER_USER})
+        assert status == 403 and recorder.received == [], (reply, status, answer)
+    confirm = {"context_id": cid, "confirmed": True}
+    status, done = call("POST", f"{stack['proxy']}/confirmations", confirm)
+    assert status == 200 and done["state"] == "completed" and len(recorder.received) == 1, done
+
+
+def test_9_registered_agent_is_discoverable_again_after_a_restart(stack, tmp_path):
+    added = add_agent(ZEBRA, tmp_path)
     before = stack_json("status")
 
     down = stack_cli("down")
