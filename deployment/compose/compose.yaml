@@ -10,6 +10,8 @@
 # deployment/submit.sbatch, every service shares one network namespace (owned by
 # `net`), so the services, and the agents registration spawns, reach each other on
 # localhost with the ENGR defaults unchanged. Only the front door is published.
+# Built images are named <project>-<service> after COMPOSE_PROJECT_NAME, so stacks
+# with different project names never replace each other's images.
 
 name: agenticnetwork
 
@@ -61,7 +63,6 @@ services:
     build:
       context: ../..
       dockerfile: deployment/dockerfiles/Dockerfile.postgres
-    image: agenticnetwork-postgres:local
     network_mode: service:net
     # initdb refuses to run as root (enroot runs it as the job's user on ENGR).
     user: postgres
@@ -83,7 +84,6 @@ services:
     build:
       context: ../..
       dockerfile: deployment/dockerfiles/Dockerfile.ads
-    image: agenticnetwork-ads:local
     network_mode: service:net
     depends_on:
       postgres:
@@ -98,7 +98,6 @@ services:
     build:
       context: ../..
       dockerfile: deployment/dockerfiles/Dockerfile.registration
-    image: agenticnetwork-registration:local
     network_mode: service:net
     depends_on:
       postgres:
@@ -125,7 +124,6 @@ services:
     build:
       context: ../..
       dockerfile: deployment/dockerfiles/Dockerfile.planner
-    image: agenticnetwork-planner:local
     network_mode: service:net
     depends_on:
       postgres:

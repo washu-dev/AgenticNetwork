@@ -1,11 +1,22 @@
 # Tier 2: build the service images and run the Docker Compose stack (real Postgres,
 # real dirctl daemon, mock LLM) through deployment/compose/smoke.sh, including a
 # restart that must keep the saved conversation. Slower than tests.yml, so it runs
-# only when deployment or service code changes, weekly, or by hand.
+# only when deployment or service code changes (in a PR or a push to main), weekly,
+# or by hand.
 name: compose
 
 on:
   pull_request:
+    paths:
+      - "deployment/**"
+      - "devstack/**"
+      - "planner_agent/**"
+      - "registration_service/**"
+      - "agent_skeleton/**"
+      - "ads_utils/**"
+      - ".github/workflows/compose.yml"
+  push:
+    branches: [main]
     paths:
       - "deployment/**"
       - "devstack/**"
