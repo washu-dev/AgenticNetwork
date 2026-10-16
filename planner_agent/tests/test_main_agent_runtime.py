@@ -1156,11 +1156,11 @@ async def _empty_task_input_augmented() -> None:
             json={
                 "user_id": "u",
                 "channel": "api",
-                "text": 'Send an email to xjian@wustl.edu, subject is "Test title", body is "test content".',
+                "text": 'Send an email to alice@example.com, subject is "Test title", body is "test content".',
             },
         )
     request = a2a.requests[0]
-    assert request.metadata["to"] == ["xjian@wustl.edu"]
+    assert request.metadata["to"] == ["alice@example.com"]
     assert request.metadata["subject"] == "Test title"
     assert request.metadata["body"] == "test content"
 

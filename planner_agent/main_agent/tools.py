@@ -139,7 +139,7 @@ task_input should include the user's request and the date range or relative time
 that creates an extra Google Doc and emails a link instead of the email body.
   - **task_input should be complete for email requests.** The Email Agent can reason over the free-text \
 request, but structured fields make the action safer. Concretely, for an email send pass:
-      task_input={"to": ["xjian@wustl.edu"], "subject": "Test title", "body": "test content"}
+      task_input={"to": ["alice@example.com"], "subject": "Test title", "body": "test content"}
   - **Never call the same agent with the same task twice in one turn.** If a call_agent observation came back \
 with status `completed` or `skipped`, the action already ran. Read the structured_output and call \
 final_answer — do NOT call call_agent again with the same arguments. Calling a side-effecting request \
