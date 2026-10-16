@@ -47,7 +47,7 @@ def _user_text(context: "RequestContext") -> str:
         return ""
 
 
-# Based on washu-dev/agent-skeleton PR #29 by raneemousa3.
+# Based on a contribution by raneemousa3 (agent-skeleton PR #29).
 # Reserved metadata keys that carry per-user secrets. The AgenticNetwork planner
 # may inject these into request metadata; they must NEVER enter the model-visible
 # payload (run_tool_loop json.dumps's the payload into the LLM user message, and

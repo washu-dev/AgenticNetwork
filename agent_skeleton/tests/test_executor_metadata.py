@@ -1,6 +1,6 @@
 """Regression tests for the metadata leak fixes in executor.py.
 
-Based on washu-dev/agent-skeleton PR #29 by raneemousa3. These verify that
+Based on a contribution by raneemousa3 (agent-skeleton PR #29). These verify that
 reserved private keys (credentials) and the signed-in user's identity in
 request/message/part metadata never reach the model-visible payload built by
 _payload_from_context(), that skill hints and task input still do, and that a

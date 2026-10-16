@@ -43,7 +43,7 @@ deployment/google_credentials/
 .humming/
 hf_cache/
 
-# ra_dep — personal copy; never commit its secrets (its .env and .hf_token are covered by the rules above)
+# Local deployment copies: never commit their credentials
 ra_dep/google_credentials/
 
 *.err
