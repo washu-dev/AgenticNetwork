@@ -455,9 +455,12 @@ def create_app(
     async def post_confirmation(req: ConfirmationRequest, request: Request) -> dict[str, Any]:
         # Same identity rule as /messages: the header identity wins over the body.
         user_id = _resolve_shib_user_id(request, req.user_id)
-        owner = await _conversation_owner(req.context_id)
-        if owner is not None and owner != user_id:
-            raise HTTPException(status_code=403, detail="You do not own this conversation.")
+        # The same ownership check as a chat "yes" or "no", which also knows the owner
+        # from the pending row when the conversation's history was never saved.
+        try:
+            await runtime._owned_context(user_id, req.channel, req.context_id)
+        except ContextOwnershipError as exc:
+            raise HTTPException(status_code=403, detail="You do not own this conversation.") from exc
         # P4c: the confirm button must carry the same per-user credentials +
         # auth_user_id as /messages, or a credential-consent resume dispatches
         # with no key and records no grant.

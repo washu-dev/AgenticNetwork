@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 
+import httpx
 import pytest
 from a2a.types import AgentCapabilities, AgentCard, AgentExtension, AgentSkill
 
@@ -25,6 +26,7 @@ from planner_agent.main_agent.directory.card_oasf_converter import (
 from planner_agent.main_agent.llm_client import ScriptedLLMClient, ToolCall
 from planner_agent.main_agent.models import A2ATaskState, Channel
 from planner_agent.main_agent.runtime import ContextOwnershipError, MainAgentRuntime
+from planner_agent.main_agent.server import create_app
 from planner_agent.main_agent.state.store import InMemoryStateStore
 
 from planner_agent.tests.test_main_agent_runtime import EMAIL_CARD, SpyA2A, SpyDirectory, _config
@@ -269,6 +271,68 @@ def test_pending_row_guards_a_conversation_whose_history_was_never_saved(persist
 
     asyncio.run(go())
 
+
+
+def _email_app() -> tuple[object, SpyA2A]:
+    """The HTTP app of another planner process (empty memory), for the confirm button."""
+    directory = SpyDirectory(fake_ads=True)
+    directory.publish_agent_card(load_agent_card(EMAIL_CARD))
+    a2a = SpyA2A()
+    app = create_app(
+        config=_config("strict"),
+        directory_client=directory,
+        a2a_client=a2a,
+        state_store=InMemoryStateStore(),
+        llm_client=ScriptedLLMClient([]),
+    )
+    return app, a2a
+
+
+async def _press(app, user, context_id, confirmed):
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client:
+        return await client.post(
+            "/confirmations", json={"context_id": context_id, "confirmed": confirmed}, headers={"mail": user},
+        )
+
+
+def test_confirm_button_checks_the_pending_rows_owner(persisted, monkeypatch) -> None:
+    monkeypatch.delenv("REGISTRATION_DB_DSN", raising=False)
+    conversations, pending_rows = persisted
+
+    async def go():
+        first_process, _ = _write_runtime()
+        cid = (await _say(first_process, OWNER, "Send the email.", metadata=OWNER_META)).context_id
+        assert cid not in conversations  # only the pending row records the owner
+        app, a2a = _email_app()
+
+        for confirmed in (False, True):
+            resp = await _press(app, OTHER, cid, confirmed)
+            assert resp.status_code == 403, resp.text
+
+        assert a2a.requests == [] and cid in pending_rows
+
+    asyncio.run(go())
+
+
+def test_confirm_button_resumes_an_action_raised_on_another_process(persisted, monkeypatch) -> None:
+    monkeypatch.delenv("REGISTRATION_DB_DSN", raising=False)
+    conversations, pending_rows = persisted
+
+    async def go():
+        first_process, _ = _write_runtime()
+        cid = (await _say(first_process, OWNER, "Send the email.", metadata=OWNER_META)).context_id
+        conversations[cid] = (OWNER, list(first_process.store.get_context(cid).conversation_history))
+        app, a2a = _email_app()
+
+        refused = await _press(app, OTHER, cid, True)
+        resp = await _press(app, OWNER, cid, True)
+
+        assert refused.status_code == 403, refused.text
+        assert resp.status_code == 200 and resp.json()["state"] == "completed", resp.text
+        assert a2a.calls == [("email-agent", "email/send")]
+        assert cid not in pending_rows
+
+    asyncio.run(go())
 
 def test_pending_store_owner_reads_the_rows_owner(monkeypatch) -> None:
     queries: list[str] = []
