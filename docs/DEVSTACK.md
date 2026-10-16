@@ -93,6 +93,18 @@ The mock LLM is the default. It is scripted: the planner always lists agents, ca
 agent whose name and description best match your words, and returns that agent's reply.
 Agents answer `[mock-llm] Echo: <your message>`.
 
+A few details of the script are there to exercise the planner and agents (all in
+`devstack/mock_llm.py`):
+
+- If your message names one of the chosen agent's skills (an id from `GET /agents`, such as
+  `nlp/natural_language_generation/text_summarization`), the planner passes it as `skill`.
+- `[mock-llm: ask first]` in your message makes the planner ask you a question (`ask_user`)
+  first; your reply continues the conversation. `[mock-llm: never answer]` makes it list
+  agents at every step, so its step limit (`MAIN_AGENT_MAX_STEPS`, default 10) ends the turn.
+- An agent with tools (for example the preset `calculator`) calls a tool your message names,
+  with the JSON object written right after the name as arguments, and adds
+  ` | <tool> -> <result>` to its echo: `Use the calculator {"expression": "6 * 7"}`.
+
 To use a real model, set three values in the environment or in `.devstack.env` at the
 repo root (ignored by git; `KEY=VALUE` lines), then run `scripts/stack down` and
 `scripts/stack up --llm openai`:

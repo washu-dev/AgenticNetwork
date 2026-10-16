@@ -1,4 +1,5 @@
-"""Mock LLM: the planner's three-step script, the specialist echo, and the HTTP wire."""
+"""Mock LLM: the planner's three-step script and its directives, the specialist echo and tool
+call, and the HTTP wire."""
 
 from __future__ import annotations
 
@@ -104,6 +105,81 @@ def test_planner_step2_explains_failed_call():
     name, args = tool_call(mock_llm.build_completion(planner_body("hi", [LIST_OK, failed])))
     assert name == "final_answer"
     assert "did not succeed" in args["text"] and "ConnectError" in args["text"]
+
+
+def test_planner_step1_passes_a_skill_the_user_names():
+    agents = [{**AGENTS[1], "skills": ["echo/summarize", "harbor/publish_notice"]}]
+    listed = {"tool": "list_agents", "status": "ok", "content": {"agents": agents, "count": 1}}
+    name, args = tool_call(mock_llm.build_completion(planner_body("Use harbor/publish_notice to echo it", [listed])))
+    assert (name, args["skill"]) == ("call_agent", "harbor/publish_notice")
+    # Without a named skill the call carries none, as before.
+    _, args = tool_call(mock_llm.build_completion(planner_body("echo it", [listed])))
+    assert "skill" not in args
+
+
+def test_planner_ask_first_directive_asks_then_the_reply_runs_the_script():
+    asked = tool_call(mock_llm.build_completion(planner_body(f"Echo my notes {mock_llm.ASK_FIRST}", [])))
+    assert asked == ("ask_user", {"text": mock_llm.ASK_TEXT})
+    # The reply is a new turn without the directive: the usual first step.
+    assert tool_call(mock_llm.build_completion(planner_body("the harbor notes", []))) == ("list_agents", {})
+
+
+def test_planner_never_answer_directive_lists_agents_at_every_step():
+    text = f"Echo this {mock_llm.NEVER_ANSWER}"
+    for observations in ([], [LIST_OK], [LIST_OK] * 7):
+        assert tool_call(mock_llm.build_completion(planner_body(text, observations))) == ("list_agents", {})
+
+
+CALCULATOR = {
+    "type": "function",
+    "function": {"name": "calculator", "parameters": {"type": "object", "properties": {"expression": {"type": "string"}}}},
+}
+CLOCK = {"type": "function", "function": {"name": "current_time", "parameters": {"type": "object", "properties": {}}}}
+
+
+def specialist_body(text: str, tools: list | None = None, results: list | None = None) -> dict:
+    """A request shaped like agent_skeleton.llm_loop sends it, after ``results`` [(name, content)]."""
+    messages = [
+        {"role": "system", "content": "You are Harbor Tallyman."},
+        {"role": "user", "content": json.dumps({"prompt": text}, indent=2)},
+    ]
+    for i, (name, content) in enumerate(results or []):
+        messages.append({"role": "assistant", "content": None, "tool_calls": [
+            {"id": f"call_{i}", "type": "function", "function": {"name": name, "arguments": "{}"}}
+        ]})
+        messages.append({"role": "tool", "tool_call_id": f"call_{i}", "content": json.dumps(content)})
+    body = {"model": "mock-specialist", "messages": messages}
+    if tools:
+        body["tools"] = tools
+    return body
+
+
+def test_specialist_calls_the_tool_its_message_names_with_the_json_after_it():
+    text = 'Use the calculator {"expression": "17 * 23"} to total the crates.'
+    assert tool_call(mock_llm.build_completion(specialist_body(text, [CLOCK, CALCULATOR]))) == (
+        "calculator", {"expression": "17 * 23"},
+    )
+    # A named tool with no JSON after it is called without arguments.
+    assert tool_call(mock_llm.build_completion(specialist_body("What is the current_time?", [CALCULATOR, CLOCK]))) == (
+        "current_time", {},
+    )
+
+
+def test_specialist_without_a_named_offered_tool_echoes():
+    for body in (
+        specialist_body("Total the crates.", [CALCULATOR]),  # offered, not named
+        specialist_body('Use the calculator {"expression": "1 + 1"}'),  # named, not offered
+    ):
+        choice = mock_llm.build_completion(body)["choices"][0]
+        assert choice["finish_reason"] == "stop" and choice["message"]["content"].startswith("[mock-llm] Echo:")
+
+
+def test_specialist_answers_with_the_tool_results_once_they_are_back():
+    text = 'Use the calculator {"expression": "17 * 23"} to total the crates.'
+    result = {"ok": True, "expression": "17 * 23", "result": 391}
+    choice = mock_llm.build_completion(specialist_body(text, [CALCULATOR], [("calculator", result)]))["choices"][0]
+    assert choice["finish_reason"] == "stop"
+    assert choice["message"]["content"] == f"[mock-llm] Echo: {text} | calculator -> {json.dumps(result)}"
 
 
 def test_specialist_echo_unwraps_skeleton_payload():

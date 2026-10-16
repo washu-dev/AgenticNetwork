@@ -12,12 +12,22 @@ Two kinds of caller:
   0. ``list_agents {}``
   1. ``call_agent`` on the listed agent whose name and description share the most
      words with the user's text (else the first one); ``final_answer`` instead if
-     no agent is listed or listing failed.
+     no agent is listed or listing failed. The call carries ``skill`` when the
+     user's text names one of that agent's listed skills.
   2. ``final_answer`` with the agent's reply text (or an explanation of its error).
+
+  Two directives in the user's text change the script. ``[mock-llm: ask first]``
+  makes step 0 ``ask_user`` (ASK_TEXT), which ends the turn; the user's reply is a
+  new turn and gets the script above. ``[mock-llm: never answer]`` makes every step
+  ``list_agents``, so only the planner's step limit ends the turn.
 
 * A **specialist** (anything else, e.g. a registered ``llm`` agent running
   ``agent_skeleton.llm_loop``) gets assistant text ``"[mock-llm] Echo: <latest
-  user message>"``. The marker proves that the agent's own LLM loop ran.
+  user message>"``. The marker proves that the agent's own LLM loop ran. When the
+  request offers tools and the user message names one, the specialist first calls
+  that tool, with the JSON object written right after its name as arguments (``{}``
+  if there is none); once results are back, the echo ends with
+  ``" | <tool> -> <result>"`` for each one.
 
 Run: ``python3 -m devstack.mock_llm --port 8099``. ``MOCK_LLM_LOG=<file>`` appends
 every request and response as one JSON line each. Standard library only.
@@ -39,6 +49,9 @@ from typing import Any
 MODELS = ("mock-planner", "mock-specialist")
 SPECIALIST_PREFIX = "[mock-llm]"
 NO_AGENTS_TEXT = "No agents are available right now."
+ASK_FIRST = "[mock-llm: ask first]"  # directive: the planner asks the user before anything else
+NEVER_ANSWER = "[mock-llm: never answer]"  # directive: the planner never calls final_answer
+ASK_TEXT = "Before I hand this to an agent: which details matter most to you?"
 _ECHO_LIMIT = 300
 _STOPWORDS = frozenset(
     "a an and are as at be but by can do for from have how i in is it me my of on or "
@@ -62,19 +75,27 @@ def planner_tool_call(body: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     messages = body.get("messages") or []
     tool_messages = [m for m in messages if isinstance(m, dict) and m.get("role") == "tool"]
     step = len(tool_messages)
+    user_text = planner_user_text(messages)
+    if NEVER_ANSWER in user_text:
+        return "list_agents", {}
     if step == 0:
+        if ASK_FIRST in user_text:
+            return "ask_user", {"text": ASK_TEXT}
         return "list_agents", {}
 
     observation = _json_or_none(_content_text(tool_messages[-1].get("content")))
     if step == 1:
-        user_text = planner_user_text(messages)
         if not isinstance(observation, dict) or observation.get("status") != "ok":
             return "final_answer", {"text": f"I could not list agents: {_observation_error(observation)}"}
         agents = (observation.get("content") or {}).get("agents") or []
         agent = pick_agent(agents, user_text)
         if agent is None:
             return "final_answer", {"text": NO_AGENTS_TEXT}
-        return "call_agent", {"agent_id": agent.get("agent_id"), "task_input": {"request": user_text}}
+        arguments: dict[str, Any] = {"agent_id": agent.get("agent_id"), "task_input": {"request": user_text}}
+        skill = next((s for s in agent.get("skills") or [] if isinstance(s, str) and s and s in user_text), None)
+        if skill:
+            arguments["skill"] = skill
+        return "call_agent", arguments
 
     return "final_answer", {"text": _final_text(observation)}
 
@@ -106,24 +127,49 @@ def pick_agent(agents: list[Any], user_text: str) -> dict[str, Any] | None:
 
 
 def specialist_reply(body: dict[str, Any]) -> str:
-    """``[mock-llm] Echo: <latest user message>``, whitespace-collapsed and truncated."""
-    text = ""
-    for message in reversed(body.get("messages") or []):
-        if isinstance(message, dict) and message.get("role") == "user":
-            text = _user_message_text(_content_text(message.get("content")))
-            break
-    text = " ".join(text.split())
+    """``[mock-llm] Echo: <latest user message>``, whitespace-collapsed and truncated,
+    then `` | <tool> -> <result>`` for each tool result that followed that message."""
+    text = " ".join(_latest_user_text(body).split())
     if len(text) > _ECHO_LIMIT:
         text = text[: _ECHO_LIMIT - 3] + "..."
-    return f"{SPECIALIST_PREFIX} Echo: {text}" if text else f"{SPECIALIST_PREFIX} Echo: (empty message)"
+    reply = f"{SPECIALIST_PREFIX} Echo: {text}" if text else f"{SPECIALIST_PREFIX} Echo: (empty message)"
+    for name, result in _tool_results(body.get("messages") or []):
+        reply += f" | {name} -> {_short(result)}"
+    return reply
+
+
+def specialist_tool_call(body: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
+    """(tool name, arguments) when the request offers tools, none has been called since
+    the latest user message, and that message names an offered tool (the first one it
+    names). The arguments are the JSON object right after the name, else ``{}``."""
+    messages = body.get("messages") or []
+    if _tool_results(messages):
+        return None
+    text = _latest_user_text(body)
+    named = []
+    for tool in body.get("tools") or []:
+        function = tool.get("function") if isinstance(tool, dict) else None
+        name = function.get("name") if isinstance(function, dict) else None
+        if isinstance(name, str) and name and (match := re.search(rf"\b{re.escape(name)}\b", text)):
+            named.append((match.start(), name, match.end()))
+    if not named:
+        return None
+    _, name, end = min(named)
+    rest = text[end:].lstrip(" :")
+    try:
+        arguments, _ = json.JSONDecoder().raw_decode(rest)
+    except ValueError:
+        arguments = {}
+    return name, arguments if isinstance(arguments, dict) else {}
 
 
 def build_completion(body: dict[str, Any]) -> dict[str, Any]:
     """The full ``chat.completion`` object answering ``body``."""
     model = str(body.get("model") or MODELS[0])
     seed = hashlib.sha256(json.dumps(body, sort_keys=True, default=str).encode()).hexdigest()[:24]
-    if is_planner_request(body):
-        name, arguments = planner_tool_call(body)
+    call = planner_tool_call(body) if is_planner_request(body) else specialist_tool_call(body)
+    if call is not None:
+        name, arguments = call
         message: dict[str, Any] = {
             "role": "assistant",
             "content": None,
@@ -175,6 +221,39 @@ def _content_text(content: Any) -> str:
             str(part.get("text", "")) for part in content if isinstance(part, dict) and part.get("type") == "text"
         )
     return str(content)
+
+
+def _latest_user_text(body: dict[str, Any]) -> str:
+    for message in reversed(body.get("messages") or []):
+        if isinstance(message, dict) and message.get("role") == "user":
+            return _user_message_text(_content_text(message.get("content")))
+    return ""
+
+
+def _tool_results(messages: list[Any]) -> list[tuple[str, str]]:
+    """[(tool name, result text)] of the tool messages after the latest user message."""
+    names: dict[str, str] = {}
+    results: list[tuple[str, str]] = []
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        role = message.get("role")
+        if role == "user":
+            names, results = {}, []
+        elif role == "assistant":
+            for call in message.get("tool_calls") or []:
+                function = call.get("function") if isinstance(call, dict) else None
+                if isinstance(function, dict):
+                    names[str(call.get("id"))] = str(function.get("name") or "")
+        elif role == "tool":
+            call_id = str(message.get("tool_call_id"))
+            results.append((names.get(call_id) or call_id, _content_text(message.get("content"))))
+    return results
+
+
+def _short(text: str) -> str:
+    text = " ".join(text.split())
+    return text if len(text) <= _ECHO_LIMIT else text[: _ECHO_LIMIT - 3] + "..."
 
 
 def _user_message_text(content: str) -> str:
