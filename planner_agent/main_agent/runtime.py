@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import base64
+import contextlib
 import inspect
 import logging
 import json
@@ -133,6 +135,9 @@ class MainAgentRuntime:
         # context_ids with an answer to their pending action running in this process;
         # another answer meanwhile gets answer_in_progress (see _answer_pending).
         self._answering: set[str] = set()
+        # Claim cleanups (deletes, releases) still running after their answer was cancelled,
+        # held so they finish (see _run_to_end).
+        self._cleanups: set[asyncio.Task] = set()
 
     # -------- public API --------
 
@@ -147,16 +152,18 @@ class MainAgentRuntime:
         progress_callback: ProgressCallback | None = None,
     ) -> TurnResult:
         if context_id and (self._is_affirmative(text) or self._is_negative(text)):
-            # Also while an earlier answer is still running here (a double send, a retry),
-            # checked after the lookup: this one then gets answer_in_progress instead of
-            # starting an LLM turn on "yes".
-            if await self._get_pending(context_id) or context_id in self._answering:
+            # Also while an earlier answer is still running (a double send, a retry, a reply
+            # on another process): with a DB its row stays, claimed, until it is done, and
+            # this process's own answers are in _answering (checked after the lookup, which
+            # yields). This one then gets answer_in_progress instead of an LLM turn on "yes".
+            pending, _ = await self._lookup_pending(context_id)
+            if pending is not None or context_id in self._answering:
                 # H1: a yes or no acts on the pending action with the caller's
                 # credentials and identity, so the caller must own the conversation,
                 # checked exactly as _open_context checks every other message.
                 await self._owned_context(user_id, channel, context_id)
                 return await self._answer_pending(
-                    context_id, user_id, channel, metadata or {},
+                    context_id, channel, metadata or {},
                     confirmed=not self._is_negative(text), user_text=text,
                 )
 
@@ -624,6 +631,8 @@ class MainAgentRuntime:
                 # The request the owner approves; the resumed call sends this, not
                 # whatever current_goal a later message has set by then.
                 "user_goal": context.current_goal,
+                # Names this prompt, so the confirm button answers the prompt it was shown on.
+                "prompt_id": uuid4().hex,
             }
             await self._save_pending(context.context_id, context.user_id, pending)
             selected_agents.append(
@@ -756,12 +765,12 @@ class MainAgentRuntime:
     async def _answer_pending(
         self,
         context_id: str,
-        user_id: str,
         channel: Channel,
         metadata: dict[str, Any],
         *,
         confirmed: bool,
         user_text: str | None = None,
+        prompt_id: str | None = None,
     ) -> TurnResult:
         """Act on the owner's answer to a pending write confirmation or credential consent.
 
@@ -775,56 +784,74 @@ class MainAgentRuntime:
         - Each handler does everything that can fail first (credential lookups), then claims
           the action (_claim_this) and calls the agent with nothing that can fail in between,
           so an answer either leaves the action pending or acts on it, never half of each.
-          Across processes the claim decides: the loser gets ``no_pending``.
+          Across processes the claim decides: the loser gets ``no_pending``, and an answer
+          arriving while the claimed action runs gets ``answer_in_progress``.
+        - ``prompt_id`` (the confirm button sends the one it was shown with) must name the
+          pending prompt; a press on a prompt a newer one replaced gets ``superseded``.
         """
         if context_id in self._answering:
-            return TurnResult(
-                context_id=context_id,
-                state=A2ATaskState.failed,
-                text="Your earlier answer to this is still being handled.",
-                errors=["answer_in_progress"],
-                llm_model=self.config.llm_model,
-            )
+            return self._in_progress(context_id)
         self._answering.add(context_id)
         try:
             user_text = user_text or ("yes" if confirmed else "no")
             if confirmed and context_id not in self.store.contexts:
                 return self._unknown_context(context_id)
-            pending = await self._get_pending(context_id)
+            pending, claimed = await self._lookup_pending(context_id)
             if pending is None:
                 return self._no_pending(context_id)
+            if prompt_id is not None and pending.get("prompt_id") != prompt_id:
+                return self._superseded(context_id)
+            if claimed:
+                return self._in_progress(context_id)
             if not confirmed:
-                return await self._cancel_confirmation(context_id, user_id, pending, user_text=user_text)
+                return await self._cancel_confirmation(context_id, pending, user_text=user_text)
             if pending.get("kind") == "credential_consent":
                 return await self._resume_credential_consent(
-                    context_id, user_id, channel, metadata, pending, user_text=user_text,
+                    context_id, channel, metadata, pending, user_text=user_text,
                 )
             return await self._resume_confirmation(
-                context_id, user_id, channel, metadata, pending, user_text=user_text,
+                context_id, channel, metadata, pending, user_text=user_text,
             )
         finally:
             self._answering.discard(context_id)
 
-    async def _claim_this(self, context_id: str, user_id: str, pending: dict[str, Any]) -> TurnResult | None:
-        """Claim the pending action this answer read. None means claimed; otherwise the
-        reply to give, and nothing was claimed: another answer got there first, the database
-        couldn't serve the claim, or a newer prompt had replaced this one (it is put back)."""
+    async def _claim_this(self, context_id: str, pending: dict[str, Any]) -> tuple[str, TurnResult | None]:
+        """Claim the pending action this answer read: (claim id, None) when claimed, which the
+        handler then acts inside _claimed (or passes to _finish_pending). Otherwise ("", the
+        reply to give), and nothing is acted on: another answer got there first, a newer
+        prompt had replaced this one (it stays pending), or the database couldn't serve the
+        claim (one it may have applied is released)."""
         try:
-            claimed = await self._claim_pending(context_id)
+            claim_id = await self._claim_pending(context_id, pending)
         except PendingStoreUnavailable:
-            return TurnResult(
+            return "", TurnResult(
                 context_id=context_id,
                 state=A2ATaskState.failed,
                 text="Your answer couldn't be recorded, so nothing was run or cancelled. Try again in a moment.",
                 errors=["pending_store_unavailable"],
                 llm_model=self.config.llm_model,
             )
-        if claimed is None:
-            return self._no_pending(context_id)
-        if claimed != pending:
-            await self._save_pending(context_id, user_id, claimed)
-            return self._no_pending(context_id)
-        return None
+        if claim_id is None:
+            return "", self._no_pending(context_id)
+        return claim_id, None
+
+    def _in_progress(self, context_id: str) -> TurnResult:
+        return TurnResult(
+            context_id=context_id,
+            state=A2ATaskState.failed,
+            text="Your earlier answer to this is still being handled.",
+            errors=["answer_in_progress"],
+            llm_model=self.config.llm_model,
+        )
+
+    def _superseded(self, context_id: str) -> TurnResult:
+        return TurnResult(
+            context_id=context_id,
+            state=A2ATaskState.failed,
+            text="That prompt was replaced by a newer one, so nothing was run or cancelled. Answer the newest prompt.",
+            errors=["superseded"],
+            llm_model=self.config.llm_model,
+        )
 
     def _no_pending(self, context_id: str) -> TurnResult:
         return TurnResult(
@@ -845,12 +872,12 @@ class MainAgentRuntime:
         )
 
     # The three handlers below are called by _answer_pending with the pending action it
-    # read; each claims it with _claim_this right before acting.
+    # read; each claims it with _claim_this right before acting and holds the claim while
+    # it acts (_claimed), or finishes it at once (a cancel).
 
     async def _resume_confirmation(
         self,
         context_id: str,
-        user_id: str,
         channel: Channel,
         metadata: dict[str, Any],
         pending: dict[str, Any],
@@ -887,13 +914,14 @@ class MainAgentRuntime:
             uploaded_files=[],
             credentials=scoped,
         )
-        refused = await self._claim_this(context_id, user_id, pending)
+        claim_id, refused = await self._claim_this(context_id, pending)
         if refused is not None:
             return refused
         # Record the user's confirmation turn so future LLM turns can see it.
         context.conversation_history.append(f"user: {user_text}")
         context.updated_at = utc_now()
-        result = await self._send_task(agent, request)
+        async with self._claimed(context_id, claim_id):
+            result = await self._send_task(agent, request)
         self.store.save_context(context)
 
         text = _last_text(result) or f"{skill} completed."
@@ -929,13 +957,13 @@ class MainAgentRuntime:
     async def _cancel_confirmation(
         self,
         context_id: str,
-        user_id: str,
         pending: dict[str, Any],
         user_text: str = "no",
     ) -> TurnResult:
-        refused = await self._claim_this(context_id, user_id, pending)
+        claim_id, refused = await self._claim_this(context_id, pending)
         if refused is not None:
             return refused
+        await self._finish_pending(context_id, claim_id)
         skill = str(pending.get("skill") or "pending_action")
         text = f"Cancelled. {skill} was not executed."
         try:
@@ -1056,6 +1084,7 @@ class MainAgentRuntime:
                 "confirmation_status": ConfirmationStatus.pending.value,
                 "selected_agent": agent.model_dump(mode="json"),
                 "user_goal": context.current_goal,
+                "prompt_id": uuid4().hex,
             }
             await self._save_pending(context.context_id, context.user_id, pending)
             labels = ", ".join(f"{r.label} ({r.type})" for r in ungranted)
@@ -1082,7 +1111,6 @@ class MainAgentRuntime:
     async def _resume_credential_consent(
         self,
         context_id: str,
-        user_id: str,
         channel: Channel,
         metadata: dict[str, Any],
         pending: dict[str, Any],
@@ -1117,22 +1145,23 @@ class MainAgentRuntime:
             uploaded_files=[],
             credentials=scoped,
         )
-        refused = await self._claim_this(context_id, user_id, pending)
+        claim_id, refused = await self._claim_this(context_id, pending)
         if refused is not None:
             return refused
         context.conversation_history.append(f"user: {user_text}")
         context.updated_at = utc_now()
-        result = await self._send_task(agent, request)
-        self.store.save_context(context)
-        # Recorded after the call, so nothing that can fail sits between the claim and the
-        # call. If recording fails, the call has still run on the consent just given and
-        # the owner is asked again next time.
-        if self.credential_gate is not None and auth_user_id:
-            try:
-                for cred_type in grant_types:
-                    await self.credential_gate.add_grant(auth_user_id, agent.agent_id, cred_type)
-            except Exception:
-                logger.warning("credential_grant_record_failed agent_id=%s", agent.agent_id, exc_info=True)
+        async with self._claimed(context_id, claim_id):
+            result = await self._send_task(agent, request)
+            self.store.save_context(context)
+            # Recorded after the call, so nothing that can fail sits between the claim and
+            # the call. If recording fails, the call has still run on the consent just given
+            # and the owner is asked again next time.
+            if self.credential_gate is not None and auth_user_id:
+                try:
+                    for cred_type in grant_types:
+                        await self.credential_gate.add_grant(auth_user_id, agent.agent_id, cred_type)
+                except Exception:
+                    logger.warning("credential_grant_record_failed agent_id=%s", agent.agent_id, exc_info=True)
 
         text = _last_text(result) or f"{skill or 'The request'} completed."
         context.conversation_history.append(f"assistant: {text}")
@@ -1203,8 +1232,9 @@ class MainAgentRuntime:
     # The Postgres calls are best-effort: if the DB is unreachable, pending state
     # degrades to the process-local cache rather than failing the turn, except an
     # answer's claim, which is refused instead (see _claim_pending). When it is
-    # reachable, the row is read on every lookup (see _get_pending) and an answer
-    # removes it before acting (see _claim_pending).
+    # reachable, the row is read on every lookup (see _lookup_pending), and an answer
+    # marks it claimed before acting (see _claim_pending), keeps the claim fresh while
+    # it acts and deletes the row after (see _claimed).
     async def _save_pending(self, context_id: str, owner_email: str, pending: dict) -> None:
         self.store.save_pending_confirmation(context_id, pending)
         try:
@@ -1213,44 +1243,135 @@ class MainAgentRuntime:
             logger.warning("pending_confirmation_persist_failed", exc_info=True)
 
     async def _get_pending(self, context_id: str) -> dict | None:
+        """The pending action waiting for an answer, or None (none, or one being answered)."""
+        pending, claimed = await self._lookup_pending(context_id)
+        return None if claimed else pending
+
+    async def _lookup_pending(self, context_id: str) -> tuple[dict | None, bool]:
+        """(pending action, claimed): claimed means an answer on some process is acting
+        on it now. Without a DB a claim removes the in-memory copy, so claimed is always
+        False and this process's answer in progress is in ``self._answering``."""
         cached = self.store.get_pending_confirmation(context_id)
         if not pending_store.enabled():
-            return cached
+            return cached, False
         try:
-            pending = await pending_store.get(context_id)
+            row = await pending_store.get(context_id)
         except Exception:
             logger.warning("pending_confirmation_load_failed", exc_info=True)
-            return cached
+            return cached, False
         # With a DB the row wins over this process's copy: another process may have
         # resumed or cancelled the action since it was cached here, and acting on the
         # stale copy would run a confirmed write a second time.
-        if pending is None:
+        if row is None:
+            self.store.clear_pending_confirmation(context_id)
+            return None, False
+        pending, claimed = row
+        if claimed:
             self.store.clear_pending_confirmation(context_id)
         else:
             self.store.save_pending_confirmation(context_id, pending)  # warm the cache
-        return pending
+        return pending, claimed
 
-    async def _claim_pending(self, context_id: str) -> dict | None:
-        """Remove the pending action and return it, so only one answer acts on it.
+    async def _claim_pending(self, context_id: str, pending: dict) -> str | None:
+        """Claim ``pending`` (the action this answer read), so only one answer acts on it.
 
-        Two answers can arrive together: a double click, a client retry, a chat "yes"
-        and the button, or replies on two processes. When each read the action and
-        cleared it only after the agent call, both ran it. Now an answer runs only an
-        action it took. With a DB the row decides (one DELETE ... RETURNING), and this
-        process's copy is then dropped. If that statement fails, nothing is claimed and
-        PendingStoreUnavailable is raised: running the cached copy would leave the row
-        for a later answer, here or on another process, to run again. Without a DB the
-        in-memory copy is taken, which no other answer in this process can also get.
+        Returns the claim's id, or None if another answer or a newer prompt got there first.
+        Two answers can arrive together: a double click, a client retry, a chat "yes" and
+        the button, or replies on two processes. When each read the action and cleared it
+        only after the agent call, both ran it. Now an answer runs only an action it
+        claimed, and only if it is still the one it read. With a DB the row decides (one
+        UPDATE marking it claimed under this answer's id), and this process's copy is
+        dropped. If that statement fails, the answer is refused (PendingStoreUnavailable):
+        running the cached copy would leave the row for a later answer, here or on another
+        process, to run again. A claim that fails or is cancelled (a closed chat stream) may
+        still have been applied, and nothing will act on it, so it is released by its id,
+        which can't touch another answer's claim. Without a DB the in-memory copy is
+        removed, which no other answer in this process can also do.
         """
+        claim_id = uuid4().hex
         if not pending_store.enabled():
-            return self.store.take_pending_confirmation(context_id)
+            return claim_id if self.store.take_pending_confirmation(context_id, pending) is not None else None
+        claiming = asyncio.ensure_future(pending_store.claim(context_id, pending, claim_id))
         try:
-            claimed = await pending_store.take(context_id)
-        except Exception as exc:
+            claimed = await asyncio.shield(claiming)
+        except BaseException as exc:
+            self._run_to_end(self._release_claim(claiming, context_id, claim_id))
+            if not isinstance(exc, Exception):
+                raise
             logger.warning("pending_confirmation_claim_failed", exc_info=True)
             raise PendingStoreUnavailable(context_id) from exc
         self.store.clear_pending_confirmation(context_id)
-        return claimed
+        return claim_id if claimed else None
+
+    async def _release_claim(self, claiming: asyncio.Future, context_id: str, claim_id: str) -> None:
+        try:
+            if not await claiming:
+                return  # nothing was claimed
+        except Exception:
+            pass  # the outcome is unknown: the database may have applied it
+        try:
+            await pending_store.release(context_id, claim_id)
+        except Exception:
+            logger.warning("pending_confirmation_release_failed", exc_info=True)
+
+    @contextlib.asynccontextmanager
+    async def _claimed(self, context_id: str, claim_id: str):
+        """Hold the claim ``claim_id`` while the body acts on it, then delete the row.
+
+        A claim reads as in progress for CLAIM_TTL_SECONDS after it was last refreshed, and
+        an agent call can run far longer (registered agents up to an hour), so the claim is
+        refreshed every CLAIM_REFRESH_SECONDS until the body ends."""
+        done = asyncio.Event()
+        refreshing = asyncio.ensure_future(self._refresh_claim(context_id, claim_id, done))
+        try:
+            yield
+        finally:
+            done.set()
+            refreshing.cancel()
+            await self._finish_pending(context_id, claim_id)
+
+    async def _refresh_claim(self, context_id: str, claim_id: str, done: asyncio.Event) -> None:
+        if not pending_store.enabled():
+            return  # no claim to keep: the in-memory copy was removed
+        # ``done`` ends the loop even when a cancelled refresh comes back as a database
+        # error rather than a cancellation (asyncpg can do that).
+        while not done.is_set():
+            await asyncio.sleep(pending_store.CLAIM_REFRESH_SECONDS)
+            try:
+                # Bounded (pending_store.refresh also bounds giving its connection back),
+                # so one hung connection can't stop the refreshing.
+                await asyncio.wait_for(
+                    pending_store.refresh(context_id, claim_id), pending_store.CLAIM_REFRESH_TIMEOUT_SECONDS,
+                )
+            except Exception:
+                logger.warning("pending_confirmation_refresh_failed", exc_info=True)
+
+    async def _finish_pending(self, context_id: str, claim_id: str) -> None:
+        """Delete the claimed row once its answer is done, unless a newer prompt replaced it.
+
+        The delete runs to the end even if the answer is cancelled: closing the chat stream
+        cancels the answer mid-call, and a claim left behind would turn away every answer to
+        the prompt until it expired. If the delete fails, the claim expires after
+        CLAIM_TTL_SECONDS and is never claimed again.
+        """
+        if not pending_store.enabled():
+            return  # the claim already removed the in-memory copy
+
+        async def delete() -> None:
+            try:
+                await pending_store.finish(context_id, claim_id)
+            except Exception:
+                logger.warning("pending_confirmation_finish_failed", exc_info=True)
+
+        await asyncio.shield(self._run_to_end(delete()))
+
+    def _run_to_end(self, cleanup: Awaitable[None]) -> asyncio.Future:
+        """Start a claim cleanup that the answer's cancellation must not stop, and hold it
+        until it ends."""
+        task = asyncio.ensure_future(cleanup)
+        self._cleanups.add(task)
+        task.add_done_callback(self._cleanups.discard)
+        return task
 
     async def _clear_pending(self, context_id: str) -> None:
         self.store.clear_pending_confirmation(context_id)

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import time
 
 import httpx
 import pytest
@@ -111,12 +112,31 @@ async def _say(runtime, user, text, context_id=None, metadata=None):
     )
 
 
+class PendingRows(dict):
+    """context_id -> (owner, payload), plus ``claimed``: context_id -> (claim time, claim id)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.claimed: dict[str, list] = {}
+
+    def waiting(self, context_id: str) -> bool:
+        """A row is there and no answer has claimed it."""
+        return context_id in self and context_id not in self.claimed
+
+    def age_claim(self, context_id: str, seconds: float) -> None:
+        self.claimed[context_id][0] -= seconds
+
+    def held_by(self, context_id: str, claim_id: str) -> bool:
+        return context_id in self.claimed and self.claimed[context_id][1] == claim_id
+
+
 @pytest.fixture
 def persisted(monkeypatch):
     """A Postgres stand-in shared by every runtime in a test, so a fresh runtime acts as
-    another planner process: conversations (owner, history) and pending rows (owner, payload)."""
+    another planner process: conversations (owner, history) and pending rows (owner,
+    payload, claim), following the statements in pending_store."""
     conversations: dict[str, tuple[str, list[str]]] = {}
-    pending_rows: dict[str, tuple[str, dict]] = {}
+    pending_rows = PendingRows()
 
     async def conversation_owner(context_id):
         entry = conversations.get(context_id)
@@ -128,10 +148,14 @@ def persisted(monkeypatch):
 
     async def save_pending(context_id, owner_email, payload):
         pending_rows[context_id] = (owner_email, dict(payload))
+        pending_rows.claimed.pop(context_id, None)
 
     async def get_pending(context_id):
         entry = pending_rows.get(context_id)
-        return dict(entry[1]) if entry else None
+        claim = pending_rows.claimed.get(context_id)
+        if entry is None or (claim and time.monotonic() - claim[0] > pending_store.CLAIM_TTL_SECONDS):
+            return None
+        return dict(entry[1]), claim is not None
 
     async def pending_owner(context_id):
         entry = pending_rows.get(context_id)
@@ -139,10 +163,25 @@ def persisted(monkeypatch):
 
     async def clear_pending(context_id):
         pending_rows.pop(context_id, None)
+        pending_rows.claimed.pop(context_id, None)
 
-    async def take_pending(context_id):
-        entry = pending_rows.pop(context_id, None)
-        return dict(entry[1]) if entry else None
+    async def claim_pending(context_id, payload, claim_id):
+        if not pending_rows.waiting(context_id) or pending_rows[context_id][1] != payload:
+            return False
+        pending_rows.claimed[context_id] = [time.monotonic(), claim_id]
+        return True
+
+    async def refresh_pending(context_id, claim_id):
+        if pending_rows.held_by(context_id, claim_id):
+            pending_rows.claimed[context_id][0] = time.monotonic()
+
+    async def release_pending(context_id, claim_id):
+        if pending_rows.held_by(context_id, claim_id):
+            del pending_rows.claimed[context_id]
+
+    async def finish_pending(context_id, claim_id):
+        if pending_rows.held_by(context_id, claim_id):
+            await clear_pending(context_id)
 
     monkeypatch.setattr(conversation_store, "owner", conversation_owner)
     monkeypatch.setattr(conversation_store, "load_history", load_history)
@@ -151,7 +190,10 @@ def persisted(monkeypatch):
     monkeypatch.setattr(pending_store, "get", get_pending)
     monkeypatch.setattr(pending_store, "owner", pending_owner)
     monkeypatch.setattr(pending_store, "clear", clear_pending)
-    monkeypatch.setattr(pending_store, "take", take_pending)
+    monkeypatch.setattr(pending_store, "claim", claim_pending)
+    monkeypatch.setattr(pending_store, "refresh", refresh_pending)
+    monkeypatch.setattr(pending_store, "release", release_pending)
+    monkeypatch.setattr(pending_store, "finish", finish_pending)
     return conversations, pending_rows
 
 
@@ -248,7 +290,7 @@ def test_reply_on_another_process_is_checked_against_the_persisted_owner(persist
         for reply in ("yes", "no"):
             with pytest.raises(ContextOwnershipError):
                 await _say(second_process, OTHER, reply, cid, OTHER_META)
-        assert a2a.requests == [] and cid in pending_rows
+        assert a2a.requests == [] and pending_rows.waiting(cid)
 
         done = await _say(second_process, OWNER, "yes", cid, OWNER_META)
         assert done.state == A2ATaskState.completed, done.text
@@ -272,7 +314,7 @@ def test_pending_row_guards_a_conversation_whose_history_was_never_saved(persist
             with pytest.raises(ContextOwnershipError):
                 await _say(second_process, OTHER, text, cid, OTHER_META)
 
-        assert a2a.requests == [] and cid in pending_rows
+        assert a2a.requests == [] and pending_rows.waiting(cid)
         assert cid not in second_process.store.contexts
 
     asyncio.run(go())
@@ -339,7 +381,7 @@ def test_confirm_button_checks_the_pending_rows_owner(persisted, monkeypatch) ->
             resp = await _press(app, OTHER, cid, confirmed)
             assert resp.status_code == 403, resp.text
 
-        assert a2a.requests == [] and cid in pending_rows
+        assert a2a.requests == [] and pending_rows.waiting(cid)
 
     asyncio.run(go())
 

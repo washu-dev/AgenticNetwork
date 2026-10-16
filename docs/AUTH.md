@@ -143,8 +143,11 @@ durable state now lives in Postgres so it scales past one process.
   `conversation_messages`) and pending confirmations (`pending_store.py` →
   `pending_confirmations`) are in Postgres, write-through cached and rehydrated on a miss — so a
   conversation or a mid-flight confirmation resumes on any process or after a restart. An answer
-  to a pending action first removes its row (`DELETE ... RETURNING`), so two answers arriving
-  together, on one process or two, run it once; if that statement fails, the answer is refused
+  to a pending action first claims its row (one `UPDATE` that marks it, only if it is unclaimed
+  and still the prompt the answer read) and deletes it once done. So two answers arriving
+  together, on one process or two, run it once, an answer arriving meanwhile on any process gets
+  `answer_in_progress`, and the confirm button, which names its prompt (`prompt_id`), never
+  answers a newer one. If the claim statement fails, the answer is refused
   (`pending_store_unavailable`) and nothing runs (details: [`PLANNER.md`](PLANNER.md),
   "Confirmation & consent resume").
   Persistence is best-effort (a DB hiccup degrades to the cache, never fails the turn), except

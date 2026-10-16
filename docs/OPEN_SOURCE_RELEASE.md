@@ -1,6 +1,6 @@
 # Open-source release plan
 
-Status as of **2026-10-15**. This is a working document for the maintainers and the
+Status as of **2026-10-16**. This is a working document for the maintainers and the
 agents helping them. Update it as decisions land, and rewrite or remove it before the
 repository goes public.
 
@@ -18,7 +18,7 @@ repository goes public.
   `/ready`, native agent spawning and `/ready` in registration, the dev stack
   `scripts/stack`, the full-chain test `tests/pipeline/` and CI), the 2026-10-13 safe-cuts
   pass (dead code, stale docs and unused dependencies removed; the security fixes listed
-  below) and the two 2026-10-15 passes.
+  below), the two 2026-10-15 passes and the 2026-10-16 confirmation follow-ups.
 - **Tests:** the component suites, `devstack/tests` and the pipeline suite (full chain and
   scenarios) pass offline. CI (`.github/workflows/tests.yml`) runs them, plus a repo-hygiene
   job, on every PR and push to `main`; it first passed on GitHub for `d069aaf` (2026-10-15).
@@ -51,6 +51,10 @@ repository goes public.
   Compose docs; and a history and hygiene audit (below). With this pass the engineering side is
   finished for the release candidate. What remains is decisions and access: the license and
   sign-off, the ops docs, the history approach, and the live checks listed below.
+- **Confirmation follow-ups (2026-10-16):** the two small gaps the finalize pass left in
+  pending confirmations are closed: a late "yes" on another planner process is told the
+  first answer is still running, and the confirm button names its prompt, so a click on an
+  old prompt runs nothing (security list below).
 
 ### Decided 2026-10-13 (Ronak)
 
@@ -220,16 +224,29 @@ The two copies have diverged, so they must be reconciled first.
      retry, a chat "yes" racing the button, replies on two processes) both ran the write,
      because each read the action, sent the call and cleared it only afterwards. Now one
      answer per conversation runs at a time in a process, and an answer claims the action
-     right before the agent call (one `DELETE ... RETURNING` with a database, else it takes the
-     process's in-memory copy), so only one answer acts; the others get `answer_in_progress`
-     or `no_pending` and nothing runs. A claim the database can't serve runs nothing, and the
-     resumed call sends the request the prompt showed (fixed 2026-10-15;
-     `test_confirmation_claim.py`, pipeline `test_9`; two adversarial review rounds). Still
-     open (small): a chat "yes" reaching another planner process during the first answer's
-     agent call is handled as an ordinary message, so the model may call the agent again
-     (fix: mark the claimed row instead of deleting it); and, older than this fix, a confirm
-     names no prompt, so a click on an old prompt answers a newer one saved for the same
-     conversation in the meantime (fix: give each prompt an id and claim only a matching row).
+     right before the agent call (with a database one `UPDATE` marks the row claimed and it is
+     deleted once the answer is done; without one it takes the process's in-memory copy), so
+     only one answer acts; the others get `answer_in_progress` or `no_pending` and nothing
+     runs. A claim the database can't serve runs nothing, and the resumed call sends the
+     request the prompt showed (fixed 2026-10-15; `test_confirmation_claim.py`, pipeline
+     `test_9`; two adversarial review rounds).
+   - Fixed: a chat "yes" reaching another planner process during the first answer's agent call
+     found nothing pending (the claim had deleted the row) and was handled as an ordinary
+     message, so the model could call the agent again. The claimed row now stays until the
+     answer is done (refreshed while the call runs, deleted even when the chat stream closes
+     mid-call), so that answer gets `answer_in_progress`; a claim never finished (its process
+     died) expires after 2 minutes and is never claimed again. And a confirm named no
+     prompt, so a click on an old prompt answered a newer one saved for the same conversation
+     meanwhile; each prompt now has an id that the button sends back, and a click on a replaced
+     prompt runs nothing (`superseded`) (fixed 2026-10-16; `test_confirmation_claim.py`,
+     `test_pending_store_postgres.py` on a real Postgres 15, pipeline `test_7`; three
+     adversarial review rounds, whose confirmed findings are fixed: the delete survives a
+     closed stream, claims carry an id so only their own answer refreshes, releases or deletes
+     them, each refresh is bounded and drops a dead connection, and a claim whose statement
+     failed or was cancelled is released). Known limit, fail-safe: a claim statement the
+     database applies only after its release (its connection dropped while it waited on
+     someone else's lock on the row) leaves a claim that expires, so that prompt can't be
+     answered and the owner asks again (`docs/PLANNER.md`).
    - Fixed: an upload's `entry_file` must be a bare `*.py` name; `../x.py`, absolute paths
      and newlines get 422 (`test_custom.py::test_entry_file_must_be_bare_name`).
    - Fixed: the planner's `/register/{path}` proxy no longer forwards registration's

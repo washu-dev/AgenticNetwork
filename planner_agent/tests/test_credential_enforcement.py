@@ -135,7 +135,7 @@ def test_confirmations_button_resume_grants_and_scopes():
         # _answer_pending, which claims the pending consent (server.py /confirmations).
         pending = rt.store.get_pending_confirmation(res1.context_id)
         assert pending and pending.get("kind") == "credential_consent"
-        await rt._answer_pending(res1.context_id, "u", Channel.api, meta, confirmed=True)
+        await rt._answer_pending(res1.context_id, Channel.api, meta, confirmed=True)
         assert rt.store.get_pending_confirmation(res1.context_id) is None
         assert len(a2a.requests) == 1
         assert a2a.requests[0].metadata.get("credentials") == OPENAI_CRED

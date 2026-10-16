@@ -80,16 +80,39 @@ D9–D11).
 - **`conversation_store.py`** (Postgres, `conversation_messages`) — durable per-conversation
   history, owner-stamped, write-through cached, UPSERT-per-turn (keeps `created_at` stable so
   `/sessions` timestamps are real). No-op without a DB.
-- **`pending_store.py`** (Postgres, `pending_confirmations`) — durable pending write/consent state.
-  The runtime helpers `_save_pending` / `_get_pending` / `_claim_pending` / `_clear_pending`
-  write-through to the in-memory cache and Postgres — **best-effort** (a DB error degrades to the
-  cache, never fails the turn, with one exception below). With the DB reachable, `_get_pending` reads the row on every
-  lookup and drops a cached copy whose row is gone, so an action resumed or cancelled on one
-  process is not run again from another process's cache. `_claim_pending` removes the row with
-  one `DELETE ... RETURNING` (`pending_store.take`), then drops the cached copy. It is the one
-  exception to best-effort: if that statement fails, nothing is claimed and the answer gets
-  `pending_store_unavailable`, because running the cached copy would leave the row for a later
-  answer to run again.
+- **`pending_store.py`** (Postgres, `pending_confirmations`) — durable pending write/consent
+  state. The runtime helpers `_save_pending` / `_lookup_pending` (`_get_pending`) /
+  `_claim_pending` / `_finish_pending` / `_clear_pending` write-through to the in-memory cache
+  and Postgres — **best-effort** (a DB error degrades to the cache, never fails the turn, with
+  one exception below). With the DB reachable, `_lookup_pending` reads the row on every lookup
+  and drops a cached copy whose row is gone or claimed, so an action resumed or cancelled on one
+  process is not run again from another process's cache. `_claim_pending` marks the row claimed
+  under a fresh claim id (`claimed_at`, `claim_id`) with one `UPDATE` that matches only an
+  unclaimed row still holding the prompt the answer read (`pending_store.claim`, comparing the
+  whole payload), then drops the cached copy. Refresh, release and delete match that claim id, so
+  they never touch another answer's claim or a newer prompt (saving a prompt clears any claim).
+  While the agent call runs, the answer refreshes the claim every `CLAIM_REFRESH_SECONDS` (20 s;
+  `pending_store.refresh`, each attempt bounded at `CLAIM_REFRESH_TIMEOUT_SECONDS`, 10 s; a
+  failed attempt drops its connection, since asyncpg would wait for a reply a dead connection
+  never sends before reusing it), because a claim reads as in progress only until
+  `CLAIM_TTL_SECONDS` (2 minutes) after its last refresh, and agent calls can run far longer
+  (registered agents up to an hour); a live claim expires only if three attempts in a row fail.
+  `_finish_pending` deletes the row once the agent call or the cancel is done
+  (`pending_store.finish`). `_claimed` wraps the refresh and the delete around the call. The
+  delete runs to the end even if the answer is cancelled (closing the chat stream cancels it
+  mid-call, and the server keeps cancelling it), and so does the release of a claim whose
+  statement failed or was cancelled after the database may have applied it
+  (`pending_store.release`). The claim is the one exception to best-effort: if that statement
+  fails, the answer gets `pending_store_unavailable`, because running the cached copy would leave
+  the row for a later answer to run again. A failed delete or release, a process that dies
+  mid-call, or a claim statement the database applies only after its release (its connection
+  dropped while the statement waited on a lock someone else held on the row), leaves the claim:
+  it reads as in progress for up to 2 minutes, then as nothing pending, and it is never claimed
+  again. The row stays until the conversation's next prompt replaces it or the conversation is
+  deleted. Planners before this change (8ea4cfd and earlier) ignore `claimed_at`, so before
+  rolling the planner back past this change, delete the claimed rows (`DELETE FROM
+  pending_confirmations WHERE claimed_at IS NOT NULL`); no deployment runs two planner versions
+  on one database at once.
 - `GET /sessions` derives from the persistence layer (Postgres when configured, else in-memory
   contexts) keyed on the authenticated principal — no `user_id` query param.
 
@@ -107,23 +130,31 @@ returns a terminal "reply yes/no" (or "Allow"). The resume paths read it back:
   `_cancel_confirmation`. Two answers can arrive together (a double click, a retry, a chat "yes"
   racing the button, replies on two processes); each answer runs at most once:
   - Within one process, one answer per conversation runs at a time (`_answering`); another gets
-    `failed` with `errors: ["answer_in_progress"]` and leaves the action alone. `handle_message`
-    checks this after its pending lookup, so a repeated "yes" never starts an LLM turn while the
-    first answer runs.
+    `failed` with `errors: ["answer_in_progress"]` and leaves the action alone. With a database
+    the claimed row stays until the answer is done, so an answer arriving on any other process
+    meanwhile, by chat or button, gets `answer_in_progress` too. `handle_message` routes a bare
+    yes or no to `_answer_pending` while a prompt is pending, a live claim holds it, or this
+    process is answering, so a repeated "yes" never starts an LLM turn while the first answer
+    runs.
   - Each handler first does what can fail (credential lookups, building the request), then
     claims the action (`_claim_this`) and calls the agent with nothing that can fail in between.
     A failure before the claim leaves the action pending; after the claim, only the agent call
     runs. Consent grants are recorded after the call: if that fails, the call has still run on
     the consent just given, and the owner is asked again next time.
-  - The claim must return the prompt the answer read. Across processes the loser gets
-    `no_pending`; a newer prompt that replaced the one read is put back for its own answer.
+  - The claim matches the prompt the answer read. Across processes the loser gets
+    `no_pending`; a newer prompt that replaced the one read is not claimed and stays for its
+    own answer.
+  - Each prompt carries a `prompt_id` (a random hex id, returned in `pending_confirmation`).
+    The confirm button sends it back (`POST /confirmations` takes an optional `prompt_id`); a
+    press on a prompt that a newer one replaced gets `superseded` and runs or cancels nothing.
+    A chat "yes" or "no" carries no id and answers the pending prompt, the latest one the chat
+    showed. A request without a `prompt_id` (an older client), or a row saved without one (by
+    an older planner), is answered as before.
   - A confirm on a process that doesn't know the conversation returns `unknown_context`, and a
     claim the database can't serve returns `pending_store_unavailable`; both leave the action
-    pending.
-  - Still open: a chat "yes" that reaches another planner process while the first answer is
-    inside its agent call finds nothing pending there and is handled as an ordinary message, so
-    the model may call the agent again (in strict mode a write skill then asks for a fresh
-    confirmation). Closing it needs the claim to mark the row instead of deleting it.
+    pending. (A claim the database applied but couldn't confirm is released; if that release
+    fails too, the prompt reads as in progress for up to 2 minutes, then as nothing pending, as
+    above.)
 - The prompt stores the request it asks about (`user_goal`); the resumed call sends that, not the
   conversation's current goal, which a later message may have changed.
 

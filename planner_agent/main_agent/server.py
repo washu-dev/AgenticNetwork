@@ -119,6 +119,9 @@ class ConfirmationRequest(BaseModel):
     channel: Channel = Channel.api
     context_id: str
     confirmed: bool = True
+    # pending_confirmation.prompt_id from the response that showed the prompt; without
+    # it (older clients) the answer goes to whatever prompt is pending.
+    prompt_id: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -468,8 +471,9 @@ def create_app(
         # H2b: _answer_pending reads the pending action through to Postgres, so a confirm
         # can resume a prompt raised on another process or before a restart, and claims it
         # right before acting, so a second press or a chat reply racing it runs nothing.
+        # prompt_id names the prompt the button was shown on; a newer prompt is left alone.
         result = await runtime._answer_pending(
-            req.context_id, user_id, req.channel, req.metadata, confirmed=req.confirmed,
+            req.context_id, req.channel, req.metadata, confirmed=req.confirmed, prompt_id=req.prompt_id,
         )
         return result.to_response()
 

@@ -9,11 +9,19 @@ This module persists it to Postgres (table `pending_confirmations`, created in
 The runtime keeps an in-memory cache, but when a DB is configured the row is the
 source of truth and is read on every lookup: another process may have resumed or
 cancelled the action since this one cached it. An answer (yes, no, the confirm
-button) acts only on a row it removed itself with `take`, so two answers arriving
-together cannot both run the action. Lookups fall back to the cache only when the
-DB is unreachable; a claim never does (the runtime refuses the answer instead).
-When no DB is configured (Tier A/B laptop runs, unit tests) every
-function is a no-op and the in-memory cache is the only store.
+button) acts only on a row it claimed itself with `claim`, which marks the row
+(`claimed_at`, and the answer's own `claim_id`) only if it is still unclaimed and
+still the prompt the answer read, so two answers arriving together cannot both run
+the action and an answer never runs a newer prompt it didn't see. The row stays
+while the agent call runs (the answer keeps its claim fresh with `refresh`), so a
+late answer on any process is told the action is in progress, and `finish` deletes
+it afterwards; `release` gives it back when the answer ended before acting. Those
+three match the claim_id, so they never touch another answer's claim or a newer
+prompt. A claim not refreshed for CLAIM_TTL_SECONDS (its process died mid-call)
+reads as no row and can never be claimed again: the action runs at most once.
+Lookups fall back to the cache only when the DB is unreachable; a claim never does
+(the runtime refuses the answer instead). When no DB is configured (Tier A/B laptop
+runs, unit tests) every function is a no-op and the in-memory cache is the only store.
 """
 from __future__ import annotations
 
@@ -23,6 +31,17 @@ from typing import Any
 
 from planner_agent.main_agent.db import get_pool
 
+# A claimed row reads as "in progress" until CLAIM_TTL_SECONDS after its claim was last
+# refreshed, then as gone. The answer refreshes it every CLAIM_REFRESH_SECONDS while its
+# agent call runs (which can take up to an hour), each attempt ending within
+# CLAIM_REFRESH_TIMEOUT_SECONDS, so a live claim expires only when three attempts in a row
+# fail. Otherwise a claim expires only when its process died, its delete or release
+# failed, or the database applied its claim statement after the release (see
+# runtime._release_claim).
+CLAIM_TTL_SECONDS = 120.0
+CLAIM_REFRESH_SECONDS = 20.0
+CLAIM_REFRESH_TIMEOUT_SECONDS = 10.0
+
 
 def enabled() -> bool:
     """Whether pending confirmations are persisted (a shared DB is configured)."""
@@ -30,7 +49,7 @@ def enabled() -> bool:
 
 
 async def save(context_id: str, owner_email: str, payload: dict[str, Any]) -> None:
-    """Persist (or replace) the pending confirmation for a context_id."""
+    """Persist (or replace, claimed or not) the pending confirmation for a context_id."""
     if not enabled():
         return
     pool = await get_pool()
@@ -39,41 +58,99 @@ async def save(context_id: str, owner_email: str, payload: dict[str, Any]) -> No
             "INSERT INTO pending_confirmations (context_id, owner_email, payload) "
             "VALUES ($1, $2, $3::jsonb) "
             "ON CONFLICT (context_id) DO UPDATE SET "
-            "owner_email = EXCLUDED.owner_email, payload = EXCLUDED.payload, created_at = now()",
+            "owner_email = EXCLUDED.owner_email, payload = EXCLUDED.payload, created_at = now(), "
+            "claimed_at = NULL, claim_id = NULL",
             context_id,
             owner_email,
             json.dumps(payload),
         )
 
 
-async def get(context_id: str) -> dict[str, Any] | None:
-    """Return the persisted pending confirmation for a context_id, or None."""
-    if not enabled():
-        return None
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            "SELECT payload FROM pending_confirmations WHERE context_id = $1",
-            context_id,
-        )
-    return _payload(row)
+async def get(context_id: str) -> tuple[dict[str, Any], bool] | None:
+    """Return (payload, claimed) for a context_id's pending confirmation, or None.
 
-
-async def take(context_id: str) -> dict[str, Any] | None:
-    """Remove the pending confirmation for a context_id and return it, or None.
-
-    One statement, so when two answers race (a double click, a client retry, replies on
-    two processes) exactly one of them gets the payload and the other finds no row.
+    claimed is True while an answer is acting on it. A claim not refreshed for
+    CLAIM_TTL_SECONDS reads as None.
     """
     if not enabled():
         return None
     pool = await get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            "DELETE FROM pending_confirmations WHERE context_id = $1 RETURNING payload",
+            "SELECT payload, claimed_at IS NOT NULL AS claimed FROM pending_confirmations "
+            "WHERE context_id = $1 "
+            "AND (claimed_at IS NULL OR claimed_at > now() - make_interval(secs => $2))",
             context_id,
+            CLAIM_TTL_SECONDS,
         )
-    return _payload(row)
+    return (_payload(row), row["claimed"]) if row else None
+
+
+async def claim(context_id: str, payload: dict[str, Any], claim_id: str) -> bool:
+    """Claim the pending confirmation for the answer ``claim_id`` if it is unclaimed and
+    still ``payload``.
+
+    One statement, so when two answers race (a double click, a client retry, replies on
+    two processes) exactly one of them claims it. Matching the whole payload means an
+    answer can't claim a newer prompt that replaced the one it read.
+    """
+    if not enabled():
+        return False
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        claimed = await conn.fetchval(
+            "UPDATE pending_confirmations SET claimed_at = now(), claim_id = $3 "
+            "WHERE context_id = $1 AND claimed_at IS NULL AND payload = $2::jsonb "
+            "RETURNING true",
+            context_id,
+            json.dumps(payload),
+            claim_id,
+        )
+    return bool(claimed)
+
+
+async def refresh(context_id: str, claim_id: str) -> None:
+    """Restart the expiry of the claim ``claim_id`` while its answer is still acting.
+
+    Bounded by CLAIM_REFRESH_TIMEOUT_SECONDS (the caller also bounds the whole attempt)."""
+    await _execute(
+        "UPDATE pending_confirmations SET claimed_at = now() WHERE context_id = $1 AND claim_id = $2",
+        context_id, claim_id, timeout=CLAIM_REFRESH_TIMEOUT_SECONDS,
+    )
+
+
+async def release(context_id: str, claim_id: str) -> None:
+    """Give the claim ``claim_id`` back unused, so a later answer can act on the prompt."""
+    await _execute(
+        "UPDATE pending_confirmations SET claimed_at = NULL, claim_id = NULL "
+        "WHERE context_id = $1 AND claim_id = $2",
+        context_id, claim_id,
+    )
+
+
+async def finish(context_id: str, claim_id: str) -> None:
+    """Delete the row the answer ``claim_id`` claimed, once it is done, unless a newer
+    prompt replaced it (saving one clears the claim)."""
+    await _execute(
+        "DELETE FROM pending_confirmations WHERE context_id = $1 AND claim_id = $2",
+        context_id, claim_id,
+    )
+
+
+async def _execute(query: str, *args: Any, timeout: float | None = None) -> None:
+    if not enabled():
+        return
+    pool = await get_pool()
+    async with pool.acquire(timeout=timeout) as conn:
+        try:
+            await conn.execute(query, *args, timeout=timeout)
+        except BaseException:
+            # Drop the connection rather than give it back. After a failed or cancelled
+            # statement asyncpg waits for the server to confirm the cancel before reusing
+            # the connection, which a dead connection never does, and a wait cut short by
+            # a timeout can close the next user's connection.
+            conn.terminate()
+            raise
 
 
 def _payload(row: Any) -> dict[str, Any] | None:

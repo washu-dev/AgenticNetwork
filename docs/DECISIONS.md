@@ -45,7 +45,7 @@ confirmation — resume on any process or after a restart. Persistence is **best
 hiccup degrades to the process-local cache rather than failing the turn. The only remaining
 process-local state is the write-only `invocations` audit (never read back). **Code.**
 `planner_agent/main_agent/conversation_store.py`, `pending_store.py`, `db.py` (schema),
-`runtime.py` (`_open_context` rehydrate, `_save/_get/_claim/_clear_pending`). One exception to
+`runtime.py` (`_open_context` rehydrate, `_save/_lookup/_claim/_finish/_clear_pending`). One exception to
 best-effort since 2026-10-15: claiming a pending action fails closed when the DB errors
 ([`PLANNER.md`](PLANNER.md), "Context, sessions & persistence").
 

@@ -457,16 +457,22 @@ def ask_to_publish(stack: dict[str, Any], directory: Directory, recorder: Thread
 
 def test_7_write_skill_runs_only_after_its_owner_confirms(stack, directory, recorder):
     """In strict mode a call to a write skill waits for confirmation. Only the conversation's
-    owner can confirm or cancel it; the confirmed call reaches the agent once, marked as
-    confirmed; a "no" cancels it without reaching the agent."""
-    cid = ask_to_publish(stack, directory, recorder)["context_id"]
+    owner can confirm or cancel it, and only for the prompt the confirm button was shown on;
+    the confirmed call reaches the agent once, marked as confirmed; a "no" cancels it without
+    reaching the agent."""
+    asked = ask_to_publish(stack, directory, recorder)
+    cid = asked["context_id"]
     for confirmed in (True, False):
         body = {"context_id": cid, "confirmed": confirmed}
         assert call("POST", f"{stack['planner']}/confirmations", body, headers={"mail": OTHER_USER})[0] == 403
     assert recorder.received == []
 
-    # The owner confirms, the way the chat UI's confirm button does.
+    # The owner confirms, the way the chat UI's confirm button does: naming the prompt it
+    # showed. A press naming another prompt (one a newer prompt replaced) runs nothing.
     confirm = {"user_id": "demo-user", "channel": "api", "context_id": cid, "confirmed": True}
+    status, stale = call("POST", f"{stack['proxy']}/confirmations", {**confirm, "prompt_id": "0" * 32})
+    assert status == 200 and stale["errors"] == ["superseded"] and recorder.received == [], stale
+    confirm["prompt_id"] = asked["pending_confirmation"]["prompt_id"]
     status, done = call("POST", f"{stack['proxy']}/confirmations", confirm)
     assert status == 200 and done["state"] == "completed", done
     assert done["text"] == f"{RECORDER_MARKER} /notices/" and done["selected_agent"], done

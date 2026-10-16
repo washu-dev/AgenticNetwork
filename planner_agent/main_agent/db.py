@@ -71,6 +71,14 @@ CREATE TABLE IF NOT EXISTS pending_confirmations (
     payload      JSONB       NOT NULL,
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+-- Set when an answer claims the row (pending_store.claim); the row is deleted once the
+-- agent call or the cancel is done. While set, other answers are told it's in progress,
+-- until the claim expires (pending_store.CLAIM_TTL_SECONDS).
+-- claim_id names the answer holding the claim, so only that answer refreshes, releases
+-- or deletes it.
+ALTER TABLE pending_confirmations
+    ADD COLUMN IF NOT EXISTS claimed_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS claim_id   TEXT;
 
 CREATE OR REPLACE FUNCTION planner_update_updated_at()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$

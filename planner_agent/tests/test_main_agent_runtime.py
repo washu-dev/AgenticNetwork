@@ -182,7 +182,7 @@ def test_pending_confirmation_survives_across_processes(monkeypatch) -> None:
 
     async def fake_get(cid):
         entry = shared.get(cid)
-        return dict(entry[1]) if entry else None
+        return (dict(entry[1]), False) if entry else None
 
     async def fake_clear(cid):
         shared.pop(cid, None)

@@ -29,15 +29,31 @@ The request path (user → planner → directory → A2A → agent → answer) a
 
 | Suite | Command | Tests | Line coverage | What it covers |
 |---|---|---|---|---|
-| Planner | `planner_agent/.venv/bin/python -m pytest planner_agent/tests -q` | 143 | 63% | The tool loop (scripted LLM, fake directory), the HTTP API (identity, conversation ownership, streaming, confirmations), credential discovery and enforcement, `/ready`, startup, bug reports |
+| Planner | `planner_agent/.venv/bin/python -m pytest planner_agent/tests -q` | 158 (+10) | 64% | The tool loop (scripted LLM, fake directory), the HTTP API (identity, conversation ownership, streaming, confirmations), credential discovery and enforcement, `/ready`, startup, bug reports |
 | Registration | `registration_service/.venv/bin/python -m pytest registration_service/tests -q` | 301 | 80% | The API, upload checks, the image build manifest, the native supervisor and agent processes, the Cloud Run backend (mocked), streaming and tool-loop agents, credentials, the fake database |
 | Agent skeleton | `registration_service/.venv/bin/python -m pytest agent_skeleton/tests -q` | 70 | 73% | The spec-driven engine, the `call_endpoint` tool and its secret redaction, per-operation tools, preset tools, the multi-endpoint manager, the generator, credentials kept out of the LLM prompt, the tool-schema and handler contract |
 | Directory tooling | `registration_service/.venv/bin/python -m pytest agent_directory_service/tests -q` | 22 | 50% | Card ↔ record conversion, the `dirctl` CLI backend (mocked), route summaries and routing wake-up |
 | Dev stack | `registration_service/.venv/bin/python -m pytest devstack/tests -q` | 55 | 52% | The mock LLM, the fake `dirctl`, the identity proxy, the stack CLI's checks that need no running services |
 | Pipeline | `registration_service/.venv/bin/python -m pytest tests/pipeline -q` | 19 | — | The running system, end to end (next section) |
 
-Counts and coverage were measured on 2026-10-15 with the local venvs; both move as tests are
-added. Line coverage counts the component's own code, its tests left out. It sees only code that
+Counts and coverage were measured on 2026-10-15 (planner 2026-10-16) with the local venvs; both
+move as tests are added. The planner's other 10 tests (`test_pending_store_postgres.py`) run the
+pending-confirmation statements on a real Postgres and are skipped unless
+`PLANNER_TEST_DATABASE_DSN` names a scratch database (each test drops and recreates
+`pending_confirmations` there). One way to get one, from the repo's Postgres image
+(`deployment/dockerfiles/Dockerfile.postgres`), built and started from the repo root (the
+database must be UTF8, as the deployment's entrypoint makes it):
+
+```bash
+docker build -f deployment/dockerfiles/Dockerfile.postgres -t agenticnetwork-postgres:local .
+docker run -d --rm --name pending-store-pg -p 127.0.0.1:55432:5432 --user postgres --entrypoint bash agenticnetwork-postgres:local -c 'B=/usr/lib/postgresql/15/bin; $B/initdb -D /tmp/pg -A trust --encoding=UTF8 --locale=C >/dev/null && echo "host all all 0.0.0.0/0 trust" >> /tmp/pg/pg_hba.conf && exec $B/postgres -D /tmp/pg -c listen_addresses="*" -c unix_socket_directories=/tmp'
+```
+
+then `docker exec pending-store-pg /usr/lib/postgresql/15/bin/createdb -h /tmp pending_test` and
+run the suite with
+`PLANNER_TEST_DATABASE_DSN=postgresql://postgres@127.0.0.1:55432/pending_test`. CI has no
+Postgres, so run them before merging a change to `pending_store.py`. They passed on Postgres
+15.19 on 2026-10-16. Line coverage counts the component's own code, its tests left out. It sees only code that
 runs inside the pytest process, so code a suite starts in a subprocess shows as missed: the stack
 CLI's `up`, the fake `dirctl` behind `devstack/bin/dirctl`, and agent processes. The pipeline
 suite exercises much of that code without measuring it.
@@ -109,9 +125,10 @@ fake `dirctl` (`push`, then `routing publish`) and unpublished afterwards.
 - **ask_user.** The planner's question pauses the turn (`input_required`); the reply in the same
   conversation reaches the agent with the question and answer in its history.
 - **Confirmation.** A write skill waits for confirmation. Another user's confirm or cancel gets
-  403, and another user's chat "yes" or "no" naming the conversation is refused; the owner's
-  confirm runs it once with `confirmed` in its metadata; a second confirm fails; a chat "no"
-  cancels it without running it. Two confirms sent together, with the agent slowed so the
+  403, and another user's chat "yes" or "no" naming the conversation is refused; a confirm naming
+  another prompt id gets `superseded` and runs nothing; the owner's confirm with the prompt's id
+  runs it once with `confirmed` in its metadata; a second confirm fails; a chat "no" cancels it
+  without running it. Two confirms sent together, with the agent slowed so the
   second arrives during the first one's call, run it once, and the other fails.
 - **Restart.** After `down` and `up` on the same state dir, an agent added with `add-agent` is
   listed once, by the same id, and answers its prompt.

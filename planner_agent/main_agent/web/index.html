@@ -2038,11 +2038,13 @@ async function uvSendMessage() {
                 ? uvEsc(finalData.text || 'This agent needs one of your saved credentials.')
                 : `Confirm: run <strong>${uvEsc(pc.skill || 'action')}</strong>?`;
               const okLabel = pc.kind === 'credential_consent' ? 'Allow' : 'Yes, proceed';
+              // The buttons answer this prompt only: if a newer one replaced it, the
+              // planner runs nothing and says so.
               liveBubble.innerHTML = `
                 ${prompt}
-                <div style="display:flex;gap:8px;margin-top:8px">
-                  <button type="button" class="av-btn av-btn-primary av-btn-sm" onclick="uvConfirm(true)">${okLabel}</button>
-                  <button type="button" class="av-btn av-btn-ghost av-btn-sm" onclick="uvConfirm(false)">Cancel</button>
+                <div style="display:flex;gap:8px;margin-top:8px" data-prompt-id="${uvEsc(pc.prompt_id || '')}">
+                  <button type="button" class="av-btn av-btn-primary av-btn-sm" onclick="uvConfirm(true, this.parentElement.dataset.promptId)">${okLabel}</button>
+                  <button type="button" class="av-btn av-btn-ghost av-btn-sm" onclick="uvConfirm(false, this.parentElement.dataset.promptId)">Cancel</button>
                 </div>`;
             } else {
               liveBubble.innerHTML = uvFmt(finalData.text || finalData.final_response || '(no response)');
@@ -2084,12 +2086,13 @@ async function uvSendMessage() {
   }
 }
 
-async function uvConfirm(confirmed) {
+async function uvConfirm(confirmed, promptId) {
   try {
     const result = await fetch('/confirmations', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({user_id: 'demo-user', channel: 'api', context_id: contextId, confirmed}),
+      body: JSON.stringify({user_id: 'demo-user', channel: 'api', context_id: contextId, confirmed,
+                            prompt_id: promptId || undefined}),
     }).then(r => r.json());
     contextId = result.context_id || contextId;
     uvAppendMsg('agent', 'Planner Agent', result.text || result.final_response || (confirmed ? 'Done.' : 'Cancelled.'), true);
