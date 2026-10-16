@@ -187,6 +187,7 @@ def test_pending_confirmation_survives_across_processes(monkeypatch) -> None:
     async def fake_clear(cid):
         shared.pop(cid, None)
 
+    monkeypatch.setattr(pending_store, "enabled", lambda: True)
     monkeypatch.setattr(pending_store, "save", fake_save)
     monkeypatch.setattr(pending_store, "get", fake_get)
     monkeypatch.setattr(pending_store, "clear", fake_clear)
@@ -205,10 +206,10 @@ async def _pending_cross_process() -> None:
     assert got is not None and got["kind"] == "credential_consent"
     assert rt_b.store.get_pending_confirmation("ctx1") is not None  # cache warmed
 
-    # Clearing on B removes it durably; A (after its stale cache is dropped) sees nothing.
+    # Clearing on B removes it durably; A sees nothing although its cache still held it.
     await rt_b._clear_pending("ctx1")
-    rt_a.store.clear_pending_confirmation("ctx1")
     assert await rt_a._get_pending("ctx1") is None
+    assert rt_a.store.get_pending_confirmation("ctx1") is None  # stale copy dropped
 
 
 def test_pending_confirmation_in_memory_without_db() -> None:

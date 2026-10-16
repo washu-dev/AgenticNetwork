@@ -142,6 +142,7 @@ def persisted(monkeypatch):
 
     monkeypatch.setattr(conversation_store, "owner", conversation_owner)
     monkeypatch.setattr(conversation_store, "load_history", load_history)
+    monkeypatch.setattr(pending_store, "enabled", lambda: True)
     monkeypatch.setattr(pending_store, "save", save_pending)
     monkeypatch.setattr(pending_store, "get", get_pending)
     monkeypatch.setattr(pending_store, "owner", pending_owner)
@@ -272,6 +273,30 @@ def test_pending_row_guards_a_conversation_whose_history_was_never_saved(persist
     asyncio.run(go())
 
 
+def test_owner_yes_on_another_process_does_not_leave_a_stale_copy_to_run_again(persisted) -> None:
+    """Once the owner's yes ran the action on the second process, the first process must
+    not run it again from its in-memory copy when the owner later says "ok" there."""
+    conversations, pending_rows = persisted
+
+    async def go():
+        first_process, first_a2a = _write_runtime()
+        cid = (await _say(first_process, OWNER, "Send the email.", metadata=OWNER_META)).context_id
+        conversations[cid] = (OWNER, list(first_process.store.get_context(cid).conversation_history))
+        second_process, second_a2a = _write_runtime()
+
+        done = await _say(second_process, OWNER, "yes", cid, OWNER_META)
+        assert done.state == A2ATaskState.completed, done.text
+        assert cid not in pending_rows
+        assert first_process.store.get_pending_confirmation(cid) is not None  # the stale copy
+
+        await _say(first_process, OWNER, "ok", cid, OWNER_META)
+
+        assert second_a2a.calls == [("email-agent", "email/send")]
+        assert first_a2a.calls == []
+        assert first_process.store.get_pending_confirmation(cid) is None
+
+    asyncio.run(go())
+
 
 def _email_app() -> tuple[object, SpyA2A]:
     """The HTTP app of another planner process (empty memory), for the confirm button."""
@@ -333,6 +358,7 @@ def test_confirm_button_resumes_an_action_raised_on_another_process(persisted, m
         assert cid not in pending_rows
 
     asyncio.run(go())
+
 
 def test_pending_store_owner_reads_the_rows_owner(monkeypatch) -> None:
     queries: list[str] = []

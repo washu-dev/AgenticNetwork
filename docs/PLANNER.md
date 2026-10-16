@@ -82,8 +82,10 @@ D9–D11).
   `/sessions` timestamps are real). No-op without a DB.
 - **`pending_store.py`** (Postgres, `pending_confirmations`) — durable pending write/consent state.
   The runtime helpers `_save_pending` / `_get_pending` / `_clear_pending` write-through to the
-  in-memory cache and Postgres and rehydrate on a miss — **best-effort** (a DB error degrades to
-  the cache, never fails the turn).
+  in-memory cache and Postgres — **best-effort** (a DB error degrades to the cache, never fails
+  the turn). With the DB reachable, `_get_pending` reads the row on every lookup and drops a
+  cached copy whose row is gone, so an action resumed or cancelled on one process is not run
+  again from another process's cache.
 - `GET /sessions` derives from the persistence layer (Postgres when configured, else in-memory
   contexts) keyed on the authenticated principal — no `user_id` query param.
 

@@ -1094,7 +1094,8 @@ class MainAgentRuntime:
     # H2b: pending confirmations are write-through cached in the in-memory store and
     # persisted to Postgres, so a prompt raised on one process can be resumed on another.
     # The Postgres calls are best-effort: if the DB is unreachable, pending state
-    # degrades to the process-local cache rather than failing the turn.
+    # degrades to the process-local cache rather than failing the turn. When it is
+    # reachable, the row is read on every lookup (see _get_pending).
     async def _save_pending(self, context_id: str, owner_email: str, pending: dict) -> None:
         self.store.save_pending_confirmation(context_id, pending)
         try:
@@ -1103,15 +1104,21 @@ class MainAgentRuntime:
             logger.warning("pending_confirmation_persist_failed", exc_info=True)
 
     async def _get_pending(self, context_id: str) -> dict | None:
-        pending = self.store.get_pending_confirmation(context_id)
+        cached = self.store.get_pending_confirmation(context_id)
+        if not pending_store.enabled():
+            return cached
+        try:
+            pending = await pending_store.get(context_id)
+        except Exception:
+            logger.warning("pending_confirmation_load_failed", exc_info=True)
+            return cached
+        # With a DB the row wins over this process's copy: another process may have
+        # resumed or cancelled the action since it was cached here, and acting on the
+        # stale copy would run a confirmed write a second time.
         if pending is None:
-            try:
-                pending = await pending_store.get(context_id)
-            except Exception:
-                logger.warning("pending_confirmation_load_failed", exc_info=True)
-                return None
-            if pending is not None:
-                self.store.save_pending_confirmation(context_id, pending)  # warm the cache
+            self.store.clear_pending_confirmation(context_id)
+        else:
+            self.store.save_pending_confirmation(context_id, pending)  # warm the cache
         return pending
 
     async def _clear_pending(self, context_id: str) -> None:

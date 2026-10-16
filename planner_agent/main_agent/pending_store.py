@@ -6,10 +6,11 @@ landing on a different planner process (or after a restart) would find nothing.
 This module persists it to Postgres (table `pending_confirmations`, created in
 `db._SCHEMA_SQL`) so the resume works across processes.
 
-The runtime keeps an in-memory cache and uses this as the durable source of truth,
-rehydrating on a cache miss (same pattern as `conversation_store`). When no DB is
-configured (Tier A/B laptop runs, unit tests) every function is a no-op and the
-in-memory cache is the only store.
+The runtime keeps an in-memory cache, but when a DB is configured the row is the
+source of truth and is read on every lookup: another process may have resumed or
+cancelled the action since this one cached it. The cache answers only when the DB
+is unreachable. When no DB is configured (Tier A/B laptop runs, unit tests) every
+function is a no-op and the in-memory cache is the only store.
 """
 from __future__ import annotations
 
@@ -20,13 +21,14 @@ from typing import Any
 from planner_agent.main_agent.db import get_pool
 
 
-def _enabled() -> bool:
+def enabled() -> bool:
+    """Whether pending confirmations are persisted (a shared DB is configured)."""
     return bool(os.getenv("REGISTRATION_DB_DSN"))
 
 
 async def save(context_id: str, owner_email: str, payload: dict[str, Any]) -> None:
     """Persist (or replace) the pending confirmation for a context_id."""
-    if not _enabled():
+    if not enabled():
         return
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -43,7 +45,7 @@ async def save(context_id: str, owner_email: str, payload: dict[str, Any]) -> No
 
 async def get(context_id: str) -> dict[str, Any] | None:
     """Return the persisted pending confirmation for a context_id, or None."""
-    if not _enabled():
+    if not enabled():
         return None
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -60,7 +62,7 @@ async def get(context_id: str) -> dict[str, Any] | None:
 
 async def owner(context_id: str) -> str | None:
     """Return the owner_email of a persisted pending confirmation, or None."""
-    if not _enabled():
+    if not enabled():
         return None
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -73,7 +75,7 @@ async def owner(context_id: str) -> str | None:
 
 async def clear(context_id: str) -> None:
     """Remove any persisted pending confirmation for a context_id."""
-    if not _enabled():
+    if not enabled():
         return
     pool = await get_pool()
     async with pool.acquire() as conn:
