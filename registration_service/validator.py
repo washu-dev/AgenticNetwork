@@ -2,7 +2,7 @@
 
 Pure static analysis — no uploaded code is ever imported or executed here.
 
-Two kinds of finding (D1):
+Two kinds of finding (docs/DECISIONS.md D2):
   * **errors** — structural problems that make the upload unusable (won't parse,
     the declared class is missing / doesn't subclass AgentHandler / lacks
     handle_structured). These block the upload (422).
@@ -33,7 +33,7 @@ class ValidationResult:
 
 
 def _scan_warnings(tree: ast.AST) -> list[str]:
-    """Advisory-only findings surfaced to the approver (never block — D1)."""
+    """Advisory-only findings surfaced to the approver (never block — docs/DECISIONS.md D2)."""
     warnings: list[str] = []
     # Blocked imports.
     for node in ast.walk(tree):

@@ -413,7 +413,8 @@ async def upload_handler(agent_id: str, file: UploadFile = File(...)) -> dict:
         entry_path = handler_dir / entry_file
         entry_path.write_text(source)
 
-    # Validate the entry file only (structural blocks; blocklist is advisory — D1).
+    # Validate the entry file only (structural blocks; the blocklist is advisory,
+    # docs/DECISIONS.md D2).
     # An uploaded TOOL module checks the tool contract (TOOL_SCHEMAS/TOOL_REGISTRY or
     # build_tools); a custom handler checks the AgentHandler subclass. Which one is
     # decided by the config, not the handler_type name.
@@ -470,7 +471,7 @@ async def get_handler_source(agent_id: str, request: Request) -> dict:
             "manifest": list_tree(handler_dir),
             "download_url": f"/agents/{agent_id}/handler/download",
             "warnings": warnings,
-            "system_packages": spec.system_packages,   # apt, flagged for review (D10)
+            "system_packages": spec.system_packages,   # apt, flagged for review
             "credentials": credentials,
         }
     return {
@@ -478,7 +479,7 @@ async def get_handler_source(agent_id: str, request: Request) -> dict:
         "source": entry_source,
         "handler_file_path": path,
         "warnings": warnings,
-        "system_packages": spec.system_packages,         # apt, flagged for review (D10)
+        "system_packages": spec.system_packages,         # apt, flagged for review
         "credentials": credentials,
     }
 

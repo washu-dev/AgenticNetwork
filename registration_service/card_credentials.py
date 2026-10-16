@@ -2,8 +2,8 @@
 
 Declared credentials ride on the published card's ``capabilities.extensions``
 because that is the one field the planner's discovery read path round-trips
-(ADS ``annotations`` are discarded — see the P4 plan §0.7). The planner reads
-this same URI back in P4b.
+(ADS discovery discards ``annotations``). The planner reads this same URI back
+(``directory/card_oasf_converter.py::_required_credentials_from_card``).
 
 Contract note: ``AgentExtension.required`` is the A2A **protocol-comprehension**
 flag ("a client must understand this extension to interact"), *not* whether a

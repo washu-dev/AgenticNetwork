@@ -105,12 +105,12 @@ class ResourceRequirements(BaseModel):
         return v.strip()
 
 
-HARD_MAX_RUNTIME_SECONDS = 3600   # ceiling for a single agent request (D11)
+HARD_MAX_RUNTIME_SECONDS = 3600   # ceiling for a single agent request
 
 # apt package tokens permitted in system_packages. Debian names are lowercase
 # letters/digits plus +.-, but we also allow version pins (pkg=1.2) and arch
 # qualifiers (pkg:amd64). This is NOT a judgment about which packages are
-# "safe" (D10 permits arbitrary apt, flagged for the approver) — it purely
+# "safe" (arbitrary apt packages are allowed but flagged for the approver) — it purely
 # blocks shell/Dockerfile injection by rejecting whitespace and metacharacters
 # before the token reaches the generated `apt-get install` RUN line.
 _APT_TOKEN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9+.:=~-]*$")
@@ -188,7 +188,7 @@ class UploadedTools(BaseModel):
     entry_file: str = "tools.py"            # module at the upload root exposing the tools
     python_version: str = "3.11"
     requirements: list[str] = Field(default_factory=list)
-    system_packages: list[str] = Field(default_factory=list)   # apt, cluster build only (D10)
+    system_packages: list[str] = Field(default_factory=list)   # apt, cluster build only
     install_project: bool = True            # pip install . if pyproject.toml/setup.py present at root
     extra: dict[str, Any] = Field(default_factory=dict)         # passed to build_tools(config)
 
@@ -290,7 +290,7 @@ class CustomConfig(BaseModel):
     class_name: str
     python_version: str = "3.11"
     requirements: list[str] = Field(default_factory=list)
-    system_packages: list[str] = Field(default_factory=list)   # apt, cluster build only (D10)
+    system_packages: list[str] = Field(default_factory=list)   # apt, cluster build only
     entry_file: str = "handler.py"          # adapter module at the upload root that defines class_name
     install_project: bool = True            # pip install . if pyproject.toml/setup.py present at root
     max_runtime_seconds: int = 1800         # per-request cap; clamped to HARD_MAX_RUNTIME_SECONDS

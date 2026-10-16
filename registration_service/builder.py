@@ -30,9 +30,9 @@ def generate_dockerfile(config: AnyConfig) -> str:
       src/             — the user's uploaded project tree: the entry file at the root
                          plus any importable siblings (refbot/, pyproject.toml, …).
 
-    Ordering (§7.2): apt system_packages first (so a C toolchain via build-essential
-    is available to any later pip build — D10), then framework, then the project tree,
-    then `pip install /app` (only if the project ships build metadata — D8), then agent
+    Ordering: apt system_packages first (so a C toolchain via build-essential
+    is available to any later pip build), then framework, then the project tree,
+    then `pip install /app` (only if the project ships build metadata), then agent
     requirements LAST so they win over project/framework pins. cwd is /app under
     `python -m`, so `import <pkg>` resolves and HANDLER_FILE_PATH points at the entry
     file; runtime config arrives via AGENT_CONFIG_JSON (set by ClusterBackend).
@@ -52,7 +52,7 @@ def generate_dockerfile(config: AnyConfig) -> str:
     if spec.system_packages:
         pkgs = " ".join(spec.system_packages)
         apt_line = (
-            "# System packages (apt) — arbitrary, flagged for approver review (D10)\n"
+            "# System packages (apt) — arbitrary, flagged for approver review\n"
             "RUN apt-get update && apt-get install -y --no-install-recommends "
             f"{pkgs} \\\n"
             "    && rm -rf /var/lib/apt/lists/*\n\n"
@@ -62,7 +62,7 @@ def generate_dockerfile(config: AnyConfig) -> str:
     if spec.requirements:
         pkgs = " ".join(f'"{r}"' for r in spec.requirements)
         req_line = (
-            "# Agent requirements (additive; installed last so they win) — D8\n"
+            "# Agent requirements (additive; installed last so they win)\n"
             f"RUN pip install --no-cache-dir {pkgs}\n\n"
         )
 
@@ -70,7 +70,7 @@ def generate_dockerfile(config: AnyConfig) -> str:
     if spec.install_project:
         # Gated by install_project; the shell test skips it when no metadata is present.
         install_project_line = (
-            "# Install the uploaded project if it ships build metadata (D8)\n"
+            "# Install the uploaded project if it ships build metadata\n"
             "RUN if [ -f /app/pyproject.toml ] || [ -f /app/setup.py ]; then "
             "pip install --no-cache-dir /app; fi\n\n"
         )

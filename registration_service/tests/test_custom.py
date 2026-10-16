@@ -129,7 +129,7 @@ async def test_blocklist_is_advisory_not_blocking(client: AsyncClient, monkeypat
         "        return {'answer': 'ok'}\n"
     )
     resp = await client.post(f"/agents/{agent['id']}/handler", files=_upload_files(src))
-    assert resp.status_code == 200, resp.text          # advisory, not a block (D1)
+    assert resp.status_code == 200, resp.text  # advisory, not a block (docs/DECISIONS.md D2)
     assert any("subprocess" in w for w in resp.json()["warnings"])
 
 

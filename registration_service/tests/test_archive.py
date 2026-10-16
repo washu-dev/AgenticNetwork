@@ -1,6 +1,6 @@
 """Unit tests for the safe archive-unpack module (registration_service.archive).
 
-Exercises the happy path and every §5.3 rejection directly (no HTTP layer).
+Exercises the happy path and every rejection in archive.py directly (no HTTP layer).
 """
 
 from __future__ import annotations
@@ -74,7 +74,7 @@ def test_list_tree_and_zip_tree_roundtrip(tmp_path: Path) -> None:
     assert set(names) == {"handler.py", "pkg/mod.py"}  # .venv excluded from the zip too
 
 
-# ── Rejections (§5.3) ──────────────────────────────────────────────────────────
+# ── Rejections in archive.py ───────────────────────────────────────────────────
 
 def test_reject_not_a_zip(tmp_path: Path) -> None:
     with pytest.raises(ArchiveError, match="not a valid .zip"):

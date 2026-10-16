@@ -987,7 +987,7 @@ class MainAgentRuntime:
 
         Symmetric to :meth:`_resume_confirmation`. Note: approving the credential
         also proceeds with the call (we do not additionally re-prompt the write
-        policy — credential consent implies proceed; see P4c plan §4.2).
+        policy — credential consent implies proceed; see docs/AUTH.md §4, The flow, step 3).
         """
         try:
             context = self.store.get_context(context_id)

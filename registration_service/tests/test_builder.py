@@ -58,7 +58,7 @@ def test_dockerfile_requirements_installed_last():
     df = generate_dockerfile(
         CustomConfig(class_name="H", requirements=["numpy"], install_project=True)
     )
-    # Ordering (§7.2): COPY src → install project → requirements last (so they win).
+    # Ordering: COPY src → install project → requirements last (so they win).
     assert df.index("COPY src/ /app/") < df.index("pip install --no-cache-dir /app") \
         < df.index('pip install --no-cache-dir "numpy"')
 

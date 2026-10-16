@@ -20,7 +20,7 @@ def _is_allowed_provider(provider: str) -> bool:
     """Accept catalog credential types (canonical Option-A namespace) or custom:<slug>.
 
     The stored ``provider`` column now holds catalog ``type`` strings so that
-    declaration → grant → injection all match on the same key (P4c §4.5).
+    declaration → grant → injection all match on the same key (docs/AUTH.md §4, Namespace).
     ``google_oauth`` is written only by the OAuth callback, never via this path.
     """
     return is_known_type(provider)

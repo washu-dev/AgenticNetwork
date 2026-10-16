@@ -77,7 +77,7 @@ def _signal_group(pid: int, sig: int) -> None:
 
 
 def _has_build_metadata(handler_dir: Path) -> bool:
-    """True if the uploaded project root ships pip-installable build metadata (D8)."""
+    """True if the uploaded project root ships pip-installable build metadata."""
     return (handler_dir / "pyproject.toml").exists() or (handler_dir / "setup.py").exists()
 
 
@@ -231,7 +231,7 @@ class SubprocessBackend(ContainerBackend):
             handler_dir = _handler_files_dir() / agent_id
             env["HANDLER_FILE_PATH"] = str(handler_dir / spec.entry_file)
             if spec.system_packages:
-                # apt is a cluster-image concern (D10); we can't apt-install per-agent
+                # apt is a cluster-image concern; we can't apt-install per-agent
                 # in local subprocess dev, so skip and warn. If the handler needs a
                 # system lib locally, install it on the host first.
                 logger.warning(
@@ -289,11 +289,11 @@ class SubprocessBackend(ContainerBackend):
     async def _ensure_venv(self, handler_dir: Path, spec: UploadSpec) -> str:
         """Create a per-agent venv (if absent) and install project + requirements.
 
-        Order mirrors the cluster Dockerfile (§7.2/§7.3): framework, then the
+        Order mirrors the cluster Dockerfile (see builder.py): framework, then the
         uploaded project (`pip install .` if it ships build metadata and
-        install_project is set — D8), then requirements LAST so they win.
-        Returns the venv's python. system_packages (apt, P2) can't be installed
-        per-agent locally — it's log-and-skipped by the caller path in P2.
+        install_project is set), then requirements LAST so they win.
+        Returns the venv's python. system_packages (apt) can't be installed
+        per-agent locally — the caller logs and skips them.
         """
         venv = handler_dir / ".venv"
         py = venv / "bin" / "python"
