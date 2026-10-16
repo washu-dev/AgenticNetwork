@@ -368,7 +368,7 @@
         </div>
         <div class="form-group">
           <label class="field-label" for="inp-tl-extra">Extra config (JSON) <span class="hint">— optional, passed to your <code>build_tools(config)</code> factory</span></label>
-          <textarea id="inp-tl-extra" class="code-editor" rows="3" placeholder='{"contact_email": "you@wustl.edu", "http_timeout": 20}'></textarea>
+          <textarea id="inp-tl-extra" class="code-editor" rows="3" placeholder='{"contact_email": "you@example.com", "http_timeout": 20}'></textarea>
           <span class="hint">Use this for per-deployment values a tool needs but the model must NOT see or set —
           an API key, a contact email, a timeout, a result cap. <code>build_tools</code> closes over them, so they
           never become tool parameters. Reaches the agent only via <code>build_tools</code>; ignored if the module
