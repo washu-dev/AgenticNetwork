@@ -23,7 +23,7 @@ repository goes public.
   scenarios) pass offline. CI (`.github/workflows/tests.yml`) runs them, plus a repo-hygiene
   job, on every PR and push to `main`; it first passed on GitHub for `d069aaf` (2026-10-15).
   The tier-2 workflow (`compose.yml`) now also runs on pushes to `main` that touch service or
-  deployment code. Commands: `CLAUDE.md` §10.
+  deployment code; its first GitHub run passed on `28ab3ce` (2026-10-15, amd64, about 3 min). Commands: `CLAUDE.md` §10.
 - **Goals 1–3** (below): tier 1 of Goal 1 is done; the full-chain test passed 20 runs in a
   row locally on 2026-10-13. `scripts/stack` covers Goals 2 and 3 for the native tier
   ([`DEVSTACK.md`](DEVSTACK.md)).
@@ -199,7 +199,7 @@ The two copies have diverged, so they must be reconciled first.
 1. **The full-chain test, the one-command start and the laptop workflow** (Goals 1–3).
    Tier 1 and the native stack are done and pass in CI. Tier 2 (Docker Compose, real Postgres
    and `dirctl`) passed locally on 2026-10-15 (arm64, and emulated amd64 with a conda-free
-   planner image); its CI workflow runs on pushes to `main`. Still to do: a tier-3 real-model
+   planner image) and on GitHub's amd64 runner with the shipped images (`28ab3ce`). Still to do: a tier-3 real-model
    run, `add-agent` for an agent folder, and the scenarios not yet covered (below).
 2. **Security fixes that must land before release**, each with a regression test:
    - Fixed: a request-body `user_id` no longer overrides the logged-in identity (planner

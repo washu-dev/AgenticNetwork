@@ -237,9 +237,10 @@ runs each service as a managed Cloud Run service with Cloud SQL.
 - **Publishing may need internet:** `deployment/ads_daemon.yaml` configures the OASF
   validator with `schema_url: https://schema.oasf.outshift.com`. A fully offline start
   was not tested.
-- **Images are built for the host's architecture.** Tested on arm64 (Apple silicon), and on
-  `linux/amd64` under Docker Desktop emulation (2026-10-15) with one change: the planner's
-  `mamba create` step hangs under Rosetta, so that run built the planner without conda.
+- **Images are built for the host's architecture.** Tested on arm64 (Apple silicon) and on
+  GitHub's amd64 runner (`compose.yml`, 2026-10-15). Under Docker Desktop's amd64 emulation on
+  Apple silicon, the planner's `mamba create` step hangs (Rosetta), so build amd64 images on an
+  amd64 host or in CI.
   `deployment/build_and_push.sh` builds `linux/amd64` for ENGR.
 
 ## Troubleshooting
