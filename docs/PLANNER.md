@@ -69,11 +69,12 @@ This is where the multi-user hardening lives (see [AUTH.md](AUTH.md) §5, [DECIS
 D9–D11).
 
 - **`_open_context(user_id, channel, text, context_id)`** (async) — per-user context keying. Looks
-  up the caller-supplied `context_id`; if found, asserts `context.user_id == user_id` else raises
-  `ContextOwnershipError` (→ 403). On an in-memory miss it **rehydrates from Postgres**
-  (`_rehydrate_context` → `conversation_store`), so a conversation resumes on any process or after a
-  restart. Unknown/never-persisted id → a fresh context bound to the caller (reusing the id). The
-  old single global `server_context_id` slot was removed.
+  up the caller-supplied `context_id` with `_owned_context`, which raises `ContextOwnershipError`
+  (→ 403) unless the caller owns it. The owner is the in-memory context's; on a miss it
+  **rehydrates from Postgres** (`_rehydrate_context` → `conversation_store`), so a conversation
+  resumes on any process or after a restart; with no saved history, the pending row's owner
+  (`pending_store.owner`) still counts. An id with no owner anywhere → a fresh context bound to the
+  caller (reusing the id). The old single global `server_context_id` slot was removed.
 - **`InMemoryStateStore`** (`state/store.py`) — the per-process cache: `contexts`,
   `pending_confirmations`, and the write-only `invocations` audit.
 - **`conversation_store.py`** (Postgres, `conversation_messages`) — durable per-conversation
@@ -90,11 +91,13 @@ D9–D11).
 
 A write-skill confirmation or a credential-consent prompt saves a `pending_confirmations` entry and
 returns a terminal "reply yes/no" (or "Allow"). The resume paths read it back:
-- `handle_message` detects an affirmative/negative reply on a `context_id` with pending state.
+- `handle_message` detects an affirmative/negative reply on a `context_id` with pending state and
+  first checks ownership with `_owned_context` (403 otherwise), because the resumed call carries
+  the replying user's credentials and a consent records the grant under that user.
 - `_resume_confirmation` (write skill) / `_resume_credential_consent` (records the grant, then
   dispatches) / `_cancel_confirmation` (async; clears pending).
-- `POST /confirmations` (the button path) first checks that the caller owns the conversation
-  (403 otherwise), then re-injects credentials and routes by `pending.kind`.
+- `POST /confirmations` (the button path) runs the same check (403 otherwise), then re-injects
+  credentials and routes by `pending.kind`.
 
 Because pending state is durable (D11), these resume correctly across processes/restarts.
 

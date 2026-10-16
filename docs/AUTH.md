@@ -134,8 +134,9 @@ The planner was originally single-user; three fixes made it safe for concurrent 
 durable state now lives in Postgres so it scales past one process.
 
 - **Per-user context keying (D10).** Each conversation has its own `context_id`-keyed context,
-  bound to its owner; presenting another user's `context_id` → 403 (`runtime.py::_open_context`,
-  `ContextOwnershipError`). The old single global context was removed.
+  bound to its owner; presenting another user's `context_id` → 403 (`runtime.py::_owned_context`,
+  `ContextOwnershipError`), for any message, a "yes" or "no" to a pending action included, and for
+  `POST /confirmations`. The old single global context was removed.
 - **Ownership on data endpoints.** `GET /sessions` and `GET`/`DELETE /conversations/{id}` derive
   the principal from identity (not a query param) and enforce ownership (403/404).
 - **Durable, shared state (D11).** Conversation history (`conversation_store.py` →
