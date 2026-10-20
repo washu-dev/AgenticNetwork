@@ -551,8 +551,8 @@ planner → saved history → register an agent → shut down with nothing left 
 
 | Path | What it is |
 |---|---|
-| `ads_utils/converter.py` | Shared Agent Card → OASF/ADS record converter (used by all agents) |
-| `ads_utils/publisher.py` | Shared `DirectoryPublisher` — canonical ADS publish/unpublish logic |
+| `ads_utils/converter.py` | That repo's Agent Card → OASF/ADS record converter, used by its agents (this repo's copy is `agentnet/directory/card_oasf.py`) |
+| `ads_utils/publisher.py` | That repo's `DirectoryPublisher` for its agents (this repo's canonical copy is `agentnet/directory/publisher.py`) |
 | `email_agent/email_agent.py` | Email/Workspace agent (monolith; `ToolCallingEmailAgent`) |
 | `coding_agent/agent_loop.py` | litellm tool loop |
 | `coding_agent/_vendor_v2/` | Vendored A2A + directory stack for peer discovery |

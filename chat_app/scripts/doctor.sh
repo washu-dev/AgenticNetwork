@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Chat app — 自检脚本
-# 一键检查: env 配置 / dirctl 装好 / ADS 通 / server 在跑 / OpenAI 通
-# 用法: chat_app/scripts/doctor.sh
+# Chat app self-check.
+# Checks in one run: env settings / dirctl installed / ADS reachable / server running / OpenAI reachable.
+# Usage: chat_app/scripts/doctor.sh
 
 set -u
 
