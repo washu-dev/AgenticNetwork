@@ -1,15 +1,18 @@
-"""ZONE 4 — Tool dispatch + tool bodies.  ★ WRITE THE BODIES ★ (dispatch is copy)
+"""ZONE 4 — Tool dispatch + tool bodies.  DEMO AGENT + ENGINE
 
-- Tool BODIES (word_count, reverse_text): your real Python — replace them with
-  your agent's actual capabilities. Each takes keyword args named exactly like
-  its schema `properties` and returns a JSON-able dict.
-- TOOL_REGISTRY: the {name: function} map. This REPLACES the hand-written
-  if/elif chain in disaster's _run_tool. Adding a tool = write a function + add
-  one registry entry + add one schema in tool_schemas.py. The LLM
-  loop dispatches over this registry via ``AgentSpec.dispatch`` (see spec.py).
-- validate_tool_registry(): the startup alignment check the disaster agent
-  never had. It fails fast if a schema and its function disagree, instead of
-  failing silently at runtime as `{"ok": False, "error": ...}`.
+- DEMO: the tool BODIES (word_count, reverse_text). Each takes keyword args named
+  exactly like its schema `properties` and returns a JSON-able dict; an uploaded
+  tools module's functions follow the same rule.
+- DEMO: TOOL_REGISTRY, the {name: function} map for the demo's tools. A registry
+  REPLACES the hand-written if/elif chain in disaster's _run_tool. Adding a tool =
+  write a function + add one registry entry + add one schema in tool_schemas.py.
+  The LLM loop dispatches over a spec's registry via ``AgentSpec.dispatch`` (see
+  spec.py).
+- ENGINE: validate_tool_registry(), the alignment check the disaster agent never
+  had. Every spec builder (AgentSpec.validate) and serve.create_app run it, so it
+  guards every hosted LLM agent's tools. It fails fast if a schema and its
+  function disagree, instead of failing silently at runtime as
+  `{"ok": False, "error": ...}`.
 """
 from __future__ import annotations
 
@@ -22,7 +25,7 @@ from .tool_schemas import TOOL_SCHEMAS
 _log = logging.getLogger(__name__)
 
 
-# --- Tool bodies  ★ WRITE THESE ★ ----------------------------------------
+# --- Demo tool bodies ----------------------------------------------------
 
 def word_count(*, text: str) -> dict[str, Any]:
     return {"ok": True, "word_count": len(text.split()), "char_count": len(text)}
@@ -35,7 +38,7 @@ def reverse_text(*, text: str, uppercase: bool = False) -> dict[str, Any]:
     return {"ok": True, "reversed": reversed_text}
 
 
-# --- Registry (one entry per tool)  ★ EDIT ★ -----------------------------
+# --- Demo registry (one entry per tool) ----------------------------------
 
 TOOL_REGISTRY: dict[str, Callable[..., dict[str, Any]]] = {
     "word_count": word_count,
@@ -43,7 +46,7 @@ TOOL_REGISTRY: dict[str, Callable[..., dict[str, Any]]] = {
 }
 
 
-# --- The alignment check (the gap disaster never closed) -----------------
+# --- ENGINE: the alignment check (the gap disaster never closed) ---------
 
 def validate_tool_registry(
     schemas: list[dict[str, Any]] | None = None,

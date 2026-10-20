@@ -1,6 +1,11 @@
-"""Shared configuration & constants.
+"""Shared configuration & constants.  ENGINE (defaults for every agent)
 
-SUPPORT FILE — you normally only edit the DEFAULT_* values below.
+These values are not just the demo's. MAX_TOOL_STEPS is the step limit for every
+AgentSpec that doesn't set its own, AGENT_NAME is the name in every
+SkeletonAgentExecutor heartbeat ("... is working..."), and the env_* readers are
+how a deployment sets host, port, model, ADS address and the wrapped endpoint
+without code edits. Change a default only on purpose: it reaches every hosted
+agent. DEFAULT_CARD_PATH points at the demo agent's card.
 """
 from __future__ import annotations
 

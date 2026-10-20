@@ -1,22 +1,26 @@
-"""agent_skeleton — a minimal, copy-to-start template for an AgenticNetwork A2A agent.
+"""agent_skeleton — the agent runtime for AgenticNetwork A2A agents.
 
-Two ways to build on this skeleton:
+Every hosted agent imports this package at run time. It holds:
+  * the LLM tool loop (llm_loop.run_tool_loop) and AgentSpec (spec.py), which picks
+    an agent's prompt + tools as DATA so one frozen loop serves every agent;
+  * the A2A executor and server (executor.py, serve.py, a2a_runtime.py);
+  * AgentHandler (base.py), the base class for custom agents, and HandlerExecutor
+    (handler_executor.py), which serves one over A2A;
+  * container_runner, the entry point of every built agent image;
+  * system_tools/, ready-made tools (call_endpoint, the presets).
 
-1. Stock template — edit these; everything else is plumbing:
-       tool_schemas.py  — your tools' JSON schemas        (ZONE 1)
-       prompt.py        — system prompt + result shape     (ZONE 2)
-       tools.py         — your tool functions + registry   (ZONE 4)
-       agent.card.json  — your skills & endpoint
+It also holds a small demo agent (agent.card.json, tool_schemas.py, the demo tool
+bodies in tools.py, SYSTEM_PROMPT in prompt.py) and the wrapper-repo generator
+(generator/), which emits a complete, deployable wrapper-agent folder from an
+answers.json.
 
-2. Endpoint wrapper — front an external API with an LLM loop; no code, just a
-   card + an env var:
-       AGENT_ENDPOINT_URL=https://api.example.com/run \\
-       AGENT_ENDPOINT_AUTH_ENV=EXAMPLE_TOKEN \\
-       python -m agent_skeleton.serve serve-wrapper --card my.card.json
-   The AgentSpec seam (spec.py) selects an agent's prompt + tools as DATA, so one
-   frozen engine (llm_loop.run_tool_loop) serves every configuration; system_tools/
-   provides ready-made tools (today: call_endpoint). The generator/ package emits a
-   complete, deployable wrapper-agent folder from an answers.json.
+The import name ``agent_skeleton`` is a public interface: uploaded handlers import
+it and built images run ``python -m agent_skeleton.container_runner``, so uploads
+may not claim the name (registration_service/archive.py). Don't build an agent by
+editing these files; a change here reaches every hosted agent. Register one of
+three kinds instead (README.md, "Building an agent"; docs/BUILDING_AGENTS.md): a
+custom AgentHandler, an ``llm`` agent with an uploaded tools module, or a no-code
+proxy/http agent.
 
 See README.md for the walkthrough and CLAUDE.md for working notes.
 
@@ -39,7 +43,7 @@ __all__ = [
     "make_call_endpoint",
 ]
 
-# Custom-handler API for uploaded agents. Present in the full skeleton; the lean
+# Custom-handler API for uploaded agents. Present in the full package; the lean
 # copy the generator vendors into a wrapper agent omits base/handler_executor, so
 # import these defensively.
 try:

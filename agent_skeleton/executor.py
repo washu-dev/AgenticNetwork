@@ -1,7 +1,12 @@
-"""ZONE 5 — The A2A executor.  (COPY; rarely edit)
+"""ZONE 5 — The A2A executor.  ENGINE
+
+serve.create_app wraps every spec in this class: the demo agent, serve-wrapper,
+generated wrapper agents (as wrapper_engine/), and built images of ``llm`` agents
+with uploaded tools (container_runner). A change here reaches all of them, so
+don't edit it to build an agent.
 
 This is the SINGLE class the a2a-sdk calls when a request arrives. It is the
-boundary between A2A and your agent. It:
+boundary between A2A and the agent's spec. It:
 
   1. READS the request from `context` — you never parse raw JSON-RPC; the SDK
      hands you context.get_user_input() and context.metadata / DataParts.

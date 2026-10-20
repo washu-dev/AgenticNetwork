@@ -1,12 +1,16 @@
-"""ZONE 2 — System prompt + result normalization.  ★ WRITE THIS ★
+"""ZONE 2 — System prompt + result normalization.  DEMO AGENT + ENGINE
 
-- SYSTEM_PROMPT: the instructions that define your agent's behavior and the
-  exact output contract you want from the model.
-- normalize_result(): turn the model's final text into the STABLE structured
-  dict your agent returns. Mirror disaster's _normalize_plan.
+- DEMO: SYSTEM_PROMPT, the demo agent's instructions and the exact output
+  contract it asks of the model.
+- ENGINE: normalize_result() turns the model's final text into the STABLE
+  structured dict an agent returns (mirrors disaster's _normalize_plan). It is
+  the default for every AgentSpec without its own ``normalize``, which today is
+  every hosted LLM agent, so a change here changes all of their results.
+- ENGINE: build_wrapper_prompt / build_operations_prompt / build_manager_prompt,
+  the system prompts for the endpoint-wrapper specs (spec.py) and the generator.
 
 Why a stable shape matters: the planner reads the structured DataPart artifact
-your agent emits, so downstream callers depend on these keys always existing.
+an agent emits, so downstream callers depend on these keys always existing.
 """
 from __future__ import annotations
 
@@ -57,7 +61,7 @@ def normalize_result(raw_text: str, tool_log: list[dict[str, Any]]) -> dict[str,
     }
 
 
-# --- Endpoint-wrapper prompt (built from the agent card + endpoint answers) ---
+# --- ENGINE: endpoint-wrapper prompts (agent card + endpoint answers) ---
 
 def build_wrapper_prompt(
     *,

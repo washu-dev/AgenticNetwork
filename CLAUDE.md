@@ -517,7 +517,7 @@ planner → saved history → register an agent → shut down with nothing left 
 | `agent_directory_service/services/directory/card_oasf_converter.py` | Agent Card ↔ OASF record |
 | `agent_directory_service/scripts/` | publish / show / diagnose / repair / watch ADS |
 | `agent_directory_service/configs/ads_daemon_fast_routing.yaml` | Fast-routing daemon config |
-| `agent_skeleton/` | Agent template + spec-driven **endpoint-wrapper engine** (`spec.py`, `system_tools/call_endpoint.py`) + answers→agent **`generator/`** |
+| `agent_skeleton/` | **Agent runtime** every hosted agent imports (LLM tool loop + `spec.py`, A2A executor/server, `AgentHandler`, `container_runner.py` image entry point, `system_tools/`) + a small demo agent + answers→agent **`generator/`** |
 | `deployment/` | Infra **machinery** (shared images/entrypoints/launch scripts): `submit.sbatch`, `dockerfiles/`, `entrypoints/`, `build_and_push.sh`, `scripts/gcp_iam_step7.sh`. Deployment **docs** live in `docs/deployment/` |
 | `docs/deployment/` | Deployment guides: `engr/README.md` (cluster runbook), `gcp/README.md` (GCP runbook) + `gcp/MIGRATION.md`, `gcp/DEPLOYED_COMPONENTS.md`, `gcp/DESIGN_`/`IMPLEMENTATION_CLOUDRUN_BACKEND.md`; agnostic: `AGENT_INTEGRATION_SPEC.md`, `DOWNSTREAM_CONSIDERATIONS.md` |
 | `registration_service/server.py` | FastAPI app — REST API for agent registration + static UI at `/` |

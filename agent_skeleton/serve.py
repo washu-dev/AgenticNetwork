@@ -1,19 +1,23 @@
-"""ZONE 6 — Serve.  (COPY; rarely edit)
+"""ZONE 6 — Serve.  ENGINE
 
-Wires the executor into an HTTP server. Directory (ADS) publishing is not done
-here: the registration service's supervisor publishes registered agents, and a
-hand-run agent can be published with
+Wires the executor into an HTTP server. create_app builds the A2A web app for any
+AgentSpec; container_runner uses it to serve built images of ``llm`` agents with
+uploaded tools, and generated wrapper agents use it too. The CLI below runs the
+demo agent (serve-a2a) or wraps one endpoint (serve-wrapper).
+
+Directory (ADS) publishing is not done here: the registration service's
+supervisor publishes registered agents, and a hand-run agent can be published with
 ``python -m agent_directory_service.scripts.publish_agents --card <card.json>``.
 The runtime layering:
 
     uvicorn (HTTP server)
       -> A2AStarletteApplication(card, handler).build()   (Starlette/ASGI app)
         -> DefaultRequestHandler(executor, InMemoryTaskStore())  (A2A protocol)
-          -> SkeletonAgentExecutor.execute(context, event_queue)  (your code)
+          -> SkeletonAgentExecutor.execute(context, event_queue)  (runs the spec)
 
 Run:
-    python -m agent_skeleton.serve check          # validate schemas <-> functions
-    python -m agent_skeleton.serve serve-a2a      # demo tools
+    python -m agent_skeleton.serve check          # validate the demo's schemas <-> functions
+    python -m agent_skeleton.serve serve-a2a      # the demo agent
     # the headline path — wrap an external endpoint in an LLM loop:
     python -m agent_skeleton.serve serve-wrapper --card my.card.json \
         --endpoint-url https://api.example.com/run

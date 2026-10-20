@@ -10,7 +10,7 @@ one-command start goals.
 The system is split across two repos:
 
 - **This repo (`AgenticNetwork`)** owns the infrastructure: planner, ADS operator
-  tooling, registration service, and the `agent_skeleton` template.
+  tooling, registration service, and the `agent_skeleton` agent runtime.
 - **[`agent-directory`](https://github.com/washu-dev/agent-directory)** owns the
   specialist agents: email, coding, intelligence, geoSpatial, disaster_response, scout.
 
@@ -18,7 +18,10 @@ Within this repo:
 - `agent_directory_service/` owns ADS operation, publication, route inspection,
   diagnostics, and repair tooling.
 - `planner_agent/` owns the product main-agent runtime.
-- `agent_skeleton/` is the canonical template for building new agents.
+- `agent_skeleton/` is the agent runtime that every hosted agent imports, plus
+  a small demo agent and the wrapper generator. Build new agents as
+  [`docs/BUILDING_AGENTS.md`](docs/BUILDING_AGENTS.md) describes, not by copying
+  or editing it; its import name is a public interface.
 
 Do not reintroduce the old prototype, milestone demo agents, or PI runtime under
 `agent_directory_service/`. ADS and A2A should stay conceptually separate:

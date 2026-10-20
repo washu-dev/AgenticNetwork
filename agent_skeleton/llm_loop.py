@@ -1,8 +1,11 @@
-"""ZONE 3 — The LLM tool-calling loop.  (COPY; rarely edit)
+"""ZONE 3 — The LLM tool-calling loop.  ENGINE
 
 The generic Chat Completions tool loop, mirroring disaster's _call_model loop.
-It is agent-agnostic: you give it a system prompt, a user payload, the tool
-schemas, and a dispatch function.
+Every LLM agent runs it: the registration service's llm handlers call run_agent,
+and SkeletonAgentExecutor calls it for everything served through create_app.
+Agents differ only in the AgentSpec they pass (spec.py), so don't edit this to
+build an agent. It is agent-agnostic: you give it a system prompt, a user
+payload, the tool schemas, and a dispatch function.
 
 WHY IT LOOKS LIKE THIS — vLLM / Chat Completions is STATELESS (there is no
 `previous_response_id` like the old Responses API). So we hold the whole

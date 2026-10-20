@@ -2,7 +2,7 @@
 
 This is the seam that lets a SINGLE engine (``llm_loop.run_tool_loop``) serve many
 agents and control levels **without per-agent edits to the loop**. An ``AgentSpec``
-bundles the "write" zones — system prompt, tool schemas, tool bodies, normalize —
+bundles the per-agent parts — system prompt, tool schemas, tool bodies, normalize —
 into one object that the executor and serve layers pass straight through. The loop
 core stays frozen and generic; only the spec changes.
 
@@ -78,10 +78,10 @@ class AgentSpec:
 
 
 def default_demo_spec() -> AgentSpec:
-    """Reproduce the original skeleton behavior from the existing module globals.
+    """Build the demo agent's spec from the demo module globals.
 
     Keeps backward compatibility: ``run_agent`` / ``create_app`` with no spec
-    behave exactly as the stock template did."""
+    serve the demo agent, as they always have."""
     from .config import AGENT_NAME
     from .prompt import SYSTEM_PROMPT, normalize_result
     from .tool_schemas import TOOL_SCHEMAS

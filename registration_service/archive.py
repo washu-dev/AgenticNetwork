@@ -68,7 +68,7 @@ def _framework_impersonation_reason(
     ``agent_skeleton/container_runner.py`` (the ENTRYPOINT) — and the agent fails to
     boot. We reject that at upload instead of shipping a container that dies on start.
 
-    Only ``pyproject.toml`` is inspected (the framework/template's build system); a
+    Only ``pyproject.toml`` is inspected (the framework's build system); a
     malformed or absent file is skipped (out of scope — the image build surfaces it).
     """
     if "pyproject.toml" not in manifest:
@@ -171,7 +171,8 @@ def unpack_archive(raw: bytes, dest: Path, entry_file: str) -> list[str]:
             f"project re-declaring it removes that entrypoint at build time and the "
             f"agent won't start. Rename your project and package only your own code "
             f'(e.g. name = "myagent", packages = ["my_pkg"]) and drop any package-dir '
-            f'mapping {_FRAMEWORK_PACKAGE} = ".". See REGISTERING.md.'
+            f'mapping {_FRAMEWORK_PACKAGE} = ".". See agent_skeleton/README.md '
+            '("The name agent_skeleton is reserved").'
         )
 
     # All checks passed — clear dest, then extract only the validated members.
