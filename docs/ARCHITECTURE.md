@@ -16,8 +16,9 @@ agent-to-agent protocol.
 - **Specialist agents** — each wraps one capability behind an HTTP endpoint (email, coding,
   intelligence, geospatial, disaster-response, scout). They live in the separate
   `agent-directory` repo. New ones are built from the template — [BUILDING_AGENTS.md](BUILDING_AGENTS.md).
-- **A directory (ADS)** — `agent_directory_service/`. The registry where agents publish a card
-  so others can find them by skill. Deep dive: [AGENT_DIRECTORY.md](AGENT_DIRECTORY.md).
+- **A directory (ADS)** — AGNTCY's `dir` daemon; this repo's client code and operator tooling are
+  in `agentnet/`. The registry where agents publish a card so others can find them by skill.
+  Deep dive: [AGENT_DIRECTORY.md](AGENT_DIRECTORY.md).
 - **A registration service** — `registration_service/`. A web UI + API to register agents
   (including user-uploaded custom ones) into the directory. Deep dive:
   [REGISTRATION_SERVICE.md](REGISTRATION_SERVICE.md).
@@ -63,10 +64,10 @@ response (with a tool trace) back to the caller.
    (`main_agent/llm_client.py`, OpenAI Chat Completions — vLLM-compatible) sees only the **5
    primitives** in `main_agent/tools.py`.
 3. `list_agents` / `describe_agent` query ADS via `DirectoryClient`
-   (`main_agent/directory/`), which shells out to `dirctl` — or uses an in-process fake in
+   (`agentnet/directory/`), which shells out to `dirctl` — or uses an in-process fake in
    `--fake-ads` mode.
 4. `call_agent` resolves the agent, checks policy (write-skill gating), scopes + injects the
-   user's granted credentials, and dispatches the task over A2A (`main_agent/a2a/`).
+   user's granted credentials, and dispatches the task over A2A (`agentnet/a2a/`).
 5. The specialist runs its own executor / LLM loop and returns a text summary + a
    structured-data `DataPart` artifact (the machine-readable channel the planner reads).
 6. The planner normalizes the result; the LLM emits `final_answer`; the server serializes the
@@ -82,14 +83,14 @@ ADS records are both **stored** (content-addressed; `dirctl search`) **and** sep
 routed** — in which case it is **invisible to live discovery** even though it exists. The
 directory backend deliberately raises `DirectoryUnavailable` rather than silently falling back
 to storage search, so this failure mode surfaces instead of hiding. The entire
-`agent_directory_service/scripts/` suite exists to detect and repair it. Full mechanics:
+`agentnet/scripts/` suite exists to detect and repair it. Full mechanics:
 [AGENT_DIRECTORY.md](AGENT_DIRECTORY.md); rationale: [DECISIONS.md](DECISIONS.md) D1.
 
 ## Realities worth knowing up front
 
 - **Heavy code duplication, not a shared library.** The A2A + directory protocol layer exists
-  in ~5 divergent copies (canonical `agent_directory_service/services/`, `_vendor_v2/` trees in
-  coding/intelligence, the more-evolved planner fork, scout's own). Library pins drift. When
+  in ~4 divergent copies (canonical `agentnet/`, `_vendor_v2/` trees in coding/intelligence,
+  scout's own). Library pins drift. When
   fixing a protocol/security bug, check whether the fix must be replicated across copies.
 - **Authentication is planner-only.** Only the planner (`:8090`) is behind WashU Shibboleth.
   Specialist ports and ADS/vLLM have no auth and bind `0.0.0.0` — safe only on a trusted node.

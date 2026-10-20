@@ -7,8 +7,8 @@ import uuid
 import httpx
 import pytest
 
-from planner_agent.main_agent.directory.card_oasf_converter import load_agent_card
-from planner_agent.main_agent.directory.client import DirectoryClient
+from agentnet.directory.card_oasf import load_agent_card
+from agentnet.directory.client import DirectoryClient
 
 from planner_agent.main_agent import conversation_store
 from planner_agent.main_agent.config import MainAgentConfig

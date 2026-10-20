@@ -6,7 +6,7 @@ import asyncio
 
 from planner_agent.main_agent import server
 from planner_agent.main_agent.config import MainAgentConfig
-from planner_agent.main_agent.directory.client import DirectoryClient
+from agentnet.directory.client import DirectoryClient
 from planner_agent.main_agent.llm_client import ScriptedLLMClient
 
 

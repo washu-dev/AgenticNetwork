@@ -29,14 +29,15 @@ The request path (user → planner → directory → A2A → agent → answer) a
 
 | Suite | Command | Tests | Line coverage | What it covers |
 |---|---|---|---|---|
-| Planner | `planner_agent/.venv/bin/python -m pytest planner_agent/tests -q` | 160 (+12) | 64% | The tool loop (scripted LLM, fake directory), the HTTP API (identity, conversation ownership, streaming, confirmations), credential discovery and enforcement, `/ready`, startup, bug reports, that every import of the repo's own code resolves |
-| Registration | `registration_service/.venv/bin/python -m pytest registration_service/tests -q` | 318 | 80% | The API, upload checks, the image build manifest, the native supervisor and agent processes, the Cloud Run backend (mocked), which handler module the runner starts for each handler type, streaming and uploaded-tools agents, credentials, the fake database, that every import of the repo's own code (here and in `agent_skeleton/`) resolves |
+| Planner | `planner_agent/.venv/bin/python -m pytest planner_agent/tests -q` | 162 (+12) | 74% | The tool loop (scripted LLM, fake directory), the HTTP API (identity, conversation ownership, streaming, confirmations), credential discovery and enforcement, `/ready`, startup, bug reports, that every import of the repo's own code resolves |
+| Registration | `registration_service/.venv/bin/python -m pytest registration_service/tests -q` | 319 | 80% | The API, upload checks, the image build manifest, the native supervisor and agent processes, the Cloud Run backend (mocked), which handler module the runner starts for each handler type, streaming and uploaded-tools agents, credentials, the fake database, that every import of the repo's own code (here and in `agent_skeleton/`) resolves |
 | Agent skeleton | `registration_service/.venv/bin/python -m pytest agent_skeleton/tests -q` | 70 | 73% | The spec-driven engine, the `call_endpoint` tool and its secret redaction, per-operation tools, preset tools, the multi-endpoint manager, the generator, credentials kept out of the LLM prompt, the tool-schema and handler contract |
-| Directory tooling | `registration_service/.venv/bin/python -m pytest agent_directory_service/tests -q` | 22 | 50% | Card ↔ record conversion, the `dirctl` CLI backend (mocked), route summaries and routing wake-up |
+| agentnet (directory + A2A) | `registration_service/.venv/bin/python -m pytest agentnet/tests -q`, and the same with `planner_agent/.venv/bin/python` | 38 in each venv | 52% | Card ↔ record conversion, the `dirctl` CLI backend (mocked), the registration service's publisher (id-only skills, no legacy routing, its errors), the fake-directory flag, route summaries and routing wake-up |
 | Dev stack | `registration_service/.venv/bin/python -m pytest devstack/tests -q` | 55 | 52% | The mock LLM, the fake `dirctl`, the identity proxy, the stack CLI's checks that need no running services |
 | Pipeline | `registration_service/.venv/bin/python -m pytest tests/pipeline -q` | 19 | — | The running system, end to end (next section) |
 
-Counts and coverage were measured on 2026-10-15 (planner 2026-10-16) with the local venvs; both
+Counts and coverage were measured on 2026-10-15 (planner 2026-10-16, planner and agentnet again
+2026-10-20) with the local venvs; both
 move as tests are added. The planner's other 12 tests (`test_pending_store_postgres.py`) run the
 pending-confirmation statements on a real Postgres and are skipped unless
 `PLANNER_TEST_DATABASE_DSN` names a scratch database (each test drops and recreates
@@ -58,8 +59,9 @@ runs inside the pytest process, so code a suite starts in a subprocess shows as 
 CLI's `up`, the fake `dirctl` behind `devstack/bin/dirctl`, and agent processes. The pipeline
 suite exercises much of that code without measuring it.
 
-The registration venv runs four suites because it matches the directory tooling's `a2a-sdk` pin
-and installs `agent_skeleton`. Do not set `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`: the registration
+The registration venv runs four suites because it installs `agent_skeleton`. agentnet's suite
+also runs in the planner venv, because agentnet runs inside both services (`a2a-sdk` 0.3.2 and
+0.3.26). Do not set `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`: the registration
 suite needs the `pytest-asyncio` plugin, and coverage comes from the `pytest-cov` plugin.
 
 ### Coverage

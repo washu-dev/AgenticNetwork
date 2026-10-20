@@ -161,7 +161,7 @@ repository goes public.
   ```
 - **Contributor clearance:** the current tree has lines from seven authors, including
   students, a contributor who committed from a non-WashU address (most of
-  `agent_directory_service/`) and a hackathon participant (the metadata filter in
+  `agent_directory_service/`, now merged into `agentnet/`) and a hackathon participant (the metadata filter in
   `agent_skeleton/executor.py`). Confirm under WashU's IP policy, and with the non-WashU
   contributor in writing, that each contribution can be released under the chosen license,
   and record the copyright line.

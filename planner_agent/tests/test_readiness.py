@@ -15,9 +15,9 @@ import pytest
 
 from planner_agent.main_agent import db, server
 from planner_agent.main_agent.config import MainAgentConfig
-from planner_agent.main_agent.directory import backends
-from planner_agent.main_agent.directory.backends import RealADSDirectoryBackend
-from planner_agent.main_agent.directory.client import DirectoryClient
+from agentnet.directory import backends
+from agentnet.directory.backends import RealADSDirectoryBackend
+from agentnet.directory.client import DirectoryClient
 from planner_agent.main_agent.llm_client import ScriptedLLMClient
 from planner_agent.main_agent.server import create_app
 from planner_agent.tests.test_main_agent_runtime import FailA2A

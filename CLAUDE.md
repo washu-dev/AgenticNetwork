@@ -23,14 +23,14 @@ task. There are three kinds of thing in the repo:
   repo: `email_agent`, `coding_agent`, `intelligence_agent`, `geoSpatial_agent`,
   `disaster_response_agent`, `scout_agent`. Each is its own HTTP service wrapping
   one capability.
-- **A directory (ADS)** — `agent_directory_service/`. The registry/"phone book"
+- **A directory (ADS)** — AGNTCY's `dirctl` daemon; this repo's client code and operator tooling are in `agentnet/`. The registry/"phone book"
   where agents publish a card so the others can look them up by skill.
 
 ### The three contracts that hold it together
 
 | Contract | Plain-English role | Implemented with |
 |---|---|---|
-| **Agent Card** (`*.card.json`) | An agent's résumé: name, URL, and a list of skills | local `card_oasf_converter.py` |
+| **Agent Card** (`*.card.json`) | An agent's résumé: name, URL, and a list of skills | `agentnet/directory/card_oasf.py` |
 | **ADS** (the directory) | The phone book: publish your card, search by skill | AGNTCY `dir` via the `dirctl` CLI |
 | **A2A** (agent-to-agent) | The phone call: send a task over HTTP/JSON-RPC, get a result | the official `a2a-sdk` |
 
@@ -63,10 +63,10 @@ task. There are three kinds of thing in the repo:
    `main_agent/tools.py`: `list_agents`, `describe_agent`, `call_agent`,
    `ask_user`, `final_answer`.
 3. `list_agents`/`describe_agent` query ADS via `DirectoryClient`
-   (`main_agent/directory/`), which shells out to `dirctl` (or uses an in-process
+   (`agentnet/directory/`), which shells out to `dirctl` (or uses an in-process
    fake in `--fake-ads` mode).
 4. `call_agent` resolves the agent, checks policy, and dispatches the task over
-   A2A (`main_agent/a2a/`) to the chosen specialist's HTTP endpoint.
+   A2A (`agentnet/a2a/`) to the chosen specialist's HTTP endpoint.
 5. The specialist's `AgentExecutor` runs its own LLM loop / API calls and returns
    a text summary plus a structured-data artifact.
 6. The planner normalizes the result and the LLM emits `final_answer`; the server
@@ -77,7 +77,7 @@ task. There are three kinds of thing in the repo:
 list/search`). A record can be **stored but not routed**, in which case it is
 **invisible to live discovery**. The directory backend deliberately raises
 `DirectoryUnavailable` rather than silently falling back to storage search. The
-whole `agent_directory_service/scripts/` suite exists to detect and repair this.
+whole `agentnet/scripts/` suite exists to detect and repair this.
 
 ---
 
@@ -88,7 +88,7 @@ whole `agent_directory_service/scripts/` suite exists to detect and repair this.
 | Component | Role | Default port | Environment | LLM API surface |
 |---|---|---|---|---|
 | `planner_agent` | Orchestrator + chat UI | **8090** | pip venv (`requirements.txt`) | OpenAI **Chat Completions** (vLLM-ready; migrated 2026-06) |
-| `agent_directory_service` | Directory (ADS) operator tooling | dir at **8888** (routing 8999) | pip venv (`requirements.txt`) | n/a (`dirctl`) |
+| `agentnet` | Shared directory (ADS) + A2A library; ADS operator tooling (`scripts/ads`) | dir at **8888** (routing 8999) | runs in the planner and registration venvs | n/a (`dirctl`) |
 | `registration_service` | Agent self-registration web UI + manager | **8091** | pip venv (`requirements.txt`) | n/a |
 
 **[`agent-directory`](https://github.com/washu-dev/agent-directory) repo (specialist agents):**
@@ -199,7 +199,7 @@ status, gotchas), `.../DEPLOYED_COMPONENTS.md` (inventory + control commands), a
 **Different agents require different environments — by design.** Each component
 has its own conda env or venv, and `README.md` states: *do not install one
 component's requirements file into another component's virtual environment.* The environments even
-disagree on library versions (ADS pins `a2a-sdk==0.3.2`, the planner uses
+disagree on library versions (registration pins `a2a-sdk==0.3.2`, the planner uses
 `0.3.26`). This is fine because **agents only ever communicate over A2A (HTTP)** —
 they share no Python imports at runtime, so each can have any dependencies, any
 Python version, even run on a different machine or container.
@@ -209,7 +209,7 @@ Python version, even run on a different machine or container.
 | pip venv | `planner_agent` | `python3 -m venv planner_agent/.venv && .../pip install -r planner_agent/requirements.txt` |
 | pip venv | `registration_service` | `python3 -m venv registration_service/.venv && .../pip install -r registration_service/requirements.txt` |
 | pip venv (editable) | `scout_agent` | `python3 -m venv .venv && .venv/bin/pip install -e .` (needs Python ≥3.11) |
-| pip venv | `agent_directory_service` | `python3 -m venv agent_directory_service/.venv && .../pip install -r agent_directory_service/requirements.txt` (the venv `run_ads.sh` uses) |
+| pip venv (optional) | `agentnet` with `ADS_BACKEND=sdk` | `python3 -m venv agentnet/.venv && .../pip install -r agentnet/requirements-sdk.txt` (point `scripts/ads` at it with `ADS_PYTHON`) |
 | conda `email-agent-a2a` (shared) | `email_agent`, `disaster_response_agent`, `geoSpatial_agent` | `conda env create -f email_agent/environment.yml` (the superset) |
 | conda `coding-agent-a2a` | `coding_agent` | `conda env create -f coding_agent/environment.yml` |
 | conda `intelligence-agent-a2a` | `intelligence_agent` | `conda env create -f intelligence_agent/environment.yml` |
@@ -399,13 +399,11 @@ auth-unaware.
 ## 9. Important realities & caveats
 
 - **Heavy code duplication, not a shared library.** The A2A + directory protocol
-  layer exists in ~5 divergent copies: canonical `agent_directory_service/services/`,
+  layer exists in ~4 divergent copies: this repo's one shared package `agentnet/`,
   near-identical `_vendor_v2/` trees in `coding_agent/` and `intelligence_agent/`
   (identical to each other except the package `__init__.py` docstring; their
   import paths, error strings, and log path diverge from the canonical copy),
-  a more-evolved fork in `planner_agent/main_agent/` (adds inline base64 file
-  parts, optional skill, streaming progress, `demo-v3` records), and scout's own
-  independent implementation. Library pins drift (`a2a-sdk` 0.3.2 vs 0.3.26). When
+  and scout's own independent implementation. Library pins drift (`a2a-sdk` 0.3.2 vs 0.3.26). When
   fixing protocol bugs, check whether the fix needs replicating across copies.
 - **Scout uses a different directory.** Every other agent uses `dirctl` at
   `ADS_SERVER_ADDR` (`localhost:8888` in the ENGR deploy; the ADS VM on GCP); scout uses
@@ -449,10 +447,12 @@ registration_service/.venv/bin/python -m pytest registration_service/tests -q
 # Agent skeleton (in-repo copy)
 registration_service/.venv/bin/python -m pytest agent_skeleton/tests -q
 
-# ADS package (dirctl mocked; the registration venv matches its a2a-sdk 0.3.2 pin).
+# agentnet, the shared directory/A2A package (dirctl mocked). It runs in both service
+# venvs (a2a-sdk 0.3.2 and 0.3.26), so test it with both.
 # print_versions lists the deps of the venv running it.
-registration_service/.venv/bin/python -m pytest agent_directory_service/tests -q
-registration_service/.venv/bin/python -m agent_directory_service.scripts.print_versions
+registration_service/.venv/bin/python -m pytest agentnet/tests -q
+planner_agent/.venv/bin/python -m pytest agentnet/tests -q
+registration_service/.venv/bin/python -m agentnet.scripts.print_versions
 
 # Dev stack: mock LLM, fake dirctl, identity proxy, stack CLI safety checks
 registration_service/.venv/bin/python -m pytest devstack/tests -q
@@ -472,10 +472,10 @@ registration_service/.venv/bin/python -m pytest tests/pipeline -q
 planner_agent/scripts/doctor.sh
 
 # ADS operator commands (wrapper)
-agent_directory_service/run_ads.sh -list | -raw-list | -diag | -watch | -repair | -repair-delete | -publish <card> | -remove <cid> | -delete <cid>
+scripts/ads -list | -raw-list | -diag | -watch | -repair | -repair-delete | -publish <card> | -remove <cid> | -delete <cid>
 
 # Validate an A2A endpoint without publishing
-python -m agent_directory_service.scripts.validate_agent_endpoint \
+registration_service/.venv/bin/python -m agentnet.scripts.validate_agent_endpoint \
   --card <card.json> --skill <skill> --prompt "..." --endpoint http://host:port/
 ```
 
@@ -512,11 +512,13 @@ planner → saved history → register an agent → shut down with nothing left 
 | `planner_agent/main_agent/server.py` | FastAPI surface + chat UI serving |
 | `planner_agent/main_agent/web/index.html` | Single-file chat UI |
 | `planner_agent/scripts/start.sh` / `doctor.sh` | Launcher / self-check |
-| `agent_directory_service/run_ads.sh` | ADS operator dispatcher |
-| `agent_directory_service/services/directory/backends.py` | Real/fake ADS backends (dirctl) |
-| `agent_directory_service/services/directory/card_oasf_converter.py` | Agent Card ↔ OASF record |
-| `agent_directory_service/scripts/` | publish / show / diagnose / repair / watch ADS |
-| `agent_directory_service/configs/ads_daemon_fast_routing.yaml` | Fast-routing daemon config |
+| `scripts/ads` | ADS operator dispatcher |
+| `agentnet/directory/backends.py` | Real/fake ADS backends (dirctl) |
+| `agentnet/directory/card_oasf.py` | Agent Card ↔ OASF record |
+| `agentnet/directory/publisher.py` | `DirectoryPublisher`: the registration service's ADS publish/unpublish |
+| `agentnet/a2a/` | A2A transport, adapters and client |
+| `agentnet/scripts/` | publish / show / diagnose / repair / watch ADS |
+| `deployment/ads_daemon.local.yaml` | Fast-routing local daemon config |
 | `agent_skeleton/` | **Agent runtime** every hosted agent imports (LLM tool loop + `spec.py`, A2A executor/server, `AgentHandler`, `container_runner.py` image entry point, `system_tools/`) + a small demo agent + answers→agent **`generator/`** |
 | `deployment/` | Infra **machinery** (shared images/entrypoints/launch scripts): `submit.sbatch`, `dockerfiles/`, `entrypoints/`, `build_and_push.sh`, `scripts/gcp_iam_step7.sh`. Deployment **docs** live in `docs/deployment/` |
 | `docs/deployment/` | Deployment guides: `engr/README.md` (cluster runbook), `gcp/README.md` (GCP runbook) + `gcp/MIGRATION.md`, `gcp/DEPLOYED_COMPONENTS.md`, `gcp/DESIGN_`/`IMPLEMENTATION_CLOUDRUN_BACKEND.md`; agnostic: `AGENT_INTEGRATION_SPEC.md`, `DOWNSTREAM_CONSIDERATIONS.md` |

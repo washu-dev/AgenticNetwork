@@ -26,8 +26,8 @@ Supported commands (the ones the dev stack's services call):
 Global flags: ``--server-addr`` (accepted and logged, never contacted) and
 ``--output``/``-o`` (``json``; anything else prints text). The JSON shapes follow the
 real CLI (``routing list`` returns ``[{"record_ref": {"cid": ...}, "labels": [...]}]``),
-which is what ``planner_agent/main_agent/directory/backends.py`` and
-``ads_utils/publisher.py`` parse.
+which is what ``agentnet/directory/backends.py`` and
+``agentnet/directory/publisher.py`` parse.
 
 Concurrent processes are safe: every command holds an ``fcntl`` lock on
 ``<state>.lock`` and writes the state file atomically.

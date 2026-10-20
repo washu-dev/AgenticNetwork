@@ -103,7 +103,7 @@ a new agent that publishes a valid card is callable with zero orchestrator chang
 
 | Field | Notes |
 |---|---|
-| `name` | Display name. **Load-bearing:** `agent_id` is derived from it (`card.name` lowercased + hyphenated, in `card_oasf_converter.py::oasf_record_to_discovered_agent`). Renaming the agent changes its `agent_id`. |
+| `name` | Display name. **Load-bearing:** `agent_id` is derived from it (`card.name` lowercased + hyphenated, in `agentnet/directory/card_oasf.py::agent_card_to_oasf_record`). Renaming the agent changes its `agent_id`. |
 | `url` | Where the agent's A2A server listens / is reached. Becomes the ADS record's `interaction.endpoint` **and** the planner's dispatch URL. Today this is a LAN IP or `127.0.0.1:<port>` (see *advertise-url* below). |
 | `version` | The agent's own release version (e.g. disaster `0.3.2`, email `0.2.6`). **Distinct from `protocolVersion`.** |
 | `protocolVersion` | The A2A protocol version the card targets (`0.3.0` in all current cards). Required by the `AgentCard` model. |
@@ -147,7 +147,7 @@ card): `id`, `name`, `description`, `tags`, `examples`, `inputModes`,
 **Write / risk metadata is *computed*, not just tagged.** There are three
 independent ways a skill becomes "write":
 1. its `id` is in the hardcoded `WRITE_SKILL_IDS` set
-   (`card_oasf_converter.py`, e.g. `email/send`, `email/docs/*`, `calendar/*`,
+   (`agentnet/directory/card_oasf.py`, e.g. `email/send`, `email/docs/*`, `calendar/*`,
    `code/bug_fix`);
 2. it carries a `"write"` tag;
 3. its id/tags/name/description match `WRITE_SKILL_TERMS`.
@@ -383,13 +383,13 @@ separate `agent-directory` repo.
 5. `wait` — the job lives as long as the containers (up to the partition's time limit).
 
 **Publish** (per agent) → the **canonical verified path** (`RealADSDirectoryBackend`,
-used by `run_ads.sh -publish` → `publish_agents.py`) is **three** dirctl calls:
+used by `scripts/ads -publish` → `publish_agents.py`) is **three** dirctl calls:
 `push <record> --output raw` → CID; `pull <cid> --output json` (read-back verify);
 `routing publish <cid> --output json`; then poll `routing list --cid <cid>` until it
 appears. **The agents' own boot-time self-publish helpers take a shortcut** — `push`
 → `routing publish`, **no read-back, no routing poll** — which opens a
 **stored-but-not-routed window** if the routing reconciler lags. The repair/watch/
-diagnose scripts in `agent_directory_service/scripts/` exist for exactly this.
+diagnose scripts in `agentnet/scripts/` exist for exactly this.
 
 **Discover & call** (a user prompt) →
 `POST /messages` → planner runtime tool loop → LLM (vLLM) sees 5 tools →
@@ -398,7 +398,7 @@ diagnose scripts in `agent_directory_service/scripts/` exist for exactly this.
 **from the card url** and sends A2A `message/send` over HTTP/JSON-RPC → the specialist
 runs its own LLM loop and returns text + a `DataPart` artifact → `final_answer`.
 
-**Decoupling primitive (for the future):** `run_ads.sh -publish <card>` →
+**Decoupling primitive (for the future):** `scripts/ads -publish <card>` →
 `publish_agents.py` registers a card **without the agent running** — the seam that a
 scale-to-zero design (#1 downstream) builds on.
 
@@ -463,12 +463,12 @@ health — all externally. The six existing specialist agents do not use this pa
 |---|---|
 | agent-directory: `<agent>/*.card.json` | the cards (identity, skills, endpoint) |
 | agent-directory: `disaster_response_agent/disaster_response_agent.py` | cleanest executor + serve + self-publish template |
-| `agent_directory_service/services/directory/card_oasf_converter.py` | Card ↔ OASF record; skill-id mapping; write-policy derivation |
-| `agent_directory_service/services/directory/backends.py` | real/fake ADS backends; canonical publish + routing-poll; stored-vs-routed guard |
-| `agent_directory_service/scripts/publish_agents.py`, `run_ads.sh` | standalone publisher (the decoupling primitive) |
+| `agentnet/directory/card_oasf.py` | Card ↔ OASF record; skill-id mapping; write-policy derivation |
+| `agentnet/directory/backends.py` | real/fake ADS backends; canonical publish + routing-poll; stored-vs-routed guard |
+| `agentnet/scripts/publish_agents.py`, `scripts/ads` | standalone publisher (the decoupling primitive) |
 | `planner_agent/main_agent/tools.py` | the 5 tools + system prompt |
 | `planner_agent/main_agent/runtime.py` | tool loop, `call_agent`, policy/write-gating, agent-shaped shims |
-| `planner_agent/main_agent/a2a/`, `directory/` | A2A transport + directory client (the more-evolved fork) |
+| `agentnet/a2a/`, `agentnet/directory/` | A2A transport + directory client (shared with the registration service) |
 | `deployment/dockerfiles/`, `entrypoints/`, `submit.sbatch`, `start_vllm.sbatch`, `build_and_push.sh`, `.env.example`, `ads_daemon.yaml` | the cluster scaffolding |
 | `docs/deployment/DOWNSTREAM_CONSIDERATIONS.md` | what changes at scale (#1 scale-to-zero, #2 per-agent cloud, #3 cross-cutting prerequisites) |
 | `registration_service/server.py` | REST API: `POST /agents`, `GET /agents`, `DELETE /agents/{id}`, `POST /agents/{id}/restart` |

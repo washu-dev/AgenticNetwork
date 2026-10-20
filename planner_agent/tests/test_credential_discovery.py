@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from a2a.types import AgentCapabilities, AgentCard, AgentExtension, AgentSkill
 
-from planner_agent.main_agent.directory.card_oasf_converter import (
+from agentnet.directory.card_oasf import (
     REQUIRED_CREDENTIALS_EXTENSION_URI,
     _required_credentials_from_card,
     agent_card_to_oasf_record,
@@ -103,3 +103,19 @@ def test_agent_full_card_does_not_leak_required_credentials():
         required_credentials=[{"type": "openai_api_key", "label": "OpenAI key"}],
     )
     assert "required_credentials" not in _agent_full_card(agent)
+
+
+# ── Shared classes ───────────────────────────────────────────────────────────
+
+def test_planner_uses_the_agentnet_classes_themselves():
+    # Re-exports, not copies: pydantic rejects an instance of a look-alike model,
+    # stored pending confirmations re-validate as DiscoveredAgent, and the runtime
+    # catches DirectoryUnavailable by class.
+    import agentnet.directory
+    import agentnet.models
+    from planner_agent.main_agent import models, runtime
+
+    for name in ("DiscoveredAgent", "CredentialRequirement", "A2ATaskRequest", "A2ATaskResult",
+                 "PublishedRecord", "RiskLevel", "utc_now"):
+        assert getattr(models, name) is getattr(agentnet.models, name), name
+    assert runtime.DirectoryUnavailable is agentnet.directory.DirectoryUnavailable

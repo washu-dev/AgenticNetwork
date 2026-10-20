@@ -144,13 +144,13 @@ trusted node."* Everything inside the node trusts everything else.
 
 - **Stored-but-not-routed.** An ADS record can be `dirctl push`ed (stored) yet never
   land in the routing index (discoverable). The good publish paths
-  (`ads_utils/publisher.py`, planner backend) **poll routing**
+  (`agentnet/directory/publisher.py`, `agentnet/directory/backends.py`) **poll routing**
   to catch this; several per-agent inline publishers are fire-and-forget and can leave an
   agent invisible with no error. Repair/watch tooling lives in
-  `agent_directory_service/scripts/` (`run_ads.sh -diag` / `-repair` / `-watch`).
-- **~5–6 divergent copies of the card/A2A/directory stack** (canonical
-  `agent_directory_service` + `ads_utils`, the `_vendor_v2/` copies in coding/intelligence,
-  the planner fork, and inline copies in email/disaster/geospatial). A policy/security fix
+  `agentnet/scripts/` (`scripts/ads -diag` / `-repair` / `-watch`).
+- **~4–5 divergent copies of the card/A2A/directory stack** (canonical
+  `agentnet/`, the `_vendor_v2/` copies in coding/intelligence,
+  and inline copies in email/disaster/geospatial). A policy/security fix
   in one may not propagate — e.g. some inline copies **drop the write-risk detection** the
   canonical converter computes. Check all copies when fixing anything security-relevant.
 - **Ephemeral vLLM + gateway↔node wiring.** The GPU node hostname changes each run and the

@@ -1,5 +1,5 @@
 # ADS daemon config for single-container deployment.
-# Adapted from agent_directory_service/configs/ads_daemon_fast_routing.yaml.
+# Adapted from deployment/ads_daemon.local.yaml.
 #
 # Changes from the original:
 #   - listen_address changed from "localhost:8888" to "0.0.0.0:8888" so that

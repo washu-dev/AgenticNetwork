@@ -14,7 +14,9 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
-from planner_agent.main_agent.a2a.client import A2AClient
+from agentnet.a2a.client import A2AClient
+from agentnet.directory import DirectoryUnavailable
+from agentnet.directory.client import DirectoryClient
 from planner_agent.main_agent.models import (
     A2AMessage,
     A2APart,
@@ -30,8 +32,6 @@ from planner_agent.main_agent.models import (
     PolicyDecisionStatus,
     utc_now,
 )
-from planner_agent.main_agent.directory.client import DirectoryClient
-from planner_agent.main_agent.directory.backends import DirectoryUnavailable
 from planner_agent.main_agent.state.store import InMemoryStateStore
 
 from planner_agent.main_agent import conversation_store, pending_store

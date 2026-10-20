@@ -5,8 +5,8 @@ A map of every doc, grouped by who it is for. New here? Read the repo-root
 
 These docs go deeper than the root README and [`CLAUDE.md`](../CLAUDE.md) (the single-file
 system guide): they explain internals, decisions and rationale rather than repeat run steps.
-Each component (`planner_agent/`, `registration_service/`, `agent_directory_service/`,
-`agent_skeleton/`, `ads_utils/`) has its own `README.md` with its install and run steps.
+Each component (`planner_agent/`, `registration_service/`, `agentnet/`,
+`agent_skeleton/`) has its own `README.md` with its install and run steps.
 
 > **Scope:** only durable reference lives here. In-progress plans and working notes go in
 > `docs/dev/` (ignored by git, local only) and are not a source of truth.
@@ -59,7 +59,7 @@ The guides are here; the machinery (Dockerfiles, entrypoints, launch scripts) is
 | [deployment/gcp/DESIGN_CLOUDRUN_BACKEND.md](deployment/gcp/DESIGN_CLOUDRUN_BACKEND.md) | understand the design of the register → build → deploy → publish automation on Cloud Run. |
 | [deployment/gcp/IMPLEMENTATION_CLOUDRUN_BACKEND.md](deployment/gcp/IMPLEMENTATION_CLOUDRUN_BACKEND.md) | follow the step-by-step build of that automation and its progress. |
 | [deployment/DOWNSTREAM_CONSIDERATIONS.md](deployment/DOWNSTREAM_CONSIDERATIONS.md) | read the forward-looking architecture and scaling decisions (an append-only log). |
-| [AGENT_DIRECTORY.md](AGENT_DIRECTORY.md) | operate or debug the directory (ADS): publishing, the routing index, diagnosis and repair (`agent_directory_service/run_ads.sh`). |
+| [AGENT_DIRECTORY.md](AGENT_DIRECTORY.md) | operate or debug the directory (ADS): publishing, the routing index, diagnosis and repair (`scripts/ads`). |
 
 ## Root files
 

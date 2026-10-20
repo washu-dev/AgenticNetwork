@@ -1,2 +1,0 @@
-"""Agent Directory Service infrastructure."""
-

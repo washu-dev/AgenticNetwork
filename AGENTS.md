@@ -15,8 +15,10 @@ The system is split across two repos:
   specialist agents: email, coding, intelligence, geoSpatial, disaster_response, scout.
 
 Within this repo:
-- `agent_directory_service/` owns ADS operation, publication, route inspection,
-  diagnostics, and repair tooling.
+- `agentnet/` is the one shared directory (ADS) and A2A library that the planner
+  and the registration service import. It also owns ADS operation, publication,
+  route inspection, diagnostics, and repair tooling (`agentnet/scripts/`, run
+  through `scripts/ads`).
 - `planner_agent/` owns the product main-agent runtime.
 - `agent_skeleton/` is the agent runtime that every hosted agent imports, plus
   a small demo agent and the wrapper generator. Build new agents as
@@ -24,7 +26,7 @@ Within this repo:
   or editing it; its import name is a public interface.
 
 Do not reintroduce the old prototype, milestone demo agents, or PI runtime under
-`agent_directory_service/`. ADS and A2A should stay conceptually separate:
+`agentnet/`. ADS and A2A should stay conceptually separate:
 
 - ADS / Directory publishes and discovers agent metadata.
 - A2A handles direct agent-to-agent task communication after discovery.
@@ -48,10 +50,12 @@ Do not reintroduce the old prototype, milestone demo agents, or PI runtime under
 For ADS changes:
 
 ```bash
-registration_service/.venv/bin/python -m pytest -q -p no:cacheprovider agent_directory_service/tests
-registration_service/.venv/bin/python -m agent_directory_service.scripts.print_versions
+registration_service/.venv/bin/python -m pytest -q -p no:cacheprovider agentnet/tests
+planner_agent/.venv/bin/python -m pytest -q -p no:cacheprovider agentnet/tests
+registration_service/.venv/bin/python -m agentnet.scripts.print_versions
 ```
 
-The registration venv matches the ADS `a2a-sdk` 0.3.2 pin; `run_ads.sh` uses its own
-`agent_directory_service/.venv`, built from `requirements.txt`. All suites and the dev stack:
+agentnet runs in both service venvs (registration on `a2a-sdk` 0.3.2, the planner
+on 0.3.26), so run its tests with both; `scripts/ads` uses the registration venv
+(`ADS_PYTHON` overrides it). All suites and the dev stack:
 `CLAUDE.md` §10; CI runs them (`.github/workflows/tests.yml`).

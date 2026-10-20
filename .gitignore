@@ -20,7 +20,6 @@ uploaded_handlers/
 # The .example template stays tracked; a real secrets.env must never be committed.
 secrets.env
 **/secrets.env
-agent_directory_service/.runtime/
 .venv/
 .claude/
 

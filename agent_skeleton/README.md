@@ -146,7 +146,7 @@ To make it **discoverable** by the planner, publish the card to the directory
 the registration service are published by its supervisor instead.
 
 ```bash
-python -m agent_directory_service.scripts.publish_agents --card agent_skeleton/agent.card.json
+python -m agentnet.scripts.publish_agents --card agent_skeleton/agent.card.json
 ```
 
 ---

@@ -7,17 +7,18 @@ the system is, start with [`README.md`](README.md); for how changes reach a runn
 ## Development setup
 
 Each component has its own venv, and their dependencies disagree (the planner pins `a2a-sdk`
-0.3.26, the registration service and the directory tooling 0.3.2). Never install one component's
-requirements into another's venv. Run everything from the repo root.
+0.3.26, the registration service 0.3.2; the shared `agentnet/` package runs on both). Never
+install one component's requirements into another's venv. Run everything from the repo root.
 
 | Venv | For | Create it |
 |---|---|---|
 | `planner_agent/.venv` | the planner | `python3 -m venv planner_agent/.venv && planner_agent/.venv/bin/pip install -r planner_agent/requirements.txt` |
 | `registration_service/.venv` | the registration service; also runs the skeleton, directory, dev stack and full-chain tests | `python3 -m venv registration_service/.venv && registration_service/.venv/bin/pip install -r registration_service/requirements.txt` (from the repo root: it installs `./agent_skeleton` in editable mode) |
-| `agent_directory_service/.venv` | optional: only `agent_directory_service/run_ads.sh` against a real directory | `python3 -m venv agent_directory_service/.venv && agent_directory_service/.venv/bin/pip install -r agent_directory_service/requirements.txt` (uses the `buf.build` extra index named in that file) |
+| `agentnet/.venv` | optional: only `scripts/ads` with `ADS_BACKEND=sdk` (the default `cli` backend runs in the registration venv) | `python3 -m venv agentnet/.venv && agentnet/.venv/bin/pip install -r agentnet/requirements-sdk.txt` (uses the `buf.build` extra index named in that file), then set `ADS_PYTHON=agentnet/.venv/bin/python` |
 
 The dev stack needs Python 3.11 or newer as `python3`. CI uses Python 3.13 for the planner, 3.12
-for the directory tooling and the full-chain test, and 3.11 for the rest. `scripts/stack doctor`
+for the full-chain test, and 3.11 for the rest; agentnet's tests run twice, on 3.11 with the
+registration requirements and on 3.13 with the planner's. `scripts/stack doctor`
 checks your setup.
 
 ## Running tests
@@ -29,7 +30,8 @@ Every suite runs offline: no Docker, Postgres, `dirctl`, external services or AP
 planner_agent/.venv/bin/python -m pytest planner_agent/tests -q
 registration_service/.venv/bin/python -m pytest registration_service/tests -q   # its conftest sets FAKE_DB=1
 registration_service/.venv/bin/python -m pytest agent_skeleton/tests -q
-registration_service/.venv/bin/python -m pytest agent_directory_service/tests -q
+registration_service/.venv/bin/python -m pytest agentnet/tests -q   # agentnet runs in both service venvs,
+planner_agent/.venv/bin/python -m pytest agentnet/tests -q          # so test it with both
 registration_service/.venv/bin/python -m pytest devstack/tests -q
 
 # Full chain: starts the dev stack on ports offset by PIPELINE_PORT_OFFSET (default 20000),
@@ -47,8 +49,8 @@ What each suite covers, and how to write tests: [`docs/TESTING.md`](docs/TESTING
 [`.github/workflows/tests.yml`](.github/workflows/tests.yml) runs on every pull request, on pushes
 to `main`, and on demand:
 
-- **unit**: the five suites above (planner, registration, skeleton, directory tooling, dev stack),
-  each in a fresh environment, with `-p no:cacheprovider`.
+- **unit**: the suites above (planner, registration, skeleton, agentnet in both service
+  environments, dev stack), each in a fresh environment, with `-p no:cacheprovider`.
 - **repo hygiene**: no tracked file that `.gitignore` excludes; no tracked secrets, keys,
   credential or token files, model weights, slide decks, local databases, logs or wheels
   (`*.example` templates are allowed); no tracked file over 1 MB.

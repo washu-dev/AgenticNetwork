@@ -23,6 +23,7 @@ RUN mamba create -n planner-agent python=3.13 pip -y --quiet \
         -r /app/planner_agent/requirements.txt
 
 COPY planner_agent/ planner_agent/
+COPY agentnet/ agentnet/
 COPY deployment/entrypoints/entrypoint-planner.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 

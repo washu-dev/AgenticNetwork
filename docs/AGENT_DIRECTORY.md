@@ -1,7 +1,9 @@
 # Agent Directory Service (ADS)
 
-`agent_directory_service/` — the registry where agents publish a card so others discover them by
-skill. It's operator tooling around the AGNTCY `dir` daemon (driven by the `dirctl` CLI). The
+The registry where agents publish a card so others discover them by skill. This repo's code for
+it is in `agentnet/`: the client, backends and publisher (`agentnet/directory/`) and operator
+tooling (`agentnet/scripts/`, run through `scripts/ads`) around the AGNTCY `dir` daemon (driven by
+the `dirctl` CLI). The
 directory daemon listens on **:8888** (routing gossip on **:8999**).
 
 The single most important thing to understand here is **stored ≠ routed**.
@@ -21,12 +23,12 @@ The backend **fails closed** rather than hiding this: `search_agents` tries `rou
 `routing list`, and only consults storage `search` if `ADS_ALLOW_LOCAL_STORE_FALLBACK=true`. If
 storage has matching records but the routing index is empty, it raises **`DirectoryUnavailable`**
 ("exists in storage but is not routed/discoverable") instead of silently returning the stored copy
-(`services/directory/backends.py`). Diagnostics classify each CID as `healthy` (stored + routed),
+(`agentnet/directory/backends.py`). Diagnostics classify each CID as `healthy` (stored + routed),
 `queued` (publish submitted, not yet indexed), `stale` (stored, was routed, now absent), or
 `orphaned` (stored, no publication record).
 
 Publish is therefore a **two-step + poll**: `push` → `routing publish` → poll `routing list --cid`
-until the CID appears. The good publish paths (`ads_utils/publisher.py`, the planner backend) both
+until the CID appears. The good publish paths (`agentnet/directory/publisher.py`, the backend) both
 poll; several per-agent inline publishers are fire-and-forget and can leave an agent invisible
 with no error — check them when debugging discovery.
 
@@ -47,24 +49,24 @@ Selection is by env flag (`AGENT_NETWORK_FAKE_ADS`, and the planner's `--fake-ad
 `routing search [--skill]`, `search --skill` (storage fallback), `routing unpublish <cid>`,
 `routing info`, and `daemon start/stop/status`. The operator scripts also run `delete <cid>`.
 
-## Card ↔ OASF conversion (`card_oasf_converter.py`)
+## Card ↔ OASF conversion (`agentnet/directory/card_oasf.py`)
 
 The bridge between an A2A `AgentCard` and a `dir` record:
 - `agent_card_to_ads_record` — builds the ADS/OASF record (`schema_version 1.0.0`), embeds the
   original card under `modules[0].data.card_data`, and sets routing skills via
-  `_ads_routing_skills_for_card` (mapping known skills to the official OASF taxonomy,
+  `ads_routing_skills` (mapping known skills to the official OASF taxonomy,
   `KNOWN_OASF_SKILLS`; demo-only skills stay as custom tags to avoid false routing hints). It also
   computes write-risk (`WRITE_SKILL_IDS`/`TERMS`) → `risk_level` + `write_requires_confirmation`.
 - `oasf_record_to_discovered_agent` — the reverse, for search results (rebuilds the card, scores
-  skills). The planner's fork additionally parses declared credentials off the card and accepts
-  `demo-v2`/`demo-v3` records.
+  skills). It also parses declared credentials off the card and accepts `demo-v2`/`demo-v3`
+  records.
 - **On-card routing tags** (`oasf:<name>:<id>`): a card can declare its own routing skills via a
   skill tag so generator-produced agents are discoverable without editing the hardcoded maps. This
-  lives in `_ads_routing_skills_for_card` + `_oasf_skill_from_tag`.
+  lives in `ads_routing_skills` + `_oasf_skill_from_tag`.
 
 ## Operator tooling
 
-`run_ads.sh` dispatches the operator commands:
+`scripts/ads` dispatches the operator commands:
 
 | Command | Does |
 |---|---|
@@ -76,11 +78,11 @@ The bridge between an A2A `AgentCard` and a `dir` record:
 | `-publish <card>` | publish one Agent Card |
 | `-remove <cid>` / `-delete <cid>` | unpublish from routing (and delete from storage) |
 
-The `scripts/` suite backs these: `publish_agents.py`, `show_ads_routes.py`, `ads_diagnostics.py`,
+The `agentnet/scripts/` suite backs these: `publish_agents.py`, `show_ads_routes.py`, `ads_diagnostics.py`,
 `watch_ads_routing.py`, `force_route_active_agents.py`, plus
 `validate_agent_endpoint.py` (test an A2A endpoint without publishing) and `print_versions.py`.
 
-The **fast-routing daemon config** (`configs/ads_daemon_fast_routing.yaml`) tightens the
+The **fast-routing daemon config** (`deployment/ads_daemon.local.yaml`) tightens the
 publication scheduler + reconciler indexer intervals to ~5s so re-published records appear in
 `routing list` quickly (the default intervals made freshly-repaired records linger as "queued").
 
@@ -89,15 +91,17 @@ publication scheduler + reconciler indexer intervals to ~5s so re-published reco
   `agntcy_app_sdk` `AgentDirectory` at `DIRECTORY_ENDPOINT` (gRPC, default `:8889`). It's unverified
   whether these are the same logical directory — scout may not be discoverable by the others (see
   [`CLAUDE.md`](../CLAUDE.md) §9).
-- **The converter/A2A stack is duplicated** across ~5 copies (canonical here, planner fork,
+- **The converter/A2A stack is duplicated** across ~4 copies (canonical `agentnet/`,
   `_vendor_v2/` in coding/intelligence, inline copies). A routing/policy fix in one may not
   propagate. See [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Key files
 | Path | Role |
 |---|---|
-| `services/directory/backends.py` | real (`dirctl`) + fake backends, stored-vs-routed logic, `DirectoryUnavailable` |
-| `services/directory/card_oasf_converter.py` | Card ↔ OASF record, routing-skill mapping |
-| `run_ads.sh` | operator command dispatcher |
-| `scripts/` | publish / show / diagnose / repair / watch / validate |
-| `configs/ads_daemon_fast_routing.yaml` | fast-routing daemon tuning |
+| `agentnet/directory/backends.py` | real (`dirctl`) + fake backends, stored-vs-routed logic |
+| `agentnet/directory/__init__.py` | `DirectoryUnavailable` |
+| `agentnet/directory/card_oasf.py` | Card ↔ OASF record, routing-skill mapping |
+| `agentnet/directory/publisher.py` | `DirectoryPublisher`, the registration service's publish/unpublish |
+| `scripts/ads` | operator command dispatcher |
+| `agentnet/scripts/` | publish / show / diagnose / repair / watch / validate |
+| `deployment/ads_daemon.local.yaml` | fast-routing daemon tuning |

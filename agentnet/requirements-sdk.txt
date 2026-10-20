@@ -1,0 +1,17 @@
+# Optional: only for ADS_BACKEND=sdk, where RealADSDirectoryBackend imports the
+# agntcy-dir Python SDK (lazily). The default ADS_BACKEND=cli shells out to dirctl
+# and needs none of this: agentnet then runs in either service venv.
+# The protobuf pin can clash with a service venv, so use a separate one, e.g.
+#   python3 -m venv agentnet/.venv && agentnet/.venv/bin/pip install -r agentnet/requirements-sdk.txt
+# and point scripts/ads at it with ADS_PYTHON=agentnet/.venv/bin/python.
+--extra-index-url https://buf.build/gen/python
+
+# Runtime verified from the former shared venv used to run the directory tooling.
+a2a-sdk==0.3.2
+agntcy-dir==1.2.1
+agntcy-oasf-sdk-grpc-python==1.80.0.1.20260427074745+7826cb0d66b9
+agntcy-oasf-sdk-protocolbuffers-python==34.1.0.1.20260427074745+7826cb0d66b9
+protobuf==6.33.6
+
+httpx==0.28.1
+pydantic==2.12.5

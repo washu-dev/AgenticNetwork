@@ -96,6 +96,7 @@ def _render_agent_main(answers: AgentAnswers, system_prompt: str) -> str:
         "    app = create_app(card, model=MODEL, spec=spec)\n\n"
         "    record = None\n"
         "    if not args.no_publish:\n"
+        # ads_utils here is agent-directory's own package (beside the emitted agent), not this repo's agentnet.
         "        from ads_utils.publisher import DirectoryPublisher, DirectoryUnavailable\n"
         "        try:\n"
         "            pub = DirectoryPublisher(server_addr=args.ads_url)\n"

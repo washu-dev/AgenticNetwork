@@ -143,4 +143,4 @@ routing index to be discoverable; the directory backend raises `DirectoryUnavail
 than silently falling back to storage search. **Rationale.** A "stored but not routed" record is
 invisible to live discovery — a silent failure mode. Failing closed surfaces it; the good
 publish paths poll routing to catch it. **Code.**
-`agent_directory_service/services/directory/backends.py`, the `scripts/` repair suite.
+`agentnet/directory/backends.py`, the `agentnet/scripts/` repair suite.

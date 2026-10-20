@@ -1,4 +1,4 @@
-"""Every import of this repo's own code under planner_agent/ resolves.
+"""Every import of this repo's own code under planner_agent/ and agentnet/ resolves.
 
 An import that runs only inside a function (server.py's health probe imports its
 A2A transport that way) or a try block fails only when that code runs, so a stale
@@ -7,7 +7,8 @@ running it: it finds every import statement, at the top level or nested anywhere
 keeps the ones that name this repo's packages (or are relative), and checks that
 each one imports and that each name in ``from X import a`` exists. Third-party
 imports are ignored. registration_service/tests/test_internal_imports.py does the
-same for registration_service/ and agent_skeleton/.
+same for registration_service/, agent_skeleton/ and agentnet/, so agentnet is
+checked in both services' venvs.
 """
 
 from __future__ import annotations
@@ -20,8 +21,10 @@ import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 # Folders to scan. A folder that does not exist (yet, or any more) is skipped.
-_SCAN_ROOTS = ("planner_agent", "chat_app")
+_SCAN_ROOTS = ("planner_agent", "chat_app", "agentnet")
 # This repo's top-level packages. Imports of anything else count as third-party.
+# ads_utils and agent_directory_service were merged into agentnet; they stay listed
+# so a leftover import of either fails here instead of passing as third-party.
 _OWN_PACKAGES = frozenset({
     "planner_agent", "chat_app", "registration_service", "agent_skeleton",
     "agentnet", "ads_utils", "agent_directory_service", "devstack",

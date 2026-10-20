@@ -162,10 +162,10 @@ returns a terminal "reply yes/no" (or "Allow"). The resume paths read it back:
 
 Because pending state is durable (D11), these resume correctly across processes/restarts.
 
-## Directory access (`main_agent/directory/`)
+## Directory access (`agentnet/directory/`)
 
 `DirectoryClient` wraps a real (`dirctl`-shelling) or fake (in-process, `--fake-ads`) backend. The
-planner's converter fork (`card_oasf_converter.py`) additionally parses declared credentials off the
+converter (`agentnet/directory/card_oasf.py`) also parses declared credentials off the
 card (`_required_credentials_from_card`, the read path) and accepts both `demo-v2`/`demo-v3` records.
 Every `dirctl` call is killed after `DIRCTL_TIMEOUT_SECONDS` (default 60) and surfaces as
 `DirectoryUnavailable`; the `/ready` directory check uses a fixed 4 s limit. See
@@ -194,6 +194,6 @@ planner_agent/.venv/bin/python -m pytest planner_agent/tests -q -p no:cacheprovi
 | `main_agent/state/store.py` | in-process cache (contexts, pending, invocations) |
 | `main_agent/conversation_store.py` / `pending_store.py` | Postgres durable state |
 | `main_agent/db.py` | Postgres pool + schema |
-| `main_agent/directory/` | ADS client + backends + converter fork |
-| `main_agent/a2a/` | A2A request build/dispatch/adapters |
+| `agentnet/directory/` (repo root) | ADS client + backends + converter, shared with the registration service |
+| `agentnet/a2a/` (repo root) | A2A request build/dispatch/adapters |
 | `main_agent/web/index.html` / `landing.html` | chat UI / public landing |

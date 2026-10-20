@@ -8,8 +8,8 @@ import pytest
 
 from planner_agent.main_agent import github_issues
 from planner_agent.main_agent.config import MainAgentConfig
-from planner_agent.main_agent.directory.card_oasf_converter import load_agent_card
-from planner_agent.main_agent.directory.client import DirectoryClient
+from agentnet.directory.card_oasf import load_agent_card
+from agentnet.directory.client import DirectoryClient
 from planner_agent.main_agent.llm_client import ScriptedLLMClient
 from planner_agent.main_agent.server import IssueRequest, build_issue_payload, create_app
 from planner_agent.tests.test_main_agent_runtime import FailA2A, EMAIL_CARD

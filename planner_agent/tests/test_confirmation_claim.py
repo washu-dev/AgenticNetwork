@@ -36,7 +36,7 @@ from a2a.types import AgentCapabilities, AgentCard, AgentExtension, AgentSkill
 
 from planner_agent.main_agent import pending_store
 from planner_agent.main_agent.credential_gate import InMemoryCredentialGate
-from planner_agent.main_agent.directory.card_oasf_converter import (
+from agentnet.directory.card_oasf import (
     REQUIRED_CREDENTIALS_EXTENSION_URI,
     load_agent_card,
 )

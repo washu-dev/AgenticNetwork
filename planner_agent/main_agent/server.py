@@ -19,10 +19,10 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
-from planner_agent.main_agent.a2a.client import A2AClient
+from agentnet.a2a.client import A2AClient
+from agentnet.directory.card_oasf import load_agent_card
+from agentnet.directory.client import DirectoryClient
 from planner_agent.main_agent.models import Channel
-from planner_agent.main_agent.directory.card_oasf_converter import load_agent_card
-from planner_agent.main_agent.directory.client import DirectoryClient
 from planner_agent.main_agent.state.store import InMemoryStateStore
 
 from planner_agent.main_agent.auth import get_current_user, get_or_create_user, get_shib_email, is_admin
@@ -594,7 +594,7 @@ def create_app(
         # path aren't falsely marked down.
         # Authenticate the probe for private Cloud Run (*.run.app) agents — same
         # gated ID-token auth used for A2A calls; a no-op for other hosts.
-        from planner_agent.main_agent.a2a.transport import CloudRunIdTokenAuth
+        from agentnet.a2a.transport import CloudRunIdTokenAuth
 
         url = endpoint.rstrip("/") + "/.well-known/agent-card.json"
         try:

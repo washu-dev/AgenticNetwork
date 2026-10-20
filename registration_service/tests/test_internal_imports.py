@@ -1,4 +1,4 @@
-"""Every import of this repo's own code under registration_service/ and agent_skeleton/ resolves.
+"""Every import of this repo's own code under registration_service/, agent_skeleton/ and agentnet/ resolves.
 
 An import that runs only inside a function (runner.py picks its handler module that
 way) or a try block fails only when that code runs, so a stale path after a rename
@@ -18,8 +18,10 @@ import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 # Folders to scan. A folder that does not exist (yet, or any more) is skipped.
-_SCAN_ROOTS = ("registration_service", "agent_skeleton")
+_SCAN_ROOTS = ("registration_service", "agent_skeleton", "agentnet")
 # This repo's top-level packages. Imports of anything else count as third-party.
+# ads_utils and agent_directory_service were merged into agentnet; they stay listed
+# so a leftover import of either fails here instead of passing as third-party.
 _OWN_PACKAGES = frozenset({
     "planner_agent", "chat_app", "registration_service", "agent_skeleton",
     "agentnet", "ads_utils", "agent_directory_service", "devstack",

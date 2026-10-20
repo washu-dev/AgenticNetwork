@@ -7,7 +7,7 @@ demo agent (serve-a2a) or wraps one endpoint (serve-wrapper).
 
 Directory (ADS) publishing is not done here: the registration service's
 supervisor publishes registered agents, and a hand-run agent can be published with
-``python -m agent_directory_service.scripts.publish_agents --card <card.json>``.
+``python -m agentnet.scripts.publish_agents --card <card.json>``.
 The runtime layering:
 
     uvicorn (HTTP server)

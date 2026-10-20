@@ -88,8 +88,7 @@ What to run before a pull request, and what CI checks, is in [`CONTRIBUTING.md`]
 | [`planner_agent/`](planner_agent/README.md) | The planner: orchestrator, HTTP API and chat UI (port 8090). |
 | [`registration_service/`](registration_service/README.md) | Registers, spawns and monitors agents and publishes their cards; web UI and REST API (port 8091). |
 | [`agent_skeleton/`](agent_skeleton/README.md) | The agent runtime that registered agents run on, plus a small demo agent. |
-| [`agent_directory_service/`](agent_directory_service/README.md) | Operator tooling for the directory: publish, inspect, diagnose and repair records (`run_ads.sh`). |
-| [`ads_utils/`](ads_utils/README.md) | Shared code that publishes and unpublishes Agent Cards; used by the registration service. |
+| [`agentnet/`](agentnet/README.md) | Shared library for the directory (ADS) and A2A calls, used by the planner and the registration service; plus operator tooling to publish, inspect, diagnose and repair directory records (`scripts/ads`). |
 | [`devstack/`](docs/DEVSTACK.md), [`scripts/stack`](scripts/stack) | The dev stack (mock LLM, fake `dirctl`, dev identity proxy, seed agents) and its CLI. |
 | [`tests/pipeline/`](tests/pipeline/) | Full-chain test that drives the dev stack over HTTP. |
 | [`deployment/`](deployment/README.md) | Dockerfiles, entrypoints, Slurm and Google Cloud scripts, config templates. |

@@ -101,7 +101,7 @@ The planner discovers it automatically on its next `list_agents` — **no planne
 Declarations (skills, credentials) only propagate on (re)publish, so changing them requires a
 re-publish. Validate an endpoint without publishing:
 ```bash
-python -m agent_directory_service.scripts.validate_agent_endpoint \
+python -m agentnet.scripts.validate_agent_endpoint \
   --card <card.json> --skill <skill> --prompt "..." --endpoint http://host:port/
 ```
 

@@ -22,7 +22,7 @@ defaults:
 
 jobs:
   unit:
-    name: unit (${{ matrix.component }})
+    name: unit (${{ matrix.label || matrix.component }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
@@ -43,13 +43,19 @@ jobs:
             python: "3.11"
             deps: agent_skeleton/pyproject.toml
             install: pip install -e ./agent_skeleton pytest
-          - component: agent_directory_service
-            python: "3.12"
-            deps: agent_directory_service/requirements.txt
-            # Only what the tests import (a2a, pydantic, pytest; dirctl is mocked).
-            # Its requirements.txt needs the buf.build extra index for agntcy-*, which
-            # the tests never import, so CI does not depend on that index.
-            install: pip install a2a-sdk==0.3.2 pydantic==2.12.5 pytest==9.0.3
+          # agentnet runs inside both services, so its tests run in each service's
+          # environment: registration's (a2a-sdk 0.3.2) and the planner's (0.3.26).
+          # dirctl is mocked.
+          - component: agentnet
+            label: agentnet, a2a-sdk 0.3.2
+            python: "3.11"
+            deps: registration_service/requirements.txt
+            install: pip install -r registration_service/requirements.txt
+          - component: agentnet
+            label: agentnet, a2a-sdk 0.3.26
+            python: "3.13"
+            deps: planner_agent/requirements.txt
+            install: pip install -r planner_agent/requirements.txt
           - component: devstack
             python: "3.11"
             deps: registration_service/requirements.txt

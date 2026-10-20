@@ -20,7 +20,7 @@ COPY registration_service/requirements.txt registration_service/requirements.txt
 RUN pip install --no-cache-dir -r registration_service/requirements.txt
 
 COPY registration_service/ registration_service/
-COPY ads_utils/ ads_utils/
+COPY agentnet/ agentnet/
 COPY deployment/entrypoints/entrypoint-registration.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 

@@ -46,9 +46,7 @@ planner_agent/
 ├── .env.example            # config template (copy to .env.local)
 ├── main_agent/
 │   ├── config.py           # MainAgentConfig from env vars
-│   ├── models.py           # planner-local A2A, ADS, policy, and state models
-│   ├── a2a/                # planner-local A2A client, adapters, HTTP transport
-│   ├── directory/          # planner-local fake/real ADS client + card converter
+│   ├── models.py           # policy and state models; re-exports the wire models from agentnet
 │   ├── state/              # planner-local in-memory state store (per process)
 │   ├── tools.py            # 5 tool schemas + system prompt
 │   ├── llm_client.py       # OpenAI Chat Completions client + ScriptedLLMClient
@@ -74,8 +72,8 @@ planner_agent/
 Standalone planner infrastructure:
 
 - `main_agent/models.py` — `DiscoveredAgent`, `A2A*`, `PIContext`, policy records, etc.
-- `main_agent/directory/` — `DirectoryClient` (fake ADS + real ADS via `dirctl`)
-- `main_agent/a2a/` — `A2AClient`, SDK adapters, and HTTP streaming transport
+- `agentnet/directory/` (repo root) — `DirectoryClient` (fake ADS + real ADS via `dirctl`)
+- `agentnet/a2a/` (repo root) — `A2AClient`, SDK adapters, and HTTP streaming transport
 - `main_agent/state/store.py` — in-memory state store
 
 ## Running
@@ -170,7 +168,7 @@ An identity header (`mail`, `eppn`, `remote-user`) always wins over a body `user
 
 In the cluster the planner container connects to ADS automatically via
 `ADS_SERVER_ADDR`. For local testing against a tunneled cluster ADS (see
-`agent_directory_service/README.md`), point the planner at it directly — agents
+`agentnet/README.md`), point the planner at it directly — agents
 will already be publishing their own cards:
 
 ```bash
@@ -184,7 +182,7 @@ planner_agent/.venv/bin/python -m planner_agent.scripts.run_server
 To manually publish a card (e.g. an agent crashed before publishing):
 
 ```bash
-agent_directory_service/run_ads.sh -publish ../agent-directory/email_agent/email_agent.card.json
+scripts/ads -publish ../agent-directory/email_agent/email_agent.card.json
 ```
 
 The same `/messages` and `/agents` endpoints work; they just hit real ADS

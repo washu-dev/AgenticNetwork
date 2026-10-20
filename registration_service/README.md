@@ -174,7 +174,7 @@ the component you are working on.
 | `PGUSER` | `postgres` | Postgres user |
 | `PGDATABASE` | `registration` | Database name |
 | `PGPASSWORD` | — | Postgres password (used when constructing the DSN from parts) |
-| `ADS_SERVER_ADDR` | — | ADS dirctl address, e.g. `localhost:8888` (consumed via `ads_utils.publisher`) |
+| `ADS_SERVER_ADDR` | — | ADS dirctl address, e.g. `localhost:8888` (consumed via `agentnet.directory.publisher`) |
 | `OPENAI_BASE_URL` | — | vLLM endpoint for spawned LLM agents |
 | `OPENAI_API_KEY` | — | API key (any non-empty value works with vLLM) |
 | `REGISTRATION_SERVICE_PORT` | `8091` | Port the FastAPI server listens on |

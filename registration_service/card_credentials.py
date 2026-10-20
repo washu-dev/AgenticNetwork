@@ -3,7 +3,7 @@
 Declared credentials ride on the published card's ``capabilities.extensions``
 because that is the one field the planner's discovery read path round-trips
 (ADS discovery discards ``annotations``). The planner reads this same URI back
-(``directory/card_oasf_converter.py::_required_credentials_from_card``).
+(``agentnet/directory/card_oasf.py::_required_credentials_from_card``).
 
 Contract note: ``AgentExtension.required`` is the A2A **protocol-comprehension**
 flag ("a client must understand this extension to interact"), *not* whether a
@@ -18,8 +18,9 @@ from typing import Any
 
 from a2a.types import AgentExtension
 
-# Cross-component contract: the planner mirrors this URI in its read path (P4b).
-CREDENTIALS_EXTENSION_URI = "agenticnetwork.dev/ext/required-credentials"
+# Cross-component contract: the planner reads this URI back (P4b); both sides
+# take it from agentnet.models.
+from agentnet.models import REQUIRED_CREDENTIALS_EXTENSION_URI as CREDENTIALS_EXTENSION_URI
 
 
 def build_credentials_extension(

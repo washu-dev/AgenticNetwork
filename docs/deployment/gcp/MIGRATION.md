@@ -328,7 +328,7 @@ setup + WashU IT coordination, revisit when retiring the external box becomes wo
 
 1. **Decouple ADS publishing from agent lifetime** — pre-publish the full catalog so a
    stopped agent is still discoverable. Primitive already exists:
-   `agent_directory_service/scripts/publish_agents.py`.
+   `agentnet/scripts/publish_agents.py`.
 2. **On-demand backend + planner activate-and-wait** — a `CloudRunBackend`/`GKEBackend`
    implementing the existing `ContainerBackend` interface; planner brings the chosen agent up
    and polls health before dispatching.
@@ -342,7 +342,7 @@ setup + WashU IT coordination, revisit when retiring the external box becomes wo
   `agents` table + crash-recovery loop — the on-demand backend slots in here.
 - The custom-agent register→approve→build→`image_ready` pipeline — only the *launch* step
   changes (host-`srun`-loop → GCP API).
-- `ads_utils/publisher.py` (canonical push→verify→route path) and `publish_agents.py`
+- `agentnet/directory/publisher.py` (canonical push→verify→route path) and `publish_agents.py`
   (publish-without-running) — the pre-publish catalog primitive.
 - The planner's agent-agnostic 5-tool design and A2A/OASF contracts — unchanged.
 - `AGENT_INTEGRATION_SPEC.md`'s dependency-class tags — the per-item migration checklist.

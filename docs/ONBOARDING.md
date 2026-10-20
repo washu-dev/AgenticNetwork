@@ -107,8 +107,8 @@ On GCP, see [`docs/deployment/gcp/README.md`](deployment/gcp/README.md) "Dev wor
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| "I added my agent to `agent-directory` but the planner can't see it." | A card file was added, but the agent was never deployed/run or never published to ADS. | Register it via the registration service (A), or deploy it + self-publish (B). Confirm with `run_ads.sh -list`. |
-| "The agent is registered but still not discoverable." | Stored-but-not-routed (pushed, not in the routing index). | `run_ads.sh -diag` to classify it; `-repair` to route it. |
+| "I added my agent to `agent-directory` but the planner can't see it." | A card file was added, but the agent was never deployed/run or never published to ADS. | Register it via the registration service (A), or deploy it + self-publish (B). Confirm with `scripts/ads -list`. |
+| "The agent is registered but still not discoverable." | Stored-but-not-routed (pushed, not in the routing index). | `scripts/ads -diag` to classify it; `-repair` to route it. |
 | "My agent reads the key from an env var but each user should use their own." | Wrong credential model (operator env-var used for a user-owned resource). | Declare it, grant it in Settings, read from `context`. [`docs/AUTH.md`](AUTH.md) §4. |
 | "I pushed to `main` / synced the cluster but nothing changed." | Source sync ≠ redeploy; the running system uses built images. | Rebuild + push images, resubmit `submit.sbatch`. |
 | "Admin routes 403 for everyone." | `ADMIN_EMAILS` unset (fail-closed). | Set `ADMIN_EMAILS` in `deployment/.env`. |
@@ -120,14 +120,14 @@ scripts/stack status --json
 scripts/stack smoke
 
 # Is my agent actually discoverable (routed) in ADS?
-agent_directory_service/run_ads.sh -list          # routed agents
-agent_directory_service/run_ads.sh -diag          # healthy / queued / stale / orphaned
+scripts/ads -list          # routed agents
+scripts/ads -diag          # healthy / queued / stale / orphaned
 
 # Does the planner see it?
 curl -s http://localhost:8090/agents | jq '.agents[].name'   # from the compute node
 
 # Test an agent's A2A endpoint directly, without publishing:
-python -m agent_directory_service.scripts.validate_agent_endpoint \
+python -m agentnet.scripts.validate_agent_endpoint \
   --card <card.json> --skill <skill> --prompt "..." --endpoint http://host:port/
 ```
 

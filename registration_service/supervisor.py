@@ -14,8 +14,8 @@ from typing import Any
 
 import httpx
 
-from ads_utils.converter import oasf_skill_tag
-from ads_utils.publisher import DirectoryPublisher, DirectoryUnavailable
+from agentnet.directory.card_oasf import oasf_skill_tag
+from agentnet.directory.publisher import DirectoryPublisher, DirectoryUnavailable
 from a2a.types import AgentCard, AgentCapabilities, AgentSkill
 
 from registration_service.card_credentials import build_credentials_extension
@@ -1015,7 +1015,7 @@ def _build_agent_card(
             description=description,
             # Self-describe the ADS routing skill via an 'oasf:<name>:<id>' tag
             # so the card is discoverable without a per-agent entry in
-            # ads_utils.converter's routing map.
+            # the converter's routing map (agentnet/directory/card_oasf.py).
             tags=(
                 [oasf_skill_tag(s.get("key") or s["name"], s["id"])]
                 if s.get("id") is not None

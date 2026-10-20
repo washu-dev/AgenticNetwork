@@ -98,7 +98,7 @@ idempotent migration in `db.py` rewrites legacy values (`openai`→`openai_api_k
    `agenticnetwork.dev/ext/required-credentials` (`registration_service/card_credentials.py`).
    Extensions are used because ADS discovery discards the `annotations` map.
 2. **Discover.** The planner reads them back into `DiscoveredAgent.required_credentials`
-   (`directory/card_oasf_converter.py::_required_credentials_from_card`, the read path).
+   (`agentnet/directory/card_oasf.py::_required_credentials_from_card`, the read path).
 3. **Enforce + consent.** In `runtime.py::_enforce_credentials` (before dispatch):
    - required + not stored → **block** with "add it in Settings."
    - required + stored + not granted → **consent prompt** (`kind="credential_consent"`); on

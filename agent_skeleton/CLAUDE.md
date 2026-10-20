@@ -43,7 +43,7 @@ Two rules follow:
 | Contract | Role | Here |
 |---|---|---|
 | **Agent Card** (`agent.card.json`) | identity + skills + endpoint | `a2a-sdk` `AgentCard` model |
-| **ADS** (directory) | publish/discover by skill | registration supervisor via `ads_utils/publisher.py`, or `publish_agents --card` by hand |
+| **ADS** (directory) | publish/discover by skill | registration supervisor via `agentnet/directory/publisher.py`, or `publish_agents --card` by hand |
 | **A2A** | the actual call (HTTP/JSON-RPC) | `execute()` in `executor.py` |
 
 ## 3. File map — engine, demo, tooling
@@ -121,8 +121,8 @@ cheaper belt-and-suspenders version; both can coexist.
 ## 6. Gotchas (inherited from the parent system)
 
 - **Stored-but-not-routed:** a card can be pushed to ADS yet not appear in the
-  routing index → invisible to the planner. Publish through `ads_utils/publisher.py`
-  (which polls routing) or `python -m agent_directory_service.scripts.publish_agents --card ...`.
+  routing index → invisible to the planner. Publish through `agentnet/directory/publisher.py`
+  (which polls routing) or `python -m agentnet.scripts.publish_agents --card ...`.
 - **Dummy key guards:** `OPENAI_API_KEY` must be non-empty even for vLLM; set a
   placeholder.
 - **vLLM tool calling needs launch flags:** `--enable-auto-tool-choice

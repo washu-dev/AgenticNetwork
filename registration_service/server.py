@@ -16,7 +16,7 @@ import asyncpg
 from fastapi import FastAPI, File, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 
-from ads_utils.publisher import DirectoryPublisher
+from agentnet.directory.publisher import DirectoryPublisher
 from registration_service import db
 from registration_service.archive import ArchiveError, _clear_dir, list_tree, unpack_archive, zip_tree
 from registration_service.backend import _handler_files_dir, _image_slug

@@ -68,8 +68,8 @@ wake-on-request behavior.
      images so cold starts pay seconds, not minutes.
 
 - **Enablers already in the repo.** The decoupling primitive exists: a standalone
-  publisher (`agent_directory_service/run_ads.sh -publish <card>` →
-  `agent_directory_service/scripts/publish_agents.py`) can register a card without
+  publisher (`scripts/ads -publish <card>` →
+  `agentnet/scripts/publish_agents.py`) can register a card without
   the agent running. The missing piece is the activation proxy, which is new
   infrastructure.
 
@@ -80,7 +80,7 @@ wake-on-request behavior.
   **stored but not routed**, which makes it invisible to live discovery even
   though it exists. The planner discovers via *routing*, so any future
   pre-publishing scheme must ensure cards are **routed**, not merely stored. (This
-  is why the `agent_directory_service/scripts/` repair/watch suite exists.)
+  is why the `agentnet/scripts/` repair/watch suite exists.)
 
 - **Open questions / risks.**
   - Cold-start latency: large conda-env images take tens of seconds to minutes to
@@ -93,8 +93,8 @@ wake-on-request behavior.
 - **References.**
   - `../disaster_response_agent/disaster_response_agent.py` — `serve-a2a` publish/unpublish on start/stop
   - `deployment/submit.sbatch` — all containers launched up front
-  - `../agent_directory_service/run_ads.sh` (`-publish`), `../agent_directory_service/scripts/publish_agents.py` — standalone publisher
-  - `../agent_directory_service/scripts/` — routing repair/watch tooling (stored-vs-routed)
+  - `scripts/ads` (`-publish`), `agentnet/scripts/publish_agents.py` — standalone publisher
+  - `agentnet/scripts/` — routing repair/watch tooling (stored-vs-routed)
 
 ---
 
@@ -145,7 +145,7 @@ Chat Completions (CLAUDE.md §7 is kept current on this).
     the **stateless, horizontally-autoscaled front door** (per-turn state lives on
     `TurnState`; it does not self-publish, so no lifecycle coupling). Replace its
     hard dependency on the local `dirctl` subprocess
-    (`main_agent/directory/backends.py`) with a network/gRPC directory client so a
+    (`agentnet/directory/backends.py`) with a network/gRPC directory client so a
     pod needs no `dirctl` binary. Set a non-permissive `policy_mode` for a shared
     deployment, and note the bypass: with no skill hint, write-gating is skipped
     entirely (`runtime.py::_evaluate_policy`).

@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 from typing import Sequence
 
-from planner_agent.main_agent.directory.client import DirectoryClient
+from agentnet.directory.client import DirectoryClient
 from planner_agent.main_agent.config import load_config
 from planner_agent.main_agent.server import create_app
 

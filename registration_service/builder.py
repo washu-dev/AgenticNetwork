@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ads_utils.converter import oasf_skill_tag
+from agentnet.directory.card_oasf import oasf_skill_tag
 from registration_service.models import AnyConfig, upload_spec
 
 

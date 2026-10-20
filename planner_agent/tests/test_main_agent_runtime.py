@@ -8,7 +8,7 @@ from typing import Any
 import httpx
 from a2a.types import AgentCapabilities, AgentCard, AgentProvider, AgentSkill
 
-from planner_agent.main_agent.a2a.client import A2AClient
+from agentnet.a2a.client import A2AClient
 from planner_agent.main_agent.models import (
     A2AArtifact,
     A2AMessage,
@@ -17,8 +17,8 @@ from planner_agent.main_agent.models import (
     A2ATaskState,
     Channel,
 )
-from planner_agent.main_agent.directory.card_oasf_converter import load_agent_card
-from planner_agent.main_agent.directory.client import DirectoryClient
+from agentnet.directory.card_oasf import load_agent_card
+from agentnet.directory.client import DirectoryClient
 from planner_agent.main_agent.state.store import InMemoryStateStore
 
 from planner_agent.main_agent.config import MainAgentConfig
@@ -432,7 +432,7 @@ def test_login_identity_rides_only_in_request_metadata() -> None:
 
 
 async def _login_identity_rides_only_in_request_metadata() -> None:
-    from planner_agent.main_agent.a2a.adapters import internal_task_request_to_a2a_request
+    from agentnet.a2a.adapters import internal_task_request_to_a2a_request
 
     identity = "person@example.test"
     directory = SpyDirectory(fake_ads=True)

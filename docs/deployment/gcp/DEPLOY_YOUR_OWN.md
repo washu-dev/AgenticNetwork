@@ -28,7 +28,7 @@ same images, same services, your names.
 
 - **Cloud Run `planner`**: the orchestrator and chat UI. It finds agents in the directory and calls
   them over A2A, attaching a Google ID token for `*.run.app` agents
-  (`planner_agent/main_agent/a2a/transport.py`, `CloudRunIdTokenAuth`).
+  (`agentnet/a2a/transport.py`, `CloudRunIdTokenAuth`).
 - **Cloud Run `registration`**: the registration service, run as a singleton with
   `SPAWN_BACKEND=cloudrun`. When a registered agent's image is ready, its `CloudRunBackend` deploys
   the agent as its own Cloud Run service and publishes the agent's card to the directory
@@ -490,12 +490,12 @@ Known operational traps (the build poll's freshness guard, the `updated_at` trig
 **Deploy an existing agent by hand (unverified).** Deploy its image as a Cloud Run service with
 `--ingress=internal --no-allow-unauthenticated --min-instances=0 --service-account="$AGENT_SA"`,
 grant `PLANNER_SA` `roles/run.invoker` on it, set the card's URL to the service's `run.app` URL,
-and publish the card from your laptop through an SSH tunnel to the directory (`run_ads.sh` needs
-`dirctl` and the ADS venv; see [docs/AGENT_DIRECTORY.md](../../AGENT_DIRECTORY.md)):
+and publish the card from your laptop through an SSH tunnel to the directory (`scripts/ads` needs
+`dirctl` and the registration venv; see [docs/AGENT_DIRECTORY.md](../../AGENT_DIRECTORY.md)):
 
 ```bash
 gcloud compute ssh ads --zone="$ZONE" -- -N -L 8888:localhost:8888      # leave running
-agent_directory_service/run_ads.sh --server-addr localhost:8888 -publish my_agent.card.json
+scripts/ads --server-addr localhost:8888 -publish my_agent.card.json
 ```
 
 **Keep scaled-to-zero agents at zero.** The planner probes every agent's card URL each minute, which

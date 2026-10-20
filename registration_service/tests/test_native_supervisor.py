@@ -27,7 +27,7 @@ pytest.importorskip("uvicorn")
 
 import registration_service.db as db_mod  # noqa: E402
 import registration_service.supervisor as sup_mod  # noqa: E402
-from ads_utils.publisher import DirectoryUnavailable  # noqa: E402
+from agentnet.directory.publisher import DirectoryUnavailable  # noqa: E402
 from registration_service.fake_db import reset_fake_db  # noqa: E402
 from registration_service.port_pool import port_free_on_host  # noqa: E402
 from registration_service.supervisor import Supervisor  # noqa: E402
