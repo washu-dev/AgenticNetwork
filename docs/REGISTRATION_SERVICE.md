@@ -15,7 +15,7 @@ There are three, consolidated from five on 2026-10-10 ([DECISIONS.md](DECISIONS.
 | Type | Config (`models.py`) | Runs as | Approval? |
 |---|---|---|---|
 | `llm` | `LLMConfig` (system_prompt, model, **tools**) | `LLMAgentExecutor` over an `AgentSpec` built from `tools` | auto, **unless** `tools.source == "upload"` |
-| `proxy` | `ProxyConfig` (upstream_url, auth_header) | `APIProxyExecutor` — forwards the A2A task to an upstream HTTP/JSON-RPC service; no LLM | auto |
+| `proxy` | `ProxyConfig` (upstream_url, auth_header) | `ProxyExecutor` — forwards the A2A task to an upstream HTTP/JSON-RPC service; no LLM | auto |
 | `custom` | `CustomConfig` (class_name, entry_file, requirements, system_packages, credentials, …) | a user-uploaded `AgentHandler` subclass run via the skeleton `HandlerExecutor` | **admin** |
 
 `LLMConfig.tools` is a discriminated union on `source` — `none` (a single turn),
@@ -23,8 +23,8 @@ There are three, consolidated from five on 2026-10-10 ([DECISIONS.md](DECISIONS.
 tool per API operation), `raw` (schemas with no bodies; runs prompt-only). This axis
 used to be three separate handler types: `tool_loop` is now `upload` and
 `endpoint_ops` is now `http`, because neither was ever a different *runtime* from
-`llm` — `tool_loop_handler.py` reuses `llm_handler`'s executor and card builder
-verbatim; only the spec differed.
+`llm` — their handlers (now `llm_upload_handler.py` and `llm_http_handler.py`) reuse
+`llm_handler`'s executor and card builder verbatim; only the spec differed.
 
 `runner.py` dispatches on the canonical type and, for `llm`, on `tools.source`.
 The **approval gate is a property of the config, not the type name**:

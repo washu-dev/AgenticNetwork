@@ -1,10 +1,13 @@
-"""Tests for the tool_loop handler API surface (register / upload / approve).
+"""Tests for `llm` agents with uploaded tools (`tools.source = "upload"`): the API
+surface (register / upload / approve) and the engine half of `extra`.
 
-tool_loop uploads author-supplied tool bodies + schemas + a system prompt; the
-service builds the LLM loop / handler / A2A server around them. It shares the
-uploaded-code lifecycle with `custom` (register-unapproved → upload → approve),
-but validates the *tool contract* (TOOL_SCHEMAS/TOOL_REGISTRY or build_tools)
-rather than an AgentHandler subclass.
+The author uploads tool bodies + schemas + a system prompt; the service builds the
+LLM loop / handler / A2A server around them (locally, handlers/llm_upload_handler.py).
+It shares the uploaded-code lifecycle with `custom` (register-unapproved → upload →
+approve), but validates the *tool contract* (TOOL_SCHEMAS/TOOL_REGISTRY or
+build_tools) rather than an AgentHandler subclass. These tests register under the
+legacy name `tool_loop` on purpose: they also prove that name and its flat config
+shape still work (test_handler_taxonomy.py covers the canonical form).
 """
 
 from __future__ import annotations

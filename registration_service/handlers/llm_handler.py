@@ -1,12 +1,16 @@
-"""LLM handler — A2A server backed by the shared agent_skeleton tool-loop engine.
+"""LLM handler — A2A server for an ``llm`` agent whose ``tools.source`` is
+``none``, ``presets`` or ``raw``, backed by the shared agent_skeleton engine.
 
-The registration "llm" agent type is routed through the spec engine
-(``agent_skeleton.llm_loop.run_agent`` + ``spec.llm_wrapper_spec``) rather than a
-bespoke single-turn call. That gives the "LLM Agent" option optional PRESET TOOLS
-(chosen by name from ``agent_skeleton.system_tools.preset_tools``): with no tools
-it is a single LLM turn as before; with tools the frozen loop lets the model call
-them and then answer. Only the spec differs — the engine loop is shared with the
-endpoint-wrapper and demo agents.
+The agent is routed through the spec engine (``agent_skeleton.llm_loop.run_agent``
++ ``spec.llm_wrapper_spec``) rather than a bespoke single-turn call. ``none`` is a
+single LLM turn; ``presets`` adds tools chosen by name from
+``agent_skeleton.system_tools.preset_tools``, which the loop lets the model call
+before it answers; ``raw`` schemas have no bodies, so the runner serves those
+agents prompt-only (as ``none``). Only the spec differs — the engine loop is shared
+with every other ``llm`` source.
+
+``LLMAgentExecutor`` and ``build_agent_card`` here are also used by
+``llm_upload_handler`` (``upload``) and ``llm_http_handler`` (``http``).
 """
 
 from __future__ import annotations

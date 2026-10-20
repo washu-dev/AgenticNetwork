@@ -5,10 +5,19 @@ This script is exec'd by SubprocessBackend.spawn() for each registered agent.
 
 Dispatch is on the CANONICAL handler type (``llm`` / ``proxy`` / ``custom``) and,
 for ``llm``, on ``config.tools.source`` — because "where do the tools come from"
-is a field now, not a type. Legacy stored values (``api_proxy``, ``tool_loop``,
-``endpoint_ops``) are normalized by ``models.parse_config`` +
-``normalize_handler_type``, so an agent row written before the consolidation still
-starts unchanged.
+is a field now, not a type:
+
+  * ``proxy``                                → handlers/proxy_handler.py
+  * ``llm``, tools.source none/presets/raw   → handlers/llm_handler.py
+  * ``llm``, tools.source upload             → handlers/llm_upload_handler.py
+  * ``llm``, tools.source http               → handlers/llm_http_handler.py
+  * ``custom``                               → handlers/custom_handler.py
+
+The legacy names (``api_proxy``, ``tool_loop``, ``endpoint_ops``) and their old
+config shapes are still read here (``models.parse_config`` +
+``normalize_handler_type``). SubprocessBackend sends the canonical name with the
+canonical config (``backend._config_envelope``), so an agent row written before
+the consolidation still starts unchanged.
 """
 
 from __future__ import annotations
@@ -115,7 +124,7 @@ def main() -> None:
     )
 
     if isinstance(config, ProxyConfig):
-        from registration_service.handlers.api_proxy_handler import run
+        from registration_service.handlers.proxy_handler import run
 
         run(
             agent_id=agent_id,
@@ -147,7 +156,7 @@ def main() -> None:
         source = config.tools.source
         if source == "upload":
             # Author-uploaded tool bodies (the old `tool_loop` type).
-            from registration_service.handlers.tool_loop_handler import run
+            from registration_service.handlers.llm_upload_handler import run
 
             run(
                 agent_id=agent_id,
@@ -162,7 +171,7 @@ def main() -> None:
             return
         if source == "http":
             # One typed tool per API operation (the old `endpoint_ops` type).
-            from registration_service.handlers.operation_handler import run
+            from registration_service.handlers.llm_http_handler import run
 
             run(
                 agent_id=agent_id,

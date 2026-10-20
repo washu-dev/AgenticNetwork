@@ -23,7 +23,7 @@ from a2a.types import TaskState  # noqa: E402
 
 from agent_skeleton.container_runner import _tool_loop_card  # noqa: E402
 from registration_service.backend import SubprocessBackend  # noqa: E402
-from registration_service.handlers import api_proxy_handler, custom_handler, llm_handler  # noqa: E402
+from registration_service.handlers import custom_handler, llm_handler, proxy_handler  # noqa: E402
 from registration_service.handlers.heartbeat import await_with_heartbeat  # noqa: E402
 from registration_service.models import LLMConfig, ProxyConfig  # noqa: E402
 from registration_service.supervisor import _build_agent_card  # noqa: E402
@@ -44,7 +44,7 @@ def test_served_cards_agree_with_published_card() -> None:
     published = _build_agent_card("a1", "Agent", "d", _SKILLS, 19200).capabilities.streaming
     served = {
         "llm": llm_handler.build_agent_card("a1", "Agent", "d", 19200),
-        "proxy": api_proxy_handler.build_agent_card("a1", "Agent", "d", 19200),
+        "proxy": proxy_handler.build_agent_card("a1", "Agent", "d", 19200),
         "custom": custom_handler.build_agent_card("a1", "Agent", "d", 19200),
         "tool loop (container)": _tool_loop_card("a1", "Agent", "d", 19200),
     }

@@ -1,4 +1,8 @@
-"""API proxy handler — forwards incoming A2A tasks to an upstream HTTP service."""
+"""Proxy handler — A2A server for the ``proxy`` agent type (legacy name ``api_proxy``).
+
+No LLM: each incoming A2A task is forwarded to an upstream HTTP/JSON-RPC service
+the author hosts, and the upstream's reply is returned as the answer.
+"""
 
 from __future__ import annotations
 
@@ -29,7 +33,7 @@ logger = logging.getLogger(__name__)
 _PROXY_TIMEOUT_SECONDS = 120.0
 
 
-class APIProxyExecutor(AgentExecutor):
+class ProxyExecutor(AgentExecutor):
     """Forwards an A2A task to an upstream URL and returns its response."""
 
     def __init__(self, agent_id: str, upstream_url: str, auth_header: str | None) -> None:
@@ -66,7 +70,7 @@ class APIProxyExecutor(AgentExecutor):
             # a streaming caller connected meanwhile.
             result = await await_with_heartbeat(updater, self._forward(payload, headers))
         except Exception as exc:
-            logger.exception("api_proxy_failed agent_id=%s upstream=%s", self._agent_id, self._upstream_url)
+            logger.exception("proxy_failed agent_id=%s upstream=%s", self._agent_id, self._upstream_url)
             await updater.complete(
                 message=updater.new_agent_message(
                     [Part(root=TextPart(text=f"Upstream request failed: {exc}"))]
@@ -165,7 +169,7 @@ def run(
     port: int,
 ) -> None:
     card = build_agent_card(agent_id, name, description, port)
-    executor = APIProxyExecutor(agent_id, upstream_url, auth_header)
+    executor = ProxyExecutor(agent_id, upstream_url, auth_header)
     request_handler = DefaultRequestHandler(
         agent_executor=executor,
         task_store=InMemoryTaskStore(),
@@ -174,5 +178,5 @@ def run(
         agent_card=card,
         http_handler=request_handler,
     ).build()
-    logger.info("api_proxy_starting agent_id=%s port=%d upstream=%s", agent_id, port, upstream_url)
+    logger.info("proxy_starting agent_id=%s port=%d upstream=%s", agent_id, port, upstream_url)
     uvicorn.run(app, host=os.getenv("AGENT_BIND_HOST", "0.0.0.0"), port=port, log_level="warning")

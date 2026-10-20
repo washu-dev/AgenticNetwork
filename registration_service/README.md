@@ -44,7 +44,8 @@ the loop*:
 ### Legacy type names (still accepted)
 
 This taxonomy replaced a five-way split in 2026-07. `tool_loop` and `endpoint_ops`
-were never different *runtimes* from `llm` — `handlers/tool_loop_handler.py` imports
+were never different *runtimes* from `llm` — their handlers (now
+`handlers/llm_upload_handler.py` and `handlers/llm_http_handler.py`) import
 `llm_handler`'s executor and card builder verbatim; only the `AgentSpec` differed. So
 "where do the tools come from" became a field.
 
@@ -73,8 +74,10 @@ registration submitted under a legacy name is *persisted* under the canonical on
 | `backend.py` | `SubprocessBackend` (local dev), `ClusterBackend` (cluster `srun` steps) and `CloudRunBackend` (Cloud Run services) behind one `ContainerBackend` interface; `make_backend()` picks by `SPAWN_BACKEND` |
 | `runner.py` | Entry point for local subprocess agents; reads `AGENT_CONFIG_JSON` and dispatches on the canonical type + `tools.source` → the right handler |
 | `builder.py` | Generates the per-agent Docker build context (`Dockerfile` + `{slug}.card.json`) committed to the agent-directory repo for cluster custom agents |
-| `handlers/llm_handler.py` | A2A server for the `llm` loop (`none`/`presets` sources); its executor + card builder are reused verbatim by `tool_loop_handler.py` (`upload`) and `operation_handler.py` (`http`) |
-| `handlers/api_proxy_handler.py` | Minimal A2A server that forwards tasks to an upstream URL (the `proxy` type) |
+| `handlers/llm_handler.py` | A2A server for the `llm` loop with the `none`, `presets` or `raw` tool source (`raw` runs prompt-only); its executor + card builder are reused verbatim by the two handlers below |
+| `handlers/llm_upload_handler.py` | A2A server for an `llm` agent with uploaded tools (`tools.source = "upload"`; legacy name `tool_loop`), local subprocess path |
+| `handlers/llm_http_handler.py` | A2A server for an `llm` agent with one typed tool per API operation (`tools.source = "http"`; legacy name `endpoint_ops`) |
+| `handlers/proxy_handler.py` | Minimal A2A server that forwards tasks to an upstream URL (the `proxy` type; legacy name `api_proxy`) |
 | `handlers/custom_handler.py` | Loads and runs an uploaded `AgentHandler` subclass (local subprocess path) |
 | `credential_catalog.py` / `card_credentials.py` | Canonical credential-type catalog + the card credentials extension for declared per-user creds (P4) |
 | `validator.py` | Validates uploaded custom-agent handler code/archives before spawn |

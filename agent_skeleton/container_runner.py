@@ -52,11 +52,12 @@ def _tool_loop_card(agent_id: str, name: str, description: str, port: int):
 
 
 def _serve_tool_loop(cfg: dict) -> None:
-    """Serve an uploaded LLM tool loop (registration ``tool_loop`` type) on the cluster.
+    """Serve an ``llm`` agent with uploaded tools (``tools.source = "upload"``; legacy
+    name ``tool_loop``) from its per-agent image.
 
     Loads the author's tools module (TOOL_SCHEMAS + TOOL_REGISTRY, or build_tools),
     builds an AgentSpec, and serves it through the skeleton's own create_app +
-    SkeletonAgentExecutor — the same engine the local tool_loop_handler uses, but
+    SkeletonAgentExecutor — the same engine the local llm_upload_handler uses, but
     without any registration_service import (which isn't in this image)."""
     import uvicorn
 

@@ -8,8 +8,9 @@ Three backends share one interface (ContainerBackend):
     remain importable) into which their requirements are installed.
 
   * ClusterBackend — ENGR cluster. Each agent is launched as an `srun --overlap`
-    step inside the existing Slurm allocation, using a per-agent (custom) or
-    shared (llm/api_proxy) Docker image.
+    step inside the existing Slurm allocation, using its own per-agent Docker
+    image. Only uploaded-code agents (``custom``, or ``llm`` with uploaded tools)
+    run here; the supervisor rejects the others on this backend.
 
   * CloudRunBackend — GCP. Each custom agent is deployed as a scale-to-zero Cloud
     Run service off the CI-built image (Cloud Run Admin API), run as a shared
@@ -34,7 +35,7 @@ from pathlib import Path
 
 import httpx
 
-from registration_service.models import AnyConfig, UploadSpec, upload_spec
+from registration_service.models import AnyConfig, UploadSpec, normalize_handler_type, upload_spec
 
 logger = logging.getLogger(__name__)
 
@@ -101,11 +102,17 @@ def _config_envelope(
     config: AnyConfig,
     port: int,
 ) -> str:
-    """The nested AGENT_CONFIG_JSON envelope shared by every handler type (model input)."""
+    """The nested AGENT_CONFIG_JSON envelope shared by every handler type (model input).
+
+    ``config`` is already typed, so its dump is in the CANONICAL shape. Send the
+    canonical name with it: a row stored under a legacy name (``tool_loop``,
+    ``endpoint_ops``) would otherwise make the runner read this canonical payload
+    with the legacy-shape reader, which drops ``extra`` or rejects the config.
+    """
     config_payload = config.model_dump()
     config_payload["name"] = name
     config_payload["description"] = description
-    return _envelope_json(agent_id, handler_type, port, config_payload)
+    return _envelope_json(agent_id, normalize_handler_type(handler_type), port, config_payload)
 
 
 def cluster_srun_argv(
@@ -117,7 +124,7 @@ def cluster_srun_argv(
     config: dict,
     port: int,
 ) -> tuple[list[str], dict[str, str]]:
-    """Build the host-side `srun --overlap` argv + per-agent env for a custom agent.
+    """Build the host-side `srun --overlap` argv + per-agent env for an uploaded-code agent.
 
     Used by the registration service's /internal/spawn-queue so the host spawn loop
     (deployment/spawn_agent_loop.py) can launch the agent in the native Slurm env.

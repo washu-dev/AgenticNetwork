@@ -3,7 +3,7 @@
 The planner injects each user's credentials into A2A request metadata under
 "credentials", and the login identity (an email under SSO) under "user_id". These
 tests drive the agents registration runs (llm / http operation tools via
-``LLMAgentExecutor``; proxy via ``APIProxyExecutor``) and the runner's config
+``LLMAgentExecutor``; proxy via ``ProxyExecutor``) and the runner's config
 parsing, and check that a sentinel secret never reaches the model, a log line or
 the returned artifact and the identity never reaches the model or the upstream,
 while an operation tool still authenticates with its own token. No network: the
@@ -37,7 +37,7 @@ from agent_skeleton import llm_loop  # noqa: E402
 from agent_skeleton.spec import llm_wrapper_spec, operation_wrapper_spec  # noqa: E402
 from agent_skeleton.system_tools import call_endpoint as call_endpoint_mod  # noqa: E402
 from agent_skeleton.system_tools.call_endpoint import EndpointConfig, OperationConfig  # noqa: E402
-from registration_service.handlers.api_proxy_handler import APIProxyExecutor  # noqa: E402
+from registration_service.handlers.proxy_handler import ProxyExecutor  # noqa: E402
 from registration_service.handlers.llm_handler import LLMAgentExecutor  # noqa: E402
 
 SENTINEL = "TEST_SECRET_DO_NOT_LEAK"
@@ -195,11 +195,11 @@ async def test_proxy_keeps_credentials_out_of_logs_and_artifact(monkeypatch, cap
         seen.update(payload=payload, headers=headers)
         return {"result": {"status": {"message": {"parts": [{"kind": "text", "text": "ok"}]}}}}
 
-    monkeypatch.setattr(APIProxyExecutor, "_forward", fake_forward)
+    monkeypatch.setattr(ProxyExecutor, "_forward", fake_forward)
     caplog.set_level(logging.DEBUG)
 
     q = _Queue()
-    await APIProxyExecutor("proxy", "http://upstream.example.test/a2a", "Bearer operator").execute(
+    await ProxyExecutor("proxy", "http://upstream.example.test/a2a", "Bearer operator").execute(
         _context_with_credentials(), q
     )
 

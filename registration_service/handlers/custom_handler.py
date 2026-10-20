@@ -1,8 +1,10 @@
-"""Custom handler — A2A server backed by a user-uploaded AgentHandler subclass.
+"""Custom handler — A2A server for the ``custom`` agent type: a user-uploaded
+AgentHandler subclass.
 
 Loads the handler class from the uploaded file (HANDLER_FILE_PATH), instantiates
 it with the `extra` config, and wraps it in agent_skeleton.HandlerExecutor. The
-A2A serving wiring mirrors llm_handler / api_proxy_handler.
+A2A serving wiring mirrors llm_handler / proxy_handler. This is the LOCAL
+(subprocess) path; per-agent images use ``agent_skeleton.container_runner``.
 """
 
 from __future__ import annotations

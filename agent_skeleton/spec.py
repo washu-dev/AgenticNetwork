@@ -284,9 +284,11 @@ def load_tool_module(path: str, config: dict[str, Any] | None = None) -> tuple[l
         API key, a handle) into each tool WITHOUT the value ever becoming a tool
         parameter the model sees.
 
-    This is the ``tool_loop`` handler's analog of ``make_operation_tool`` in the
-    endpoint-ops path — it turns uploaded code into the (schemas, registry) an
-    ``AgentSpec`` needs. Pure loading; alignment is checked by ``tool_loop_spec``.
+    For an ``llm`` agent with uploaded tools (``tools.source = "upload"``; legacy
+    name ``tool_loop``) this is the analog of ``make_operation_tool`` for HTTP
+    tools (``tools.source = "http"``) — it turns uploaded code into the (schemas,
+    registry) an ``AgentSpec`` needs. Pure loading; alignment is checked by
+    ``tool_loop_spec``.
     """
     import importlib.util
 
@@ -328,11 +330,11 @@ def tool_loop_spec(
     """Build a spec for an uploaded LLM tool loop: the author's OWN tool bodies +
     schemas + system prompt, run by the same frozen engine as every other spec.
 
-    This is the ``tool_loop`` registration type — the sibling of
-    ``llm_wrapper_spec`` (preset tools) and ``operation_wrapper_spec`` (typed HTTP
-    operations), but with the tools supplied as uploaded Python. Validated before
-    return, so a schema/function mismatch fails HERE (at spawn) rather than on the
-    first request."""
+    This serves an ``llm`` agent with ``tools.source = "upload"`` (legacy name
+    ``tool_loop``) — the sibling of ``llm_wrapper_spec`` (preset tools) and
+    ``operation_wrapper_spec`` (typed HTTP operations), but with the tools
+    supplied as uploaded Python. Validated before return, so a schema/function
+    mismatch fails HERE (at spawn) rather than on the first request."""
     spec = AgentSpec(
         name=name,
         system_prompt=system_prompt,

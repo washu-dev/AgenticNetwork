@@ -1,14 +1,14 @@
-"""Tool-loop handler — A2A server for an uploaded LLM tool loop.
+"""LLM upload handler — A2A server for an ``llm`` agent with ``tools.source = "upload"``.
 
-The registration ``tool_loop`` agent type runs author-supplied tool bodies +
-schemas + a system prompt through the shared engine
-(``agent_skeleton.llm_loop.run_agent`` via ``spec.tool_loop_spec``). It reuses the
-``llm`` handler's ``LLMAgentExecutor`` + card builder verbatim — the run loop and
-the A2A dual-channel output are identical; only the spec (the uploaded tools)
-differs. This mirrors how ``operation_handler`` (endpoint_ops) is built: the same
-executor, a different spec.
+The author uploads tool bodies + schemas; with the system prompt they run through
+the shared engine (``agent_skeleton.llm_loop.run_agent`` via
+``spec.tool_loop_spec``). The legacy name for this shape is ``tool_loop``. It
+reuses ``llm_handler``'s ``LLMAgentExecutor`` + card builder verbatim — the run
+loop and the A2A dual-channel output are identical; only the spec (the uploaded
+tools) differs. ``llm_http_handler`` (``tools.source = "http"``) is built the same
+way: the same executor, a different spec.
 
-This is the LOCAL (subprocess) path. The cluster equivalent is
+This is the LOCAL (subprocess) path. The cluster and Cloud Run equivalent is
 ``agent_skeleton.container_runner._serve_tool_loop`` (which can't import
 registration_service, so it serves via the skeleton's own ``create_app``).
 """
@@ -64,7 +64,7 @@ def run(
         http_handler=request_handler,
     ).build()
     logger.info(
-        "tool_loop_handler_starting agent_id=%s port=%d model=%s tools=%d file=%s",
+        "llm_upload_handler_starting agent_id=%s port=%d model=%s tools=%d file=%s",
         agent_id,
         port,
         model,

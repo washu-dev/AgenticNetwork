@@ -13,11 +13,12 @@ actually changes the runtime — *who runs the loop*:
 
 This replaces the older five-way split (``llm``, ``api_proxy``, ``custom``,
 ``endpoint_ops``, ``tool_loop``). ``tool_loop`` and ``endpoint_ops`` were never
-different *runtimes* from ``llm`` — ``handlers/tool_loop_handler.py`` imports
-``llm_handler``'s executor and card builder verbatim and says so; only the
-``AgentSpec`` differed. So "where do the tools come from" is now a **field**
-(``LLMConfig.tools``) rather than a type. ``proxy`` stays separate precisely
-because "no LLM at all" is its defining property.
+different *runtimes* from ``llm`` — the upload handler (now
+``handlers/llm_upload_handler.py``) imports ``llm_handler``'s executor and card
+builder verbatim and says so; only the ``AgentSpec`` differed. So "where do the
+tools come from" is now a **field** (``LLMConfig.tools``) rather than a type.
+``proxy`` stays separate precisely because "no LLM at all" is its defining
+property.
 
 **Legacy names keep working.** ``api_proxy`` / ``tool_loop`` / ``endpoint_ops``
 are still accepted on the wire and still parse from their old config shapes (see

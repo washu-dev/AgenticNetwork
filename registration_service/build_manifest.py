@@ -75,13 +75,13 @@ _ALLOWED: tuple[tuple[str, str, str], ...] = (
 # emitted; only their NAMES can appear, under "omitted_fields". Kept explicit so the
 # self-test below has something concrete to check the rendered document against.
 _NEVER_EMIT: frozenset[str] = frozenset({
-    "extra",            # tool_loop: the documented "bake in secrets" channel
+    "extra",            # custom / llm upload tools: the documented "bake in secrets" channel
     "tools",            # llm: arbitrary dicts
-    "auth_header",      # api_proxy: may be a literal header value
-    "auth_env",         # endpoint_ops: an env var name, but not needed here
+    "auth_header",      # proxy: may be a literal header value
+    "auth_env",         # llm http tools: an env var name, but not needed here
     "system_prompt",    # free text
     "model",            # free text
-    "operations",       # endpoint_ops: nested dicts (params, headers)
+    "operations",       # llm http tools: nested dicts (params, headers)
     "upstream_url",     # may embed credentials in userinfo
     "base_url",         # ditto
     "preset_tools",     # not needed to rebuild an uploaded-code agent

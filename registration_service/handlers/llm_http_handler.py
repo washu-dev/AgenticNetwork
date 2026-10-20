@@ -1,12 +1,13 @@
-"""Endpoint-ops handler — A2A server for a TYPED per-operation API wrapper.
+"""LLM HTTP handler — A2A server for an ``llm`` agent with ``tools.source = "http"``.
 
-The registration ``endpoint_ops`` agent type wraps an external HTTP/JSON API by
-exposing each of its operations as its OWN typed Chat Completions tool (Feature B):
-the model calls e.g. ``get_weather(city=...)`` and the tool builds the concrete
-``GET /weather?city=...`` request. This is built on the same shared engine as the
-``llm`` type — it reuses ``agent_skeleton.llm_loop.run_agent`` via
-``operation_wrapper_spec`` — so the serving stack (executor, dual-channel output)
-is identical; only the spec (typed operation tools) differs.
+The agent wraps an external HTTP/JSON API by exposing each of its operations as
+its OWN typed Chat Completions tool: the model calls e.g. ``get_weather(city=...)``
+and the tool builds the concrete ``GET /weather?city=...`` request. The legacy
+name for this shape is ``endpoint_ops``. It runs on the same shared engine as
+every ``llm`` agent (``agent_skeleton.llm_loop.run_agent`` via
+``operation_wrapper_spec``) and reuses ``llm_handler``'s executor + card builder,
+so the serving stack (executor, dual-channel output) is identical; only the spec
+(typed operation tools) differs.
 """
 
 from __future__ import annotations
@@ -67,7 +68,7 @@ def run(
         http_handler=request_handler,
     ).build()
     logger.info(
-        "operation_handler_starting agent_id=%s port=%d model=%s operations=%d base_url=%s",
+        "llm_http_handler_starting agent_id=%s port=%d model=%s operations=%d base_url=%s",
         agent_id,
         port,
         model,

@@ -12,7 +12,7 @@ Two protocols:
     (works for any plain REST/JSON service).
   * ``a2a`` — wrap ``request`` in an A2A JSON-RPC ``message/send`` envelope (for
     external services that already speak the network's agent-to-agent protocol),
-    mirroring ``registration_service/handlers/api_proxy_handler.py``.
+    mirroring ``registration_service/handlers/proxy_handler.py``.
 
 Intentionally **dependency-free** (stdlib ``urllib`` only): a generated agent can
 run this without httpx / a2a-sdk installed, and it is unit-testable without a

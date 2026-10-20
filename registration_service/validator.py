@@ -58,11 +58,12 @@ def _scan_warnings(tree: ast.AST) -> list[str]:
 
 
 def validate_tool_module(source: str) -> ValidationResult:
-    """Validate an uploaded ``tool_loop`` entry module (AST only; never executes).
+    """Validate the entry module of an ``llm`` agent with uploaded tools
+    (``tools.source = "upload"``; legacy name ``tool_loop``). AST only; never executes.
 
     Structural (blocking): the module must expose the tool contract — module-level
     ``TOOL_SCHEMAS`` **and** ``TOOL_REGISTRY``, or a ``build_tools`` factory (which
-    returns them). This is the tool-loop analog of ``validate_handler``'s
+    returns them). This is the uploaded-tools analog of ``validate_handler``'s
     AgentHandler check. The schema↔function alignment is enforced later, at spawn,
     by ``AgentSpec.validate()`` (which does need to run the code).
     """
