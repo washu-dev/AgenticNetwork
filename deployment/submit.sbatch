@@ -109,7 +109,10 @@ fi
 
 # Ports — offset by PORT_OFFSET so a test instance can run beside prod on one node.
 # Single source of truth: each agent entrypoint reads its own *_PORT env var.
-export MAIN_AGENT_PORT=$((8090 + PORT_OFFSET))
+# The chat app (planner service) reads CHAT_APP_PORT; MAIN_AGENT_PORT is its old name,
+# exported too because an older planner image reads only that one.
+export CHAT_APP_PORT=$((8090 + PORT_OFFSET))
+export MAIN_AGENT_PORT="$CHAT_APP_PORT"
 export REGISTRATION_SERVICE_PORT=$((8091 + PORT_OFFSET))
 export EMAIL_AGENT_A2A_PORT=$((9103 + PORT_OFFSET))
 export SCOUT_HTTP_PORT=$((9104 + PORT_OFFSET))
@@ -136,9 +139,12 @@ fi
 # A test instance sits behind NO Shibboleth SP — it's reached by SSH tunnel to its
 # planner port, not the public agenticweb URL — so relax the planner's auth gate, or
 # every /app and /messages request 401s (no identity headers). Scoped strictly to test;
-# prod ALWAYS keeps the SSO gate. Override with PLANNER_ALLOW_ANON=0 to keep it on in test.
+# prod ALWAYS keeps the SSO gate. Override with CHAT_APP_ALLOW_ANON=0 to keep it on in test
+# (the old name PLANNER_ALLOW_ANON still works). Both names are exported with the same
+# value, because an older planner image reads only PLANNER_ALLOW_ANON.
 if [ "$DEPLOY_ENV" = "test" ]; then
-    export PLANNER_ALLOW_ANON="${PLANNER_ALLOW_ANON:-1}"
+    export CHAT_APP_ALLOW_ANON="${CHAT_APP_ALLOW_ANON:-${PLANNER_ALLOW_ANON:-1}}"
+    export PLANNER_ALLOW_ANON="$CHAT_APP_ALLOW_ANON"
 fi
 
 # Postgres data dir: prod uses the persistent /engrfs volume (real, credential-bearing
@@ -248,7 +254,7 @@ for i in $(seq 1 30); do
     sleep 1
 done
 
-# Port assignments (MAIN_AGENT_PORT, *_A2A_PORT, etc.) are exported in the instance-mode
+# Port assignments (CHAT_APP_PORT, *_A2A_PORT, etc.) are exported in the instance-mode
 # block near the top of this script, offset by PORT_OFFSET. Slurm propagates them into
 # every container automatically.
 

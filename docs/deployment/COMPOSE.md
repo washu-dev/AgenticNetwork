@@ -87,8 +87,8 @@ Compose reads `deployment/compose/.env`. Every variable is optional.
 | `ADMIN_EMAILS` | `dev@example.test` | Comma-separated admin emails, read by the planner and the registration service. |
 | `OPENAI_BASE_URL` | `http://127.0.0.1:8099/v1` (the mock) | OpenAI-compatible Chat Completions endpoint for the planner and the spawned agents. |
 | `OPENAI_API_KEY` | `mock-key` | Its API key. |
-| `MAIN_AGENT_LLM_MODEL` | `mock-planner` | The planner's model name. |
-| `DEVSTACK_SPECIALIST_MODEL` | `MAIN_AGENT_LLM_MODEL` | The model the seed agents are registered with. |
+| `PLANNER_LLM_MODEL` | `mock-planner` | The planner's model name. Its old name, `MAIN_AGENT_LLM_MODEL`, still works. |
+| `DEVSTACK_SPECIALIST_MODEL` | `PLANNER_LLM_MODEL` | The model the seed agents are registered with. |
 | `CREDENTIALS_ENCRYPTION_KEY` | empty | 32-byte base64 key that encrypts users' stored credentials. Needed before anyone saves a credential. |
 | `COMPOSE_PROJECT_NAME` | `agenticnetwork` | Compose's own setting. A second stack on the same host needs another name and another `FRONT_DOOR_PORT`; it gets its own containers, volumes and built images (named `<project>-<service>`). |
 
@@ -106,7 +106,7 @@ Set all three in `.env`, before the first start:
 ```bash
 OPENAI_BASE_URL=https://api.openai.com/v1
 OPENAI_API_KEY=sk-...
-MAIN_AGENT_LLM_MODEL=gpt-4o-mini
+PLANNER_LLM_MODEL=gpt-4o-mini
 ```
 
 Any OpenAI-compatible Chat Completions endpoint works: a hosted API, vLLM or Ollama. The

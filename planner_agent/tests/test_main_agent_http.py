@@ -23,6 +23,12 @@ def _config() -> MainAgentConfig:
     return MainAgentConfig(llm_enabled=False, llm_model="mock", fake_ads=True)
 
 
+def _no_anon_opt_in(monkeypatch) -> None:
+    # The anonymous-access opt-in, under its name and its old name.
+    for name in ("CHAT_APP_ALLOW_ANON", "PLANNER_ALLOW_ANON"):
+        monkeypatch.delenv(name, raising=False)
+
+
 def test_health_endpoint() -> None:
     asyncio.run(_health())
 
@@ -63,7 +69,7 @@ async def _agents_listing() -> None:
 
 
 def test_messages_endpoint_accepts_image_upload(tmp_path, monkeypatch) -> None:
-    monkeypatch.setenv("MAIN_AGENT_UPLOAD_DIR", str(tmp_path))
+    monkeypatch.setenv("CHAT_APP_UPLOAD_DIR", str(tmp_path))
     asyncio.run(_messages_accepts_image_upload())
 
 
@@ -135,23 +141,50 @@ async def _post_message(headers: dict[str, str] | None = None):
 
 def test_missing_identity_fails_closed_when_db_configured(monkeypatch) -> None:
     monkeypatch.setenv("REGISTRATION_DB_DSN", "postgres://unused")
-    monkeypatch.delenv("PLANNER_ALLOW_ANON", raising=False)
+    _no_anon_opt_in(monkeypatch)
     resp = asyncio.run(_post_message())
     assert resp.status_code == 401, resp.text
 
 
 def test_missing_identity_allowed_without_db(monkeypatch) -> None:
     monkeypatch.delenv("REGISTRATION_DB_DSN", raising=False)
-    monkeypatch.delenv("PLANNER_ALLOW_ANON", raising=False)
+    _no_anon_opt_in(monkeypatch)
     resp = asyncio.run(_post_message())
     assert resp.status_code == 200, resp.text
 
 
 def test_allow_anon_flag_overrides_fail_closed(monkeypatch) -> None:
     monkeypatch.setenv("REGISTRATION_DB_DSN", "postgres://unused")
+    _no_anon_opt_in(monkeypatch)
+    monkeypatch.setenv("CHAT_APP_ALLOW_ANON", "1")
+    resp = asyncio.run(_post_message())
+    assert resp.status_code == 200, resp.text
+
+
+def test_old_allow_anon_name_still_overrides_fail_closed(monkeypatch) -> None:
+    monkeypatch.setenv("REGISTRATION_DB_DSN", "postgres://unused")
+    _no_anon_opt_in(monkeypatch)
     monkeypatch.setenv("PLANNER_ALLOW_ANON", "1")
     resp = asyncio.run(_post_message())
     assert resp.status_code == 200, resp.text
+
+
+@pytest.mark.parametrize("name", ["CHAT_APP_ALLOW_ANON", "PLANNER_ALLOW_ANON"])
+@pytest.mark.parametrize("value", ["true", "yes", "on", "0", "", " 1"])
+def test_allow_anon_needs_exactly_1(monkeypatch, name, value) -> None:
+    monkeypatch.setenv("REGISTRATION_DB_DSN", "postgres://unused")
+    _no_anon_opt_in(monkeypatch)
+    monkeypatch.setenv(name, value)
+    resp = asyncio.run(_post_message())
+    assert resp.status_code == 401, resp.text
+
+
+def test_new_allow_anon_name_wins_over_the_old_one(monkeypatch) -> None:
+    monkeypatch.setenv("REGISTRATION_DB_DSN", "postgres://unused")
+    monkeypatch.setenv("CHAT_APP_ALLOW_ANON", "0")
+    monkeypatch.setenv("PLANNER_ALLOW_ANON", "1")
+    resp = asyncio.run(_post_message())
+    assert resp.status_code == 401, resp.text
 
 
 def test_shib_header_becomes_user_id(monkeypatch) -> None:
@@ -220,7 +253,7 @@ def test_admin_empty_allowlist_forbids_everyone(monkeypatch) -> None:
 
 def test_admin_route_401_without_identity_when_db(monkeypatch) -> None:
     monkeypatch.setenv("REGISTRATION_DB_DSN", "postgres://unused")
-    monkeypatch.delenv("PLANNER_ALLOW_ANON", raising=False)
+    _no_anon_opt_in(monkeypatch)
     monkeypatch.setenv("ADMIN_EMAILS", "admin@example.com")
     resp = asyncio.run(_get(_final_answer_app(), "/admin/stats"))
     assert resp.status_code == 401, resp.text
@@ -312,7 +345,7 @@ async def _register_proxy_never_forwards_internal_routes() -> None:
 def test_landing_is_public_and_links_to_app(monkeypatch) -> None:
     # Even with a DB configured (fail-closed identity), / needs no identity.
     monkeypatch.setenv("REGISTRATION_DB_DSN", "postgres://unused")
-    monkeypatch.delenv("PLANNER_ALLOW_ANON", raising=False)
+    _no_anon_opt_in(monkeypatch)
     asyncio.run(_landing_is_public())
 
 
@@ -327,7 +360,7 @@ async def _landing_is_public() -> None:
 
 def test_app_hard_gated_when_db_configured(monkeypatch) -> None:
     monkeypatch.setenv("REGISTRATION_DB_DSN", "postgres://unused")
-    monkeypatch.delenv("PLANNER_ALLOW_ANON", raising=False)
+    _no_anon_opt_in(monkeypatch)
     asyncio.run(_app_hard_gated())
 
 
@@ -345,7 +378,7 @@ async def _app_hard_gated() -> None:
 
 def test_app_served_in_dev_without_db(monkeypatch) -> None:
     monkeypatch.delenv("REGISTRATION_DB_DSN", raising=False)
-    monkeypatch.delenv("PLANNER_ALLOW_ANON", raising=False)
+    _no_anon_opt_in(monkeypatch)
     asyncio.run(_app_served_in_dev())
 
 
@@ -517,7 +550,7 @@ async def _body_user_id_cannot_enter_another_users_context() -> None:
 def test_body_user_id_kept_without_identity_header(monkeypatch) -> None:
     # Anonymous dev/no-DB runs keep the body's user_id, as before.
     monkeypatch.delenv("REGISTRATION_DB_DSN", raising=False)
-    monkeypatch.delenv("PLANNER_ALLOW_ANON", raising=False)
+    _no_anon_opt_in(monkeypatch)
     asyncio.run(_body_user_id_kept_without_identity_header())
 
 
@@ -538,7 +571,7 @@ async def _body_user_id_kept_without_identity_header() -> None:
 
 def test_confirmations_fail_closed_without_identity_when_db(monkeypatch) -> None:
     monkeypatch.setenv("REGISTRATION_DB_DSN", "postgres://unused")
-    monkeypatch.delenv("PLANNER_ALLOW_ANON", raising=False)
+    _no_anon_opt_in(monkeypatch)
     asyncio.run(_confirmations_fail_closed())
 
 
@@ -652,7 +685,7 @@ async def _me_without_db() -> None:
 
 def test_me_without_db_or_header_is_demo_user(monkeypatch) -> None:
     monkeypatch.delenv("REGISTRATION_DB_DSN", raising=False)
-    monkeypatch.delenv("PLANNER_ALLOW_ANON", raising=False)
+    _no_anon_opt_in(monkeypatch)
     resp = asyncio.run(_get(_final_answer_app(), "/me"))
     assert resp.status_code == 200, resp.text
     assert resp.json()["email"] == "demo-user"
@@ -660,7 +693,7 @@ def test_me_without_db_or_header_is_demo_user(monkeypatch) -> None:
 
 def test_me_fails_closed_without_identity_when_db(monkeypatch) -> None:
     monkeypatch.setenv("REGISTRATION_DB_DSN", "postgres://unused")
-    monkeypatch.delenv("PLANNER_ALLOW_ANON", raising=False)
+    _no_anon_opt_in(monkeypatch)
     resp = asyncio.run(_get(_final_answer_app(), "/me"))
     assert resp.status_code == 401, resp.text
 

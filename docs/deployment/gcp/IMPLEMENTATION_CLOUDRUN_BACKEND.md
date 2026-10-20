@@ -406,7 +406,8 @@ needs org-level GCP access + WashU-IdP re-registration — deferred.
   reverse-proxy config (nginx/Apache — whichever proxies to the ENGR planner today) is repointed to run.app
   **and** injects `Authorization: Bearer <token>`, sets SNI + `Host: <run.app host>`, keeps `proxy_buffering
   off` for `/messages/stream` SSE, and forwards the mod_shib identity headers.
-- *The flip (together):* `gcloud run services update planner --remove-env-vars=PLANNER_ALLOW_ANON` + repoint
+- *The flip (together):* `gcloud run services update planner --remove-env-vars=PLANNER_ALLOW_ANON,CHAT_APP_ALLOW_ANON`
+  (the old and new names of the same setting; remove both) + repoint
   the gateway upstream to run.app.
 - *Validate first:* from the gateway, `curl -H "Authorization: Bearer $(cat token)" …/health` → 200; a bare
   curl (no token) → 403; confirm the refresh survives a token expiry.

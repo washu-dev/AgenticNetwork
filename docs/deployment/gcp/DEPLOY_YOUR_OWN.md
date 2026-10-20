@@ -327,17 +327,17 @@ adds to `PLANNER_SECRETS` for the deploy command below.
 export PLANNER_SECRETS="REGISTRATION_DB_DSN=registration-db-dsn:latest,CREDENTIALS_ENCRYPTION_KEY=credentials-encryption-key:latest"
 ```
 
-**A. A hosted OpenAI-compatible API (a key).** `MAIN_AGENT_LLM_MODEL` defaults to `gpt-4o-mini`. For
+**A. A hosted OpenAI-compatible API (a key).** `PLANNER_LLM_MODEL` defaults to `gpt-4o-mini`. For
 a provider other than OpenAI, add `OPENAI_BASE_URL=<its /v1 URL>` to `LLM_ENV`.
 
 ```bash
 printf %s 'REPLACE_ME' | gcloud secrets create llm-api-key --data-file=-
 grant llm-api-key "$PLANNER_SA"
-export LLM_ENV="MAIN_AGENT_LLM_MODEL=gpt-4o-mini"
+export LLM_ENV="PLANNER_LLM_MODEL=gpt-4o-mini"
 export PLANNER_SECRETS="${PLANNER_SECRETS},OPENAI_API_KEY=llm-api-key:latest"
 ```
 
-**B. Vertex AI (no key).** With `MAIN_AGENT_LLM_PROVIDER=vertex` the planner mints a short-lived
+**B. Vertex AI (no key).** With `PLANNER_LLM_PROVIDER=vertex` the planner mints a short-lived
 token from its service account on each call, so it needs no `OPENAI_API_KEY`. The model name is the
 one the reference validated (`MIGRATION.md`, "LLM hosting").
 
@@ -345,7 +345,7 @@ one the reference validated (`MIGRATION.md`, "LLM hosting").
 gcloud projects add-iam-policy-binding "$PROJECT_ID" \
   --member="serviceAccount:${PLANNER_SA}" --role=roles/aiplatform.user --condition=None
 export VERTEX_URL="https://${REGION}-aiplatform.googleapis.com/v1/projects/${PROJECT_ID}/locations/${REGION}/endpoints/openapi"
-export LLM_ENV="MAIN_AGENT_LLM_PROVIDER=vertex,OPENAI_BASE_URL=${VERTEX_URL},MAIN_AGENT_LLM_MODEL=google/gemini-2.5-flash"
+export LLM_ENV="PLANNER_LLM_PROVIDER=vertex,OPENAI_BASE_URL=${VERTEX_URL},PLANNER_LLM_MODEL=google/gemini-2.5-flash"
 ```
 
 **C. Self-hosted vLLM.** vLLM must be reachable from the VPC (for example on a GPU VM, or through a
@@ -360,19 +360,20 @@ gcloud compute firewall-rules create allow-vllm-from-connector --network=default
   --source-ranges="$CONNECTOR_RANGE" --target-tags=vllm
 printf %s 'REPLACE_ME' | gcloud secrets create llm-api-key --data-file=-   # the same value as vLLM's --api-key
 grant llm-api-key "$PLANNER_SA"
-export LLM_ENV="OPENAI_BASE_URL=http://VLLM_INTERNAL_IP:8100/v1,MAIN_AGENT_LLM_MODEL=openai/gpt-oss-120b"
+export LLM_ENV="OPENAI_BASE_URL=http://VLLM_INTERNAL_IP:8100/v1,PLANNER_LLM_MODEL=openai/gpt-oss-120b"
 export PLANNER_SECRETS="${PLANNER_SECRETS},OPENAI_API_KEY=llm-api-key:latest"
 ```
 
 **Optional failover**, as in the reference (vLLM primary, Vertex fallback): add
-`MAIN_AGENT_LLM_FALLBACK_PROVIDER=vertex,MAIN_AGENT_LLM_FALLBACK_BASE_URL=${VERTEX_URL},MAIN_AGENT_LLM_FALLBACK_MODEL=google/gemini-2.5-flash`
+`PLANNER_LLM_FALLBACK_PROVIDER=vertex,PLANNER_LLM_FALLBACK_BASE_URL=${VERTEX_URL},PLANNER_LLM_FALLBACK_MODEL=google/gemini-2.5-flash`
 to `LLM_ENV` and grant the planner `roles/aiplatform.user` as in option B. The planner switches on
 connection errors, timeouts and 5xx answers.
 
 **Deploy.** The command override starts the server directly, as the reference did: the stock
 planner entrypoint waits for ADS before starting and doesn't read `$PORT`
-(`deployment/entrypoints/entrypoint-planner.sh`). `MAIN_AGENT_PORT=8080` makes the server listen
-where Cloud Run sends traffic.
+(`deployment/entrypoints/entrypoint-planner.sh`). `CHAT_APP_PORT=8080` makes the server listen
+where Cloud Run sends traffic. (The planner's settings were renamed; the old `MAIN_AGENT_*`
+names and `PLANNER_ALLOW_ANON` still work. See `planner_agent/README.md`.)
 
 ```bash
 gcloud run deploy planner \
@@ -383,14 +384,14 @@ gcloud run deploy planner \
   --min-instances=1 --max-instances=1 --no-cpu-throttling \
   --ingress=all --no-allow-unauthenticated \
   --vpc-connector="$CONNECTOR" --add-cloudsql-instances="$SQL_CONN" \
-  --set-env-vars="MAIN_AGENT_PORT=8080,ADS_SERVER_ADDR=${ADS_IP}:8888,PLANNER_ALLOW_ANON=1,A2A_HTTP_TIMEOUT_SECONDS=120,${LLM_ENV}" \
+  --set-env-vars="CHAT_APP_PORT=8080,ADS_SERVER_ADDR=${ADS_IP}:8888,CHAT_APP_ALLOW_ANON=1,A2A_HTTP_TIMEOUT_SECONDS=120,${LLM_ENV}" \
   --set-secrets="$PLANNER_SECRETS"
 ```
 
 - `--timeout=3600` keeps the chat's server-sent-events stream (`/messages/stream`) open.
 - `--no-cpu-throttling` keeps the planner's background agent-health loop running between requests.
 - `A2A_HTTP_TIMEOUT_SECONDS=120` (default 30) leaves time for a scaled-to-zero agent to cold-start.
-- `PLANNER_ALLOW_ANON=1`: with a database configured, the planner otherwise answers 401 to any
+- `CHAT_APP_ALLOW_ANON=1`: with a database configured, the planner otherwise answers 401 to any
   request without an SSO identity header (`main_agent/server.py`, `_anon_identity_allowed`), and the
   proxy adds none. Everyone who reaches the planner then shares the `demo-user` identity, including
   its stored credentials, so IAM is your only access control (next step).
@@ -429,8 +430,9 @@ gcloud run services add-iam-policy-binding planner --region="$REGION" \
 
 **No public front door yet.** Exposing the planner to end users needs an authenticating front door
 that injects the `mail`/`eppn`/`remote-user` identity headers the planner trusts
-([docs/AUTH.md](../../AUTH.md)) and strips any a client sends; then remove `PLANNER_ALLOW_ANON`.
-That is future work. The WashU design (an SSO gateway that mints a Google ID token) is outlined in
+([docs/AUTH.md](../../AUTH.md)) and strips any a client sends; then remove `CHAT_APP_ALLOW_ANON`
+(and `PLANNER_ALLOW_ANON`, its old name, if an older setup set it). That is future work. The
+WashU design (an SSO gateway that mints a Google ID token) is outlined in
 [IMPLEMENTATION_CLOUDRUN_BACKEND.md](IMPLEMENTATION_CLOUDRUN_BACKEND.md) Step 10, and the
 alternatives (load balancer with Cloud Armor, IAP with Workforce Identity Federation) are weighed in
 [DOWNSTREAM_CONSIDERATIONS.md](../DOWNSTREAM_CONSIDERATIONS.md) #4.
@@ -500,11 +502,11 @@ scripts/ads --server-addr localhost:8888 -publish my_agent.card.json
 
 **Keep scaled-to-zero agents at zero.** The planner probes every agent's card URL each minute, which
 cold-starts a min-0 agent and keeps it warm. List on-demand agents (ids as `GET /agents` shows them)
-in `HEALTH_PROBE_SKIP_AGENTS`:
+in `CHAT_APP_HEALTH_PROBE_SKIP_AGENTS`:
 
 ```bash
 gcloud run services update planner --region="$REGION" \
-  --update-env-vars='^|^HEALTH_PROBE_SKIP_AGENTS=agent-one,agent-two'
+  --update-env-vars='^|^CHAT_APP_HEALTH_PROBE_SKIP_AGENTS=agent-one,agent-two'
 ```
 
 ## Cost
@@ -515,7 +517,7 @@ gcloud run services update planner --region="$REGION" \
   that is a planning estimate, not a measured bill.
 - **LLM:** pay per token for a hosted API or Vertex; GPU hours for self-hosted vLLM.
 - **Agents** cost about nothing while idle at zero instances, provided they are listed in
-  `HEALTH_PROBE_SKIP_AGENTS` (step 13).
+  `CHAT_APP_HEALTH_PROBE_SKIP_AGENTS` (step 13).
 - **Pause** without deleting:
 
   ```bash

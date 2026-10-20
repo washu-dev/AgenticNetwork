@@ -56,5 +56,5 @@ if ! command -v "$PYTHON_BIN" >/dev/null 2>&1 && [[ ! -x "$PYTHON_BIN" ]]; then
 fi
 
 cd "$REPO_ROOT"
-echo "main_agent_start python=$PYTHON_BIN env=$ENV_FILE port=${MAIN_AGENT_PORT:-8090} fake_ads=${AGENT_NETWORK_FAKE_ADS:-false} model=${MAIN_AGENT_LLM_MODEL:-gpt-4o-mini}"
+echo "main_agent_start python=$PYTHON_BIN env=$ENV_FILE port=${CHAT_APP_PORT:-${MAIN_AGENT_PORT:-8090}} fake_ads=${AGENT_NETWORK_FAKE_ADS:-false} model=${PLANNER_LLM_MODEL:-${MAIN_AGENT_LLM_MODEL:-gpt-4o-mini}}"
 exec "$PYTHON_BIN" -m planner_agent.scripts.run_server "$@"

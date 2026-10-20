@@ -47,11 +47,11 @@ from test_full_chain import (
 )
 
 A2A_TIMEOUT = 5  # seconds: the planner's A2A_HTTP_TIMEOUT_SECONDS on this file's stack
-MAX_STEPS = 6  # the planner's MAIN_AGENT_MAX_STEPS on this file's stack
+MAX_STEPS = 6  # the planner's PLANNER_MAX_STEPS on this file's stack
 PLANNER_SETTINGS = {
     "A2A_HTTP_TIMEOUT_SECONDS": str(A2A_TIMEOUT),
-    "MAIN_AGENT_MAX_STEPS": str(MAX_STEPS),
-    "MAIN_AGENT_POLICY_MODE": "strict",
+    "PLANNER_MAX_STEPS": str(MAX_STEPS),
+    "PLANNER_POLICY_MODE": "strict",
 }
 SCENARIO_ENV = {
     **STACK_ENV,

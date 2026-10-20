@@ -202,7 +202,7 @@ def test_undeclared_agent_gets_no_credentials():
 
 def test_allowlisted_legacy_agent_gets_full_bundle(caplog):
     async def go():
-        env = {"MAIN_AGENT_LLM_ENABLED": "false", "PLANNER_UNSCOPED_CREDENTIAL_AGENTS": " plain-bot , email-agent "}
+        env = {"PLANNER_LLM_ENABLED": "false", "PLANNER_UNSCOPED_CREDENTIAL_AGENTS": " plain-bot , email-agent "}
         allow = load_config(env).unscoped_credential_agents
         assert allow == ["plain-bot", "email-agent"]
         config = _config().model_copy(update={"unscoped_credential_agents": allow})

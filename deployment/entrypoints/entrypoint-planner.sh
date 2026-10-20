@@ -18,6 +18,7 @@ for i in $(seq 1 60); do
     sleep 1
 done
 
+# New setting names first; the old MAIN_AGENT_* names still work as fallbacks.
 exec /opt/conda/envs/planner-agent/bin/python -m planner_agent.scripts.run_server \
-    --host "${MAIN_AGENT_HOST:-0.0.0.0}" \
-    --port "${MAIN_AGENT_PORT:-8090}"
+    --host "${CHAT_APP_HOST:-${MAIN_AGENT_HOST:-0.0.0.0}}" \
+    --port "${CHAT_APP_PORT:-${MAIN_AGENT_PORT:-8090}}"

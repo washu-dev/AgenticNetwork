@@ -132,8 +132,9 @@ services:
         condition: service_healthy
     environment:
       <<: *shared-env
-      MAIN_AGENT_HOST: 127.0.0.1
-      MAIN_AGENT_LLM_MODEL: ${MAIN_AGENT_LLM_MODEL:-mock-planner}
+      CHAT_APP_HOST: 127.0.0.1
+      # MAIN_AGENT_LLM_MODEL is the old name of PLANNER_LLM_MODEL and still works.
+      PLANNER_LLM_MODEL: ${PLANNER_LLM_MODEL:-${MAIN_AGENT_LLM_MODEL:-mock-planner}}
       AGENT_NETWORK_FAKE_ADS: "false"
       REGISTRATION_SERVICE_URL: http://127.0.0.1:8091
       CREDENTIALS_ENCRYPTION_KEY: ${CREDENTIALS_ENCRYPTION_KEY:-}
@@ -182,7 +183,7 @@ services:
     environment:
       PYTHONDONTWRITEBYTECODE: "1"
       PYTHONUNBUFFERED: "1"
-      SEED_MODEL: ${DEVSTACK_SPECIALIST_MODEL:-${MAIN_AGENT_LLM_MODEL:-mock-specialist}}
+      SEED_MODEL: ${DEVSTACK_SPECIALIST_MODEL:-${PLANNER_LLM_MODEL:-${MAIN_AGENT_LLM_MODEL:-mock-specialist}}}
     command:
       - python
       - -c

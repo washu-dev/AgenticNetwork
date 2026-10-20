@@ -26,9 +26,10 @@ Browser → nginx (TLS) → Apache + mod_shib (Shibboleth SP) → reverse-proxy 
   it drops client identity headers and injects `mail: dev@example.test` ([DEVSTACK.md](DEVSTACK.md)).
 
 > **On GCP (front door not built yet).** The GCP planner has **no SSO gateway in front of it**
-> today — it runs `PLANNER_ALLOW_ANON=1` and is reached IAM-privately via `gcloud run services
-> proxy` (operators only). It *is* now on Cloud SQL, so the credential/history persistence and the
-> fail-closed machinery below are live; they just aren't enforced while anon is on. The GCP front door
+> today — it runs `PLANNER_ALLOW_ANON=1` (the old name of `CHAT_APP_ALLOW_ANON`) and is reached
+> IAM-privately via `gcloud run services proxy` (operators only). It *is* now on Cloud SQL, so the
+> credential/history persistence and the fail-closed machinery below are live; they just aren't
+> enforced while anon is on. The GCP front door
 > is not built yet (GCP work has been on hold since end of summer 2026; cloud is a critical leg going
 > forward, 2026-10-13); the decided approach is **Option A**
 > — the same WashU Shibboleth gateway repointed at GCP, minting a Google ID token to reach the private
@@ -40,7 +41,8 @@ Browser → nginx (TLS) → Apache + mod_shib (Shibboleth SP) → reverse-proxy 
 `server.py::_resolve_shib_user_id` is the single identity resolver for `/messages`,
 `/confirmations` and the data endpoints; a header identity always wins over a request-body
 `user_id`. When no header is present:
-- **DB configured** (`REGISTRATION_DB_DSN` set) → **401**, unless `PLANNER_ALLOW_ANON=1`.
+- **DB configured** (`REGISTRATION_DB_DSN` set) → **401**, unless `CHAT_APP_ALLOW_ANON=1`
+  (exactly `1`; the old name `PLANNER_ALLOW_ANON` still works).
 - **No DB** (laptop/tests) → the body `user_id` on `/messages` and `/confirmations`, `demo-user`
   elsewhere.
 

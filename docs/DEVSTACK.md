@@ -102,7 +102,7 @@ A few details of the script are there to exercise the planner and agents (all in
   `nlp/natural_language_generation/text_summarization`), the planner passes it as `skill`.
 - `[mock-llm: ask first]` in your message makes the planner ask you a question (`ask_user`)
   first; your reply continues the conversation. `[mock-llm: never answer]` makes it list
-  agents at every step, so its step limit (`MAIN_AGENT_MAX_STEPS`, default 10) ends the turn.
+  agents at every step, so its step limit (`PLANNER_MAX_STEPS`, default 10) ends the turn.
 - An agent with tools (for example the preset `calculator`) calls a tool your message names,
   with the JSON object written right after the name as arguments, and adds
   ` | <tool> -> <result>` to its echo: `Use the calculator {"expression": "6 * 7"}`.
@@ -114,7 +114,7 @@ repo root (ignored by git; `KEY=VALUE` lines), then run `scripts/stack down` and
 ```bash
 OPENAI_BASE_URL=https://api.openai.com/v1   # any OpenAI-compatible endpoint
 OPENAI_API_KEY=...
-MAIN_AGENT_LLM_MODEL=gpt-4o-mini            # the planner's model
+PLANNER_LLM_MODEL=gpt-4o-mini               # the planner's model (old name MAIN_AGENT_LLM_MODEL still works)
 # DEVSTACK_SPECIALIST_MODEL=...              # optional: the agents' model (default: the planner's)
 # DEVSTACK_LLM=openai                        # optional: make openai the default for `up`
 ```

@@ -214,7 +214,7 @@ agent call":
 |---|---|
 | Listen `host:port` | Binds `0.0.0.0:<port>`. Default ports in §5. |
 | **LLM endpoint** | `OPENAI_BASE_URL` (OpenAI-SDK agents) or `OPENAI_API_BASE` (litellm agents). |
-| **LLM model var** | Each agent declares its *own*: `MAIN_AGENT_LLM_MODEL`, `INTEL_AGENT_MODEL`, `CODING_AGENT_MODEL`, `EMAIL_AGENT_MODEL`, `DISASTER_AGENT_MODEL`. **There is no geospatial model var in `.env.example`.** |
+| **LLM model var** | Each agent declares its *own*: `PLANNER_LLM_MODEL` (the planner; old name `MAIN_AGENT_LLM_MODEL`), `INTEL_AGENT_MODEL`, `CODING_AGENT_MODEL`, `EMAIL_AGENT_MODEL`, `DISASTER_AGENT_MODEL`. **There is no geospatial model var in `.env.example`.** |
 | **LLM API surface** | Chat Completions / litellm / **Responses** / Gemini — differs per agent and determines cloud-migration effort (§4, #2 downstream). |
 | **Per-agent secrets** | `BRAVE_API_KEY` (scout, intelligence); `GOOGLE_CALENDAR_*` OAuth + on-disk refresh tokens (email); `GOOGLE_API_KEY` / `GOOGLE_MAPS_API_KEY` (geospatial). |
 | **Directory address** | Set via **five+ near-duplicate vars** (`ADS_SERVER_ADDR`, `ADS_SERVER_ADDRESS`, `ADS_URL`, `DIRECTORY_ENDPOINT`, plus `CODING_AGENT_DIRECTORY_URL` / `INTEL_AGENT_DIRECTORY_URL`) — an artifact of divergent vendored protocol copies. **Scout uses a *different* directory** (`agntcy_app_sdk` `AgentDirectory` over gRPC, default `:8889`) than everyone else (`dirctl` at `:8888`). |

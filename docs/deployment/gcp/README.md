@@ -65,7 +65,8 @@ not the internet. You need `gcloud` authed as a user with `run.invoker` on the s
 ```bash
 gcloud run services proxy planner --project=di2-agenticweb --region=us-central1 --port=8080
 ```
-Then open http://localhost:8080/app (anon is allowed for now — `PLANNER_ALLOW_ANON=1`).
+Then open http://localhost:8080/app (anon is allowed for now — `PLANNER_ALLOW_ANON=1`, the old name
+of `CHAT_APP_ALLOW_ANON`).
 
 **Registration service:**
 ```bash

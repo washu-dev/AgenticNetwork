@@ -32,6 +32,7 @@ from planner_agent.main_agent.credentials_router import (
     router as credentials_router,
 )
 from planner_agent.main_agent.config import MainAgentConfig, load_config
+from planner_agent.main_agent.env import allow_anon, setting, upload_dir
 from planner_agent.main_agent.db import close_db, fetch_user_credentials, init_db, ping_db
 from planner_agent.main_agent.llm_client import LLMClient, OpenAIToolLoopClient
 from planner_agent.main_agent.credential_gate import DbCredentialGate
@@ -165,7 +166,7 @@ def create_app(
     if llm_client is None:
         if not cfg.llm_enabled:
             raise RuntimeError(
-                "MAIN_AGENT_LLM_ENABLED=false but no llm_client was provided. "
+                "PLANNER_LLM_ENABLED=false but no llm_client was provided. "
                 "Pass a ScriptedLLMClient for tests or enable LLM mode."
             )
         llm_client = OpenAIToolLoopClient(cfg)
@@ -629,8 +630,8 @@ def create_app(
         # On-demand (scale-to-zero) agents must be excluded from probing: a probe
         # HTTP-hits the agent's card URL, which cold-starts a min=0 Cloud Run agent
         # and keeps it warm — defeating scale-to-zero. Skip by agent_id via
-        # HEALTH_PROBE_SKIP_AGENTS (comma-separated).
-        skip = {s.strip() for s in os.getenv("HEALTH_PROBE_SKIP_AGENTS", "").split(",") if s.strip()}
+        # CHAT_APP_HEALTH_PROBE_SKIP_AGENTS (comma-separated).
+        skip = {s.strip() for s in setting("CHAT_APP_HEALTH_PROBE_SKIP_AGENTS", "").split(",") if s.strip()}
         while True:
             try:
                 agents = directory.search_agents()
@@ -874,10 +875,10 @@ def _anon_identity_allowed() -> bool:
     Fail-closed once a real deployment DB is configured: with ``REGISTRATION_DB_DSN``
     set, a missing Shibboleth header is a 401, not a silent collapse to a shared
     identity. Anonymous is allowed when there is no DB (Tier A/B laptop runs and unit
-    tests) or when the operator explicitly opts in with ``PLANNER_ALLOW_ANON=1`` (local
-    dev against a real DB).
+    tests) or when the operator explicitly opts in with ``CHAT_APP_ALLOW_ANON=1`` (local
+    dev against a real DB; the old name ``PLANNER_ALLOW_ANON`` still works).
     """
-    if os.getenv("PLANNER_ALLOW_ANON") == "1":
+    if allow_anon():
         return True
     return not os.getenv("REGISTRATION_DB_DSN")
 
@@ -967,12 +968,12 @@ async def _store_uploaded_file(upload: Any) -> dict[str, Any]:
     data = await upload.read()
     if not data:
         raise HTTPException(status_code=400, detail="Uploaded file was empty.")
-    max_bytes = int(os.getenv("MAIN_AGENT_MAX_UPLOAD_BYTES", str(50 * 1024 * 1024)))
+    max_bytes = int(setting("CHAT_APP_MAX_UPLOAD_BYTES", str(50 * 1024 * 1024)))
     if len(data) > max_bytes:
         raise HTTPException(status_code=413, detail=f"Upload exceeds {max_bytes} bytes.")
     suffix = Path(filename).suffix.lower() or (mimetypes.guess_extension(content_type) or ".bin")
     safe_stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", Path(filename).stem).strip("._") or "upload"
-    out_dir = Path(os.getenv("MAIN_AGENT_UPLOAD_DIR", "/tmp/planner_agent_uploads"))
+    out_dir = upload_dir()
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / f"{uuid4().hex}_{safe_stem}{suffix}"
     path.write_bytes(data)
@@ -999,7 +1000,7 @@ def _agent_card_paths(
         return items
     if not allow_local:
         return []
-    raw = os.getenv("MAIN_AGENT_CARD_PATHS", "")
+    raw = setting("CHAT_APP_CARD_PATHS", "")
     return [Path(item.strip()) for item in raw.split(",") if item.strip()]
 
 

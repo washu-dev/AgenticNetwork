@@ -10,7 +10,6 @@ PLANNER_DIR="$(dirname "$SCRIPT_DIR")"
 REPO_ROOT="$(dirname "$PLANNER_DIR")"
 ENV_FILE="${ENV_FILE:-$PLANNER_DIR/.env.local}"
 DIRCTL="${DIRCTL_BIN:-$HOME/.local/bin/dirctl}"
-PORT="${MAIN_AGENT_PORT:-8090}"
 
 if [[ -z "${PYTHON_BIN:-}" ]]; then
   if [[ -x "$PLANNER_DIR/.venv/bin/python" ]]; then
@@ -45,13 +44,16 @@ if [[ -f "$ENV_FILE" ]]; then
   else
     ok "OPENAI_API_KEY is set (${OPENAI_API_KEY:0:8}...)"
   fi
-  ok "model:           ${MAIN_AGENT_LLM_MODEL:-(unset, default gpt-4o-mini)}"
-  ok "policy_mode:     ${MAIN_AGENT_POLICY_MODE:-(unset, default permissive)}"
+  ok "model:           ${PLANNER_LLM_MODEL:-${MAIN_AGENT_LLM_MODEL:-(unset, default gpt-4o-mini)}}"
+  ok "policy_mode:     ${PLANNER_POLICY_MODE:-${MAIN_AGENT_POLICY_MODE:-(unset, default permissive)}}"
   ok "fake_ads:        ${AGENT_NETWORK_FAKE_ADS:-(unset, default false)}"
   ok "ads_server:      ${ADS_SERVER_ADDR:-(unset!)}"
 else
   fail "$ENV_FILE does not exist. Copy from .env.example."
 fi
+# Read the port after the env file is loaded, so a port set there is the one checked.
+# CHAT_APP_PORT is the setting; the old MAIN_AGENT_PORT still works.
+PORT="${CHAT_APP_PORT:-${MAIN_AGENT_PORT:-8090}}"
 
 # ---- 2. python ----
 section "2) python"

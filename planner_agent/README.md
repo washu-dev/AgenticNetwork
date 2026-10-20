@@ -46,6 +46,7 @@ planner_agent/
 ├── .env.example            # config template (copy to .env.local)
 ├── main_agent/
 │   ├── config.py           # MainAgentConfig from env vars
+│   ├── env.py              # setting names, with the old names as fallbacks
 │   ├── models.py           # policy and state models; re-exports the wire models from agentnet
 │   ├── state/              # planner-local in-memory state store (per process)
 │   ├── tools.py            # 5 tool schemas + system prompt
@@ -190,28 +191,54 @@ through `dirctl` instead of the in-process fake.
 
 ## Environment variables
 
+`PLANNER_*` settings tune the planner (the LLM loop that picks agents and calls
+them). `CHAT_APP_*` settings tune the web server around it. Settings other
+services share keep their own names.
+
+**Old names still work.** Most of these settings used to start with
+`MAIN_AGENT_` instead: `MAIN_AGENT_LLM_MODEL` is now `PLANNER_LLM_MODEL`, and
+`MAIN_AGENT_PORT` is now `CHAT_APP_PORT`. Four don't follow that pattern:
+`MAIN_AGENT_MAX_OUTPUT_TOKENS` is now `PLANNER_LLM_MAX_OUTPUT_TOKENS`,
+`MAIN_AGENT_TIMEOUT_SECONDS` is now `PLANNER_LLM_TIMEOUT_SECONDS`,
+`PLANNER_ALLOW_ANON` is now `CHAT_APP_ALLOW_ANON`, and `HEALTH_PROBE_SKIP_AGENTS`
+is now `CHAT_APP_HEALTH_PROBE_SKIP_AGENTS`. When a new name is unset, the server
+reads the old one and logs a warning naming the new one. If both are set to
+different values, the new name wins, and that is logged too. The full list is in
+`main_agent/env.py`.
+
 | Variable                       | Default       | Purpose                                                       |
 | ------------------------------ | ------------- | ------------------------------------------------------------- |
 | `OPENAI_API_KEY`               | —             | Required when LLM enabled                                     |
-| `MAIN_AGENT_LLM_ENABLED`       | `true`        | Set false for purely scripted (test) runs                     |
-| `MAIN_AGENT_LLM_PROVIDER`      | `openai`      | `openai` (any OpenAI-compatible endpoint) or `vertex` (Vertex AI, ADC token) |
-| `MAIN_AGENT_LLM_MODEL`         | `gpt-4o-mini` | OpenAI model id, or your vLLM `--served-model-name`           |
-| `MAIN_AGENT_MAX_OUTPUT_TOKENS` | `1500`        | Per-turn output cap. Bump to ≥4000 for reasoning models       |
-| `MAIN_AGENT_MAX_STEPS`         | `10`          | Max tool-loop iterations per user message                     |
-| `MAIN_AGENT_TIMEOUT_SECONDS`   | `60`          | OpenAI call timeout                                           |
-| `MAIN_AGENT_POLICY_MODE`       | `permissive`  | `permissive` allows write skills; `strict` requires confirmation |
-| `MAIN_AGENT_HISTORY_LIMIT`     | `20`          | Last-N user/assistant turns sent to LLM                       |
+| `OPENAI_BASE_URL`              | —             | OpenAI-compatible endpoint (mock, vLLM, Ollama); `/ready` probes `{base}/models` |
+| `PLANNER_LLM_ENABLED`          | `true`        | Set false for purely scripted (test) runs                     |
+| `PLANNER_LLM_PROVIDER`         | `openai`      | `openai` (any OpenAI-compatible endpoint) or `vertex` (Vertex AI, ADC token) |
+| `PLANNER_LLM_MODEL`            | `gpt-4o-mini` | OpenAI model id, or your vLLM `--served-model-name`           |
+| `PLANNER_LLM_MAX_OUTPUT_TOKENS` | `1500`       | Per-turn output cap. Bump to ≥4000 for reasoning models       |
+| `PLANNER_LLM_TIMEOUT_SECONDS`  | `60`          | LLM call timeout                                              |
+| `PLANNER_LLM_FALLBACK_PROVIDER` / `_BASE_URL` / `_MODEL` | — | Optional second LLM, tried when the first one fails to connect, times out or answers 5xx. A fallback provider needs a fallback model |
+| `PLANNER_LLM_PRIMARY_TIMEOUT_SECONDS` | `20`   | Shorter timeout for the first LLM when a fallback is set, so a down LLM fails over quickly |
+| `PLANNER_MAX_STEPS`            | `10`          | Max tool-loop iterations per user message                     |
+| `PLANNER_POLICY_MODE`          | `permissive`  | `permissive` allows write skills; `strict` requires confirmation |
+| `PLANNER_HISTORY_LIMIT`        | `20`          | Last-N user/assistant turns sent to LLM                       |
+| `PLANNER_UNSCOPED_CREDENTIAL_AGENTS` | —       | Comma-separated agent ids that get the user's whole credential bundle (legacy agents that read credentials without declaring them; logged). Others get only declared + granted types |
+| `A2A_HTTP_TIMEOUT_SECONDS`     | `30`          | Timeout for each call to an agent                             |
+| `CHAT_APP_HOST`                | `0.0.0.0`     | Address the server listens on                                 |
+| `CHAT_APP_PORT`                | `8090`        | HTTP port                                                     |
+| `CHAT_APP_LOG_LEVEL`           | `INFO`        | Python log level                                              |
+| `CHAT_APP_UPLOAD_DIR`          | `/tmp/planner_agent_uploads` | Where chat uploads are saved. The planner only sends agents files from inside this folder |
+| `CHAT_APP_MAX_UPLOAD_BYTES`    | `52428800` (50 MiB) | Largest upload accepted (bigger ones get 413)           |
+| `CHAT_APP_CARD_PATHS`          | —             | Comma-separated Agent Card files to pre-load (fake-ADS mode only; same as `--card`) |
+| `CHAT_APP_ALLOW_ANON`          | off           | Exactly `1` lets requests without an identity header in as `demo-user` even with a database configured. For local dev and test instances only |
+| `CHAT_APP_HEALTH_PROBE_SKIP_AGENTS` | —        | Comma-separated agent ids the background health check never calls (keeps scaled-to-zero agents asleep) |
+| `REGISTRATION_SERVICE_URL`     | `http://localhost:8091` | Where the `/register/*` pages are forwarded          |
 | `AGENT_NETWORK_FAKE_ADS`       | `false`       | Use in-process fake ADS                                       |
 | `ADS_BACKEND`                  | `cli`         | `cli` (uses `dirctl`) or `sdk`                                |
 | `ADS_SERVER_ADDR`              | —             | e.g. `localhost:8888`                                         |
 | `DIRCTL_TIMEOUT_SECONDS`       | `60`          | Per-call limit on `dirctl`; a hung call is killed (`/ready` uses 4s) |
-| `MAIN_AGENT_PORT`              | `8090`        | HTTP port                                                     |
 | `PYTHON_BIN`                   | auto-detected | Optional interpreter override for wrapper scripts             |
 | `REGISTRATION_DB_DSN`          | —             | Postgres DSN for users, conversation history, credentials and pending confirmations. Unset: users live in memory |
-| `OPENAI_BASE_URL`              | —             | OpenAI-compatible endpoint (mock, vLLM, Ollama); `/ready` probes `{base}/models` |
 | `CREDENTIALS_ENCRYPTION_KEY`   | —             | 32-byte base64 key for AES-256-GCM credential encryption      |
 | `ADMIN_EMAILS`                 | —             | Comma-separated admin allowlist (matched against SSO identity); fail-closed |
-| `PLANNER_UNSCOPED_CREDENTIAL_AGENTS` | —       | Comma-separated agent ids that get the user's whole credential bundle (legacy agents that read credentials without declaring them; logged). Others get only declared + granted types |
 | `GITHUB_ISSUES_TOKEN` / `_REPO` | —            | Token and target `owner/name` for `POST /issues`. No default repo: use a private one (issues carry the reporter's email, prompts and trace). Either unset → 502 |
 | `GOOGLE_CLIENT_ID` / `_SECRET` / `_REDIRECT_URI` | — | Google OAuth web client for per-user Google connect |
 

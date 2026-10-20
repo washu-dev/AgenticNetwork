@@ -4,6 +4,8 @@ import os
 from collections.abc import Mapping
 from pydantic import BaseModel, Field
 
+from planner_agent.main_agent.env import setting
+
 
 class MainAgentConfigError(RuntimeError):
     """Raised when MainAgent configuration is invalid."""
@@ -47,21 +49,21 @@ class MainAgentConfig(BaseModel):
 def load_config(env: Mapping[str, str] | None = None) -> MainAgentConfig:
     values = env if env is not None else os.environ
     config = MainAgentConfig(
-        llm_enabled=_bool(values.get("MAIN_AGENT_LLM_ENABLED"), default=True),
-        llm_provider=values.get("MAIN_AGENT_LLM_PROVIDER", "openai").strip().lower(),
-        llm_model=values.get("MAIN_AGENT_LLM_MODEL", "gpt-4o-mini").strip(),
-        max_output_tokens=_int(values.get("MAIN_AGENT_MAX_OUTPUT_TOKENS"), default=1500),
-        timeout_seconds=_float(values.get("MAIN_AGENT_TIMEOUT_SECONDS"), default=60),
-        max_steps=_int(values.get("MAIN_AGENT_MAX_STEPS"), default=10),
+        llm_enabled=_bool(setting("PLANNER_LLM_ENABLED", env=values), default=True),
+        llm_provider=setting("PLANNER_LLM_PROVIDER", "openai", env=values).strip().lower(),
+        llm_model=setting("PLANNER_LLM_MODEL", "gpt-4o-mini", env=values).strip(),
+        max_output_tokens=_int(setting("PLANNER_LLM_MAX_OUTPUT_TOKENS", env=values), default=1500),
+        timeout_seconds=_float(setting("PLANNER_LLM_TIMEOUT_SECONDS", env=values), default=60),
+        max_steps=_int(setting("PLANNER_MAX_STEPS", env=values), default=10),
         fake_ads=_bool(values.get("AGENT_NETWORK_FAKE_ADS"), default=False),
         ads_server_addr=_optional(values.get("ADS_SERVER_ADDR") or values.get("ADS_URL")),
-        policy_mode=values.get("MAIN_AGENT_POLICY_MODE", "permissive").strip().lower(),
-        history_limit=_int(values.get("MAIN_AGENT_HISTORY_LIMIT"), default=20),
-        llm_fallback_provider=_lower_optional(values.get("MAIN_AGENT_LLM_FALLBACK_PROVIDER")),
-        llm_fallback_base_url=_optional(values.get("MAIN_AGENT_LLM_FALLBACK_BASE_URL")),
-        llm_fallback_model=_optional(values.get("MAIN_AGENT_LLM_FALLBACK_MODEL")),
+        policy_mode=setting("PLANNER_POLICY_MODE", "permissive", env=values).strip().lower(),
+        history_limit=_int(setting("PLANNER_HISTORY_LIMIT", env=values), default=20),
+        llm_fallback_provider=_lower_optional(setting("PLANNER_LLM_FALLBACK_PROVIDER", env=values)),
+        llm_fallback_base_url=_optional(setting("PLANNER_LLM_FALLBACK_BASE_URL", env=values)),
+        llm_fallback_model=_optional(setting("PLANNER_LLM_FALLBACK_MODEL", env=values)),
         llm_primary_timeout_seconds=_float(
-            values.get("MAIN_AGENT_LLM_PRIMARY_TIMEOUT_SECONDS"), default=20
+            setting("PLANNER_LLM_PRIMARY_TIMEOUT_SECONDS", env=values), default=20
         ),
         unscoped_credential_agents=[
             a.strip() for a in values.get("PLANNER_UNSCOPED_CREDENTIAL_AGENTS", "").split(",") if a.strip()
@@ -69,11 +71,11 @@ def load_config(env: Mapping[str, str] | None = None) -> MainAgentConfig:
     )
     if config.llm_enabled and config.llm_provider == "openai" and not values.get("OPENAI_API_KEY"):
         raise MainAgentConfigError(
-            "MAIN_AGENT_LLM_ENABLED=true with provider=openai requires OPENAI_API_KEY."
+            "PLANNER_LLM_ENABLED=true with provider=openai requires OPENAI_API_KEY."
         )
     if config.llm_fallback_provider and not config.llm_fallback_model:
         raise MainAgentConfigError(
-            "MAIN_AGENT_LLM_FALLBACK_PROVIDER is set but MAIN_AGENT_LLM_FALLBACK_MODEL is missing; "
+            "PLANNER_LLM_FALLBACK_PROVIDER is set but PLANNER_LLM_FALLBACK_MODEL is missing; "
             "the fallback provider serves a different model name than the primary."
         )
     return config

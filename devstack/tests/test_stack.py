@@ -58,10 +58,31 @@ def test_up_fails_preflight_on_a_busy_port(tmp_path, monkeypatch):
 
 def test_openai_mode_needs_its_settings(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(stack, "ENV_FILE", tmp_path / "absent.env")
-    for name in ("OPENAI_BASE_URL", "OPENAI_API_KEY", "MAIN_AGENT_LLM_MODEL"):
+    for name in ("OPENAI_BASE_URL", "OPENAI_API_KEY", "PLANNER_LLM_MODEL", "MAIN_AGENT_LLM_MODEL"):
         monkeypatch.delenv(name, raising=False)
     assert stack.main(["up", "--llm", "openai", "--state-dir", str(tmp_path)]) == stack.EXIT_PREFLIGHT
-    assert "OPENAI_API_KEY" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "OPENAI_API_KEY" in err and "PLANNER_LLM_MODEL" in err
+
+
+def test_planner_model_reads_the_new_name_then_the_old_one(monkeypatch):
+    for name in ("PLANNER_LLM_MODEL", "MAIN_AGENT_LLM_MODEL"):
+        monkeypatch.delenv(name, raising=False)
+    assert stack.planner_model_setting({}) == ""
+    assert stack.planner_model_setting({"MAIN_AGENT_LLM_MODEL": "old"}) == "old"
+    assert stack.planner_model_setting({"MAIN_AGENT_LLM_MODEL": "old", "PLANNER_LLM_MODEL": "new"}) == "new"
+    monkeypatch.setenv("MAIN_AGENT_LLM_MODEL", "old-from-env")
+    assert stack.planner_model_setting({}) == "old-from-env"
+    assert stack.planner_model_setting({"PLANNER_LLM_MODEL": "new"}) == "new"  # a new name anywhere wins
+
+
+def test_the_chat_app_gets_the_new_setting_names(tmp_path, monkeypatch):
+    monkeypatch.delenv("DEVSTACK_PASSTHROUGH_ENV", raising=False)
+    cfg = stack.StackConfig(state_dir=tmp_path, planner_model="some-model")
+    env = stack._service_specs(cfg)["planner"].env
+    assert env["PLANNER_LLM_MODEL"] == "some-model"
+    assert env["CHAT_APP_UPLOAD_DIR"] == str(tmp_path / "uploads")
+    assert not any(name.startswith("MAIN_AGENT_") for name in env)
 
 
 def test_env_file_parsing(tmp_path):

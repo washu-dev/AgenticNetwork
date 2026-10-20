@@ -244,7 +244,7 @@ Approve the usual WashU password + DUO prompt. **Leave this SSH session open** �
 only while it's connected.
 
 **3. Browse** `http://localhost:18090`. You land in the test UI as an anon/demo user
-(`PLANNER_ALLOW_ANON=1` is set for `test` only; prod always keeps the SSO gate).
+(`CHAT_APP_ALLOW_ANON=1` is set for `test` only; prod always keeps the SSO gate).
 
 Notes:
 - The test node **changes every deploy** — re-run step 1 and update `<test-node>` each time.
@@ -293,7 +293,7 @@ The registration web UI is also accessible via the planner at `http://localhost:
 ### List available agents
 
 Prod's planner has a database and no anonymous fallback, so `/messages` needs an identity header
-(otherwise 401); a test instance (`PLANNER_ALLOW_ANON=1`) does not.
+(otherwise 401); a test instance (`CHAT_APP_ALLOW_ANON=1`) does not.
 
 ```bash
 curl -s http://localhost:8090/messages \
@@ -370,7 +370,7 @@ after the job exits. The main job log is `agenticnetwork-<jobid>.log`.
 |---|---|---|
 | ADS daemon | 8888 | `ADS_SERVER_ADDR` |
 | Registration service | 8091 | `REGISTRATION_SERVICE_PORT` |
-| Planner | 8090 | `MAIN_AGENT_PORT` |
+| Planner | 8090 | `CHAT_APP_PORT` (also exported as its old name, `MAIN_AGENT_PORT`) |
 | Scout | 9104 | `SCOUT_HTTP_PORT` |
 | Email | 9103 | `EMAIL_AGENT_A2A_PORT` |
 | GeoSpatial | 19105 | `GEOSPATIAL_AGENT_A2A_PORT` |
@@ -501,7 +501,7 @@ an SSH tunnel.
    ```bash
    OPENAI_BASE_URL=http://localhost:8100/v1 \
    OPENAI_API_KEY=<VLLM_API_KEY value> \
-   MAIN_AGENT_LLM_MODEL=openai/gpt-oss-120b \
+   PLANNER_LLM_MODEL=openai/gpt-oss-120b \
    scripts/stack up --llm openai
    ```
    The gated vLLM validates the key: it must match its `--api-key` (a dummy gets 401).
@@ -557,7 +557,7 @@ planner :8090      ← trusts those headers as the user id       ← ephemeral S
   (re)deploy the gateway's upstream must be repointed to the current node (or an SSH
   tunnel bridged to it). There is **no stable gateway↔node wiring yet**
   (`DOWNSTREAM_CONSIDERATIONS.md` #3).
-- **Local dev without Shibboleth:** set `PLANNER_ALLOW_ANON=1` so a request with no
+- **Local dev without Shibboleth:** set `CHAT_APP_ALLOW_ANON=1` so a request with no
   identity header falls back to `demo-user` instead of a 401 (`auth.py`); put your dev
   identity (e.g. `demo-user`) in `ADMIN_EMAILS` to get admin locally. The old
   `ADMIN_PASSWORD`/`POST /admin/login` bypass is retired (see [`docs/AUTH.md`](../../AUTH.md)).

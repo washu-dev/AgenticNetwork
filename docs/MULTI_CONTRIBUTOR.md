@@ -166,8 +166,9 @@ ssh -J <wustlkey>@<login-host> <wustlkey>@<test-node> -L 18090:localhost:18090
 the session open. Full step-by-step + `~/.ssh/config` shortcut in `docs/deployment/engr/README.md`.)
 - Because that path bypasses Apache, there are **no Shibboleth identity headers**, so the planner
   would 401 every `/app`/`/messages` request. Therefore `submit.sbatch` sets
-  **`PLANNER_ALLOW_ANON=1` for `DEPLOY_ENV=test` only** (prod always keeps the SSO gate;
-  override with `PLANNER_ALLOW_ANON=0`). With that, the tunneled UI is usable as an anon/demo user.
+  **`CHAT_APP_ALLOW_ANON=1` for `DEPLOY_ENV=test` only** (prod always keeps the SSO gate;
+  override with `CHAT_APP_ALLOW_ANON=0`; it also exports the old name, `PLANNER_ALLOW_ANON`,
+  for older planner images). With that, the tunneled UI is usable as an anon/demo user.
 - **Google-OAuth features don't complete in test:** `GOOGLE_REDIRECT_URI` points at the prod
   public URL, so "connect Google" bounces back to prod, not the test instance. Core chat + agents
   that don't need per-user Google creds work; the Google-connect flow doesn't.

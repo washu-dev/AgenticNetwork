@@ -389,7 +389,7 @@ def _vertex_access_token() -> str:
         import google.auth.transport.requests
     except Exception as exc:
         raise RuntimeError(
-            "google-auth import failed (required for MAIN_AGENT_LLM_PROVIDER=vertex): "
+            "google-auth import failed (required for PLANNER_LLM_PROVIDER=vertex): "
             f"{type(exc).__name__}: {exc}"
         ) from exc
     creds, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])

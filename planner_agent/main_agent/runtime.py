@@ -6,7 +6,6 @@ import contextlib
 import inspect
 import logging
 import json
-import os
 import re
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Iterable
@@ -37,6 +36,7 @@ from planner_agent.main_agent.state.store import InMemoryStateStore
 from planner_agent.main_agent import conversation_store, pending_store
 from planner_agent.main_agent.config import MainAgentConfig
 from planner_agent.main_agent.credential_gate import CredentialGate
+from planner_agent.main_agent.env import upload_dir
 from planner_agent.main_agent.llm_client import LLMClient, ToolCall, TurnState
 
 logger = logging.getLogger(__name__)
@@ -1780,8 +1780,7 @@ def _is_safe_uploaded_file(path_text: str) -> bool:
         return False
     try:
         path = Path(path_text).expanduser().resolve()
-        upload_dir = Path(os.getenv("MAIN_AGENT_UPLOAD_DIR", "/tmp/planner_agent_uploads")).resolve()
-        path.relative_to(upload_dir)
+        path.relative_to(upload_dir().resolve())
     except (OSError, ValueError):
         return False
     return path.is_file()

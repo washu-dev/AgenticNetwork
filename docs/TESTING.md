@@ -105,8 +105,8 @@ process or port behind.
 
 **`test_scenarios.py`** (11 tests) runs on a stack whose planner gives up on an agent after
 5 seconds (`A2A_HTTP_TIMEOUT_SECONDS`; the default is 30), stops a turn after 6 tool steps
-(`MAIN_AGENT_MAX_STEPS`; the default is 10) and asks before a write skill
-(`MAIN_AGENT_POLICY_MODE=strict`), all passed through with `DEVSTACK_PASSTHROUGH_ENV`. Agents
+(`PLANNER_MAX_STEPS`; the default is 10) and asks before a write skill
+(`PLANNER_POLICY_MODE=strict`), all passed through with `DEVSTACK_PASSTHROUGH_ENV`. Agents
 added with `add-agent` have their saved definitions removed after each test. Agents the tests run themselves are published into the stack's directory with the
 fake `dirctl` (`push`, then `routing publish`) and unpublished afterwards.
 

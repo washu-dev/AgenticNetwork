@@ -8,13 +8,14 @@ from typing import Sequence
 
 from agentnet.directory.client import DirectoryClient
 from planner_agent.main_agent.config import load_config
+from planner_agent.main_agent.env import log_old_names, setting
 from planner_agent.main_agent.server import create_app
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the planner agent server.")
-    parser.add_argument("--host", default=os.getenv("MAIN_AGENT_HOST", "0.0.0.0"))
-    parser.add_argument("--port", type=int, default=int(os.getenv("MAIN_AGENT_PORT", "8090")))
+    parser.add_argument("--host", default=setting("CHAT_APP_HOST", "0.0.0.0"))
+    parser.add_argument("--port", type=int, default=int(setting("CHAT_APP_PORT", "8090")))
     parser.add_argument(
         "--card",
         action="append",
@@ -35,6 +36,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.fake_ads:
         os.environ["AGENT_NETWORK_FAKE_ADS"] = "true"
     _configure_logging()
+    # Settings read so far (host, port, log level) were read before logging was set up.
+    log_old_names()
     cfg = load_config()
     import uvicorn
 
@@ -57,7 +60,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _configure_logging() -> None:
-    level = getattr(logging, os.getenv("MAIN_AGENT_LOG_LEVEL", "INFO").upper(), logging.INFO)
+    level = getattr(logging, setting("CHAT_APP_LOG_LEVEL", "INFO").upper(), logging.INFO)
     logging.basicConfig(
         level=level,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",

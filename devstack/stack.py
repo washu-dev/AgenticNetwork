@@ -224,6 +224,11 @@ def setting(name: str, file_values: dict[str, str]) -> str:
     return (os.environ.get(name) or file_values.get(name) or "").strip()
 
 
+def planner_model_setting(file_values: dict[str, str]) -> str:
+    """PLANNER_LLM_MODEL, else its old name MAIN_AGENT_LLM_MODEL."""
+    return setting("PLANNER_LLM_MODEL", file_values) or setting("MAIN_AGENT_LLM_MODEL", file_values)
+
+
 def build_up_config(args: argparse.Namespace) -> StackConfig:
     file_values = read_env_file(ENV_FILE)
     llm = args.llm or setting("DEVSTACK_LLM", file_values) or "mock"
@@ -241,14 +246,14 @@ def build_up_config(args: argparse.Namespace) -> StackConfig:
     if llm == "openai":
         cfg.openai_api_key = setting("OPENAI_API_KEY", file_values)
         cfg.openai_base_url = setting("OPENAI_BASE_URL", file_values)
-        cfg.planner_model = setting("MAIN_AGENT_LLM_MODEL", file_values)
+        cfg.planner_model = planner_model_setting(file_values)
         cfg.specialist_model = setting("DEVSTACK_SPECIALIST_MODEL", file_values) or cfg.planner_model
         missing = [
             name
             for name, value in (
                 ("OPENAI_BASE_URL", cfg.openai_base_url),
                 ("OPENAI_API_KEY", cfg.openai_api_key),
-                ("MAIN_AGENT_LLM_MODEL", cfg.planner_model),
+                ("PLANNER_LLM_MODEL", cfg.planner_model),
             )
             if not value
         ]
@@ -493,9 +498,9 @@ def _service_specs(cfg: StackConfig) -> dict[str, ServiceSpec]:
                 **directory_env(cfg),
                 **llm_env(cfg),
                 "AGENT_NETWORK_FAKE_ADS": "false",
-                "MAIN_AGENT_LLM_MODEL": cfg.planner_model,
+                "PLANNER_LLM_MODEL": cfg.planner_model,
                 "REGISTRATION_SERVICE_URL": cfg.url("registration"),
-                "MAIN_AGENT_UPLOAD_DIR": str(cfg.state_dir / "uploads"),
+                "CHAT_APP_UPLOAD_DIR": str(cfg.state_dir / "uploads"),
                 "ADMIN_EMAILS": cfg.dev_user,
             },
             marker="planner_agent.scripts.run_server",
@@ -1357,8 +1362,12 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     file_values = read_env_file(ENV_FILE)
     llm = setting("DEVSTACK_LLM", file_values) or "mock"
     if llm == "openai":
-        for key in ("OPENAI_BASE_URL", "OPENAI_API_KEY", "MAIN_AGENT_LLM_MODEL"):
-            check(f"llm setting {key}", bool(setting(key, file_values)), "set" if setting(key, file_values) else "missing")
+        for key, value in (
+            ("OPENAI_BASE_URL", setting("OPENAI_BASE_URL", file_values)),
+            ("OPENAI_API_KEY", setting("OPENAI_API_KEY", file_values)),
+            ("PLANNER_LLM_MODEL", planner_model_setting(file_values)),
+        ):
+            check(f"llm setting {key}", bool(value), "set" if value else "missing")
     else:
         check("llm", True, f"default mode {llm!r} ({ENV_FILE.name} {'found' if ENV_FILE.exists() else 'absent'})")
     failed = [c for c in checks if c["level"] == "fail"]

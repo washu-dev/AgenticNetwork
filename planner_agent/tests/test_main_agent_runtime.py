@@ -464,7 +464,7 @@ async def _login_identity_rides_only_in_request_metadata() -> None:
 
 
 def test_uploaded_image_is_attached_to_geospatial_a2a_call(tmp_path, monkeypatch) -> None:
-    monkeypatch.setenv("MAIN_AGENT_UPLOAD_DIR", str(tmp_path))
+    monkeypatch.setenv("CHAT_APP_UPLOAD_DIR", str(tmp_path))
     image_path = tmp_path / "flood.jpg"
     image_bytes = b"fake image bytes"
     image_path.write_bytes(image_bytes)
