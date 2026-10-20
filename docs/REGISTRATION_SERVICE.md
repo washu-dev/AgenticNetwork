@@ -1,7 +1,9 @@
 # Registration Service
 
-`registration_service/` — a FastAPI app (`:8091`) + static web UI that registers agents into the
-network: it spawns them, publishes their card to ADS, and monitors health. It is the on-ramp for
+`registration_service/` — a FastAPI app (`:8091`) + static web UI (the sign-up wizard) that
+registers agents into the network and then runs them: it spawns them (building an image first on
+the cluster and Cloud Run), publishes their card to ADS, and monitors health. People reach it at
+`/register/` on the chat app's address, which passes those requests through. It is the on-ramp for
 **user-uploaded custom agents** and the home of the approval trust boundary.
 
 Tests: `registration_service/.venv/bin/python -m pytest registration_service/tests -q -p no:cacheprovider`
@@ -54,7 +56,7 @@ old config JSON and are normalized **on read** — never rewritten — so
   `POST /agents/{id}/approve`, `POST /agents/{id}/reject`.
 - **Internal (ENGR host spawn loop):** `GET /internal/spawn-queue`, `POST /internal/spawned`,
   `GET /internal/stop-queue`. No access check in code: they rely on `:8091` not being reachable
-  from outside, and the planner's `/register` proxy refuses them (see [`SECURITY.md`](../SECURITY.md) §2).
+  from outside, and the chat app's `/register` pass-through refuses them (see [`SECURITY.md`](../SECURITY.md) §2).
 
 Admin auth (`_require_admin`) is the SSO-identity `ADMIN_EMAILS` allowlist (dev-open under
 `FAKE_DB=1`) — see [AUTH.md](AUTH.md) §2.
@@ -127,7 +129,7 @@ declares `credentials` — appends the credential extension via
 `card_credentials.py::build_credentials_extension` under
 `agenticnetwork.dev/ext/required-credentials`. The planner reads that back (see [AUTH.md](AUTH.md)
 §4). The credential catalog (`credential_catalog.py`) is the source of valid `type` values, mirrored
-in the planner.
+in the chat app (`chat_app/credential_catalog.py`).
 
 ## Key files
 | Path | Role |

@@ -13,7 +13,7 @@ The request path (user → planner → directory → A2A → agent → answer) a
 
 | Tier | Runs | What is real | What stands in |
 |---|---|---|---|
-| 1. Native | CI, every PR | The planner, the registration service and the agents it spawns, as local processes from your checkout, talking HTTP, A2A and the `dirctl` CLI | A mock LLM (`devstack/mock_llm.py`), in-memory databases, a file-backed fake `dirctl` (`devstack/fake_dirctl.py`), a local identity proxy instead of SSO |
+| 1. Native | CI, every PR | The chat app, the registration service and the agents it spawns, as local processes from your checkout, talking HTTP, A2A and the `dirctl` CLI | A mock LLM (`devstack/mock_llm.py`), in-memory databases, a file-backed fake `dirctl` (`devstack/fake_dirctl.py`), a local identity proxy instead of SSO |
 | 2. Containers | CI (`compose.yml`): PRs and pushes to `main` touching deployment or service code, weekly, on demand; or by hand | Tier 1 plus the service images, Postgres and a real directory daemon | The mock LLM (by default) and the identity proxy |
 | 3. Real LLM | By hand, opt-in | Tier 1 with a hosted or local model | Everything else as in tier 1 |
 
@@ -29,16 +29,16 @@ The request path (user → planner → directory → A2A → agent → answer) a
 
 | Suite | Command | Tests | Line coverage | What it covers |
 |---|---|---|---|---|
-| Chat app | `chat_app/.venv/bin/python -m pytest chat_app/tests -q` | 162 (+12) | 74% | The tool loop (scripted LLM, fake directory), the HTTP API (identity, conversation ownership, streaming, confirmations), credential discovery and enforcement, `/ready`, startup, bug reports, that every import of the repo's own code resolves |
+| Chat app | `chat_app/.venv/bin/python -m pytest chat_app/tests -q` | 245 (+12) | 76% | The tool loop (scripted LLM, fake directory), the HTTP API (identity, conversation ownership, streaming, confirmations), credential discovery and enforcement, `/ready`, startup, bug reports, setting names and their old-name fallbacks, that every import of the repo's own code resolves and the package's layers import one way |
 | Registration | `registration_service/.venv/bin/python -m pytest registration_service/tests -q` | 319 | 80% | The API, upload checks, the image build manifest, the native supervisor and agent processes, the Cloud Run backend (mocked), which handler module the runner starts for each handler type, streaming and uploaded-tools agents, credentials, the fake database, that every import of the repo's own code (here and in `agent_skeleton/`) resolves |
 | Agent skeleton | `registration_service/.venv/bin/python -m pytest agent_skeleton/tests -q` | 70 | 73% | The spec-driven engine, the `call_endpoint` tool and its secret redaction, per-operation tools, preset tools, the multi-endpoint manager, the generator, credentials kept out of the LLM prompt, the tool-schema and handler contract |
 | agentnet (directory + A2A) | `registration_service/.venv/bin/python -m pytest agentnet/tests -q`, and the same with `chat_app/.venv/bin/python` | 38 in each venv | 52% | Card ↔ record conversion, the `dirctl` CLI backend (mocked), the registration service's publisher (id-only skills, no legacy routing, its errors), the fake-directory flag, route summaries and routing wake-up |
-| Dev stack | `registration_service/.venv/bin/python -m pytest devstack/tests -q` | 55 | 52% | The mock LLM, the fake `dirctl`, the identity proxy, the stack CLI's checks that need no running services |
+| Dev stack | `registration_service/.venv/bin/python -m pytest devstack/tests -q` | 58 | 52% | The mock LLM, the fake `dirctl`, the identity proxy, the stack CLI's checks that need no running services |
 | Pipeline | `registration_service/.venv/bin/python -m pytest tests/pipeline -q` | 19 | — | The running system, end to end (next section) |
 
-Counts and coverage were measured on 2026-10-15 (planner 2026-10-16, planner and agentnet again
-2026-10-20) with the local venvs; both
-move as tests are added. The planner's other 12 tests (`test_pending_store_postgres.py`) run the
+Counts and coverage were measured on 2026-10-15 (chat app 2026-10-16; chat app, agentnet and dev
+stack again 2026-10-20) with the local venvs; both
+move as tests are added. The chat app's other 12 tests (`test_pending_store_postgres.py`) run the
 pending-confirmation statements on a real Postgres and are skipped unless
 `PLANNER_TEST_DATABASE_DSN` names a scratch database (each test drops and recreates
 `pending_confirmations` there). One way to get one, from the repo's Postgres image
@@ -144,14 +144,14 @@ fake `dirctl` (`push`, then `routing publish`) and unpublished afterwards.
 - **The real directory.** The fake `dirctl` keeps records in one JSON file. It models "stored is not
   routed" (a record is discoverable only after `routing publish`), but not the daemon, its
   network routing or its timing.
-- **Persistence and Postgres.** Registration runs with `FAKE_DB=1` and the planner without a
+- **Persistence and Postgres.** Registration runs with `FAKE_DB=1` and the chat app without a
   database: users and conversations live in memory, no Postgres constraints apply, and the
-  planner's credential store, grants and consent prompts are switched off. So the credential test
-  sends the bundle as the request's `metadata.credentials`, the key under which the planner's
-  server hands stored credentials to the runtime. It proves the scoping; storing, granting and
+  chat app's credential store, grants and consent prompts are switched off. So the credential test
+  sends the bundle as the request's `metadata.credentials`, the key under which the chat app's
+  server hands stored credentials to the planner. It proves the scoping; storing, granting and
   consent need tier 2. The restart test proves the stack's own restart path: the registry is in
   memory, and `up` registers the seeds and the agents in `<state dir>/agents/` again. A
-  confirmation or `ask_user` resumed on another planner process needs tier 2.
+  confirmation or `ask_user` resumed on another chat app process needs tier 2.
 - **Login.** The identity proxy adds `mail: dev@example.test`; Shibboleth and the ENGR gateway
   are not involved.
 - **Deployments.** Agents run as local processes, not images. The ENGR cluster scripts and Cloud

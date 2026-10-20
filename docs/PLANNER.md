@@ -1,12 +1,18 @@
-# Planner (Orchestrator) Internals
+# Planner internals
 
-The planner (`chat_app/planner/`) is the brain you talk to; it runs inside the chat app
-(`chat_app/`), the web service people sign in to. It has no domain skills — it discovers
-agents via ADS and delegates whole tasks over A2A. This is the code-level view; see
+The planner (`chat_app/planner/`) is the brain you talk to: the LLM loop that picks agents and
+calls them. It has no domain skills — it discovers agents via ADS and delegates whole tasks over
+A2A. It runs inside the chat app (`chat_app/`), the web service people sign in to, which handles
+sign-in, the chat page, saved conversations, each user's keys and the admin pages
+([`chat_app/README.md`](../chat_app/README.md) covers the whole app and its settings).
+
+This doc is the code-level view of the planner: its tool loop, how it calls agents, and the
+conversation and pending-confirmation state it keeps (stored by `chat_app/store/`). It starts
+with the chat app's routes, because they are how requests reach the planner. See
 [ARCHITECTURE.md](ARCHITECTURE.md) for the system picture and [AUTH.md](AUTH.md) for
 identity/credentials.
 
-## Entry points (`chat_app/server.py`)
+## Entry points: the chat app's routes (`chat_app/server.py`)
 
 FastAPI app. Key routes:
 - `GET /` → public landing (`web/landing.html`); `GET /app` → the chat UI, hard-gated (D7).
@@ -22,8 +28,8 @@ FastAPI app. Key routes:
   drops silently).
   Code: `chat_app/github_issues.py`; decision D12.
 - `GET /sessions`, `GET`/`DELETE /conversations/{context_id}` → per-user data (ownership-enforced).
-- `/admin/*` → admin dashboard data (allowlist-gated); `/register/{path}` → proxy to the
-  registration service (admin subpaths gated; `internal/*` refused with 404).
+- `/admin/*` → admin dashboard data (allowlist-gated); `/register/{path}` → passed through to
+  the registration service (admin subpaths gated; `internal/*` refused with 404).
 - Auth/credential routers (`auth_router`, `credentials_router`, grants) mount only when
   `REGISTRATION_DB_DSN` is set.
 
@@ -112,10 +118,10 @@ D9–D11).
   would leave the row for a later answer to run again. A failed delete or release, or a process
   that dies mid-call, leaves the claim: it reads as in progress for up to 2 minutes, then as
   nothing pending, and it is never claimed again. The row stays until the conversation's next
-  prompt replaces it or the conversation is deleted. Planners before this change (8ea4cfd and
-  earlier) ignore `claimed_at`, so before rolling the planner back past this change, delete the
-  claimed rows (`DELETE FROM pending_confirmations WHERE claimed_at IS NOT NULL`); no deployment
-  runs two planner versions on one database at once.
+  prompt replaces it or the conversation is deleted. Chat app versions before this change
+  (8ea4cfd and earlier) ignore `claimed_at`, so before rolling the chat app back past this change,
+  delete the claimed rows (`DELETE FROM pending_confirmations WHERE claimed_at IS NOT NULL`); no
+  deployment runs two chat app versions on one database at once.
 - `GET /sessions` derives from the persistence layer (Postgres when configured, else in-memory
   contexts) keyed on the authenticated principal — no `user_id` query param.
 
@@ -152,7 +158,7 @@ returns a terminal "reply yes/no" (or "Allow"). The resume paths read it back:
     press on a prompt that a newer one replaced gets `superseded` and runs or cancels nothing.
     A chat "yes" or "no" carries no id and answers the pending prompt, the latest one the chat
     showed. A request without a `prompt_id` (an older client), or a row saved without one (by
-    an older planner), is answered as before.
+    an older chat app), is answered as before.
   - A confirm on a process that doesn't know the conversation returns `unknown_context`, and a
     claim the database can't serve returns `pending_store_unavailable`; both leave the action
     pending. (A claim the database applied but couldn't confirm is released; if that release

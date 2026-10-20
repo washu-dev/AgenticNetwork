@@ -1,8 +1,8 @@
-# registration_service
+# Registration service
 
-FastAPI service that lets researchers register their own agents into the AgenticNetwork without writing code. It manages agent subprocesses, persists state in PostgreSQL, and publishes agents to ADS so the planner can discover them.
+The registration service (`registration_service/`) is a FastAPI service where researchers register their own agents into the AgenticNetwork, through a sign-up wizard or its REST API, often without writing code. It also builds and runs those agents (as subprocesses locally; as their own containers on the cluster and Cloud Run), keeps their state in PostgreSQL, and publishes their cards to ADS so the planner can discover them.
 
-Runs on port **8091**. Accessible through the planner UI at `/register/` (proxied by the planner's FastAPI server).
+Runs on port **8091**. People reach it at `/register/` on the chat app's address: the chat app's web server passes `/register/*` requests through to it.
 
 ## Handler types
 
@@ -104,7 +104,7 @@ registration submitted under a legacy name is *persisted* under the canonical on
 | `POST`/`GET` | `/agents/{id}/handler` | Upload / fetch a custom agent's handler code |
 | `GET` | `/agents/{id}/handler/download` | Download an uploaded handler archive |
 | `POST` | `/agents/{id}/approve` \| `/reject` | Admin approval gate for custom agents |
-| `GET`/`POST` | `/internal/{spawn-queue,spawned,stop-queue}` | Host-side cluster spawn-loop coordination (not user-facing). No access check in code: keep port 8091 off public networks. The planner's `/register` proxy refuses these paths (see SECURITY.md) |
+| `GET`/`POST` | `/internal/{spawn-queue,spawned,stop-queue}` | Host-side cluster spawn-loop coordination (not user-facing). No access check in code: keep port 8091 off public networks. The chat app's `/register` pass-through refuses these paths (see SECURITY.md) |
 
 ## Local development (no postgres, no ADS)
 
@@ -152,16 +152,16 @@ Tests cover: register (every type + tool source, canonical and legacy names — 
 `tests/test_handler_taxonomy.py`), list, get, delete, restart, port
 reuse after delete, validation errors, and skills round-trip.
 
-### How this relates to the planner's `--fake-ads`
+### How this relates to the chat app's `--fake-ads`
 
-The planner has an analogous flag: `--fake-ads` runs its in-process ADS stub so
+The chat app has an analogous flag: `--fake-ads` runs agentnet's in-process ADS stub so
 you can test planner logic without `dirctl`. `FAKE_DB=1` fills the same gap for
 the registration service. The two modes are independent — use whichever matches
 the component you are working on.
 
 | Mode | What it stubs | When to use |
 |---|---|---|
-| `planner --fake-ads` | ADS/dirctl directory | Working on planner logic or LLM tool loop |
+| `python -m chat_app --fake-ads` | ADS/dirctl directory | Working on planner logic or LLM tool loop |
 | `FAKE_DB=1` | postgres + ADS + subprocesses | Working on registration UI, API, or handlers |
 
 ## Environment variables
@@ -201,7 +201,7 @@ The entrypoint (`deployment/entrypoints/entrypoint-registration.sh`) handles:
 
 Custom-agent spawning on the cluster uses `SPAWN_BACKEND=cluster`: the container can't call `srun`, so a host-side loop (`deployment/spawn_agent_loop.py`) polls the `/internal/*` endpoints and launches approved agents as `srun --overlap` steps.
 
-The planner proxies `/register/{path}` to `http://localhost:8091` so the UI is reachable through the planner's public port without exposing 8091 externally.
+The chat app passes `/register/{path}` through to `http://localhost:8091` so the wizard is reachable through the chat app's public port without exposing 8091 externally.
 
 ## Deployment (GCP Cloud Run)
 

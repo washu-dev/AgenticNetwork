@@ -5,7 +5,8 @@ Why this exists: ADS routing matches on official OASF skill *names*, not the
 slash-namespaced card skill ids. A card with no official routing skill publishes
 "stored but not routed" and the planner never sees it. The generator resolves the
 user's chosen ``oasf_key`` against the taxonomy and stamps the result onto the
-card as an ``oasf:<name>:<id>`` tag (read back by the patched ads_utils.converter).
+card as an ``oasf:<name>:<id>`` tag (read back by agentnet's card_oasf here and by
+agent-directory's ads_utils.converter, which the emitted agent publishes through).
 
 The taxonomy is injected (a list of {name,id,key} dicts) so this module has no
 hard dependency on registration_service; ``load_taxonomy()`` is a convenience that
@@ -57,8 +58,9 @@ def resolve(oasf_key: str, taxonomy: list[dict]) -> ResolvedOASFSkill:
 def parse_tag(tag: str) -> ResolvedOASFSkill | None:
     """Inverse of ResolvedOASFSkill.as_tag(); None if the tag isn't an OASF tag.
 
-    This is the exact logic the patched ads_utils.converter uses to read routing
-    skills off a card — kept here too so the generator and the directory agree."""
+    This is the exact logic agent-directory's ads_utils.converter (and agentnet's
+    card_oasf) uses to read routing skills off a card — kept here too so the
+    generator and the directory agree."""
     if not tag.startswith(OASF_TAG_PREFIX):
         return None
     rest = tag[len(OASF_TAG_PREFIX):]

@@ -13,18 +13,26 @@ the component index see [`README.md`](README.md). Each component also has its ow
 AgenticNetwork is a demo of an **"Internet of Agents"**: a set of independent,
 LLM-powered services that **discover each other through a shared directory** and
 then **call each other over a standard agent-to-agent protocol** to complete a
-task. There are three kinds of thing in the repo:
+task. The main pieces:
 
-- **One orchestrator** — the **planner**, inside the chat app (`chat_app/planner/`).
+- **The chat app** (`chat_app/`) — the web service people sign in to and chat in: sign-in,
+  the chat page, saved conversations, each user's encrypted keys, admin pages and the
+  `/register/*` pass-through to the registration service.
+- **One orchestrator** — the **planner**, the LLM loop inside the chat app (`chat_app/planner/`).
   The "brain" you talk to. It has *no domain skills of its own*; it discovers other agents and
   delegates whole tasks to them. It is deliberately **agent-agnostic**: adding a
   new agent to the directory makes it usable with **zero planner code changes**.
+- **The registration service** (`registration_service/`) — where agent authors register
+  agents (sign-up wizard + API). It also builds and runs those agents, on the `agent_skeleton`
+  agent runtime, and publishes their cards to the directory.
 - **Specialist agents** — live in the separate [`agent-directory`](https://github.com/washu-dev/agent-directory)
   repo: `email_agent`, `coding_agent`, `intelligence_agent`, `geoSpatial_agent`,
   `disaster_response_agent`, `scout_agent`. Each is its own HTTP service wrapping
   one capability.
-- **A directory (ADS)** — AGNTCY's `dirctl` daemon; this repo's client code and operator tooling are in `agentnet/`. The registry/"phone book"
-  where agents publish a card so the others can look them up by skill.
+- **A directory (ADS)** — AGNTCY's `dirctl` daemon. The registry/"phone book"
+  where agents publish a card so the others can look them up by skill. This repo's client
+  code is `agentnet/`, the one shared library the chat app and the registration service use for
+  directory and A2A calls; it also holds the directory operator tooling.
 
 ### The three contracts that hold it together
 
@@ -43,9 +51,10 @@ task. There are three kinds of thing in the repo:
               │
               ▼
         ┌───────────┐    "who can send email?"    ┌─────────────┐
-        │  PLANNER  │ ──────────────────────────▶ │  ADS / dir  │  (phone book)
-        │  :8090    │ ◀────── card + endpoint ──── │ :8888       │
-        └─────┬─────┘                              └─────────────┘
+        │  CHAT APP │ ──────────────────────────▶ │  ADS / dir  │  (phone book)
+        │ (planner) │ ◀────── card + endpoint ──── │ :8888       │
+        │  :8090    │                              └─────────────┘
+        └─────┬─────┘
               │
               │ A2A call (HTTP/JSON-RPC): "send this email"
               ▼
@@ -89,7 +98,7 @@ whole `agentnet/scripts/` suite exists to detect and repair this.
 |---|---|---|---|---|
 | `chat_app` | Chat app: sign-in, chat UI, and the planner (orchestrator) inside it | **8090** | pip venv (`requirements.txt`) | OpenAI **Chat Completions** (vLLM-ready; migrated 2026-06) |
 | `agentnet` | Shared directory (ADS) + A2A library; ADS operator tooling (`scripts/ads`) | dir at **8888** (routing 8999) | runs in the chat app and registration venvs | n/a (`dirctl`) |
-| `registration_service` | Agent self-registration web UI + manager | **8091** | pip venv (`requirements.txt`) | n/a |
+| `registration_service` | Registration service: sign-up wizard + API for agent authors; builds, runs and monitors their agents and publishes their cards | **8091** | pip venv (`requirements.txt`) | n/a |
 
 **[`agent-directory`](https://github.com/washu-dev/agent-directory) repo (specialist agents):**
 
@@ -121,7 +130,7 @@ else runs on a laptop: start with the dev stack. Tiers A–B are older component
 setups, Tier D is the live ENGR cluster deploy and Tier E is GCP.
 
 ### Dev stack (recommended on a laptop)
-`scripts/stack up` starts the planner, the registration service, a seed agent, a mock LLM
+`scripts/stack up` starts the chat app, the registration service, a seed agent, a mock LLM
 and a local identity proxy, and returns when everything is ready. Open
 **http://localhost:8080/app** (signed in as `dev@example.test`); `scripts/stack down` stops
 it. No Docker, database, SSO or API key. Setup, a real LLM and adding agents:
@@ -158,20 +167,20 @@ per service (`deployment/dockerfiles/Dockerfile.<agent>`, built/pushed by
 as parallel `srun --overlap` steps in `submit.sbatch` on one CPU node, plus a separate GPU
 job (`start_vllm.sbatch`) serving `gpt-oss-120b` via vLLM. ADS starts first; each agent's
 own `entrypoint.sh` (in its directory in the `agent-directory` repo; this repo's
-`deployment/entrypoints/` only holds the planner/postgres/registration ones) waits up
-to 60 s for it, then `exec`s the agent with an absolute conda path
-(`/opt/conda/envs/<env>/bin/python`). The planner reaches vLLM through
+`deployment/entrypoints/` only holds the planner/postgres/registration ones; "planner" is the
+chat app's deployment name) waits up to 60 s for it, then `exec`s the agent with an absolute
+conda path (`/opt/conda/envs/<env>/bin/python`). The chat app's planner reaches vLLM through
 `OPENAI_BASE_URL`. Full runbook: `docs/deployment/engr/README.md`.
 
 ### Tier E — GCP Cloud Run (built to a working milestone 2026-08; on hold since)
 Cloud is a critical leg of the project going forward (decided 2026-10-13); the ENGR cluster
 (Tier D) stays the live public deployment. The WashU GCP build
 (`us-central1`) is **additive**; nothing on ENGR was deleted. **Live as of 2026-08-03
-(re-verify):** the **planner and registration service on Cloud Run** wired to **Cloud SQL**, a
-**real ADS on a GCE VM**, authenticated cross-network A2A, LLM = vLLM-primary with automatic
-**Vertex AI fallback**, and the **`CloudRunBackend`** auto-deploying + auto-publishing registered
-agents end-to-end (register→build→deploy→publish). **Not built yet:** the public front door (the
-planner is anon + `gcloud run services proxy`-only) and the DNS cutover. If a task touches GCP,
+(re-verify):** the **chat app (Cloud Run service `planner`) and registration service on Cloud
+Run** wired to **Cloud SQL**, a **real ADS on a GCE VM**, authenticated cross-network A2A, LLM =
+vLLM-primary with automatic **Vertex AI fallback**, and the **`CloudRunBackend`**
+auto-deploying + auto-publishing registered agents end-to-end (register→build→deploy→publish). **Not built yet:** the public front door (the
+chat app is anon + `gcloud run services proxy`-only) and the DNS cutover. If a task touches GCP,
 start with the **GCP runbook** `docs/deployment/gcp/README.md` (architecture, how to access, dev
 workflow, cluster differences); deeper dives: `docs/deployment/gcp/MIGRATION.md` (design,
 status, gotchas), `.../DEPLOYED_COMPONENTS.md` (inventory + control commands), and
@@ -199,10 +208,12 @@ status, gotchas), `.../DEPLOYED_COMPONENTS.md` (inventory + control commands), a
 **Different agents require different environments — by design.** Each component
 has its own conda env or venv, and `README.md` states: *do not install one
 component's requirements file into another component's virtual environment.* The environments even
-disagree on library versions (registration pins `a2a-sdk==0.3.2`, the planner uses
+disagree on library versions (registration pins `a2a-sdk==0.3.2`, the chat app uses
 `0.3.26`). This is fine because **agents only ever communicate over A2A (HTTP)** —
-they share no Python imports at runtime, so each can have any dependencies, any
-Python version, even run on a different machine or container.
+agents share no Python imports at runtime, so each can have any dependencies, any
+Python version, even run on a different machine or container. The two services in this
+repo do share code in-process: both import `agentnet/` (so its tests run in both venvs), and
+the registration service also imports `agent_skeleton` to run agents.
 
 | Env | Components | How to create |
 |---|---|---|
@@ -249,8 +260,8 @@ the Responses-API agents, an **API rewrite** to Chat Completions.
 (`chat_app/planner/llm_client.py`, commit `c4d8048` "added planner vllm support") and a
 containerized ENGR deployment (`deployment/`, §4 Tier D) wires every agent to vLLM via
 `OPENAI_BASE_URL`. **`email_agent` has since migrated too** (see table below) — the
-only agent still on the OpenAI **Responses** API is **geospatial** — so the planner
-web UI (:8090) now runs against self-hosted gpt-oss-120b without a rewrite.
+only agent still on the OpenAI **Responses** API is **geospatial** — so the chat app
+(:8090) now runs against self-hosted gpt-oss-120b without a rewrite.
 
 | Agent | API today | Endpoint wiring | Rewrite? | Difficulty |
 |---|---|---|---|---|
@@ -335,8 +346,8 @@ and email are already done; use them as the reference):** the same shape of chan
 
 ## 8. Authentication & per-user credentials
 
-The planner (`:8090`) is protected by **WashU Shibboleth SSO**. Identity arrives
-via Apache-injected headers (`eppn` / `mail` / `remote-user`); the planner never
+The chat app (`:8090`) is protected by **WashU Shibboleth SSO**. Identity arrives
+via Apache-injected headers (`eppn` / `mail` / `remote-user`); the chat app never
 handles passwords directly.
 
 ```
@@ -345,12 +356,12 @@ Browser → https://agenticweb.engr.wustl.edu   (public DNS — WashU ENGR)
   → Apache + mod_shib  (Shibboleth Service Provider)
       → validates the WashU SAML assertion (campus SSO)
       → injects eppn / mail / remote-user identity headers
-  → reverse-proxy to the planner :8090
+  → reverse-proxy to the chat app :8090
 ```
 
 > The nginx + Apache + Shibboleth **gateway is persistent infrastructure that lives
 > OUTSIDE this repo** — a WashU ENGR host that holds the `agenticweb.engr.wustl.edu`
-> DNS name and the Shibboleth SP registration. It reverse-proxies to the planner,
+> DNS name and the Shibboleth SP registration. It reverse-proxies to the chat app,
 > which runs on an **ephemeral Slurm compute node**, so the gateway's upstream must
 > be repointed (or SSH-tunneled) to the current node each run. Stabilizing this is
 > tracked in [`docs/deployment/DOWNSTREAM_CONSIDERATIONS.md`](docs/deployment/DOWNSTREAM_CONSIDERATIONS.md) #3.
@@ -377,12 +388,12 @@ is in the `ADMIN_EMAILS` allowlist (comma-separated). `/admin/*` and the approve
 endpoints use `require_admin` (401 if no identity, 403 if not allowlisted); fail
 closed (empty list → no admins). The old shared `X-Admin-Token`/`MAIN_AGENT_ADMIN_TOKEN`
 and `POST /admin/login` are retired. `/me` returns `is_admin` so the UI hides admin
-surfaces for non-admins. Both the planner and `registration_service` read `ADMIN_EMAILS`
+surfaces for non-admins. Both the chat app and `registration_service` read `ADMIN_EMAILS`
 (dev/test: `registration_service` leaves it open under `FAKE_DB=1`).
 
-**Credential injection** — at the start of each `/messages` request the planner
-fetches + decrypts the requesting user's credentials and injects them into the A2A
-task context. Specialist agents receive credentials in task context and remain
+**Credential injection** — at the start of each `/messages` request the chat app
+fetches + decrypts the requesting user's credentials, and the planner injects the ones
+each agent may have into the A2A task context. Specialist agents receive credentials in task context and remain
 auth-unaware.
 
 **What's not yet done** (auth model: [`docs/AUTH.md`](docs/AUTH.md); decisions: [`docs/DECISIONS.md`](docs/DECISIONS.md)):
@@ -392,26 +403,27 @@ auth-unaware.
   in [`docs/DECISIONS.md`](docs/DECISIONS.md) (D6).
 - Removing `deployment/google_credentials/` (still used by email agent).
 
-(Google OAuth token refresh **is** implemented — `_refresh_google_token` in `server.py`.)
+(Google OAuth token refresh **is** implemented — `_refresh_google_token` in `chat_app/server.py`.)
 
 ---
 
 ## 9. Important realities & caveats
 
-- **Heavy code duplication, not a shared library.** The A2A + directory protocol
-  layer exists in ~4 divergent copies: this repo's one shared package `agentnet/`,
+- **Copies of the protocol code in the agents repo.** This repo has one A2A + directory
+  package, `agentnet/`. The `agent-directory` repo has its own divergent copies:
   near-identical `_vendor_v2/` trees in `coding_agent/` and `intelligence_agent/`
   (identical to each other except the package `__init__.py` docstring; their
-  import paths, error strings, and log path diverge from the canonical copy),
-  and scout's own independent implementation. Library pins drift (`a2a-sdk` 0.3.2 vs 0.3.26). When
+  import paths, error strings, and log path diverge from `agentnet/`),
+  scout's own independent implementation, and the others listed in
+  [`SECURITY.md`](SECURITY.md) §3. Library pins drift (`a2a-sdk` 0.3.2 vs 0.3.26). When
   fixing protocol bugs, check whether the fix needs replicating across copies.
 - **Scout uses a different directory.** Every other agent uses `dirctl` at
   `ADS_SERVER_ADDR` (`localhost:8888` in the ENGR deploy; the ADS VM on GCP); scout uses
   `agntcy_app_sdk` `AgentDirectory` at `DIRECTORY_ENDPOINT` (default `127.0.0.1:8889`, gRPC).
   It is unverified whether these are the same logical directory — if not, scout may not be
   discoverable by the others.
-- **Authentication is planner-only.** The planner (`:8090`) requires WashU
-  Shibboleth login (see §8). However, specialist agent ports (9103, 9104, 19105–19108)
+- **Authentication is at the chat app only.** The chat app (`:8090`) requires WashU
+  Shibboleth login (see §8), and the registration pages are reached through it. However, specialist agent ports (9103, 9104, 19105–19108)
   have no auth — agent cards have empty `securitySchemes` and bind `0.0.0.0`. On a
   shared node, any process on localhost can drive Gmail send, calendar/file writes,
   code execution, and geolocation directly. Write actions are gated only by the
@@ -506,10 +518,10 @@ planner → saved history → register an agent → shut down with nothing left 
 
 | Path | What it is |
 |---|---|
-| `chat_app/planner/runtime.py` | Orchestrator tool loop, ADS/A2A dispatch, policy, dedup |
+| `chat_app/planner/runtime.py` | The planner's tool loop, ADS/A2A dispatch, policy, dedup |
 | `chat_app/planner/llm_client.py` | OpenAI **Chat Completions** client (the planner's LLM call; vLLM-compatible, migrated from Responses 2026-06) |
 | `chat_app/planner/tools.py` | The 5 tool schemas + system prompt |
-| `chat_app/server.py` | FastAPI surface + chat UI serving |
+| `chat_app/server.py` | The chat app's FastAPI server: sign-in, chat UI, conversations, keys, admin routes, `/register/*` pass-through |
 | `chat_app/web/index.html` | Single-file chat UI |
 | `chat_app/scripts/start.sh` / `doctor.sh` | Launcher / self-check |
 | `scripts/ads` | ADS operator dispatcher |

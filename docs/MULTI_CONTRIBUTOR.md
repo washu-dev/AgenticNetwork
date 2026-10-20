@@ -68,7 +68,7 @@ to make the personal ones group-owned, exactly like Slurm already is.**
 
 ### The hard constraint: prod Postgres holds real secrets
 
-The planner writes to the **`registration`** database (`chat_app/store/db.py:104`,
+The chat app writes to the **`registration`** database (`chat_app/store/db.py:104`,
 `REGISTRATION_DB_DSN`), which is the **persistent** DB on the shared `/engrfs` volume. It
 contains **AES-256-GCM-encrypted Google OAuth refresh tokens**, users' OpenAI/Anthropic/Brave/
 Google API keys (`user_credentials`), credential grants, and chat history. Therefore:
@@ -142,8 +142,8 @@ can't touch prod. A deployment now runs as one of two **instances**, selected by
   candidate build without clobbering the prod-facing `:latest`. Each service's tag resolves as
   `<SERVICE>_IMAGE_TAG` → `IMAGE_TAG` (instance-wide default; the future CI SHA tag) → the
   service default (`latest`, or `v4` for ads), via the `image_ref` helper in `submit.sbatch`.
-  Workflow: `IMAGE_TAG=dev-alice bash deployment/build_and_push.sh planner` (publishes
-  `…/agenticnetwork-planner:dev-alice`, leaving `:latest` alone), then launch the test instance
+  Workflow: `IMAGE_TAG=dev-alice bash deployment/build_and_push.sh planner` (the chat app's
+  image, still named `planner`; publishes `…/agenticnetwork-planner:dev-alice`, leaving `:latest` alone), then launch the test instance
   with `PLANNER_IMAGE_TAG=dev-alice` — only the planner runs the candidate; every other service
   stays on `:latest`. `build_and_push.sh` honors `IMAGE_TAG` for the build side.
 

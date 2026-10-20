@@ -316,7 +316,7 @@ The first three are the durable core; the rest are scaffolding.
 |---|---|---|---|---|
 | ADS dir | 8888 (routing 8999) | | coding | 19106 |
 | vLLM | 8100 | | intelligence | 19107 |
-| planner | 8090 | | disaster | **19108** (5-digit) |
+| chat app (`planner`) | 8090 | | disaster | **19108** (5-digit) |
 | scout | 9104 | | geospatial | **19105** (5-digit) |
 | email | 9103 | | | |
 
@@ -330,7 +330,7 @@ The first three are the durable core; the rest are scaffolding.
 - **Image-tag mismatch:** `submit.sbatch` pins `di2washu/agenticnetwork-ads:v4`,
   but `build_and_push.sh` builds/pushes everything with `TAG=latest`. The `ads:v4`
   tag the launcher references is **not produced by the build script**. Every other
-  `srun` step (postgres, registration, planner + 6 specialists) uses `:latest`.
+  `srun` step (postgres, registration, planner (the chat app) + 6 specialists) uses `:latest`.
 - **ADS bring-up runs `dirctl` directly (no entrypoint script):** `submit.sbatch`
   starts ADS with `dirctl daemon start --config /workspace/deployment/ads_daemon.yaml`
   against the mounted config. `Dockerfile.ads` bakes the same command as its default
@@ -359,8 +359,8 @@ The first three are the durable core; the rest are scaffolding.
 scaffolding (5–10).
 
 **Build** → `build_and_push.sh` builds the **4 infra images**
-(`AGENTS=(postgres ads planner registration)` → `di2washu/agenticnetwork-<name>`)
-and pushes to DockerHub. ADS = `debian:12-slim` + `dirctl`. The 6 specialist agent
+(`AGENTS=(postgres ads planner registration)` → `di2washu/agenticnetwork-<name>`; `planner` is
+the chat app's image, which keeps its older name) and pushes to DockerHub. ADS = `debian:12-slim` + `dirctl`. The 6 specialist agent
 images (scout, email, coding, intelligence, disaster, geospatial) build from the
 separate `agent-directory` repo.
 
@@ -376,7 +376,7 @@ separate `agent-directory` repo.
    connections. Then start ADS (`dirctl daemon start` against the mounted
    `ads_daemon.yaml`, which uses the Postgres `dir` DB); poll `localhost:8888` up
    to **30 s**.
-3. Launch registration, planner, and the 6 specialists as backgrounded
+3. Launch registration, the chat app (step `planner`), and the 6 specialists as backgrounded
    `srun --overlap` steps running `/entrypoint.sh`.
 4. Each entrypoint waits up to **60 s** for ADS, then `exec`s its server by an
    absolute interpreter path; a specialist **publishes its card on boot**.
@@ -392,7 +392,7 @@ appears. **The agents' own boot-time self-publish helpers take a shortcut** — 
 diagnose scripts in `agentnet/scripts/` exist for exactly this.
 
 **Discover & call** (a user prompt) →
-`POST /messages` → planner runtime tool loop → LLM (vLLM) sees 5 tools →
+`POST /messages` to the chat app → planner runtime tool loop → LLM (vLLM) sees 5 tools →
 `list_agents` (`dirctl routing search`/`list`, post-filtered on custom tags) →
 `describe_agent` → `call_agent(agent_id, task_input, skill?)` resolves the endpoint
 **from the card url** and sends A2A `message/send` over HTTP/JSON-RPC → the specialist
@@ -424,7 +424,7 @@ health — all externally. The six existing specialist agents do not use this pa
 - the entire planner runtime: the 5-tool design, system prompt, dedup/fingerprinting,
   **strict-mode write-gating** (a creator invention, *not* AGNTCY — and **off by
   default**, since `policy_mode` defaults to `permissive`), confirmation flow,
-  streaming, the FastAPI surface + chat UI;
+  streaming, the chat app's FastAPI surface + chat UI;
 - the card→OASF converter and its skill-id mapping table; the directory backends
   wrapper (real/fake, routing-poll verification, stored-vs-routed detection);
 - conventions layered on AGNTCY's freeform fields: slash-namespaced skill ids, the

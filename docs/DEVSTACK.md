@@ -1,7 +1,7 @@
 # Local dev stack
 
-Run the whole system on your laptop with one command: the chat UI, the planner, the
-registration service, a seed agent and a mock LLM. There is no Docker, no database
+Run the whole system on your laptop with one command: the chat app (the chat UI and the
+planner inside it), the registration service, a seed agent and a mock LLM. There is no Docker, no database
 server, no SSO, no cluster and no API key. The default LLM is an offline mock.
 
 This is Goal 3 in [`OPEN_SOURCE_RELEASE.md`](OPEN_SOURCE_RELEASE.md) ("easy hands-on
@@ -28,7 +28,7 @@ answer starts with `[mock-llm] Echo:`, which proves the agent's own LLM call ran
 
 ### One-time setup: the venvs
 
-The planner and the registration service pin different `a2a-sdk` versions, so each has
+The chat app and the registration service pin different `a2a-sdk` versions, so each has
 its own venv. Create them from the repo root (the registration install must run from
 the root because it installs `./agent_skeleton`):
 
@@ -45,7 +45,7 @@ scripts/stack doctor                # checks Python, both venvs, the fake dirctl
 | Service | Port | What it is |
 |---|---|---|
 | `proxy` | 8080 | The front door. Stands in for SSO: it removes any identity headers the browser sends and adds `mail: dev@example.test`. Open the chat UI here. |
-| `planner` | 8090 | The chat app (`chat_app`, with its planner), with no database (users and conversations live in memory). |
+| `planner` | 8090 | The chat app (`chat_app`, with its planner; the service keeps its older name, `planner`), with no database (users and conversations live in memory). |
 | `registration` | 8091 | `registration_service`, with an in-memory database and the real supervisor, which spawns agents as local processes. |
 | `mock-llm` | 8099 | A deterministic OpenAI-compatible LLM (`devstack/mock_llm.py`). Not started with `--llm openai`. |
 | agents | 19200–19299 | Agents spawned by the registration service. |
@@ -59,7 +59,7 @@ read it from the state dir, so give them the same `--state-dir` instead. Before 
 `doctor` checks the default ports.
 
 After the services are ready, `up` registers the seed agents in `devstack/seeds/` through
-the real `POST /agents` path. It waits until the planner's `GET /agents` lists them.
+the real `POST /agents` path. It waits until the chat app's `GET /agents` lists them.
 
 All runtime state lives in `.devstack/` (ignored by git): logs, pid files, the
 directory file, uploads and agents you added. The registry is in memory, so `down`

@@ -28,7 +28,7 @@ git push -u origin my-change
 
 ## Step 2 — Do you need to rebuild a Docker image?
 
-Each service (planner, email agent, …) runs inside a Docker *image* — a frozen snapshot of its
+Each service (the chat app, the email agent, …) runs inside a Docker *image* — a frozen snapshot of its
 code taken at build time. There are two cases:
 
 - **You changed only config or deploy scripts** (`deployment/.env`, the `*.sbatch` files,
@@ -47,8 +47,8 @@ code taken at build time. There are two cases:
   docker login -u di2washu
   IMAGE_TAG=mytag bash deployment/build_and_push.sh planner   # <-- the service you changed
   ```
-  (The four infra images — `planner`, `ads`, `postgres`, `registration` — build from **this**
-  repo; the six specialist agents build from the **`agent-directory`** repo.)
+  (The four infra images — `planner` (the chat app), `ads`, `postgres`, `registration` — build
+  from **this** repo; the six specialist agents build from the **`agent-directory`** repo.)
 
 ## Step 3 — Launch YOUR test instance
 
@@ -60,7 +60,7 @@ sbatch deployment/start_vllm.sbatch          # wait until it shows 'R' in:  sque
 # launch your isolated copy:
 deployment/deploy.sh test
 
-# if you rebuilt an image in Step 2, tell test to use YOUR tag — e.g. the planner:
+# if you rebuilt an image in Step 2, tell test to use YOUR tag — e.g. the chat app (service planner):
 PLANNER_IMAGE_TAG=mytag deployment/deploy.sh test
 ```
 This runs beside prod on shifted ports (everything +10000) with its own throwaway database.

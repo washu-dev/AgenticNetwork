@@ -18,7 +18,7 @@ maps onto each platform.
 
 ## Architecture
 
-A message hits the planner; it **discovers** agents from ADS, **routes** to the chosen agent's Cloud Run
+A message hits the chat app (Cloud Run service `planner`), whose planner **discovers** agents from ADS, **routes** to the chosen agent's Cloud Run
 URL (authenticated with a Google ID token), reasons via **vLLM-primary / Vertex-fallback**, and persists
 to **Cloud SQL**. Separately, registering a custom agent triggers a CI build and the **`CloudRunBackend`**
 auto-deploys + auto-publishes it — no operator step. The request-path diagram is kept in one place —
@@ -28,9 +28,10 @@ auto-deploys + auto-publishes it — no operator step. The request-path diagram 
 
 At a glance (exact names, env, and control commands are in [DEPLOYED_COMPONENTS.md](DEPLOYED_COMPONENTS.md)):
 
-- **Cloud Run** — `planner` (min=1), `registration` (singleton min=max=1, `SPAWN_BACKEND=cloudrun`), and
-  on-demand agents (`disaster`, custom agents; min=0).
-- **Cloud SQL** — `agenticnetwork-db` (Postgres 15). One `registration` database **shared** by the planner
+- **Cloud Run** — `planner` (the chat app, min=1), `registration` (singleton min=max=1,
+  `SPAWN_BACKEND=cloudrun`), and on-demand agents (`disaster`, custom agents; min=0). The chat app's
+  service, image and connector keep its older name, `planner`, so the running deployment keeps working.
+- **Cloud SQL** — `agenticnetwork-db` (Postgres 15). One `registration` database **shared** by the chat app
   and the registration service (disjoint tables).
 - **GCE VMs** — `ads` (the `dirctl` directory, COS VM at `10.128.0.3`) and `vllm-relay` (autossh tunnel to
   the ENGR vLLM).
@@ -54,14 +55,14 @@ At a glance (exact names, env, and control commands are in [DEPLOYED_COMPONENTS.
 | Images | `di2washu/agenticnetwork-*` | **same images** (shared; the entrypoint branches on `SKIP_STARTUP_WAITS`) |
 | Ports | fixed (8090/8091/8888/19105-8) | Cloud Run injects `$PORT` (8080); agents use internal ingress |
 | Lifetime | ephemeral (Slurm time limit; node hostname changes each run) | persistent (stable `*.run.app` URLs) |
-| Front door | Shibboleth gateway → planner :8090 | **not yet** — currently anon + proxy (see below); Option-A front door planned |
+| Front door | Shibboleth gateway → chat app :8090 | **not yet** — currently anon + proxy (see below); Option-A front door planned |
 
 ## How to access
 
 The GCP services are **IAM-private** (no public URL yet) — reached through Google's authenticated proxy,
 not the internet. You need `gcloud` authed as a user with `run.invoker` on the service (`run.admin` covers it).
 
-**Planner (chat UI):**
+**Chat app (service `planner`):**
 ```bash
 gcloud run services proxy planner --project=di2-agenticweb --region=us-central1 --port=8080
 ```
@@ -75,7 +76,7 @@ gcloud run services proxy registration --project=di2-agenticweb --region=us-cent
 Open http://localhost:8091/. Admin actions need the identity header, e.g.
 `curl -X POST http://localhost:8091/agents/<id>/approve -H 'mail: <you>@wustl.edu'` (must be in `ADMIN_EMAILS`).
 
-The **agents** aren't accessed directly — the planner reaches them internally over the VPC. To grant a
+The **agents** aren't accessed directly — the chat app's planner reaches them internally over the VPC. To grant a
 teammate access: `gcloud run services add-iam-policy-binding planner --region=us-central1
 --member="user:them@wustl.edu" --role="roles/run.invoker"`, and they run the same proxy.
 
@@ -110,7 +111,7 @@ Pause commands are in [DEPLOYED_COMPONENTS.md](DEPLOYED_COMPONENTS.md#cost--paus
 ## Status & deferred work (handoff)
 
 **Where this landed (end of summer 2026).** The GCP migration reached a stable, self-contained milestone:
-the planner + registration service ran on Cloud Run against Cloud SQL, and the full
+the chat app (`planner`) + registration service ran on Cloud Run against Cloud SQL, and the full
 register→build→deploy→publish automation (`CloudRunBackend`) was **live and proven end-to-end**
 (2026-08-03), reachable by operators via the proxy (see [How to access](#how-to-access)). The **ENGR
 cluster remains the live public deployment** (`agenticweb.engr.wustl.edu`) — the GCP front-door cutover
@@ -119,12 +120,12 @@ was **intentionally paused**, not blocked.
 **Next steps when cloud work resumes** (scoped, with the design settled so a successor can execute
 directly — none of this blocks using or developing the GCP stack as-is):
 
-1. **Public front door.** The planner is anon + proxy-only; it isn't exposed to end users yet. Decided
+1. **Public front door.** The chat app is anon + proxy-only; it isn't exposed to end users yet. Decided
    approach: **Option A** — the WashU Shibboleth gateway mints a Google ID token to reach the private
-   planner (and drops anon at cutover). The build outline is in the CloudRunBackend
+   chat app (and drops anon at cutover). The build outline is in the CloudRunBackend
    implementation doc's [Step 10](IMPLEMENTATION_CLOUDRUN_BACKEND.md); the decision + rejected
    alternatives (LB+Cloud Armor / IAP+WIF) are in [DOWNSTREAM_CONSIDERATIONS.md](../DOWNSTREAM_CONSIDERATIONS.md) #4.
-2. **Option-1 cutover** — repoint `agenticweb.engr.wustl.edu` at the GCP planner (a reversible config
+2. **Option-1 cutover** — repoint `agenticweb.engr.wustl.edu` at the GCP chat app (a reversible config
    change on the out-of-repo WashU gateway). Only after (1).
 3. **The rest of the specialist agent fleet** on GCP (email / coding / intelligence / geospatial / scout) —
    each still needs its own per-agent LLM work; orthogonal to the platform.

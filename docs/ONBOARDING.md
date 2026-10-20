@@ -38,7 +38,7 @@ See [`docs/AGENT_DIRECTORY.md`](AGENT_DIRECTORY.md) and [`docs/ARCHITECTURE.md`]
 We deliberately moved user-facing credentials to a **per-user model** (D5/D6 in
 [`docs/DECISIONS.md`](DECISIONS.md)). The rule is *who owns the resource*:
 - **User-owned** (a user's Google account, their OpenAI/GitHub key): the user adds it in the
-  planner's **Settings → Credentials**, grants it to the agent, and the planner injects it —
+  chat app's **Settings → Credentials**, grants it to the agent, and the planner injects it —
   scoped, per-request — into the agent's task context. The agent **reads it from `context`**, not
   from an env var. Do **not** hardcode a user's key as an env var.
 - **Operator-owned** (a shared service/infra key the org pays for — Brave, Maps, vLLM): read from
@@ -47,8 +47,8 @@ We deliberately moved user-facing credentials to a **per-user model** (D5/D6 in
 If you find yourself adding `os.getenv("SOME_USER_API_KEY")` to a user-facing agent, that's the
 wrong model — see [`docs/AUTH.md`](AUTH.md) §4.
 
-### 4. Auth is planner-only, behind Shibboleth
-Only the planner (`:8090`) is authenticated (WashU SSO via an Apache/Shibboleth gateway that
+### 4. Auth is at the chat app only, behind Shibboleth
+Only the chat app (`:8090`) is authenticated (WashU SSO via an Apache/Shibboleth gateway that
 lives *outside* this repo). Admin = your SSO email in `ADMIN_EMAILS` (no shared token). Specialist
 ports have no auth and are safe only on the trusted node. See [`docs/AUTH.md`](AUTH.md) and
 [`SECURITY.md`](../SECURITY.md).
@@ -63,7 +63,7 @@ There are two lanes; pick by what you're building.
 **A. A user-contributed / self-service agent → use the registration service.** This is the
 managed path: it builds, spawns, health-checks, and **publishes to ADS for you**, and (for
 uploaded code) routes it through admin approval.
-- In the planner UI: `/register/` (or `:8091` directly). Choose the handler type —
+- At `/register/` on the chat app's address (or `:8091` directly). Choose the handler type —
   three of them, split on *who runs the loop*:
   - `llm` — we run the loop. A **Tools** field picks where its capabilities come from:
     none (prompt only), preset catalog tools, **uploaded tool code**, or typed HTTP

@@ -2,33 +2,50 @@
 
 AgenticNetwork is a research system for an **"Internet of Agents"**: independent, LLM-powered
 services that find each other in a shared directory and call each other over a standard
-agent-to-agent protocol. You talk to one orchestrator, the **planner**, which has no skills of its
-own. It searches the directory for agents that can do the task and delegates to them over A2A, so
-adding an agent to the directory makes it usable with no planner code changes.
+agent-to-agent protocol. You sign in to one web service, the **chat app**, and chat with the
+**planner** inside it: an LLM loop that has no skills of its own. The planner searches the
+directory for agents that can do the task and delegates to them over A2A, so adding an agent to
+the directory makes it usable with no planner code changes.
 
 ## How it works
 
 ```mermaid
 flowchart LR
-    U["Browser"] --> F["Front door<br/>(SSO gateway, or the dev identity proxy)"]
-    F -->|"chat (/app)"| P["Planner<br/>chat UI + tool loop"]
-    F -.->|"agent sign-up wizard (/register/),<br/>passed through the planner's web server"| R["Registration service<br/>sign-up wizard + API"]
-    P <-->|"search by skill, read cards"| D[("Directory (ADS)<br/>AGNTCY dir, via dirctl")]
-    P -->|"A2A task"| A["Specialist agents"]
-    R -->|"registers and spawns"| A
-    R -->|"publishes Agent Cards"| D
+    U["Person chatting"] --> F["Front door<br/>(SSO gateway, or the dev identity proxy)"]
+    G["Agent author"] --> F
+    subgraph C["Chat app (chat_app/)"]
+        W["Web server<br/>sign-in, chat page, saved conversations,<br/>each user's keys, admin approvals"]
+        P["Planner<br/>(LLM loop that picks agents)"]
+        W -->|"chat messages"| P
+    end
+    F --> W
+    W -.->|"/register/* passed through as is"| R["Registration service<br/>sign-up wizard + API;<br/>runs agents and publishes their cards"]
+    P <-->|"search by skill, read cards<br/>(agentnet)"| D[("Directory (ADS)<br/>AGNTCY dir, via dirctl")]
+    P -->|"A2A task (agentnet)"| A["Agents"]
+    R -->|"starts and monitors"| A
+    R -->|"publishes Agent Cards<br/>(agentnet)"| D
     P -.-> L["LLM<br/>(any OpenAI-compatible API)"]
     A -.-> L
 ```
 
-The planner's LLM sees five tools: `list_agents`, `describe_agent`, `call_agent`, `ask_user` and
-`final_answer`. A request goes browser → front door (which adds the user's identity) → planner →
-directory search → A2A call to the chosen agent → answer back to the user.
+The chat app is the only service people reach directly. It signs people in, serves the chat
+page, keeps saved conversations and each user's encrypted keys, runs the admin pages (including
+approving new agents), and files bug reports. The planner is the part of it that answers chat
+messages. Its LLM sees five tools: `list_agents`, `describe_agent`, `call_agent`, `ask_user` and
+`final_answer`. A request goes browser → front door (which adds the user's identity) → chat app
+→ planner → directory search → A2A call to the chosen agent → answer back to the user.
 
-Agent developers use a separate page, the registration wizard, to sign up an agent; an admin then
-approves it from the chat UI. Both pages sit at the same public address: the planner's web server
-passes `/register/*` requests through to the registration service (its LLM is not involved), so
-that service never needs a public port and stays behind the same sign-in.
+Agent authors use a separate place, the registration service's sign-up wizard, to register an
+agent; the registration service then runs the agent (once an admin approves it, for uploaded
+code) and publishes its card to the directory. Both sit at the same public address: the chat
+app's web server passes `/register/*` requests straight through to the registration service, and
+the planner's LLM is not involved. So the registration service never needs a public port and
+stays behind the same sign-in.
+
+`agentnet` is not a service: it is the shared library that the planner and the registration
+service use for every directory and A2A call. Agents registered through the registration service
+run on `agent_skeleton`, the agent runtime; standalone agents can be written any way that speaks
+A2A.
 
 **Key ideas**
 
@@ -41,8 +58,8 @@ Deeper: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and [`docs/AUTH.md`](docs
 
 ## Quickstart (dev stack)
 
-One command runs the whole system on a laptop: the planner, the registration service, a seed
-agent, a mock LLM and a local sign-in proxy. It runs on macOS and Linux. You need Python 3.11 or
+One command runs the whole system on a laptop: the chat app (with its planner), the
+registration service, a seed agent, a mock LLM and a local sign-in proxy. It runs on macOS and Linux. You need Python 3.11 or
 newer as `python3` (check with `python3 --version`; macOS's built-in `/usr/bin/python3` is 3.9 and
 fails with "No matching distribution found for a2a-sdk"). If your 3.11+ interpreter has another
 name, such as `python3.12`, use it for the two `-m venv` commands and set `DEVSTACK_PYTHON` to it.
@@ -76,6 +93,12 @@ agents, logs and troubleshooting: [`docs/DEVSTACK.md`](docs/DEVSTACK.md).
 The images, entrypoints and launch scripts are in [`deployment/`](deployment/); an overview of the
 targets is in [`docs/deployment/README.md`](docs/deployment/README.md).
 
+The chat app is still deployed under its older name, `planner`: the image
+`agenticnetwork-planner` (built from `deployment/dockerfiles/Dockerfile.planner`, started by
+`deployment/entrypoints/entrypoint-planner.sh`), the Compose service `planner`, the `planner`
+service in the cluster's Slurm script and the Cloud Run service `planner`. Those names are kept
+so existing deployments keep working.
+
 ## Testing
 
 All suites, including a full-chain test of the running stack, run offline (no Docker, database, `dirctl` or API key): see [`docs/TESTING.md`](docs/TESTING.md).
@@ -85,8 +108,8 @@ What to run before a pull request, and what CI checks, is in [`CONTRIBUTING.md`]
 
 | Path | What it is |
 |---|---|
-| [`chat_app/`](chat_app/README.md) | The chat app: sign-in, chat UI, conversations, users' keys and admin pages, with the planner (the LLM loop that picks agents) inside it (port 8090). |
-| [`registration_service/`](registration_service/README.md) | Registers, spawns and monitors agents and publishes their cards; web UI and REST API (port 8091). |
+| [`chat_app/`](chat_app/README.md) | The chat app, the web service people sign in to and chat in (port 8090): sign-in, chat page, saved conversations, each user's keys, admin pages and the `/register/*` pass-through. The planner, the LLM loop that picks agents and calls them, is inside it in `chat_app/planner/`. |
+| [`registration_service/`](registration_service/README.md) | The registration service (port 8091): a sign-up wizard and REST API where agent authors register agents. It also builds and runs those agents, monitors them and publishes their cards. |
 | [`agent_skeleton/`](agent_skeleton/README.md) | The agent runtime that registered agents run on, plus a small demo agent. |
 | [`agentnet/`](agentnet/README.md) | Shared library for the directory (ADS) and A2A calls, used by the chat app and the registration service; plus operator tooling to publish, inspect, diagnose and repair directory records (`scripts/ads`). |
 | [`devstack/`](docs/DEVSTACK.md), [`scripts/stack`](scripts/stack) | The dev stack (mock LLM, fake `dirctl`, dev identity proxy, seed agents) and its CLI. |

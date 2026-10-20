@@ -49,7 +49,7 @@ What each suite covers, and how to write tests: [`docs/TESTING.md`](docs/TESTING
 [`.github/workflows/tests.yml`](.github/workflows/tests.yml) runs on every pull request, on pushes
 to `main`, and on demand:
 
-- **unit**: the suites above (planner, registration, skeleton, agentnet in both service
+- **unit**: the suites above (chat app, registration, skeleton, agentnet in both service
   environments, dev stack), each in a fresh environment, with `-p no:cacheprovider`.
 - **repo hygiene**: no tracked file that `.gitignore` excludes; no tracked secrets, keys,
   credential or token files, model weights, slide decks, local databases, logs or wheels
@@ -72,15 +72,16 @@ type hints, docstring and comment density). Also:
 
 - Keep changes small and inside one component where you can.
 - Add or update a test with every behaviour change, and a regression test with every security fix.
-  Tests stay offline and deterministic: use the fakes (registration's `FAKE_DB=1`, the planner's
-  fake directory and `ScriptedLLMClient`, the dev stack's fake `dirctl` and mock LLM), never real
-  keys or services.
+  Tests stay offline and deterministic: use the fakes (registration's `FAKE_DB=1`, agentnet's
+  fake directory, the planner's `ScriptedLLMClient`, the dev stack's fake `dirctl` and mock LLM),
+  never real keys or services.
 - New settings default to today's behaviour, so existing deployments keep working.
 - Keep generated files, logs, local env files, bytecode and virtualenvs out of git.
 - Do not hardcode specialist-agent endpoints into directory logic; read Agent Cards and records.
   Keep the directory (discovery) and A2A (task calls) separate.
-- The A2A and directory code exists in several divergent copies (see
-  [`CLAUDE.md`](CLAUDE.md) §9). When you fix a protocol or security bug, check the other copies.
+- The A2A and directory code in this repo is one package, `agentnet/`; fix it there. The
+  `agent-directory` repo has its own divergent copies (see [`SECURITY.md`](SECURITY.md) §3). When
+  you fix a protocol or security bug, check those copies too.
 
 ## Branches and pull requests
 

@@ -17,35 +17,39 @@ same images, same services, your names.
 > 4. Vertex AI as the *primary* LLM, and the Vertex base URL (taken from Google's documentation,
 >    not this repo). The reference used Vertex only as the fallback behind vLLM.
 > 5. A hosted OpenAI-compatible API as the planner's LLM on Cloud Run.
-> 6. Whether the planner needs `--vpc-egress=all-traffic` to reach agents deployed with internal
+> 6. Whether the chat app needs `--vpc-egress=all-traffic` to reach agents deployed with internal
 >    ingress (see [Troubleshooting](#troubleshooting)). The reference docs don't record the
->    planner's egress setting.
+>    chat app's egress setting.
 > 7. Publishing an agent card by hand over an SSH tunnel ([step 13](#13-add-agents)).
 >
 > If you run this guide, please fix what breaks and update this box.
 
 ## What you get
 
-- **Cloud Run `planner`**: the orchestrator and chat UI. It finds agents in the directory and calls
-  them over A2A, attaching a Google ID token for `*.run.app` agents
-  (`agentnet/a2a/transport.py`, `CloudRunIdTokenAuth`).
+- **Cloud Run `planner`**: the chat app, the web service people sign in to and chat in (chat UI,
+  saved conversations, each user's keys, admin pages), with the planner inside it. The planner
+  finds agents in the directory and calls them over A2A, attaching a Google ID token for
+  `*.run.app` agents (`agentnet/a2a/transport.py`, `CloudRunIdTokenAuth`). The service keeps the
+  chat app's older name, `planner`, as do its image (`agenticnetwork-planner`), the `PLANNER_SA`
+  and `PLANNER_INVOKER_SA` settings and the `planner-connector` connector, so existing
+  deployments keep working.
 - **Cloud Run `registration`**: the registration service, run as a singleton with
   `SPAWN_BACKEND=cloudrun`. When a registered agent's image is ready, its `CloudRunBackend` deploys
   the agent as its own Cloud Run service and publishes the agent's card to the directory
   (`registration_service/backend.py`).
 - **Cloud Run `agent-<name>`**: one service per registered agent, scaled to zero when idle.
 - **GCE VM `ads`**: the AGNTCY directory (`dirctl daemon`) with a local OCI registry.
-- **Cloud SQL** Postgres: one `registration` database shared by the planner and the registration
+- **Cloud SQL** Postgres: one `registration` database shared by the chat app and the registration
   service (they use separate tables).
 - **Secret Manager** for keys, a **Serverless VPC Access connector** so Cloud Run can reach the
   private VM, and an LLM of your choice.
 
-Everything is IAM-private: there is no public URL. Operators reach the planner and the registration
+Everything is IAM-private: there is no public URL. Operators reach the chat app and the registration
 service through `gcloud run services proxy`.
 
 ```mermaid
 flowchart LR
-    OP["Operator laptop<br/>gcloud run services proxy"] -->|"IAM"| P["Cloud Run: planner"]
+    OP["Operator laptop<br/>gcloud run services proxy"] -->|"IAM"| P["Cloud Run: planner<br/>(the chat app)"]
     OP -->|"IAM"| R["Cloud Run: registration"]
     P -->|"VPC connector"| D[("GCE VM: ads<br/>dirctl daemon")]
     R -->|"VPC connector"| D
@@ -102,7 +106,7 @@ export CONNECTOR_RANGE=10.8.0.0/28              # must be outside 10.128.0.0/9 (
 
 export AGENT_SA="agent-runtime@${PROJECT_ID}.iam.gserviceaccount.com"
 export REG_SA="registration-service@${PROJECT_ID}.iam.gserviceaccount.com"
-# The planner's runtime identity. The reference used the default Compute Engine SA; a dedicated
+# The chat app's runtime identity. The reference used the default Compute Engine SA; a dedicated
 # least-privilege SA is the recommended hardening (untested here; create it and set it instead).
 export PLANNER_SA="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
 
@@ -123,8 +127,8 @@ gcloud services enable aiplatform.googleapis.com
 ## 3. Build and push the images
 
 The same Dockerfiles serve the cluster and Cloud Run (`deployment/dockerfiles/`). You need three
-images: `ads`, `planner` and `registration`. The `postgres` image is not needed; Cloud SQL
-replaces it.
+images: `ads`, `planner` (the chat app) and `registration`. The `postgres` image is not needed;
+Cloud SQL replaces it.
 
 ```bash
 gcloud artifacts repositories create agenticnetwork --repository-format=docker --location="$REGION"
@@ -155,7 +159,8 @@ GCP_PROJECT="$PROJECT_ID" GCP_REGION="$REGION" bash deployment/scripts/gcp_iam_s
 ```
 
 The script ends by describing the `planner` service to print its identity. Before step 10 that
-last command fails because the planner doesn't exist yet; the grants above it are already applied.
+last command fails because the `planner` service doesn't exist yet; the grants above it are
+already applied.
 You don't need its output: `PLANNER_SA` is set in step 1.
 
 Both services connect to Cloud SQL:
@@ -167,7 +172,7 @@ for sa in "$REG_SA" "$PLANNER_SA"; do
 done
 ```
 
-Secret access is granted per secret in step 6. The planner gets `run.invoker` on each agent
+Secret access is granted per secret in step 6. The chat app gets `run.invoker` on each agent
 automatically: the `CloudRunBackend` grants it to `PLANNER_INVOKER_SA` when it deploys the agent.
 
 ## 5. Cloud SQL Postgres
@@ -192,11 +197,11 @@ Create each secret with `printf %s`, never `echo`: a trailing newline breaks bea
 
 | Secret | Env var the code reads | Read by | Required? |
 |---|---|---|---|
-| `registration-db-dsn` | `REGISTRATION_DB_DSN` | planner, registration | yes |
-| `credentials-encryption-key` | `CREDENTIALS_ENCRYPTION_KEY` | planner (`chat_app/store/crypto.py`) | yes |
-| `llm-api-key` | `OPENAI_API_KEY` | planner | for a key-based LLM (step 10) |
+| `registration-db-dsn` | `REGISTRATION_DB_DSN` | chat app, registration | yes |
+| `credentials-encryption-key` | `CREDENTIALS_ENCRYPTION_KEY` | chat app (`chat_app/store/crypto.py`) | yes |
+| `llm-api-key` | `OPENAI_API_KEY` | chat app | for a key-based LLM (step 10) |
 | `github-token` | `GITHUB_TOKEN` | registration (`supervisor.py`, build commits) | to register agents |
-| `github-issues-token` | `GITHUB_ISSUES_TOKEN` | planner (`chat_app/github_issues.py`) | only for in-app bug reports |
+| `github-issues-token` | `GITHUB_ISSUES_TOKEN` | chat app (`chat_app/github_issues.py`) | only for in-app bug reports |
 
 The reference named the LLM secret `vllm-api-key`; any name works if you use it consistently.
 
@@ -221,7 +226,7 @@ grant credentials-encryption-key "$PLANNER_SA"
 ```
 
 The LLM secret is created in step 10. For bug reports, also create `github-issues-token`, grant it
-to the planner, and set `GITHUB_ISSUES_REPO` on the planner to a **private** repository (issues
+to the chat app, and set `GITHUB_ISSUES_REPO` on the chat app to a **private** repository (issues
 carry the reporter's email, prompts and trace). Without both, the "Report a bug" form returns
 HTTP 502 (`deployment/secrets.env.example`).
 
@@ -317,7 +322,7 @@ variables here only if your agents need an LLM, and prefer a low-value key.
 delimiter, for example `--set-env-vars='^|^ADMIN_EMAILS=a@example.com,b@example.com|SPAWN_BACKEND=cloudrun|...'`
 (see `gcloud topic escaping`).
 
-## 10. Choose the LLM and deploy the planner
+## 10. Choose the LLM and deploy the chat app
 
 The planner talks to any OpenAI-compatible Chat Completions endpoint
 (`chat_app/planner/config.py`, `llm_client.py`). Pick one option; each sets `LLM_ENV` and
@@ -366,13 +371,13 @@ export PLANNER_SECRETS="${PLANNER_SECRETS},OPENAI_API_KEY=llm-api-key:latest"
 
 **Optional failover**, as in the reference (vLLM primary, Vertex fallback): add
 `PLANNER_LLM_FALLBACK_PROVIDER=vertex,PLANNER_LLM_FALLBACK_BASE_URL=${VERTEX_URL},PLANNER_LLM_FALLBACK_MODEL=google/gemini-2.5-flash`
-to `LLM_ENV` and grant the planner `roles/aiplatform.user` as in option B. The planner switches on
-connection errors, timeouts and 5xx answers.
+to `LLM_ENV` and grant the chat app's service account `roles/aiplatform.user` as in option B. The
+planner switches on connection errors, timeouts and 5xx answers.
 
 **Deploy.** The command override starts the server directly, as the reference did: the stock
-planner entrypoint waits for ADS before starting and doesn't read `$PORT`
+entrypoint waits for ADS before starting and doesn't read `$PORT`
 (`deployment/entrypoints/entrypoint-planner.sh`). `CHAT_APP_PORT=8080` makes the server listen
-where Cloud Run sends traffic. (The planner's settings were renamed; the old `MAIN_AGENT_*`
+where Cloud Run sends traffic. (The chat app's settings were renamed; the old `MAIN_AGENT_*`
 names and `PLANNER_ALLOW_ANON` still work. See `chat_app/README.md`.) The start command is
 `python -m chat_app`: if you run an existing `planner` service deployed with the old
 `--args=-m,planner_agent.scripts.run_server`, change it to `--args=-m,chat_app` in the same deploy
@@ -393,14 +398,14 @@ gcloud run deploy planner \
 ```
 
 - `--timeout=3600` keeps the chat's server-sent-events stream (`/messages/stream`) open.
-- `--no-cpu-throttling` keeps the planner's background agent-health loop running between requests.
+- `--no-cpu-throttling` keeps the chat app's background agent-health loop running between requests.
 - `A2A_HTTP_TIMEOUT_SECONDS=120` (default 30) leaves time for a scaled-to-zero agent to cold-start.
-- `CHAT_APP_ALLOW_ANON=1`: with a database configured, the planner otherwise answers 401 to any
+- `CHAT_APP_ALLOW_ANON=1`: with a database configured, the chat app otherwise answers 401 to any
   request without an SSO identity header (`chat_app/server.py`, `_anon_identity_allowed`), and the
-  proxy adds none. Everyone who reaches the planner then shares the `demo-user` identity, including
+  proxy adds none. Everyone who reaches the chat app then shares the `demo-user` identity, including
   its stored credentials, so IAM is your only access control (next step).
 
-The planner's `/register/*` pages forward to `REGISTRATION_SERVICE_URL` (default
+The chat app's `/register/*` pass-through forwards to `REGISTRATION_SERVICE_URL` (default
 `http://localhost:8091`) without a Google ID token, so they can't reach the IAM-private
 registration service. Use the registration service's own proxy instead (step 11).
 
@@ -432,8 +437,8 @@ gcloud run services add-iam-policy-binding planner --region="$REGION" \
   --member="user:teammate@example.com" --role="roles/run.invoker"
 ```
 
-**No public front door yet.** Exposing the planner to end users needs an authenticating front door
-that injects the `mail`/`eppn`/`remote-user` identity headers the planner trusts
+**No public front door yet.** Exposing the chat app to end users needs an authenticating front door
+that injects the `mail`/`eppn`/`remote-user` identity headers the chat app trusts
 ([docs/AUTH.md](../../AUTH.md)) and strips any a client sends; then remove `CHAT_APP_ALLOW_ANON`
 (and `PLANNER_ALLOW_ANON`, its old name, if an older setup set it). That is future work. The
 WashU design (an SSO gateway that mints a Google ID token) is outlined in
@@ -448,7 +453,7 @@ gcloud run services list --region="$REGION"        # planner and registration Re
 gcloud compute instances list                      # ads RUNNING
 ```
 
-With the planner proxy running:
+With the `planner` proxy running:
 
 ```bash
 curl -s -o /dev/null -w '%{http_code}\n' http://localhost:8080/health   # 200
@@ -475,7 +480,7 @@ gcloud logging read 'resource.type="cloud_run_revision" AND resource.labels.serv
 service commits the build context to `GITHUB_REPO`; a GitHub Action there builds the image and pushes
 it to Docker Hub as `${IMAGE_REGISTRY}/agenticnetwork-custom-<name>:latest`; the build poll sees the
 image, and the `CloudRunBackend` deploys `agent-<name>` (min instances 0, max 1, as `agent-runtime`,
-internal ingress), grants the planner `run.invoker`, and publishes the card with the agent's
+internal ingress), grants the chat app `run.invoker`, and publishes the card with the agent's
 `run.app` URL. Limits today:
 
 - Only uploaded-code agents work on Cloud Run. The supervisor rejects prompt-only `llm` agents and
@@ -504,7 +509,7 @@ gcloud compute ssh ads --zone="$ZONE" -- -N -L 8888:localhost:8888      # leave 
 scripts/ads --server-addr localhost:8888 -publish my_agent.card.json
 ```
 
-**Keep scaled-to-zero agents at zero.** The planner probes every agent's card URL each minute, which
+**Keep scaled-to-zero agents at zero.** The chat app probes every agent's card URL each minute, which
 cold-starts a min-0 agent and keeps it warm. List on-demand agents (ids as `GET /agents` shows them)
 in `CHAT_APP_HEALTH_PROBE_SKIP_AGENTS`:
 
@@ -515,8 +520,9 @@ gcloud run services update planner --region="$REGION" \
 
 ## Cost
 
-- **Always on:** the planner and registration services (one instance each, CPU always allocated),
-  the Cloud SQL instance, the `ads` VM and the VPC connector, plus any vLLM host. The reference
+- **Always on:** the `planner` (chat app) and `registration` services (one instance each, CPU
+  always allocated), the Cloud SQL instance, the `ads` VM and the VPC connector, plus any vLLM
+  host. The reference
   estimated about $220–320 a month for this control plane ([MIGRATION.md](MIGRATION.md#cost--runway));
   that is a planning estimate, not a measured bill.
 - **LLM:** pay per token for a hosted API or Vertex; GPU hours for self-hosted vLLM.
@@ -566,7 +572,7 @@ From the reference deployment ([MIGRATION.md](MIGRATION.md#operational-gotchas-l
 |---|---|
 | A create or grant fails with 403 on `setIamPolicy` | Your account lacks `projectIamAdmin` or `secretmanager.admin`; Editor isn't enough. |
 | Connector creation fails with "conflicts with an existing subnetwork" | Its range is inside `10.128.0.0/9`. |
-| The planner deploys but every LLM call hangs | No firewall rule from the connector range to the LLM host. |
+| The chat app deploys but every LLM call hangs | No firewall rule from the connector range to the LLM host. |
 | `/ready` reports the directory down while `docker ps` on the VM looks fine | The COS host firewall: check the startup script ran (`sudo iptables -L INPUT` on the VM). |
 | vLLM answers 401 | The secret has a trailing newline, or it differs from vLLM's `--api-key`. |
 | The proxy returns 404 | The service was deployed with `--ingress=internal`; use `--ingress=all` with `--no-allow-unauthenticated`. |

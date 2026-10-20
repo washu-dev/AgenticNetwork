@@ -71,8 +71,14 @@ repository goes public.
   container). Rebuild with a personal `IMAGE_TAG`, then check `GET /health` on an ENGR test
   instance (`deployment/deploy.sh test`) and on a non-traffic Cloud Run revision before
   pushing `:latest`.
-- **Planner image:** six unused pins left `requirements.txt`; the first clean install
-  should pass `pip check`.
+- **Chat app image** (`Dockerfile.planner`, image `agenticnetwork-planner`): six unused pins
+  left `requirements.txt`; the first clean install should pass `pip check`.
+- **Chat app start command:** images built after the `planner_agent/` → `chat_app/` rename
+  hold `chat_app/` and `agentnet/` and start with `python -m chat_app` (`entrypoint-planner.sh`
+  does this on ENGR and Compose). A Cloud Run `planner` service started with
+  `--args=-m,planner_agent.scripts.run_server` must switch to `--args=-m,chat_app` in the same
+  deploy ([DEPLOY_YOUR_OWN.md](deployment/gcp/DEPLOY_YOUR_OWN.md) step 10). The old
+  `MAIN_AGENT_*` setting names still work.
 - **Approve → commit:** run one live approval on a test instance. `build_manifest` changed,
   and the unit tests do not exercise the live GitHub commit.
 - **Tool-loop agents** (`llm` + uploaded tools) now advertise streaming, but only in images
@@ -91,7 +97,7 @@ repository goes public.
   build time, so uploaded tool-loop images built before this change keep sending the user's
   email to their model until rebuilt. The same holds for the vendored skeleton copies in
   `agent-directory/registered_agents/`.
-- **dirctl timeouts:** every planner `dirctl` call is now killed after
+- **dirctl timeouts:** every chat app `dirctl` call is now killed after
   `DIRCTL_TIMEOUT_SECONDS` (default 60 s; before, no limit), and `/ready` kills its probe
   after 4 s. Raise the setting if a slow directory needs longer.
 - **Stored agents:** `entry_file` must now be a bare `*.py` name, and stored configs are
@@ -109,9 +115,9 @@ repository goes public.
   `deployment/.env` must add `PLANNER_UNSCOPED_CREDENTIAL_AGENTS=email-agent,geospatial-agent`
   (as in `.env.example`; ids as listed by `GET /agents`), or the email agent stops getting
   each user's Google token and falls back to its on-disk token file, if any. Check the
-  planner log for `credentials_unscoped_legacy_agent`. The geo agent is listed only to keep
-  today's behaviour: it reads the pre-catalog names `google_api`/`google_maps`, which the
-  planner's DB migration renamed. Cloud Run runs no email or geo agent, so it needs no list.
+  chat app's log (`planner.log` on ENGR) for `credentials_unscoped_legacy_agent`. The geo agent
+  is listed only to keep today's behaviour: it reads the pre-catalog names
+  `google_api`/`google_maps`, which the chat app's DB migration renamed. Cloud Run runs no email or geo agent, so it needs no list.
 - **Bug-report repo:** `GITHUB_ISSUES_REPO` no longer defaults to `washu-dev/AgenticNetwork`.
   If ENGR's real `.env` still has the old example's value, change it to a private repo (or
   blank it) before bug reporting is turned on, and before visibility changes. On Cloud Run,
@@ -394,7 +400,7 @@ directory); no real keys; the same scenarios rerun at higher tiers.
 
 | Tier | Runs | What is real |
 |---|---|---|
-| 1. Native (done) | Every PR | Planner, registration service and skeleton agents as local processes (`scripts/stack`); mock LLM; in-memory DB; fake `dirctl` |
+| 1. Native (done) | Every PR | Chat app, registration service and skeleton agents as local processes (`scripts/stack`); mock LLM; in-memory DB; fake `dirctl` |
 | 2. Containers (done locally) | PRs and pushes to `main` touching services or deployment, weekly (`compose.yml`) | The service images, real Postgres and the real `dirctl` daemon via Docker Compose (`deployment/compose/smoke.sh`); mock LLM |
 | 3. Real LLM | Manual or nightly, opt-in | One round trip with a hosted or local model |
 
@@ -418,9 +424,9 @@ refused `entry_file` and impersonating uploads.
 
 - Each handler type: `llm` with HTTP tools and uploaded tools, `custom` upload (presets and
   `proxy` are covered). Legacy type names normalize on read.
-- An agent built from the skeleton template, through each path (`endpoint_wrapper`,
-  `tool_loop`, `custom`), works end to end.
-- Confirmation and `ask_user` resumed on another planner process or after a planner restart
+- An agent built on the skeleton runtime, through each path (the generator's endpoint
+  wrapper, `llm` with uploaded tools, `custom`), works end to end.
+- Confirmation and `ask_user` resumed on another chat app process or after a chat app restart
   (needs Postgres, so tier 2).
 
 Security scenarios that fail today are added as strict expected failures and flipped
@@ -434,8 +440,8 @@ lines removed or rewritten.
 | Simplification | ~Lines | Waits on |
 |---|---|---|
 | **Protocol and directory** | | |
-| One shared directory/A2A package (the planner fork is the superset): delete `agent_directory_service/services/`, repoint its scripts and tests, fold in `ads_utils` behind a shim, dedupe the admin check and credential catalog | 3,900 | one `a2a-sdk` pin; a chosen package and Docker build context |
-| The planner's `ADS_BACKEND=sdk` path and the ADS `agntcy-dir`/buf.build deps (unused today) | 100 | how the GCP directory client gets built |
+| One shared directory/A2A package: done 2026-10-20 (`agentnet/` replaced the chat app's copy, `agent_directory_service/` and `ads_utils/`). Still open: dedupe the admin check and the credential catalog | — | — |
+| agentnet's `ADS_BACKEND=sdk` path and the ADS `agntcy-dir`/buf.build deps (unused today) | 100 | how the GCP directory client gets built |
 | Collapse the ADS address aliases into `ADS_SERVER_ADDR` | 20 | a coordinated `agent-directory` change and cluster `.env` update |
 | **Skeleton subtree and runner merge** | | |
 | The `git subtree` merge | 1,500 | "Before the subtree merge" above |
@@ -443,7 +449,7 @@ lines removed or rewritten.
 | Drop the generator (with `repo_emitter`'s unused `import os`); make `AgentSpec` mandatory and drop the demo lane | 1,030 | the generator and template decisions at the merge |
 | The multi-endpoint manager | 260 | wire it or drop it (above) |
 | Refresh the 17 vendored skeleton copies in `agent-directory/registered_agents/` | 2,200 | a re-vendor pass, or the subtree merge |
-| **Planner structure** | | |
+| **Chat app and planner structure** | | |
 | Split `create_app` (nested routes) into routers with explicit app state | 600 | an agreed layout |
 | Move the email-specific heuristics out of the generic loop | 150 | cards declaring input fields and a write tag |
 | Run `dirctl` off the event loop (calls are now time-bounded) | 40 | a cache TTL and concurrency tests |
@@ -454,12 +460,12 @@ lines removed or rewritten.
 | Put all SQL behind `db.py` helpers, then replace `fake_db.py`'s SQL matching | 260 | one typed pool-exhausted error; a tier-2 Postgres test |
 | Drop `build_manifest`'s dict-config support | 25 | typed test fixtures |
 | **Dependency and version upgrades** | | |
-| `dir`/`dirctl` v1.2 → v1.7, then delete the stored-but-not-routed workarounds (planner backend, ADS repair/watch tooling) | 1,550 | re-validating publish and discovery on ENGR and GCP |
+| `dir`/`dirctl` v1.2 → v1.7, then delete the stored-but-not-routed workarounds (agentnet's backend, ADS repair/watch tooling) | 1,550 | re-validating publish and discovery on ENGR and GCP |
 | One `a2a-sdk` line (0.3.26 everywhere, then 1.x), replacing the deprecated `A2AClient` and the skeleton's import guard | 270 | the full-chain test on the new pins; rebuilt agent images |
-| Test-only deps into `requirements-dev.txt`; the planner's pip freeze becomes direct deps plus a lock file | 50 | a locking tool, with CI and docs updated together |
+| Test-only deps into `requirements-dev.txt`; the chat app's pip freeze becomes direct deps plus a lock file | 50 | a locking tool, with CI and docs updated together |
 | Pin `registration_service/requirements.txt` (only minimums today, so a fresh clone gets e.g. openai 3.x where the tested venv has 2.x; all suites passed with both on 2026-10-15), or add a constraints file | 40 | the same locking tool; a registration image rebuild |
 | **Images, deploy config and hygiene** | | |
-| Planner image on `python:3.x-slim` instead of miniconda; one Python version across images | 45 | an ENGR test deploy and a Cloud Run staging deploy |
+| Chat app image (`Dockerfile.planner`) on `python:3.x-slim` instead of miniconda; one Python version across images | 45 | an ENGR test deploy and a Cloud Run staging deploy |
 | One ADS image tag (`submit.sbatch` pulls `:v4`, `build_and_push.sh` pushes `:latest`) | 2 | confirming they match |
 | Generate `ads_daemon.gcp.yaml` from `ads_daemon.yaml` | 70 | the GCP runbook and VM startup |
 | Prune cluster- and person-specific `.gitignore` rules; dedupe the secrets rules | 16 | checking the ENGR checkout |
@@ -468,7 +474,7 @@ lines removed or rewritten.
 | Fold `CLAUDE.md` into `CONTRIBUTING.md`, `ARCHITECTURE.md` and the deployment docs; keep a short agent entry file | 450 | an agreed outline; a `§`-reference checker |
 | Move `agent-directory`-specific content (specialist envs, LLM matrix, caveats, hand-built cluster path) to that repo | 540 | a docs home there |
 | Replace `agent_skeleton/README.md` and `CLAUDE.md` with the standalone repo's docs | 365 | the subtree merge |
-| Rewrite the protocol-duplication docs | 80 | the protocol consolidation |
+| Rewrite the protocol-duplication docs: done for this repo 2026-10-20 (`SECURITY.md` §3 lists the copies left, mostly in `agent-directory`) | — | — |
 | `SECURITY.md` becomes a public policy; this file becomes a roadmap/changelog or goes | 260 | the security fixes; release sign-off |
 | A docs link and `§`-reference check in CI | 60 | the doc fixes landing |
 | Stale docs in the sibling repos: `agent-directory/ads_utils/README.md`; `agent-skeleton/CARD_AUTHORING_PLAN.md` (converter cleanup; a card path now under `chat_app/tests/fixtures/agent_cards/`); `KNOWN_ISSUES.md` (a lab IP) | 6 | a session in those repos |

@@ -8,7 +8,7 @@ Pure assembly (answers -> files); no runtime deps beyond stdlib. The pipeline:
                  ──> repo_emitter   ──> a full agent folder in agent-directory/
                                         (card + server + vendored engine + Docker)
 
-The emitted agent self-publishes to ADS on startup via the shared
+The emitted agent self-publishes to ADS on startup via agent-directory's shared
 ads_utils.publisher and runs the endpoint_wrapper_spec engine — i.e. it is the
 "user-hosted endpoint, LLM wrapper that understands the I/O" path made concrete.
 """

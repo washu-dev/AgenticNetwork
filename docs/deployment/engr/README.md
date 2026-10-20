@@ -33,7 +33,10 @@ the vLLM inference server on a GPU node.
 ```
 
 All containers communicate over `localhost` on the same compute node.
-The planner reaches vLLM via `OPENAI_BASE_URL=http://<gpu-node>:8100/v1`.
+The `planner` container is the chat app (the web service people sign in to, with the planner
+inside it). Its image, entrypoint (`entrypoint-planner.sh`), Slurm step and log files keep the
+chat app's older name, `planner`, so the running deployment keeps working.
+The chat app's planner reaches vLLM via `OPENAI_BASE_URL=http://<gpu-node>:8100/v1`.
 
 Postgres starts first (ADS and the registration service both depend on it),
 then ADS; all agent containers wait up to 60 seconds for ADS to be reachable
@@ -52,7 +55,7 @@ registration and ADS containers are pure DB clients.
 
 | File | Purpose |
 |---|---|
-| `submit.sbatch` | Main Slurm job — launches all service containers (postgres, ADS, registration, planner + 6 specialists) in parallel |
+| `submit.sbatch` | Main Slurm job — launches all service containers (postgres, ADS, registration, planner (the chat app) + 6 specialists) in parallel |
 | `start_vllm.sbatch` | GPU Slurm job — starts the vLLM inference server |
 | `build_and_push.sh` | Builds/pushes the **4 infra images** (planner, ads, postgres, registration); the 6 specialist images build in the `agent-directory` repo |
 | `dockerfiles/` | One `Dockerfile.<agent>` per infra service (ADS runs `dirctl` directly, no Dockerfile-side entrypoint script) |
@@ -121,11 +124,11 @@ is never committed even though it sits inside the repo tree.
 
 > **Bug reporting & feedback:** `GITHUB_ISSUES_TOKEN` (secret) + `GITHUB_ISSUES_REPO` (non-secret,
 > in `.env`, no default; must be a **private** repo, because issues carry the reporter's email,
-> prompts and trace) power the planner's `POST /issues`, which backs the in-app "Report a bug"
+> prompts and trace) power the chat app's `POST /issues`, which backs the in-app "Report a bug"
 > button and the agent-creation feedback form. Both file GitHub issues labeled `user-submitted` +
 > `bug-report`/`agent-creation-feedback`. If either is unset the forms fail loud (HTTP 502) — they
 > never silently drop a report. The registration UI's feedback
-> form reaches this endpoint only when served **through the planner** (`/register/…`), which is
+> form reaches this endpoint only when served **through the chat app** (`/register/…`), which is
 > the deployed path. The token and egress from a cluster node are not yet recorded as tested; see
 > [Verifying bug reporting](#verifying-bug-reporting-not-yet-recorded-as-done) before adding the
 > token to prod.
@@ -150,7 +153,7 @@ Run from the repo root on your local machine:
 # not here (agent-directory/build_and_push.sh).
 bash deployment/build_and_push.sh
 
-# Build a single image (e.g. after changing only the planner)
+# Build a single image (e.g. after changing only the chat app, whose image is "planner")
 bash deployment/build_and_push.sh planner
 ```
 
@@ -226,7 +229,7 @@ directory.
 
 A **prod** instance is reached at the public URL (`https://agenticweb.engr.wustl.edu`) via the
 Apache + Shibboleth gateway. A **test** instance has **no public front door** — the gateway only
-ever proxies to prod. You reach a test instance by tunnelling to its planner port
+ever proxies to prod. You reach a test instance by tunnelling to its chat app port
 (`8090 + 10000 = 18090`) through the login node. All of this runs in **your laptop's terminal**,
 not a shell already on the cluster.
 
@@ -279,7 +282,7 @@ curl http://localhost:8090/health
 ```
 
 `/health` is liveness only. `curl http://localhost:8090/ready` (and `:8091/ready`) also checks the
-directory, the database and (planner only) the LLM; it returns 503 and names the failing check.
+directory, the database and (chat app only) the LLM; it returns 503 and names the failing check.
 
 ### Registration service
 
@@ -288,11 +291,11 @@ curl http://localhost:8091/health
 # Expected: {"status":"ok"}
 ```
 
-The registration web UI is also accessible via the planner at `http://localhost:8090/register/`.
+The registration web UI is also accessible via the chat app at `http://localhost:8090/register/`.
 
 ### List available agents
 
-Prod's planner has a database and no anonymous fallback, so `/messages` needs an identity header
+Prod's chat app has a database and no anonymous fallback, so `/messages` needs an identity header
 (otherwise 401); a test instance (`CHAT_APP_ALLOW_ANON=1`) does not.
 
 ```bash
@@ -331,7 +334,7 @@ The one piece of `POST /issues` not yet recorded as tested is the real token plu
      -d '{"kind":"bug","summary":"smoke test","description":"ignore me"}'
    # Expected: {"ok":true,"issue_url":"https://github.com/..."}
    ```
-   A 502 is a failure. If the planner log says `could not reach GitHub`, the node has no egress:
+   A 502 is a failure. If the chat app's log (`planner.log`) says `could not reach GitHub`, the node has no egress:
    stop, because the GitHub-issues approach depends on it.
 4. Check the issue in `GITHUB_ISSUES_REPO`: labels `user-submitted` + `bug-report`, and a readable
    "Auto-captured context" block. Submit the creation-feedback form at `/register/` and check for an
@@ -353,7 +356,7 @@ after the job exits. The main job log is `agenticnetwork-<jobid>.log`.
 | `postgres.log` | Dedicated PostgreSQL container (registration + dir DBs) |
 | `ads.log` / `ads.err` | ADS (dirctl) daemon |
 | `registration.log` / `registration.err` | Registration service |
-| `planner.log` / `planner.err` | Planner agent |
+| `planner.log` / `planner.err` | Chat app (with its planner) |
 | `scout.log` / `scout.err` | Scout agent |
 | `email.log` / `email.err` | Email agent |
 | `coding.log` / `coding.err` | Coding agent |
@@ -370,7 +373,7 @@ after the job exits. The main job log is `agenticnetwork-<jobid>.log`.
 |---|---|---|
 | ADS daemon | 8888 | `ADS_SERVER_ADDR` |
 | Registration service | 8091 | `REGISTRATION_SERVICE_PORT` |
-| Planner | 8090 | `CHAT_APP_PORT` (also exported as its old name, `MAIN_AGENT_PORT`) |
+| Chat app (`planner`) | 8090 | `CHAT_APP_PORT` (also exported as its old name, `MAIN_AGENT_PORT`) |
 | Scout | 9104 | `SCOUT_HTTP_PORT` |
 | Email | 9103 | `EMAIL_AGENT_A2A_PORT` |
 | GeoSpatial | 19105 | `GEOSPATIAL_AGENT_A2A_PORT` |
@@ -385,17 +388,17 @@ Ports 19105–19108 use 5-digit numbers to avoid collisions with other users on 
 
 ## Apache / Shibboleth SP (SSO front door)
 
-The planner sits behind an Apache reverse proxy with the Shibboleth SP, which authenticates
+The chat app sits behind an Apache reverse proxy with the Shibboleth SP, which authenticates
 WashU users and injects `mail`/`eppn` headers. That vhost lives **outside this repo** (e.g.
 `~/httpd/conf/agenticweb.engr.conf` on the proxy host).
 
-**P4e (public landing):** the planner serves a public landing at `/` and the chat UI at `/app`.
+**P4e (public landing):** the chat app serves a public landing at `/` and the chat UI at `/app`.
 For `/` to be reachable without login, the SP must allow it anonymously while still protecting
 everything else. This is an **additive** change to the existing single `<Location "/">` block —
 nothing needs to be removed:
 
 ```apache
-# Add this so mod_shib's own endpoints are never proxied to the planner:
+# Add this so mod_shib's own endpoints are never proxied to the chat app:
 ProxyPass "/Shibboleth.sso" "!"
 
 # Keep the existing protected base block (requireSession 1) exactly as-is, then add
@@ -414,7 +417,7 @@ curl -sI https://agenticweb.engr.wustl.edu:<port>/app    # 302 → WashU SSO
 ```
 If `/` still redirects to SSO (authz didn't fully override), comment out `require valid-user`
 + `require shib-session` in the base `<Location "/">` and instead protect the specific paths
-explicitly. The planner also hard-gates `/app` itself (401 without identity when a DB is
+explicitly. The chat app also hard-gates `/app` itself (401 without identity when a DB is
 configured), so identity is enforced at both layers.
 
 ---
@@ -512,7 +515,7 @@ an SSH tunnel.
 
 **The inverse** (network on the cluster, browser on your laptop) is the tunnel in
 [Accessing a test instance](#accessing-a-test-instance-ssh-tunnel). A raw tunnel to prod's
-planner bypasses Shibboleth, so it carries no identity and `/app` returns 401; use the public URL
+chat app bypasses Shibboleth, so it carries no identity and `/app` returns 401; use the public URL
 for prod.
 
 ---
@@ -533,18 +536,18 @@ nginx              ← TLS termination, request-size limits    ┐
 Apache + mod_shib  ← Shibboleth SP: WashU SSO login,         │  gateway host
   │                  injects eppn/mail/remote-user headers   │  (NOT in this repo)
   ▼                                                          ┘
-planner :8090      ← trusts those headers as the user id       ← ephemeral Slurm node
+chat app :8090     ← trusts those headers as the user id       ← ephemeral Slurm node
   │
   ├─ ADS (dirctl :8888) ...... "who can do X?"  (discovery)
   └─ A2A (HTTP/JSON-RPC) ...... calls the chosen specialist agent
 ```
 
 - **Where the network runs:** on one Slurm **compute node** (`submit.sbatch`) — ADS,
-  planner, registration, and the six specialists all talk over `localhost` on that
+  the chat app, registration, and the six specialists all talk over `localhost` on that
   node; vLLM runs on a separate GPU node. None of it is internet-reachable.
 - **How the browser reaches it:** the gateway host terminates TLS (nginx), runs the
-  WashU Shibboleth login (Apache + `mod_shib`), and reverse-proxies to the planner's
-  `:8090`. The planner's only "auth" is trusting the identity headers Apache injects
+  WashU Shibboleth login (Apache + `mod_shib`), and reverse-proxies to the chat app's
+  `:8090`. The chat app's only "auth" is trusting the identity headers Apache injects
   (`chat_app/auth.py`) — so it must **only** be reached through that
   proxy, never exposed raw.
 - **Where the link comes from:** `agenticweb.engr.wustl.edu` is a WashU-registered DNS
@@ -552,7 +555,7 @@ planner :8090      ← trusts those headers as the user id       ← ephemeral S
   identity provider (a one-time WashU-IT/ENGR setup owned by the maintainer —
   `amaan@wustl.edu`). **The gateway's nginx/Apache/Shibboleth config is not in this
   repo** — only the *contract* (the injected headers) lives here, in `auth.py`.
-- **Why the link can break:** the planner runs on an ephemeral compute node whose
+- **Why the link can break:** the chat app runs on an ephemeral compute node whose
   hostname changes every Slurm run, while the gateway is persistent — so after each
   (re)deploy the gateway's upstream must be repointed to the current node (or an SSH
   tunnel bridged to it). There is **no stable gateway↔node wiring yet**

@@ -1,31 +1,32 @@
 # Authentication, Credentials & Multi-User Isolation
 
-The identity, admin, per-user-credential, and multi-user-safety model of the planner. This is
+The identity, admin, per-user-credential, and multi-user-safety model of the chat app
+(`chat_app/`) and the planner inside it. This is
 the deep version of [`CLAUDE.md`](../CLAUDE.md) §8; the *why* behind each choice is in
 [DECISIONS.md](DECISIONS.md) (D5–D11).
 
-Everything here is **planner-only** — specialist agents remain auth-unaware (see
+Everything here happens in the chat app — specialist agents remain auth-unaware (see
 [`SECURITY.md`](../SECURITY.md) for the resulting node-trust caveats).
 
 ## 1. Identity (Shibboleth)
 
-The planner never handles passwords. A WashU Shibboleth SP (Apache `mod_shib`) in front of it
-validates the SAML assertion and injects identity headers; the planner trusts them.
+The chat app never handles passwords. A WashU Shibboleth SP (Apache `mod_shib`) in front of it
+validates the SAML assertion and injects identity headers; the chat app trusts them.
 
 ```
-Browser → nginx (TLS) → Apache + mod_shib (Shibboleth SP) → reverse-proxy → planner :8090
+Browser → nginx (TLS) → Apache + mod_shib (Shibboleth SP) → reverse-proxy → chat app :8090
                           └─ injects mail / eppn / remote-user headers
 ```
 
-- `auth.py::get_shib_email` reads headers in priority `mail → eppn → remote-user` (lowercased).
+- `chat_app/auth.py::get_shib_email` reads headers in priority `mail → eppn → remote-user` (lowercased).
 - `auth.py::get_or_create_user` auto-provisions a `users` row on first login.
 - `auth.py::get_current_user` is the FastAPI dependency (raises 401 if no identity).
 - The gateway (nginx/Apache/Shibboleth) is **persistent infra outside this repo**; it proxies
-  to the planner on an ephemeral Slurm node, so its upstream is repointed each run.
+  to the chat app on an ephemeral Slurm node, so its upstream is repointed each run.
 - Locally, the dev stack's identity proxy (`devstack/dev_identity_proxy.py`) plays the gateway:
   it drops client identity headers and injects `mail: dev@example.test` ([DEVSTACK.md](DEVSTACK.md)).
 
-> **On GCP (front door not built yet).** The GCP planner has **no SSO gateway in front of it**
+> **On GCP (front door not built yet).** The GCP chat app (Cloud Run service `planner`) has **no SSO gateway in front of it**
 > today — it runs `PLANNER_ALLOW_ANON=1` (the old name of `CHAT_APP_ALLOW_ANON`) and is reached
 > IAM-privately via `gcloud run services proxy` (operators only). It *is* now on Cloud SQL, so the
 > credential/history persistence and the fail-closed machinery below are live; they just aren't
@@ -33,12 +34,12 @@ Browser → nginx (TLS) → Apache + mod_shib (Shibboleth SP) → reverse-proxy 
 > is not built yet (GCP work has been on hold since end of summer 2026; cloud is a critical leg going
 > forward, 2026-10-13); the decided approach is **Option A**
 > — the same WashU Shibboleth gateway repointed at GCP, minting a Google ID token to reach the private
-> planner (drops anon at cutover). See
+> chat app (drops anon at cutover). See
 > [`docs/deployment/gcp/README.md`](deployment/gcp/README.md) "How to access" + "Status & deferred work (handoff)" and
 > [`docs/deployment/DOWNSTREAM_CONSIDERATIONS.md`](deployment/DOWNSTREAM_CONSIDERATIONS.md) #4.
 
 ### Fail-closed identity (D9)
-`server.py::_resolve_shib_user_id` is the single identity resolver for `/messages`,
+`chat_app/server.py::_resolve_shib_user_id` is the single identity resolver for `/messages`,
 `/confirmations` and the data endpoints; a header identity always wins over a request-body
 `user_id`. When no header is present:
 - **DB configured** (`REGISTRATION_DB_DSN` set) → **401**, unless `CHAT_APP_ALLOW_ANON=1`
@@ -57,7 +58,7 @@ Admin is **not** a separate password. It's derived from the same SSO identity:
   admins** (fail closed).
 - `auth.py::is_admin(email)` = membership test.
 - `server.py::_require_admin` = `_resolve_shib_user_id` (401 if no identity) → `is_admin` else
-  **403**. It gates all `/admin/*` routes **and** the admin `/register/*` proxy subpaths
+  **403**. It gates all `/admin/*` routes **and** the admin `/register/*` pass-through subpaths
   (`approve`, `reject`, `handler`, `handler/download`).
 - `registration_service/server.py::_require_admin` re-checks the forwarded identity as
   defense-in-depth (dev-open under `FAKE_DB=1`).
@@ -70,7 +71,7 @@ The old shared `X-Admin-Token` / `MAIN_AGENT_ADMIN_TOKEN` and `POST /admin/login
 ## 3. Serving split: public landing, gated app (D7)
 
 - `GET /` → public landing (`web/landing.html`), no identity required.
-- `GET /app` → the chat UI, **hard-gated** at the planner via `_resolve_shib_user_id` (401
+- `GET /app` → the chat UI, **hard-gated** in the chat app via `_resolve_shib_user_id` (401
   without identity when a DB is set) — defense-in-depth alongside the Apache SP.
 - Logout (`auth_router.py`) returns through `/Shibboleth.sso/Logout?return=/` to the landing.
 - Making `/` truly anonymous requires an Apache SP carve-out (public `/` + `/health`, protected
@@ -82,8 +83,8 @@ The mechanism for giving a user's own API keys to the agents that need them, wit
 ever seeing a secret. Gated on `REGISTRATION_DB_DSN` — inert without a DB.
 
 ### Storage
-- `db.py::user_credentials(user_id, provider, encrypted, …)`, `UNIQUE(user_id, provider)`.
-- `crypto.py` AES-256-GCM (`CREDENTIALS_ENCRYPTION_KEY`, 32-byte base64). API keys stored as
+- `chat_app/store/db.py::user_credentials(user_id, provider, encrypted, …)`, `UNIQUE(user_id, provider)`.
+- `chat_app/store/crypto.py` AES-256-GCM (`CREDENTIALS_ENCRYPTION_KEY`, 32-byte base64). API keys stored as
   `{"api_key": …}`, OAuth as the token bundle. Values are never returned by list endpoints.
 - `credentials_router.py` (`/me/credentials/*`) manages keys; the OAuth callback writes
   provider `google_oauth`.
@@ -92,7 +93,7 @@ ever seeing a secret. Gated on `REGISTRATION_DB_DSN` — inert without a DB.
 The credential catalog `type` values (`openai_api_key`, `brave_api_key`, …, plus `custom:<slug>`)
 are the **canonical** namespace. The `user_credentials.provider` column stores those strings; an
 idempotent migration in `db.py` rewrites legacy values (`openai`→`openai_api_key`, …).
-`credential_catalog.py` is mirrored in both the registration service and the planner.
+`credential_catalog.py` is mirrored in both the registration service and the chat app.
 
 ### The flow: declare → grant → scope → inject → read (D5)
 1. **Declare.** A custom agent declares required credentials; the registration service writes
@@ -101,7 +102,7 @@ idempotent migration in `db.py` rewrites legacy values (`openai`→`openai_api_k
    Extensions are used because ADS discovery discards the `annotations` map.
 2. **Discover.** The planner reads them back into `DiscoveredAgent.required_credentials`
    (`agentnet/directory/card_oasf.py::_required_credentials_from_card`, the read path).
-3. **Enforce + consent.** In `runtime.py::_enforce_credentials` (before dispatch):
+3. **Enforce + consent.** In `chat_app/planner/runtime.py::_enforce_credentials` (before dispatch):
    - required + not stored → **block** with "add it in Settings."
    - required + stored + not granted → **consent prompt** (`kind="credential_consent"`); on
      "yes", a grant is recorded and the call proceeds.
@@ -117,7 +118,7 @@ idempotent migration in `db.py` rewrites legacy values (`openai`→`openai_api_k
 6. **Read.** The custom agent reads them from its request context — see the skeleton seam in
    [BUILDING_AGENTS.md](BUILDING_AGENTS.md).
 
-Google OAuth token refresh **is** implemented (`server.py::_refresh_google_token`).
+Google OAuth token refresh **is** implemented (`chat_app/server.py::_refresh_google_token`).
 
 ### Two credential-sourcing models (D6)
 Which model applies depends on **who owns the resource**:
@@ -132,7 +133,7 @@ endpoint-wrapper lane is a deferred open question. See [BUILDING_AGENTS.md](BUIL
 
 ## 5. Multi-user isolation
 
-The planner was originally single-user; three fixes made it safe for concurrent users, and the
+The chat app was originally single-user; three fixes made it safe for concurrent users, and the
 durable state now lives in Postgres so it scales past one process.
 
 - **Per-user context keying (D10).** Each conversation has its own `context_id`-keyed context,

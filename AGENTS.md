@@ -10,7 +10,8 @@ one-command start goals.
 The system is split across two repos:
 
 - **This repo (`AgenticNetwork`)** owns the infrastructure: the chat app (with its
-  planner), ADS operator tooling, registration service, and the `agent_skeleton`
+  planner), the registration service (which also builds and runs registered agents),
+  the shared `agentnet` library with the ADS operator tooling, and the `agent_skeleton`
   agent runtime.
 - **[`agent-directory`](https://github.com/washu-dev/agent-directory)** owns the
   specialist agents: email, coding, intelligence, geoSpatial, disaster_response, scout.

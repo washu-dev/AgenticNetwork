@@ -42,7 +42,7 @@ Both implement the same `DirectoryBackend` protocol (`publish_agent_card`, `publ
   shells out to the `dirctl` binary at `DIRCTL_BIN`) or **`sdk`** (`agntcy.dir_sdk.client`, protobuf).
   Server address from `ADS_SERVER_ADDR`/`ADS_URL`/etc.
 
-Selection is by env flag (`AGENT_NETWORK_FAKE_ADS`, and the planner's `--fake-ads`).
+Selection is by env flag (`AGENT_NETWORK_FAKE_ADS`, and the chat app's `--fake-ads`).
 
 ## `dirctl` commands the backends invoke
 `push` (→ CID), `pull <cid>`, `routing publish <cid>`, `routing list [--cid|--skill]`,

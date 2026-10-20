@@ -4,7 +4,8 @@ Mirrors the shape of the hand-written cards in agent-directory (e.g.
 disaster_response_agent.card.json): slash-namespaced skill ids, AGENT_HOST url
 convention, empty securitySchemes. Adds the one thing those cards get by a
 shared-file edit instead: an ``oasf:<name>:<id>`` routing tag resolved from the
-taxonomy, so the agent is discoverable with no edit to ads_utils.converter's maps.
+taxonomy, so the agent is discoverable with no edit to the directory converter's maps
+(agent-directory's ads_utils.converter, or agentnet's card_oasf here).
 """
 from __future__ import annotations
 

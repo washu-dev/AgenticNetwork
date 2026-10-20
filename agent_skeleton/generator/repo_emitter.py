@@ -4,7 +4,8 @@ agent-directory repo.
 Output mirrors the hand-built agents (disaster_response_agent as the reference
 shape: card + server + Dockerfile + entrypoint + deps + README), plus a vendored
 copy of the wrapper engine so the agent needs nothing from AgenticNetwork at
-runtime. The emitted agent self-publishes via the shared ads_utils.publisher.
+runtime. The emitted agent self-publishes via agent-directory's shared
+ads_utils.publisher (that repo's package, not this repo's agentnet).
 
     agent-directory/<slug>/
       ├── <slug>.card.json     # résumé (routable: carries an oasf:<name>:<id> tag)

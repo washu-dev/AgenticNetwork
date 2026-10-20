@@ -2,8 +2,8 @@
 
 Run the whole system in containers on one machine, a laptop or any cloud VM, with
 Docker Compose: Postgres, the real directory daemon (`dirctl`), the registration
-service, the planner and a front door. It uses the same images as the ENGR cluster
-deployment. It is also the **tier 2** test from
+service, the chat app (with its planner) and a front door. It uses the same images as the
+ENGR cluster deployment. It is also the **tier 2** test from
 [`OPEN_SOURCE_RELEASE.md`](../OPEN_SOURCE_RELEASE.md): the native tier plus real Postgres
 and real `dirctl`.
 
@@ -32,9 +32,9 @@ Open **http://127.0.0.1:18080/app**: the chat UI, signed in as `dev@example.test
 built. Stacks built before 2026-10-15 tagged them `agenticnetwork-<service>:local`; remove those
 leftovers with `docker rmi`.
 
-The first build took about 2.5 minutes on a 10-core arm64 Mac with an empty cache (planner
+The first build took about 2.5 minutes on a 10-core arm64 Mac with an empty cache (`planner`
 77 s, registration 52 s, Postgres 18 s, ADS 10 s, base images included). Docker Desktop
-reported the images at 3.8 GB (planner), 640 MB (registration), 600 MB (Postgres) and
+reported the images at 3.8 GB (`planner`), 640 MB (registration), 600 MB (Postgres) and
 320 MB (ADS). A start with built images takes about 20 seconds.
 
 ## What runs
@@ -45,7 +45,7 @@ reported the images at 3.8 GB (planner), 640 MB (registration), 600 MB (Postgres
 | `postgres` | `Dockerfile.postgres` | Postgres 15. Database `registration` (registered agents, users, conversation history, credentials) persists in the `pgdata` volume; database `dir` (the directory's metadata) is recreated on every start. |
 | `ads` | `Dockerfile.ads` | The AGNTCY directory daemon (`dirctl daemon`, `deployment/ads_daemon.yaml`) on `localhost:8888`. |
 | `registration` | `Dockerfile.registration` | The registration service on `localhost:8091`. Spawns each registered agent as a subprocess in this container (ports 19200-19299) and publishes its card to the directory. Uploaded code and agent logs live in the `registration-data` volume. |
-| `planner` | `Dockerfile.planner` | The planner and chat UI on `localhost:8090`, with history in Postgres. |
+| `planner` | `Dockerfile.planner` | The chat app (chat UI, sign-in, the planner) on `localhost:8090`, with history in Postgres. The service, its Dockerfile and image keep the chat app's older name, `planner`, so existing deployments keep working. |
 | `mock-llm` | `python:3.11-slim-bookworm` | The offline mock LLM (`devstack/mock_llm.py`) on `localhost:8099`. Used unless you configure a real model. |
 | `proxy` | `python:3.11-slim-bookworm` | The front door for local use (`devstack/dev_identity_proxy.py`), port 8080 in the namespace. It drops identity headers sent by the client and signs every request in as `DEV_USER_EMAIL`. |
 | `seed` | `python:3.11-slim-bookworm` | One-shot: registers `devstack/seeds/*.json` through the registration API if they are not registered yet, then exits 0 once the planner lists them. |
@@ -61,7 +61,7 @@ other on `localhost` and the entrypoints wait for Postgres and the directory on
 `localhost` ports. Compose copies that layout: every service joins the network namespace
 of `net` (`network_mode: service:net`), so `localhost` means the same thing in every
 container and the ENGR defaults work unchanged. The registration service advertises
-spawned agents as `http://localhost:<port>/`, which the planner can only reach from the
+spawned agents as `http://localhost:<port>/`, which the chat app can only reach from the
 same namespace. Separate service hostnames would need new settings in the registration
 service, the directory config and the entrypoints; the shared namespace needs none.
 
@@ -84,7 +84,7 @@ Compose reads `deployment/compose/.env`. Every variable is optional.
 | `FRONT_DOOR_BIND` | `127.0.0.1` | Host address the front door is published on. |
 | `FRONT_DOOR_PORT` | `18080` | Host port of the front door (18080 so it does not clash with the dev stack's 8080). |
 | `DEV_USER_EMAIL` | `dev@example.test` | The identity the dev proxy signs every request in as. |
-| `ADMIN_EMAILS` | `dev@example.test` | Comma-separated admin emails, read by the planner and the registration service. |
+| `ADMIN_EMAILS` | `dev@example.test` | Comma-separated admin emails, read by the chat app and the registration service. |
 | `OPENAI_BASE_URL` | `http://127.0.0.1:8099/v1` (the mock) | OpenAI-compatible Chat Completions endpoint for the planner and the spawned agents. |
 | `OPENAI_API_KEY` | `mock-key` | Its API key. |
 | `PLANNER_LLM_MODEL` | `mock-planner` | The planner's model name. Its old name, `MAIN_AGENT_LLM_MODEL`, still works. |
@@ -131,12 +131,12 @@ The defaults are for one person on their own machine. Before other people use it
    - authenticates every request (an SSO service provider, an OAuth2/OIDC proxy, or an
      identity-aware load balancer in front of a header-mapping proxy);
    - removes any `mail`, `eppn` and `remote-user` headers the client sent, then sets
-     `mail` to the verified email. The planner trusts these headers, in that order of
+     `mail` to the verified email. The chat app trusts these headers, in that order of
      priority ([`AUTH.md`](../AUTH.md) §1);
    - forwards to `http://127.0.0.1:8090` from inside the namespace
      (`network_mode: service:net`), listens on port 8080 there, and streams responses
      unbuffered (the chat UI uses server-sent events on `/messages/stream`).
-2. **Keep the planner and registration ports private.** They trust identity headers
+2. **Keep the chat app and registration ports private.** They trust identity headers
    and have unauthenticated internal routes (`/internal/*`, [`SECURITY.md`](../../SECURITY.md)).
    Both bind `127.0.0.1` inside the namespace and are not published; do not change that.
 3. **TLS.** Terminate HTTPS at the proxy or a load balancer in front of it.
@@ -168,7 +168,7 @@ The defaults are for one person on their own machine. Before other people use it
    signed-in user can register an `llm` agent with `http` tools, or a `proxy` agent, and
    it starts at once inside the `registration` container with that container's
    environment: it can send the LLM key (or any variable named in `auth_env`) to a URL of
-   its choosing and call the planner and registration on `localhost` with forged identity
+   its choosing and call the chat app and registration on `localhost` with forged identity
    headers ([`SECURITY.md`](../../SECURITY.md) §2). Give accounts only to people you trust.
 
 ## Deploying on a cloud VM
@@ -239,7 +239,7 @@ runs each service as a managed Cloud Run service with Cloud SQL.
   was not tested.
 - **Images are built for the host's architecture.** Tested on arm64 (Apple silicon) and on
   GitHub's amd64 runner (`compose.yml`, 2026-10-15). Under Docker Desktop's amd64 emulation on
-  Apple silicon, the planner's `mamba create` step hangs (Rosetta), so build amd64 images on an
+  Apple silicon, the `planner` image's `mamba create` step hangs (Rosetta), so build amd64 images on an
   amd64 host or in CI.
   `deployment/build_and_push.sh` builds `linux/amd64` for ENGR.
 
@@ -248,14 +248,14 @@ runs each service as a managed Cloud Run service with Cloud SQL.
 | Symptom | What to do |
 |---|---|
 | `docker compose up` says a dependency failed to start | `docker compose ps` shows which service is unhealthy; `docker compose logs SERVICE` shows why. |
-| The planner is unhealthy | `docker compose exec planner curl -s http://127.0.0.1:8090/ready` names the failing check: `directory`, `db` or `llm`. |
-| `docker compose run --rm seed` exits non-zero | `docker compose logs seed registration`. With a real LLM, the planner must be ready, so check its `llm` check first. |
+| The chat app (`planner`) is unhealthy | `docker compose exec planner curl -s http://127.0.0.1:8090/ready` names the failing check: `directory`, `db` or `llm`. |
+| `docker compose run --rm seed` exits non-zero | `docker compose logs seed registration`. With a real LLM, the chat app must be ready, so check its `llm` check first. |
 | An agent misbehaves | Its log: `docker compose exec registration ls /var/lib/agenticnetwork/logs/agents` (one file per agent id). |
 | The chat finds no agents on a fresh stack | `up` does not seed (the `seed` service has its own profile): run `docker compose run --rm seed`. |
 | Port 18080 is in use | Set `FRONT_DOOR_PORT` in `.env`. |
 | Many `Failed to parse enhanced label key` warnings from `ads` | Harmless; they appear in passing runs too. |
 | Start over from nothing | `docker compose down -v` deletes the database and uploads. |
-| An amd64 build on Apple silicon stops at the planner's `mamba create` | A known hang under Rosetta emulation; build on an amd64 host or in CI (`compose.yml`). |
+| An amd64 build on Apple silicon stops at the `planner` image's `mamba create` | A known hang under Rosetta emulation; build on an amd64 host or in CI (`compose.yml`). |
 
 ## The tier-2 smoke test
 
@@ -265,7 +265,7 @@ dev stack, and exits 1 with `smoke: FAILED at <step>: ...` on the first failure:
 
 1. **ready:** `GET /ready` through the front door reports the real directory and a
    working database.
-2. **seed agent listed:** the planner's `GET /agents` lists *Echo Assistant*.
+2. **seed agent listed:** the chat app's `GET /agents` lists *Echo Assistant*.
 3. **sign-in:** `GET /me` returns the signed-in user.
 4. **chat, discovery, delegation, answer:** one prompt posted the chat UI's way
    (`POST /messages/stream`) runs `list_agents`, then `call_agent` on the seed agent, then
@@ -287,7 +287,7 @@ docker compose down && docker compose up -d && docker compose run --rm seed
 ```
 
 After the restart the seed agent keeps its `registration_id` (the seed service finds it
-instead of registering it again) and is listed by the planner again, because the
+instead of registering it again) and is listed by the chat app again, because the
 registration service respawns and republishes it. It runs from any directory and honours
 `COMPOSE_PROJECT_NAME`; set `FRONT_DOOR_URL` to test a front door other than the one
 `docker compose port net 8080` reports.

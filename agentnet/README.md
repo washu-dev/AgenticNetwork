@@ -1,8 +1,10 @@
 # agentnet
 
 The one shared library for talking to the directory (ADS) and to agents over A2A.
-The chat app (`chat_app/`) searches the directory and calls agents with it, and
-the registration service publishes and unpublishes the agents it runs with it. It
+The planner inside the chat app (`chat_app/planner/`) searches the directory and
+calls agents with it, and the registration service publishes and unpublishes the
+agents it runs with it. agentnet is a library, not a service: it runs inside those
+two. It
 also holds the operator scripts for inspecting and repairing a live directory.
 
 ## The directory (ADS)
@@ -64,7 +66,7 @@ fast routing intervals; `-watch --restart-daemon-if-stuck` restarts the daemon w
 it). A daemon restarted by a repair writes its output to `logs/ads_daemon_repair.log`.
 
 agentnet has no requirements file of its own: it runs in either service venv (the
-registration service pins a2a-sdk 0.3.2, the planner 0.3.26), and CI runs its
+registration service pins a2a-sdk 0.3.2, the chat app 0.3.26), and CI runs its
 tests in both. Both Docker images copy it to `/app/agentnet` and set
 `PYTHONPATH=/app`.
 

@@ -24,7 +24,7 @@ Each component (`chat_app/`, `registration_service/`, `agentnet/`,
 |---|---|
 | [BUILDING_AGENTS.md](BUILDING_AGENTS.md) | build a new agent: the skeleton, the executor lanes, the generator, and cards. |
 | [deployment/AGENT_INTEGRATION_SPEC.md](deployment/AGENT_INTEGRATION_SPEC.md) | know what the system needs from an agent, and which dependency needs each piece. |
-| [REGISTRATION_SERVICE.md](REGISTRATION_SERVICE.md) | register an agent: the handler types, the custom-upload lanes, the approval flow. |
+| [REGISTRATION_SERVICE.md](REGISTRATION_SERVICE.md) | register an agent and see how the registration service runs it: the handler types, the custom-upload lanes, the approval flow. |
 | [ONBOARDING.md](ONBOARDING.md) | see how changes reach the running system, the right way to add an agent or a credential, and the common pitfalls (repo ≠ running, card file ≠ published, env-var vs per-user credentials). |
 
 ## Contributors
@@ -34,7 +34,8 @@ Each component (`chat_app/`, `registration_service/`, `agentnet/`,
 | [CONTRIBUTING.md](../CONTRIBUTING.md) | set up the venvs, run the tests, see what CI checks, open a pull request. |
 | [TESTING.md](TESTING.md) | find each test suite, what it covers and how to run it. |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | understand how the pieces fit: the three contracts (Agent Card, directory, A2A), the request lifecycle, the "stored vs. routed" directory subtlety. |
-| [PLANNER.md](PLANNER.md) | work on the orchestrator: the tool loop, directory and A2A dispatch, policy gating, sessions. |
+| [chat_app/README.md](../chat_app/README.md) | work on the chat app, the web service people sign in to: its layout, routes, settings and how to run it alone. |
+| [PLANNER.md](PLANNER.md) | work on the planner, the LLM loop inside the chat app: the tool loop, directory and A2A dispatch, policy gating, sessions and pending confirmations. |
 | [AUTH.md](AUTH.md) | understand identity, admin (`ADMIN_EMAILS`), per-user credentials and their scoping, and multi-user isolation. |
 | [DECISIONS.md](DECISIONS.md) | know *why* something is the way it is: the architectural decision log. |
 | [OPEN_SOURCE_RELEASE.md](OPEN_SOURCE_RELEASE.md) | follow the open-source release: what ships, the `agent_skeleton` subtree plan, open security items, deferred simplifications (working document, 2026-10). |
