@@ -524,7 +524,7 @@ class AgentResponse(BaseModel):
     description: str
     handler_type: str
     oasf_skills: list[OASFSkill]
-    config: dict[str, Any]
+    config: dict[str, Any]   # secret values redacted (server._public_config)
     port: int | None
     status: str
     approved: bool = True

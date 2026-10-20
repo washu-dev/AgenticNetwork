@@ -186,8 +186,13 @@ async def test_register_tool_loop_persists_extra(client: AsyncClient) -> None:
                           "extra": {"contact_email": "a@b.edu", "http_timeout": 20}}}
     resp = await client.post("/agents", json=payload)
     assert resp.status_code == 201, resp.text
-    assert resp.json()["config"]["tools"]["extra"] == {
+    # Stored for the runtime; the API shows only the keys (values may be secrets).
+    from registration_service import db
+    stored = await db.get_agent(resp.json()["id"])
+    assert stored["config"]["tools"]["extra"] == {
         "contact_email": "a@b.edu", "http_timeout": 20}
+    assert resp.json()["config"]["tools"]["extra"] == {
+        "contact_email": "[redacted]", "http_timeout": "[redacted]"}
 
 
 async def test_register_tool_loop_extra_defaults_to_empty(client: AsyncClient) -> None:

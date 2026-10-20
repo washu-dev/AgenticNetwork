@@ -11,10 +11,10 @@ adding an agent to the directory makes it usable with no planner code changes.
 ```mermaid
 flowchart LR
     U["Browser"] --> F["Front door<br/>(SSO gateway, or the dev identity proxy)"]
-    F --> P["Planner<br/>chat UI + tool loop"]
+    F -->|"chat (/app)"| P["Planner<br/>chat UI + tool loop"]
+    F -.->|"agent sign-up wizard (/register/),<br/>passed through the planner's web server"| R["Registration service<br/>sign-up wizard + API"]
     P <-->|"search by skill, read cards"| D[("Directory (ADS)<br/>AGNTCY dir, via dirctl")]
     P -->|"A2A task"| A["Specialist agents"]
-    P -->|"/register proxy"| R["Registration service"]
     R -->|"registers and spawns"| A
     R -->|"publishes Agent Cards"| D
     P -.-> L["LLM<br/>(any OpenAI-compatible API)"]
@@ -24,6 +24,11 @@ flowchart LR
 The planner's LLM sees five tools: `list_agents`, `describe_agent`, `call_agent`, `ask_user` and
 `final_answer`. A request goes browser → front door (which adds the user's identity) → planner →
 directory search → A2A call to the chosen agent → answer back to the user.
+
+Agent developers use a separate page, the registration wizard, to sign up an agent; an admin then
+approves it from the chat UI. Both pages sit at the same public address: the planner's web server
+passes `/register/*` requests through to the registration service (its LLM is not involved), so
+that service never needs a public port and stays behind the same sign-in.
 
 **Key ideas**
 

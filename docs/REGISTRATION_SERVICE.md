@@ -46,7 +46,9 @@ old config JSON and are normalized **on read** — never rewritten — so
   `GET /oasf-skills`, `GET /credential-catalog`.
 - **Agent CRUD (public):** `POST /agents` (register), `GET /agents`, `GET /agents/{id}`,
   `DELETE /agents/{id}` (stop + unpublish + delete + clean handler dir),
-  `POST /agents/{id}/restart`.
+  `POST /agents/{id}/restart`. Their `config` shows secret values as `[redacted]` (a proxy's
+  `auth_header`, the values of `extra` and `tools.extra`, credentials in a URL;
+  `server.py::_public_config`); runtimes read the stored config.
 - **Custom upload/approval (admin-gated by `_require_admin`):** `POST /agents/{id}/handler`
   (upload), `GET /agents/{id}/handler` (review source), `GET /agents/{id}/handler/download`,
   `POST /agents/{id}/approve`, `POST /agents/{id}/reject`.

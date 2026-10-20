@@ -219,7 +219,7 @@ async def test_canonical_llm_upload_is_approval_gated_end_to_end(
     # Not started: no endpoint published, nothing in ADS. (A port IS reserved at
     # registration; only publishing waits for approval.)
     assert agent["endpoint_url"] is None and agent["ads_cid"] is None
-    assert agent["config"]["tools"]["extra"] == {"http_timeout": 20}
+    assert agent["config"]["tools"]["extra"] == {"http_timeout": "[redacted]"}
 
     # Approving before the code arrives is a conflict, exactly as for `custom`.
     assert (await client.post(f"/agents/{agent['id']}/approve")).status_code == 409

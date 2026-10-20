@@ -10,6 +10,7 @@ import shutil
 import uuid
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 import asyncpg
 from fastapi import FastAPI, File, HTTPException, Request, Response, UploadFile
@@ -563,6 +564,45 @@ def _parse_uuid(value: str) -> uuid.UUID:
         raise HTTPException(status_code=422, detail=f"Invalid UUID: {value!r}")
 
 
+_REDACTED = "[redacted]"
+
+
+def _redact_url(url: Any) -> Any:
+    """Hide credentials a URL may carry: userinfo and query-string values."""
+    if not isinstance(url, str):
+        return url
+    parts = urlsplit(url)
+    netloc = parts.netloc
+    if "@" in netloc:
+        netloc = f"{_REDACTED}@{netloc.rsplit('@', 1)[1]}"
+    query = "&".join(f"{pair.split('=', 1)[0]}={_REDACTED}" for pair in parts.query.split("&") if pair)
+    return urlunsplit((parts.scheme, netloc, parts.path, query, parts.fragment))
+
+
+def _public_config(config: Any) -> Any:
+    """The agent config as the API shows it: secret-bearing values replaced.
+
+    Runtimes read the stored config from the database; API responses go to any
+    signed-in user (the planner passes ``/register/agents`` through), so they never
+    carry a proxy's ``auth_header``, the values of an ``extra`` dict (top-level or
+    ``tools.extra``; keys stay visible), or credentials embedded in a URL.
+    """
+    if not isinstance(config, dict):
+        return config
+    out = dict(config)
+    if out.get("auth_header"):
+        out["auth_header"] = _REDACTED
+    if isinstance(out.get("extra"), dict):
+        out["extra"] = {k: _REDACTED for k in out["extra"]}
+    if "upstream_url" in out:
+        out["upstream_url"] = _redact_url(out["upstream_url"])
+    if isinstance(out.get("tools"), dict):
+        out["tools"] = _public_config(out["tools"])
+        if "base_url" in out["tools"]:
+            out["tools"]["base_url"] = _redact_url(out["tools"]["base_url"])
+    return out
+
+
 def _row_to_response(row: asyncpg.Record) -> AgentResponse:
     oasf_raw = row["oasf_skills"]
     if isinstance(oasf_raw, str):
@@ -579,7 +619,7 @@ def _row_to_response(row: asyncpg.Record) -> AgentResponse:
         description=row["description"],
         handler_type=row["handler_type"],
         oasf_skills=oasf_skills,
-        config=config_raw,
+        config=_public_config(config_raw),
         port=row["port"],
         status=row["status"],
         approved=row["approved"],

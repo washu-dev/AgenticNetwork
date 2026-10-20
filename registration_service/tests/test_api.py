@@ -218,3 +218,94 @@ async def test_oasf_skills_round_trip(client: AsyncClient) -> None:
 
     returned_names = {s["name"] for s in fetched["oasf_skills"]}
     assert returned_names == {"nlp/text-summarization", "data/analytics"}
+
+
+# ── Secret config values stay out of responses ────────────────────────────────
+
+SECRET = "s3cret-canary"
+
+SECRET_BEARING = [
+    {
+        "name": "Secret Proxy",
+        "description": "a proxy with operator auth",
+        "handler_type": "proxy",
+        "oasf_skills": [{"name": "tool_interaction/api_schema_understanding", "id": 1401}],
+        "config": {
+            "upstream_url": f"https://bot:{SECRET}-pw@upstream.example/api?key={SECRET}-q&mode=fast",
+            "auth_header": f"Bearer {SECRET}-header",
+        },
+    },
+    {
+        "name": "Secret Tools",
+        "description": "an LLM loop over uploaded tools",
+        "handler_type": "llm",
+        "oasf_skills": [{"name": "nlp/text-summarization", "id": 10101}],
+        "config": {
+            "system_prompt": "Use your tools.",
+            "tools": {"source": "upload", "extra": {"api_key": f"{SECRET}-extra"}},
+        },
+    },
+    {
+        "name": "Secret Http",
+        "description": "an LLM loop over an external API",
+        "handler_type": "llm",
+        "oasf_skills": [{"name": "nlp/text-summarization", "id": 10101}],
+        "config": {
+            "tools": {
+                "source": "http",
+                "base_url": f"https://{SECRET}-userinfo@api.example/v1",
+                "operations": [{"name": "ping", "path": "/ping"}],
+            },
+        },
+    },
+    {
+        "name": "Secret Custom",
+        "description": "an uploaded handler",
+        "handler_type": "custom",
+        "oasf_skills": [{"name": "nlp/text-summarization", "id": 10101}],
+        "config": {"class_name": "H", "extra": {"token": f"{SECRET}-custom"}},
+    },
+]
+
+
+async def test_agent_responses_never_carry_secret_config_values(client: AsyncClient) -> None:
+    from registration_service import db
+
+    ids = []
+    for payload in SECRET_BEARING:
+        r = await client.post("/agents", json=payload)
+        assert r.status_code == 201, r.text
+        assert SECRET not in r.text, payload["name"]
+        ids.append(r.json()["id"])
+
+    listed = await client.get("/agents")
+    assert listed.status_code == 200 and len(listed.json()) == len(SECRET_BEARING)
+    assert SECRET not in listed.text
+    for agent_id in ids:
+        r = await client.get(f"/agents/{agent_id}")
+        assert r.status_code == 200 and SECRET not in r.text
+    restarted = await client.post(f"/agents/{ids[0]}/restart")
+    assert restarted.status_code == 200 and SECRET not in restarted.text
+
+    # Keys and the non-secret shape stay visible to the wizard and approvers.
+    by_name = {a["name"]: a["config"] for a in listed.json()}
+    assert by_name["Secret Proxy"]["auth_header"] == "[redacted]"
+    assert by_name["Secret Proxy"]["upstream_url"] == (
+        "https://[redacted]@upstream.example/api?key=[redacted]&mode=[redacted]")
+    assert by_name["Secret Tools"]["tools"]["extra"] == {"api_key": "[redacted]"}
+    assert by_name["Secret Http"]["tools"]["base_url"] == "https://[redacted]@api.example/v1"
+    assert by_name["Secret Custom"]["extra"] == {"token": "[redacted]"}
+
+    # The stored config, which runtimes read, keeps the real values.
+    for agent_id in ids:
+        stored = await db.get_agent(agent_id)
+        assert SECRET in str(stored["config"])
+
+
+async def test_public_config_leaves_plain_configs_alone(client: AsyncClient) -> None:
+    created = (await client.post("/agents", json={
+        **API_PROXY_PAYLOAD, "name": "Plain Proxy",
+        "config": {"upstream_url": "http://example.com/api", "auth_header": None},
+    })).json()
+    assert created["config"]["upstream_url"] == "http://example.com/api"
+    assert created["config"]["auth_header"] is None
