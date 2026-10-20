@@ -2231,7 +2231,7 @@ async function adminDisconnectAll(btn) {
 }
 
 // ── Session sidebar (localStorage-backed) ──
-const SESSION_STORE_KEY = 'planner_agent_sessions';
+const SESSION_STORE_KEY = 'planner_agent_sessions';  // old name kept on purpose: renaming it would hide users' saved sessions
 const SESSION_MAX = 20;
 
 function _readSessions() {

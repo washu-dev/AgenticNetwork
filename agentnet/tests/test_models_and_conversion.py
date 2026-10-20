@@ -173,6 +173,20 @@ def test_ads_record_unions_on_card_tag_with_known_skill() -> None:
     assert sorted(record["skills"], key=lambda skill: skill["id"]) == [{"id": 203}, {"id": 50201}]
 
 
+def test_internal_record_labels_are_pinned() -> None:
+    # The registration service's published records must stay byte-identical to what
+    # the old ads_utils converter wrote, so these labels are pinned as literals.
+    from uuid import NAMESPACE_URL, uuid5
+
+    card = _card_with_skill_tags(["weather"])
+    record = agent_card_to_oasf_record(card)
+    assert record["schema_version"] == "demo-v2"
+    assert record["metadata"]["source"] == "agent_directory_service"
+    assert record["record_id"] == str(
+        uuid5(NAMESPACE_URL, f"agent-directory-service:{card.name}:{card.version}")
+    )
+
+
 def test_ads_record_backward_compatible_without_oasf_tag() -> None:
     # Existing cards carry no oasf: tag and an unknown skill id -> no routing skills,
     # exactly as before the fallback was added.

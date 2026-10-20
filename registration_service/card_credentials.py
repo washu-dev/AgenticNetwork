@@ -18,9 +18,12 @@ from typing import Any
 
 from a2a.types import AgentExtension
 
-# Cross-component contract: the planner reads this URI back (P4b); both sides
-# take it from agentnet.models.
-from agentnet.models import REQUIRED_CREDENTIALS_EXTENSION_URI as CREDENTIALS_EXTENSION_URI
+# Cross-component contract: the chat app's planner reads this URI back (P4b). It is
+# the same string as agentnet.models.REQUIRED_CREDENTIALS_EXTENSION_URI, written out
+# here because this module runs inside custom-agent processes, where an uploaded
+# project's own top-level packages come first on the path (as container_runner does).
+# tests/test_credentials.py checks the two stay equal.
+CREDENTIALS_EXTENSION_URI = "agenticnetwork.dev/ext/required-credentials"
 
 
 def build_credentials_extension(

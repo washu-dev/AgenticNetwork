@@ -35,10 +35,12 @@ from agentnet.models import (
     RiskLevel,
 )
 
-# Legacy labels kept for compatibility. They are what the old ads_utils converter
-# wrote into the records the registration service publishes, and chat-app images
-# that are already deployed read those records, so they stay exactly as they were.
-# Every internal record now uses them.
+# Record labels. These are the values the old ads_utils converter wrote, kept so the
+# records the registration service publishes stay byte-identical to before. Nothing
+# reads them back (deployed chat apps rebuild records from the embedded card), so
+# they are labels, not a contract. The chat app's own internal records used
+# "demo-v3" / "planner-agent" before the merge and now use these too, which changes
+# DiscoveredAgent.source_record_id values; those are never stored or shown.
 RECORD_SCHEMA_VERSION = "demo-v2"
 RECORD_ID_NAMESPACE = "agent-directory-service"
 RECORD_SOURCE = "agent_directory_service"

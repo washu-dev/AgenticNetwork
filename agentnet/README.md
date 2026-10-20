@@ -66,7 +66,8 @@ Related files outside this folder: `scripts/ads` (the operator command, below) a
 fast routing intervals; `-watch --restart-daemon-if-stuck` restarts the daemon with
 it). A daemon restarted by a repair writes its output to `logs/ads_daemon_repair.log`.
 
-agentnet has no requirements file of its own: it runs in either service venv (the
+agentnet has no required dependencies file of its own (requirements-sdk.txt is only for the
+optional SDK backend): it runs in either service venv (the
 registration service pins a2a-sdk 0.3.2, the chat app 0.3.26), and CI runs its
 tests in both. Both Docker images copy it to `/app/agentnet` and set
 `PYTHONPATH=/app`.

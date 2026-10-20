@@ -1,13 +1,13 @@
 {
   "name": "Skeleton Agent",
-  "description": "A template A2A agent that answers requests and can call simple text tools. Replace this with your agent's real capabilities.",
+  "description": "The demo agent that ships with the agent runtime: it answers requests and can call two simple text tools (word count, reverse text).",
   "url": "http://127.0.0.1:9110/",
   "version": "0.1.0",
   "protocolVersion": "0.3.0",
   "preferredTransport": "JSONRPC",
   "provider": {
-    "organization": "Your Org",
-    "url": "https://example.invalid/your-org"
+    "organization": "AgenticNetwork demo",
+    "url": "https://example.invalid/agenticnetwork-demo"
   },
   "capabilities": {
     "streaming": true,

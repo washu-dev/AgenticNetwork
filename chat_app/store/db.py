@@ -84,6 +84,7 @@ ALTER TABLE pending_confirmations
     ADD COLUMN IF NOT EXISTS claim_id           TEXT,
     ADD COLUMN IF NOT EXISTS released_claim_ids TEXT[];
 
+-- Old name kept on purpose: it already exists in deployed databases.
 CREATE OR REPLACE FUNCTION planner_update_updated_at()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN

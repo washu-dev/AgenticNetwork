@@ -12,6 +12,7 @@ from registration_service.card_credentials import (
     CREDENTIALS_EXTENSION_URI,
     build_credentials_extension,
 )
+from agentnet.models import REQUIRED_CREDENTIALS_EXTENSION_URI
 from registration_service.credential_catalog import (
     catalog_entry,
     is_known_type,
@@ -134,3 +135,9 @@ async def test_credential_catalog_endpoint(client: AsyncClient) -> None:
     types = {e["type"] for e in body}
     assert "openai_api_key" in types and "brave_api_key" in types
     assert all({"type", "label", "kind"} <= e.keys() for e in body)
+
+
+def test_credentials_extension_uri_matches_agentnet() -> None:
+    # card_credentials writes the URI out (it runs inside agent processes); the chat
+    # app reads it through agentnet. The two copies must stay equal.
+    assert CREDENTIALS_EXTENSION_URI == REQUIRED_CREDENTIALS_EXTENSION_URI

@@ -164,6 +164,10 @@ Services run straight from your checkout. After editing code, restart with
   (for another stack's service, the command that stops it). A service that did not stop
   keeps its pid file, so running `down` again retries it.
   `lsof -nP -iTCP:19200-19299 -sTCP:LISTEN` shows anything in the agent port range.
+- **A stack started before the October 2026 rename (`planner_agent/` → `chat_app/`):**
+  run `scripts/stack down` from the old checkout before pulling, or the old planner keeps
+  its port. If you already pulled, find it with `lsof -nP -iTCP:8090 -sTCP:LISTEN`
+  (add your `--port-offset`) and stop that pid.
 - **Anything else:** `scripts/stack reset`, then `scripts/stack up`.
 
 ## How it fits with the tests

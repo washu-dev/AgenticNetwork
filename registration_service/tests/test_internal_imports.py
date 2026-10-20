@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-# Folders to scan. A folder that does not exist (yet, or any more) is skipped.
+# Folders to scan. Each must exist: a rename that drops one fails this test.
 _SCAN_ROOTS = ("registration_service", "agent_skeleton", "agentnet")
 # This repo's top-level packages. Imports of anything else count as third-party.
 # ads_utils and agent_directory_service were merged into agentnet, and planner_agent
@@ -75,8 +75,9 @@ def _problem(module: str, names: tuple[str, ...]) -> str | None:
     return None
 
 
-@pytest.mark.parametrize("root", [r for r in _SCAN_ROOTS if (_REPO_ROOT / r).is_dir()])
+@pytest.mark.parametrize("root", _SCAN_ROOTS)
 def test_internal_imports_resolve(root: str) -> None:
+    assert (_REPO_ROOT / root).is_dir(), f"{root}/ is gone; update _SCAN_ROOTS"
     imports = _own_imports(_REPO_ROOT / root)
     assert imports, f"found no imports of this repo's packages under {root}/"
     problems = sorted(
