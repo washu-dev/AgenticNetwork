@@ -38,6 +38,7 @@ Each component (`planner_agent/`, `registration_service/`, `agent_directory_serv
 | [AUTH.md](AUTH.md) | understand identity, admin (`ADMIN_EMAILS`), per-user credentials and their scoping, and multi-user isolation. |
 | [DECISIONS.md](DECISIONS.md) | know *why* something is the way it is: the architectural decision log. |
 | [OPEN_SOURCE_RELEASE.md](OPEN_SOURCE_RELEASE.md) | follow the open-source release: what ships, the `agent_skeleton` subtree plan, open security items, deferred simplifications (working document, 2026-10). |
+| [DTRC summer leftover ideas](DTRC%20summer%20leftover%20ideas.md) | see open work and research ideas left from the summer 2026 build (typed agent inputs, networks of planners, discovery at scale), with statuses checked 2026-10-20. |
 
 ## Operators and deployers
 
