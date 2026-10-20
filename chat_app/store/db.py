@@ -48,7 +48,7 @@ CREATE TABLE IF NOT EXISTS agent_credential_grants (
 );
 
 -- P4g/H2: conversation history moved off process-local SQLite into Postgres so it
--- survives restarts and is shared across planner processes. owner_email keys on the
+-- survives restarts and is shared across chat app processes. owner_email keys on the
 -- Shib identity (same as the in-memory working context / sessions) rather than a
 -- users(id) FK, so anon/demo-user (no users row) can still persist in dev.
 CREATE TABLE IF NOT EXISTS conversation_messages (
@@ -63,7 +63,7 @@ CREATE TABLE IF NOT EXISTS conversation_messages (
 CREATE INDEX IF NOT EXISTS idx_conv_owner ON conversation_messages(owner_email);
 
 -- P4g/H2b: pending write/credential-consent confirmations, keyed by context_id, so a
--- prompt raised on one planner process can be resumed on another (or after a restart).
+-- prompt raised on one chat app process can be resumed on another (or after a restart).
 -- payload is the same JSON dict the in-memory store held. Superseded per context.
 CREATE TABLE IF NOT EXISTS pending_confirmations (
     context_id   TEXT        PRIMARY KEY,

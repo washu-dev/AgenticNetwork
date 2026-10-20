@@ -248,8 +248,8 @@ def test_1_agents_receive_only_the_credentials_they_declare(stack, directory, re
     """From one user's credential bundle, an agent that declares a type gets just that type
     and an agent that declares none gets none.
 
-    This tier has no credential store (the planner's /me/credentials routes need Postgres),
-    so the request carries the bundle as metadata.credentials, where the planner's server
+    This tier has no credential store (the chat app's /me/credentials routes need Postgres),
+    so the request carries the bundle as metadata.credentials, where the chat app's server
     puts the stored credentials it loads. Grants are not exercised: without a database the
     planner passes the declared types only.
     """

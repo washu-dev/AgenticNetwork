@@ -1,10 +1,11 @@
 # agentnet
 
 The one shared library for talking to the directory (ADS) and to agents over A2A.
-The planner inside the chat app (`chat_app/planner/`) searches the directory and
-calls agents with it, and the registration service publishes and unpublishes the
-agents it runs with it. agentnet is a library, not a service: it runs inside those
-two. It
+The chat app and the registration service both use it. In the chat app, the planner
+(`chat_app/planner/`) searches the directory and calls agents with it, and the web
+server (`chat_app/server.py`) lists agents, checks their health and removes them
+(admin) with it. The registration service publishes and unpublishes the agents it
+runs with it. agentnet is a library, not a service: it runs inside those two. It
 also holds the operator scripts for inspecting and repairing a live directory.
 
 ## The directory (ADS)

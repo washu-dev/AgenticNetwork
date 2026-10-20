@@ -1025,9 +1025,9 @@ async function submitCreationFeedback() {
   btn.textContent = 'Sending…';
   st.style.display = 'none';
   try {
-    // The planner owns POST /issues. When this UI is proxied at /register the
-    // planner is the same origin, so an absolute /issues reaches it. Standalone
-    // on :8091 there is no planner, so this fails gracefully with a message.
+    // The chat app owns POST /issues. When this UI is proxied at /register the
+    // chat app is the same origin, so an absolute /issues reaches it. Standalone
+    // on :8091 there is no chat app, so this fails gracefully with a message.
     const r = await fetch('/issues', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1144,7 +1144,7 @@ TOOL_REGISTRY = {"word_count": word_count}
 `;
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
-// When served via the planner proxy at /register/, API calls must be absolute.
+// When served via the chat app's /register/ pass-through, API calls must be absolute.
 // When served directly from the registration service, window.location.pathname
 // is '/', so this resolves to '' and relative paths work as-is.
 const API_PREFIX = window.location.pathname.replace(/\/$/, '').endsWith('/register')

@@ -150,6 +150,8 @@ alignment check without installing the SDK; only *serving* requires it.
 ## 8. When extending the protocol layer
 
 This runtime intentionally mirrors the disaster agent's A2A usage. If you fix a
-protocol bug here, note that the parent repo has **~5 divergent copies** of the
-A2A/directory stack (see [`../CLAUDE.md`](../CLAUDE.md) §9, Important realities & caveats) — a fix here does not
-propagate to them.
+protocol bug here, note that this repo has one shared A2A/directory package
+(`agentnet/`), but the `agent-directory` repo still has its own copies, including
+vendored copies of this runtime (see [`../SECURITY.md`](../SECURITY.md) §3 and
+[`../CLAUDE.md`](../CLAUDE.md) §9, Important realities & caveats) — a fix here does not
+reach them.

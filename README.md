@@ -19,8 +19,9 @@ flowchart LR
         W -->|"chat messages"| P
     end
     F --> W
-    W -.->|"/register/* passed through as is"| R["Registration service<br/>sign-up wizard + API;<br/>runs agents and publishes their cards"]
+    W -.->|"/register/* passed through<br/>(internal routes blocked, approvals admin-only)"| R["Registration service<br/>sign-up wizard + API;<br/>runs agents and publishes their cards"]
     P <-->|"search by skill, read cards<br/>(agentnet)"| D[("Directory (ADS)<br/>AGNTCY dir, via dirctl")]
+    W -.->|"agent list, health checks,<br/>admin removal (agentnet)"| D
     P -->|"A2A task (agentnet)"| A["Agents"]
     R -->|"starts and monitors"| A
     R -->|"publishes Agent Cards<br/>(agentnet)"| D
@@ -38,14 +39,16 @@ messages. Its LLM sees five tools: `list_agents`, `describe_agent`, `call_agent`
 Agent authors use a separate place, the registration service's sign-up wizard, to register an
 agent; the registration service then runs the agent (once an admin approves it, for uploaded
 code) and publishes its card to the directory. Both sit at the same public address: the chat
-app's web server passes `/register/*` requests straight through to the registration service, and
-the planner's LLM is not involved. So the registration service never needs a public port and
-stays behind the same sign-in.
+app's web server passes `/register/*` requests through to the registration service (it blocks the
+service's internal routes and checks admin rights for approvals), and the planner's LLM is not
+involved. So the registration service never needs a public port and stays behind the same
+sign-in.
 
-`agentnet` is not a service: it is the shared library that the planner and the registration
-service use for every directory and A2A call. Agents registered through the registration service
-run on `agent_skeleton`, the agent runtime; standalone agents can be written any way that speaks
-A2A.
+`agentnet` is not a service: it is the shared library that the chat app and the registration
+service use for every directory and A2A call. In the chat app, the planner uses it to search the
+directory and call agents, and the web server uses it to list agents, check their health and
+remove them (admin). Agents registered through the registration service run on
+`agent_skeleton`, the agent runtime; standalone agents can be written any way that speaks A2A.
 
 **Key ideas**
 

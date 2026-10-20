@@ -91,3 +91,8 @@ Always-on billers: planner (min=1), **registration (min=1)**, **Cloud SQL `agent
 `vllm-relay` VM, the connector. To pause the serverless bits: `min-instances=0` on planner + registration;
 `gcloud compute instances stop ads vllm-relay`; `gcloud sql instances patch agenticnetwork-db
 --activation-policy=NEVER` to stop the DB. The connector can't be paused (delete/recreate for long idles).
+A `min-instances` change makes a new revision, which pulls the current `:latest`. Once a `:latest`
+built after the 2026-10-20 rename exists (ENGR pushes the same one), `planner` must also get
+`--command=python --args=-m,chat_app` in that update, or the new revision cannot start (its old
+override starts `planner_agent.scripts.run_server`, which newer images lack). See
+[README.md](README.md#dev-workflow).

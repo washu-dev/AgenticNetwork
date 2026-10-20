@@ -73,7 +73,7 @@ def _admin_emails() -> set[str]:
 def _require_admin(request: Request) -> None:
     """Fail-closed admin check on the forwarded SSO identity (P4f).
 
-    The planner proxies the approver's requests through, forwarding the Apache-injected
+    The chat app passes the approver's requests through, forwarding the Apache-injected
     Shibboleth headers. Admin = that identity ∈ ADMIN_EMAILS; an empty allowlist means
     no admins. Dev/test escape hatch: FAKE_DB=1 leaves it open (no Shibboleth locally).
     """
@@ -107,7 +107,7 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-# /ready probe timeouts (the planner's values). dirctl is a subprocess, so the
+# /ready probe timeouts (the chat app's values). dirctl is a subprocess, so the
 # directory check gets longer.
 _READY_DB_TIMEOUT_SECONDS = 2.0
 _READY_DIRECTORY_TIMEOUT_SECONDS = 5.0
@@ -156,7 +156,7 @@ async def _check_directory() -> dict[str, Any]:
 
 @app.get("/ready", tags=["ops"])
 async def ready() -> JSONResponse:
-    """Readiness, in the planner's shape: 200 when no check is in error, else 503.
+    """Readiness, in the chat app's shape: 200 when no check is in error, else 503.
 
     ``{"ready": bool, "checks": {"db": {...}, "directory": {...}}}``; each check has
     ``status`` ("ok", "not_configured" or "error") and, on error, ``error``. A
@@ -583,7 +583,7 @@ def _public_config(config: Any) -> Any:
     """The agent config as the API shows it: secret-bearing values replaced.
 
     Runtimes read the stored config from the database; API responses go to any
-    signed-in user (the planner passes ``/register/agents`` through), so they never
+    signed-in user (the chat app passes ``/register/agents`` through), so they never
     carry a proxy's ``auth_header``, the values of an ``extra`` dict (top-level or
     ``tools.extra``; keys stay visible), or credentials embedded in a URL.
     """

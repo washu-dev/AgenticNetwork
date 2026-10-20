@@ -6,14 +6,14 @@
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PLANNER_DIR="$(dirname "$SCRIPT_DIR")"
-REPO_ROOT="$(dirname "$PLANNER_DIR")"
-ENV_FILE="${ENV_FILE:-$PLANNER_DIR/.env.local}"
+APP_DIR="$(dirname "$SCRIPT_DIR")"
+REPO_ROOT="$(dirname "$APP_DIR")"
+ENV_FILE="${ENV_FILE:-$APP_DIR/.env.local}"
 DIRCTL="${DIRCTL_BIN:-$HOME/.local/bin/dirctl}"
 
 if [[ -z "${PYTHON_BIN:-}" ]]; then
-  if [[ -x "$PLANNER_DIR/.venv/bin/python" ]]; then
-    PYTHON_BIN="$PLANNER_DIR/.venv/bin/python"
+  if [[ -x "$APP_DIR/.venv/bin/python" ]]; then
+    PYTHON_BIN="$APP_DIR/.venv/bin/python"
   elif [[ -x "$REPO_ROOT/.venv/bin/python" ]]; then
     PYTHON_BIN="$REPO_ROOT/.venv/bin/python"
   elif command -v python3 >/dev/null 2>&1; then
@@ -149,4 +149,4 @@ fi
 echo ""
 echo -e "${BOLD}Summary${RESET}"
 echo "  Server URL:  http://localhost:$PORT/"
-echo "  Setup guide: $PLANNER_DIR/README.md (Running)"
+echo "  Setup guide: $APP_DIR/README.md (Running)"

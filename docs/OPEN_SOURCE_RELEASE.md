@@ -77,8 +77,12 @@ repository goes public.
   hold `chat_app/` and `agentnet/` and start with `python -m chat_app` (`entrypoint-planner.sh`
   does this on ENGR and Compose). A Cloud Run `planner` service started with
   `--args=-m,planner_agent.scripts.run_server` must switch to `--args=-m,chat_app` in the same
-  deploy ([DEPLOY_YOUR_OWN.md](deployment/gcp/DEPLOY_YOUR_OWN.md) step 10). The old
-  `MAIN_AGENT_*` setting names still work.
+  deploy ([DEPLOY_YOUR_OWN.md](deployment/gcp/DEPLOY_YOUR_OWN.md) step 10). Pushing a new
+  `:latest` from ENGR is enough to make this urgent: Cloud Run and ENGR share the image, and the
+  next Cloud Run revision (even a config-only change such as `--min-instances`) pulls it. Switch
+  the WashU `planner` service right after the first such push
+  ([gcp/README.md](deployment/gcp/README.md#dev-workflow)). The old `MAIN_AGENT_*` setting
+  names still work.
 - **Approve → commit:** run one live approval on a test instance. `build_manifest` changed,
   and the unit tests do not exercise the live GitHub commit.
 - **Tool-loop agents** (`llm` + uploaded tools) now advertise streaming, but only in images

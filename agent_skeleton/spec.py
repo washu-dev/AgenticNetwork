@@ -7,8 +7,9 @@ into one object that the executor and serve layers pass straight through. The lo
 core stays frozen and generic; only the spec changes.
 
 Why this matters for the bigger picture: a generator can emit a *config* (an
-``AgentSpec``) instead of editing ``llm_loop.py``, so we never recreate the
-"~5 divergent copies of the engine" problem the parent repo already suffers from.
+``AgentSpec``) instead of editing ``llm_loop.py``, so we never make divergent copies
+of the engine, the problem the ``agent-directory`` repo's copied A2A/directory code
+already has (this repo now keeps that code in one package, ``agentnet``).
 
 Presets included here:
   * ``default_demo_spec()`` — reproduces the original skeleton behavior (the demo

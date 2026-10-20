@@ -87,6 +87,16 @@ teammate access: `gcloud run services add-iam-policy-binding planner --region=us
   The `CloudRunBackend` is unit-tested against a fake Cloud Run client — no `google-cloud-run` install, no GCP.
 - **Build + push an infra image:** `bash deployment/build_and_push.sh registration` (same script/images as the
   cluster). Redeploy with `gcloud run services update <svc> --image=di2washu/agenticnetwork-<svc>:latest`.
+- **`planner` also needs a new start command.** It runs with a start-command override that starts
+  `planner_agent.scripts.run_server`, and images built after the 2026-10-20 rename no longer contain
+  that module, so a new revision on such an image cannot start. Every new revision looks up
+  `:latest` again, including config-only updates such as a pause/resume (`--min-instances`) or an
+  env change, and ENGR pushes the same shared `:latest`. So as soon as a `:latest` built from
+  `chat_app/` is pushed (from ENGR or here), check the override with
+  `gcloud run services describe planner --region=us-central1` and switch it in one update:
+  `gcloud run services update planner --region=us-central1 --image=di2washu/agenticnetwork-planner:latest --command=python --args=-m,chat_app`
+  (append `,--fake-ads` only if the current override still has it). Details:
+  [DEPLOY_YOUR_OWN.md](DEPLOY_YOUR_OWN.md) step 10.
 - **The register→deploy loop:** register a `custom` agent → approve (fires a commit to `agent-directory`) →
   the `build-custom-agent.yml` GitHub Action builds the image → the reg service's build poll deploys it via
   the `CloudRunBackend`. Full trace + acceptance test: [IMPLEMENTATION_CLOUDRUN_BACKEND.md](IMPLEMENTATION_CLOUDRUN_BACKEND.md).
@@ -125,6 +135,8 @@ directly — none of this blocks using or developing the GCP stack as-is):
    chat app (and drops anon at cutover). The build outline is in the CloudRunBackend
    implementation doc's [Step 10](IMPLEMENTATION_CLOUDRUN_BACKEND.md); the decision + rejected
    alternatives (LB+Cloud Armor / IAP+WIF) are in [DOWNSTREAM_CONSIDERATIONS.md](../DOWNSTREAM_CONSIDERATIONS.md) #4.
+   First switch the `planner` service's start command to `-m,chat_app`, if that is not done yet
+   ([Dev workflow](#dev-workflow)).
 2. **Option-1 cutover** — repoint `agenticweb.engr.wustl.edu` at the GCP chat app (a reversible config
    change on the out-of-repo WashU gateway). Only after (1).
 3. **The rest of the specialist agent fleet** on GCP (email / coding / intelligence / geospatial / scout) —

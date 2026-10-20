@@ -1,7 +1,7 @@
 """Local stand-in for the SSO front door: a reverse proxy that signs you in.
 
 In production an Apache/Shibboleth service provider authenticates the user and
-passes their identity to the planner in the ``mail`` / ``eppn`` / ``remote-user``
+passes their identity to the chat app in the ``mail`` / ``eppn`` / ``remote-user``
 headers. On a laptop this proxy plays that role: it drops any identity headers
 the client sent (so nobody can claim another identity through it) and injects
 ``mail: <DEV_USER_EMAIL>`` (default ``dev@example.test``). It answers only requests
@@ -138,7 +138,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
             response = conn.getresponse()
         except (OSError, http.client.HTTPException) as exc:
             conn.close()
-            self._error(502, f"planner unreachable at {upstream_host_header}: {exc}")
+            self._error(502, f"chat app unreachable at {upstream_host_header}: {exc}")
             return
         try:
             self._relay(response)
@@ -216,7 +216,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Dev identity proxy: injects a fixed signed-in user.")
     parser.add_argument("--host", default="127.0.0.1", help="Listen address (default 127.0.0.1).")
     parser.add_argument("--port", type=int, default=8080)
-    parser.add_argument("--upstream", default="http://127.0.0.1:8090", help="Planner base URL.")
+    parser.add_argument("--upstream", default="http://127.0.0.1:8090", help="Chat app base URL.")
     parser.add_argument("--user", default=os.getenv("DEV_USER_EMAIL") or DEFAULT_USER)
     args = parser.parse_args(argv)
     server = make_server(args.host, args.port, args.upstream, args.user)

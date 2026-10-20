@@ -113,6 +113,33 @@ fi
 # exported too because an older planner image reads only that one.
 export CHAT_APP_PORT=$((8090 + PORT_OFFSET))
 export MAIN_AGENT_PORT="$CHAT_APP_PORT"
+# The same for the chat app's other renamed settings: copy each new name that .env
+# sets onto its old name, so an older planner image (prod's :latest before a rebuild,
+# or a pinned PLANNER_IMAGE_TAG) still reads them. Both names then hold one value, so
+# a newer image sees no conflict. The anon opt-in is left out on purpose: only the
+# test-instance block below sets it, so prod stays behind the SSO gate.
+for pair in \
+    PLANNER_LLM_ENABLED:MAIN_AGENT_LLM_ENABLED \
+    PLANNER_LLM_PROVIDER:MAIN_AGENT_LLM_PROVIDER \
+    PLANNER_LLM_MODEL:MAIN_AGENT_LLM_MODEL \
+    PLANNER_LLM_MAX_OUTPUT_TOKENS:MAIN_AGENT_MAX_OUTPUT_TOKENS \
+    PLANNER_LLM_TIMEOUT_SECONDS:MAIN_AGENT_TIMEOUT_SECONDS \
+    PLANNER_LLM_PRIMARY_TIMEOUT_SECONDS:MAIN_AGENT_LLM_PRIMARY_TIMEOUT_SECONDS \
+    PLANNER_LLM_FALLBACK_PROVIDER:MAIN_AGENT_LLM_FALLBACK_PROVIDER \
+    PLANNER_LLM_FALLBACK_BASE_URL:MAIN_AGENT_LLM_FALLBACK_BASE_URL \
+    PLANNER_LLM_FALLBACK_MODEL:MAIN_AGENT_LLM_FALLBACK_MODEL \
+    PLANNER_MAX_STEPS:MAIN_AGENT_MAX_STEPS \
+    PLANNER_HISTORY_LIMIT:MAIN_AGENT_HISTORY_LIMIT \
+    PLANNER_POLICY_MODE:MAIN_AGENT_POLICY_MODE \
+    CHAT_APP_HOST:MAIN_AGENT_HOST \
+    CHAT_APP_LOG_LEVEL:MAIN_AGENT_LOG_LEVEL \
+    CHAT_APP_UPLOAD_DIR:MAIN_AGENT_UPLOAD_DIR \
+    CHAT_APP_MAX_UPLOAD_BYTES:MAIN_AGENT_MAX_UPLOAD_BYTES \
+    CHAT_APP_CARD_PATHS:MAIN_AGENT_CARD_PATHS \
+    CHAT_APP_HEALTH_PROBE_SKIP_AGENTS:HEALTH_PROBE_SKIP_AGENTS; do
+    new="${pair%%:*}"; old="${pair#*:}"
+    if [ -n "${!new+x}" ]; then export "$old=${!new}"; fi
+done
 export REGISTRATION_SERVICE_PORT=$((8091 + PORT_OFFSET))
 export EMAIL_AGENT_A2A_PORT=$((9103 + PORT_OFFSET))
 export SCOUT_HTTP_PORT=$((9104 + PORT_OFFSET))

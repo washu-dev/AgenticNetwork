@@ -804,7 +804,7 @@ def unreachable_agents(listed: list[dict[str, Any]], names: list[str]) -> list[s
 
 
 def wait_until_listed(cfg: StackConfig, names: list[str], deadline: float) -> list[dict[str, Any]]:
-    """Wait until the planner's GET /agents lists every name and each answers; return its list."""
+    """Wait until the chat app's GET /agents lists every name and each answers; return its list."""
     wanted = {n.lower() for n in names}
     last: list[str] = []
     silent: list[str] = []

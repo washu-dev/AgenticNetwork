@@ -12,10 +12,10 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PLANNER_DIR="$(dirname "$SCRIPT_DIR")"
-REPO_ROOT="$(dirname "$PLANNER_DIR")"
+APP_DIR="$(dirname "$SCRIPT_DIR")"
+REPO_ROOT="$(dirname "$APP_DIR")"
 
-ENV_FILE="${ENV_FILE:-$PLANNER_DIR/.env.local}"
+ENV_FILE="${ENV_FILE:-$APP_DIR/.env.local}"
 if [[ ! -f "$ENV_FILE" ]]; then
   echo "ENV file not found: $ENV_FILE" >&2
   echo "Copy chat_app/.env.example to chat_app/.env.local and fill in OPENAI_API_KEY." >&2
@@ -33,8 +33,8 @@ if [[ "${OPENAI_API_KEY:-sk-REPLACE_ME}" == sk-REPLACE_ME* ]]; then
 fi
 
 if [[ -z "${PYTHON_BIN:-}" ]]; then
-  if [[ -x "$PLANNER_DIR/.venv/bin/python" ]]; then
-    PYTHON_BIN="$PLANNER_DIR/.venv/bin/python"
+  if [[ -x "$APP_DIR/.venv/bin/python" ]]; then
+    PYTHON_BIN="$APP_DIR/.venv/bin/python"
   elif [[ -x "$REPO_ROOT/.venv/bin/python" ]]; then
     PYTHON_BIN="$REPO_ROOT/.venv/bin/python"
   elif command -v python3 >/dev/null 2>&1; then

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import sys
 import types
 from pathlib import Path
@@ -88,6 +89,19 @@ def test_both_names_set_to_the_same_value_is_quiet(caplog) -> None:
     with caplog.at_level(logging.WARNING, logger=ENV_LOGGER):
         env.log_old_names()
     assert _env_warnings(caplog) == []
+
+
+def test_submit_sbatch_copies_every_renamed_setting_for_older_images() -> None:
+    # An older planner image reads only the old names, so submit.sbatch copies each new
+    # name .env sets onto its old one. The port is exported on its own, and the anon
+    # opt-in only by the test-instance block, so prod stays behind the SSO gate.
+    sbatch = (Path(__file__).resolve().parents[2] / "deployment" / "submit.sbatch").read_text()
+    copied = set(re.findall(r"^\s+([A-Z_]+):([A-Z_]+)\b", sbatch, re.M))
+    expected = {
+        (new, olds[0]) for new, olds in env.RENAMED.items()
+        if new not in ("CHAT_APP_PORT", "CHAT_APP_ALLOW_ANON")
+    }
+    assert copied == expected
 
 
 def test_an_empty_new_name_still_counts_as_set() -> None:

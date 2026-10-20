@@ -15,8 +15,8 @@
 
 name: agenticnetwork
 
-# Settings the planner and the registration service share. Spawned agents inherit
-# registration's environment, so they get the same LLM endpoint.
+# Settings the chat app (the planner service) and the registration service share.
+# Spawned agents inherit registration's environment, so they get the same LLM endpoint.
 x-shared-env: &shared-env
   ADS_SERVER_ADDR: localhost:8888
   DIRCTL_BIN: /usr/local/bin/dirctl
