@@ -31,8 +31,8 @@ decision. **Code.** `registration_service/handlers/llm_handler.py`, `models.py` 
 The registration UI reaches it same-origin when it is served through the planner's `/register`
 proxy. **Rationale.** One token holder and no local store or admin viewer to maintain; an
 unconfigured or failing GitHub call returns 502 instead of dropping the report. Implemented
-2026-07-16. **Code.** `planner_agent/main_agent/github_issues.py`, `server.py` (`post_issue`,
-`build_issue_payload`), `main_agent/web/index.html`, `registration_service/static/index.html`.
+2026-07-16. **Code.** `chat_app/github_issues.py`, `server.py` (`post_issue`,
+`build_issue_payload`), `chat_app/web/index.html`, `registration_service/static/index.html`.
 
 ## D11 — Conversation history and pending confirmations live in Postgres, not process-local state
 **Decision.** Per-conversation history (`conversation_messages`) and pending write/consent
@@ -44,7 +44,7 @@ DB makes the planner horizontally scalable and lets a conversation — or a mid-
 confirmation — resume on any process or after a restart. Persistence is **best-effort**: a DB
 hiccup degrades to the process-local cache rather than failing the turn. The only remaining
 process-local state is the write-only `invocations` audit (never read back). **Code.**
-`planner_agent/main_agent/conversation_store.py`, `pending_store.py`, `db.py` (schema),
+`chat_app/store/conversation_store.py`, `pending_store.py`, `db.py` (schema),
 `runtime.py` (`_open_context` rehydrate, `_save/_lookup/_claim/_finish/_clear_pending`). One exception to
 best-effort since 2026-10-15: claiming a pending action fails closed when the DB errors
 ([`PLANNER.md`](PLANNER.md), "Context, sessions & persistence").
@@ -56,7 +56,7 @@ and bound to the creating user; a request presenting another user's `context_id`
 user shared — a data-mixing and info-leak bug that bit as soon as two users were active.
 **Rationale.** Multi-user correctness requires per-user isolation; ownership must be asserted,
 not assumed. Unknown/stale ids start a fresh owned context (so a restart doesn't 404 a user).
-**Code.** `runtime.py::_open_context` + `ContextOwnershipError`; `state/store.py` (the global
+**Code.** `runtime.py::_open_context` + `ContextOwnershipError`; `planner/memory_store.py` (the global
 slot was removed).
 
 ## D9 — Identity fails closed once a database is configured

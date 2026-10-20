@@ -33,8 +33,8 @@ its own venv. Create them from the repo root (the registration install must run 
 the root because it installs `./agent_skeleton`):
 
 ```bash
-python3 -m venv planner_agent/.venv
-planner_agent/.venv/bin/pip install -r planner_agent/requirements.txt
+python3 -m venv chat_app/.venv
+chat_app/.venv/bin/pip install -r chat_app/requirements.txt
 python3 -m venv registration_service/.venv
 registration_service/.venv/bin/pip install -r registration_service/requirements.txt
 scripts/stack doctor                # checks Python, both venvs, the fake dirctl and ports
@@ -45,7 +45,7 @@ scripts/stack doctor                # checks Python, both venvs, the fake dirctl
 | Service | Port | What it is |
 |---|---|---|
 | `proxy` | 8080 | The front door. Stands in for SSO: it removes any identity headers the browser sends and adds `mail: dev@example.test`. Open the chat UI here. |
-| `planner` | 8090 | `planner_agent`, with no database (users and conversations live in memory). |
+| `planner` | 8090 | The chat app (`chat_app`, with its planner), with no database (users and conversations live in memory). |
 | `registration` | 8091 | `registration_service`, with an in-memory database and the real supervisor, which spawns agents as local processes. |
 | `mock-llm` | 8099 | A deterministic OpenAI-compatible LLM (`devstack/mock_llm.py`). Not started with `--llm openai`. |
 | agents | 19200–19299 | Agents spawned by the registration service. |

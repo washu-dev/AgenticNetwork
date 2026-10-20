@@ -243,8 +243,8 @@ So Step 5 is a **test lock** on the decoupled-publish contract rather than a beh
   the reconcile-not-respawn recovery path — semantically apt, since a decoupled-publish backend is exactly
   one whose agents + cards outlive the reg-service singleton.
 - **Planner `HEALTH_PROBE_SKIP_AGENTS`:** left as the interim env stopgap per the plan — it lives in the
-  separate `planner_agent` codebase, and the doc explicitly defers it ("Interim: keep the env"). Retiring
-  it (or a card `on_demand` marker) is a follow-up, tracked below.
+  separate `planner_agent` codebase (now `chat_app/`), and the doc explicitly defers it ("Interim: keep
+  the env"). Retiring it (or a card `on_demand` marker) is a follow-up, tracked below.
 - New tests (4): health-loop-never-probes; recovery **confirms** a live agent via the API (no re-deploy,
   no republish); recovery **redeploys** when the service vanished (stale card dropped first); recovery
   **deploys a stranded `image_ready`** row. **141 passed** (137 + 4).
@@ -422,7 +422,7 @@ needs org-level GCP access + WashU-IdP re-registration — deferred.
 - **Drop `PLANNER_ALLOW_ANON`** on the GCP planner so it enforces identity (no anonymous path).
 - **Lock ingress** so the Shibboleth SP proxy is the *only* way in (internal-only / LB-only), and ensure
   the trusted proxy **strips any client-supplied `eppn`/`mail`/`remote-user` headers** before injecting
-  its own — the planner blindly trusts them (`main_agent/auth.py`), so a direct-reachable planner is an
+  its own — the planner blindly trusts them (`chat_app/auth.py`), so a direct-reachable planner is an
   auth bypass. This invariant *is* the cutover.
 - **Wire the gateway→private-Cloud-Run leg:** the on-campus ENGR gateway must reach the private planner.
   Preferred cheapest path: external HTTPS LB + **Cloud Armor** allowlisting the gateway egress IP + a
@@ -455,9 +455,10 @@ Then generalize to the fleet.
 - Per-agent SAs (graduate from the shared `agent-runtime` SA).
 - `GKEBackend` for GPU/isolation agents.
 - First-party specialists' LLM rewrites (email/geospatial/coding).
-- **Retire the planner's `HEALTH_PROBE_SKIP_AGENTS` stopgap** (planner_agent codebase): now that the
-  registration backend owns Cloud Run liveness (Step 6), the planner probe should skip on-demand agents
-  via an `on_demand` card marker instead of the hand-maintained env list. Interim env kept for now.
+- **Retire the planner's `HEALTH_PROBE_SKIP_AGENTS` stopgap** (planner_agent codebase, now
+  `chat_app/`): now that the registration backend owns Cloud Run liveness (Step 6), the planner
+  probe should skip on-demand agents via an `on_demand` card marker instead of the hand-maintained
+  env list. Interim env kept for now.
 - **Give the planner its own least-privilege runtime SA.** It currently runs as the project default
   Compute Engine SA (`267355023116-compute@…`, Editor-carrying) — over-privileged. Create a dedicated
   planner SA scoped to what it needs (Vertex, Secret Manager, its ADS/VPC path) and redeploy as that SA;

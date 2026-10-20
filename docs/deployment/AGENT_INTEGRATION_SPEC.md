@@ -466,8 +466,8 @@ health — all externally. The six existing specialist agents do not use this pa
 | `agentnet/directory/card_oasf.py` | Card ↔ OASF record; skill-id mapping; write-policy derivation |
 | `agentnet/directory/backends.py` | real/fake ADS backends; canonical publish + routing-poll; stored-vs-routed guard |
 | `agentnet/scripts/publish_agents.py`, `scripts/ads` | standalone publisher (the decoupling primitive) |
-| `planner_agent/main_agent/tools.py` | the 5 tools + system prompt |
-| `planner_agent/main_agent/runtime.py` | tool loop, `call_agent`, policy/write-gating, agent-shaped shims |
+| `chat_app/planner/tools.py` | the 5 tools + system prompt |
+| `chat_app/planner/runtime.py` | tool loop, `call_agent`, policy/write-gating, agent-shaped shims |
 | `agentnet/a2a/`, `agentnet/directory/` | A2A transport + directory client (shared with the registration service) |
 | `deployment/dockerfiles/`, `entrypoints/`, `submit.sbatch`, `start_vllm.sbatch`, `build_and_push.sh`, `.env.example`, `ads_daemon.yaml` | the cluster scaffolding |
 | `docs/deployment/DOWNSTREAM_CONSIDERATIONS.md` | what changes at scale (#1 scale-to-zero, #2 per-agent cloud, #3 cross-cutting prerequisites) |

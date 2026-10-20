@@ -1,11 +1,12 @@
 # Planner (Orchestrator) Internals
 
-The planner (`planner_agent/`) is the brain you talk to. It has no domain skills — it discovers
+The planner (`chat_app/planner/`) is the brain you talk to; it runs inside the chat app
+(`chat_app/`), the web service people sign in to. It has no domain skills — it discovers
 agents via ADS and delegates whole tasks over A2A. This is the code-level view; see
 [ARCHITECTURE.md](ARCHITECTURE.md) for the system picture and [AUTH.md](AUTH.md) for
 identity/credentials.
 
-## Entry points (`main_agent/server.py`)
+## Entry points (`chat_app/server.py`)
 
 FastAPI app. Key routes:
 - `GET /` → public landing (`web/landing.html`); `GET /app` → the chat UI, hard-gated (D7).
@@ -19,7 +20,7 @@ FastAPI app. Key routes:
   `GITHUB_ISSUES_REPO`, which has no default and must be a private repo because issues carry the
   reporter's email, prompts and trace; returns 502 when either is unset or GitHub fails, never
   drops silently).
-  Code: `main_agent/github_issues.py`; decision D12.
+  Code: `chat_app/github_issues.py`; decision D12.
 - `GET /sessions`, `GET`/`DELETE /conversations/{context_id}` → per-user data (ownership-enforced).
 - `/admin/*` → admin dashboard data (allowlist-gated); `/register/{path}` → proxy to the
   registration service (admin subpaths gated; `internal/*` refused with 404).
@@ -30,11 +31,11 @@ A request's identity is resolved once by `_resolve_shib_user_id` (fail-closed �
 [AUTH.md](AUTH.md) §1). Credentials are fetched + scoped by `_inject_credentials` and passed via
 `metadata`.
 
-## The tool loop (`main_agent/runtime.py`)
+## The tool loop (`chat_app/planner/runtime.py`)
 
-`MainAgentRuntime.handle_message(user_id, channel, text, context_id, metadata, …)` is the core.
+`PlannerRuntime.handle_message(user_id, channel, text, context_id, metadata, …)` is the core.
 It runs a **bounded** loop (`config.max_steps`) in which the LLM (`llm_client.py`, OpenAI Chat
-Completions) may call only the **5 primitives** defined in `main_agent/tools.py`:
+Completions) may call only the **5 primitives** defined in `chat_app/planner/tools.py`:
 
 | Tool | Effect |
 |---|---|
@@ -75,7 +76,7 @@ D9–D11).
   resumes on any process or after a restart; with no saved history, the pending row's owner
   (`pending_store.owner`) still counts. An id with no owner anywhere → a fresh context bound to the
   caller (reusing the id). The old single global `server_context_id` slot was removed.
-- **`InMemoryStateStore`** (`state/store.py`) — the per-process cache: `contexts`,
+- **`MemoryStore`** (`planner/memory_store.py`) — the per-process cache: `contexts`,
   `pending_confirmations`, and the write-only `invocations` audit.
 - **`conversation_store.py`** (Postgres, `conversation_messages`) — durable per-conversation
   history, owner-stamped, write-through cached, UPSERT-per-turn (keeps `created_at` stable so
@@ -179,21 +180,21 @@ name. Full matrix in [`CLAUDE.md`](../CLAUDE.md) §7.
 
 ## Testing
 
-`planner_agent/tests` run with no network/DB/OpenAI key (ScriptedLLMClient + fake ADS):
+`chat_app/tests` run with no network/DB/OpenAI key (ScriptedLLMClient + fake ADS):
 ```bash
-planner_agent/.venv/bin/python -m pytest planner_agent/tests -q -p no:cacheprovider
+chat_app/.venv/bin/python -m pytest chat_app/tests -q -p no:cacheprovider
 ```
 
 ## Key files
 | Path | Role |
 |---|---|
-| `main_agent/server.py` | FastAPI surface, identity, credential injection, data endpoints |
-| `main_agent/runtime.py` | tool loop, dispatch, policy, credential enforcement, context/pending persistence |
-| `main_agent/tools.py` | the 5 tool schemas + system prompt |
-| `main_agent/llm_client.py` | Chat Completions client |
-| `main_agent/state/store.py` | in-process cache (contexts, pending, invocations) |
-| `main_agent/conversation_store.py` / `pending_store.py` | Postgres durable state |
-| `main_agent/db.py` | Postgres pool + schema |
+| `chat_app/server.py` | FastAPI surface, identity, credential injection, data endpoints |
+| `chat_app/planner/runtime.py` | tool loop, dispatch, policy, credential enforcement, context/pending persistence |
+| `chat_app/planner/tools.py` | the 5 tool schemas + system prompt |
+| `chat_app/planner/llm_client.py` | Chat Completions client |
+| `chat_app/planner/memory_store.py` | in-process cache (contexts, pending, invocations) |
+| `chat_app/store/conversation_store.py` / `pending_store.py` | Postgres durable state |
+| `chat_app/store/db.py` | Postgres pool + schema |
 | `agentnet/directory/` (repo root) | ADS client + backends + converter, shared with the registration service |
 | `agentnet/a2a/` (repo root) | A2A request build/dispatch/adapters |
-| `main_agent/web/index.html` / `landing.html` | chat UI / public landing |
+| `chat_app/web/index.html` / `landing.html` | chat UI / public landing |

@@ -5,7 +5,7 @@ A map of every doc, grouped by who it is for. New here? Read the repo-root
 
 These docs go deeper than the root README and [`CLAUDE.md`](../CLAUDE.md) (the single-file
 system guide): they explain internals, decisions and rationale rather than repeat run steps.
-Each component (`planner_agent/`, `registration_service/`, `agentnet/`,
+Each component (`chat_app/`, `registration_service/`, `agentnet/`,
 `agent_skeleton/`) has its own `README.md` with its install and run steps.
 
 > **Scope:** only durable reference lives here. In-progress plans and working notes go in

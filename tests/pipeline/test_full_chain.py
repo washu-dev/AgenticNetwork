@@ -126,7 +126,7 @@ def stream(
 
 
 def browser_body(text: str, context_id: str | None = None) -> dict[str, Any]:
-    """The JSON the chat UI (planner_agent/main_agent/web/index.html) posts to /messages/stream."""
+    """The JSON the chat UI (chat_app/web/index.html) posts to /messages/stream."""
     return {"user_id": "demo-user", "channel": "api", "text": text, "context_id": context_id}
 
 
@@ -330,11 +330,11 @@ def test_6_registered_agent_receives_the_prompt_that_matches_it(stack, tmp_path)
     definition.write_text(json.dumps(ZEBRA, indent=2), encoding="utf-8")
     added = stack_json("add-agent", str(definition))
     assert added["listed_by_planner"] and added["ads_cid"], added
-    assert listed_agents(stack["proxy"]).get(ZEBRA["name"]) == added["planner_agent_id"]
+    assert listed_agents(stack["proxy"]).get(ZEBRA["name"]) == added["chat_app_agent_id"]
     assert ZEBRA["name"] in stack_json("status")["agents"]
 
     final, _ = chat(stack["proxy"], ZEBRA_PROMPT)
-    assert_delegated(final, added["planner_agent_id"], ZEBRA_PROMPT)
+    assert_delegated(final, added["chat_app_agent_id"], ZEBRA_PROMPT)
     # The reply came from the new agent's own LLM call, made with its registered prompt.
     log = stack_cli("logs", "mock-llm-requests", "-n", "20").stdout.splitlines()
     answered = [

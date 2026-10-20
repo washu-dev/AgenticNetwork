@@ -339,7 +339,7 @@ def test_3_proxy_agent_relays_the_task_to_its_upstream(stack, register):
     added = register({**RELAY, "config": {"upstream_url": upstream}})
 
     final, _ = chat(stack["proxy"], RELAY_PROMPT)
-    assert_delegated(final, added["planner_agent_id"], RELAY_PROMPT)
+    assert_delegated(final, added["chat_app_agent_id"], RELAY_PROMPT)
     relayed = step(final, "call_agent")["content"]["structured_output"]
     assert relayed["agent_id"] == added["id"] and relayed["upstream_url"] == upstream.rstrip("/"), relayed
     # The answer was written by the seed agent's own LLM call, made with its registered prompt.
@@ -369,7 +369,7 @@ def test_4_llm_agent_uses_its_preset_tool(stack, register):
     runs the call the model makes inside the agent, and answers with the result."""
     added = register(TALLYMAN)
     final, _ = chat(stack["proxy"], TALLY_PROMPT)
-    assert_delegated(final, added["planner_agent_id"], TALLY_PROMPT)
+    assert_delegated(final, added["chat_app_agent_id"], TALLY_PROMPT)
     # 17 * 23 was computed by the agent's calculator; the mock LLM only relays the result.
     result = {"ok": True, "expression": "17 * 23", "result": 391}
     assert final["text"].endswith(f" | calculator -> {json.dumps(result)}"), final["text"]
@@ -541,6 +541,6 @@ def test_10_registered_agent_is_discoverable_again_after_a_restart(stack, tmp_pa
     status, listing = call("GET", f"{stack['proxy']}/agents")
     assert status == 200, listing
     assert sorted(a["name"] for a in listing["agents"]) == sorted([*(s["name"] for s in SEEDS), ZEBRA["name"]])
-    assert listed_agents(stack["proxy"])[ZEBRA["name"]] == added["planner_agent_id"]
+    assert listed_agents(stack["proxy"])[ZEBRA["name"]] == added["chat_app_agent_id"]
     final, _ = chat(stack["proxy"], ZEBRA_PROMPT)
-    assert_delegated(final, added["planner_agent_id"], ZEBRA_PROMPT)
+    assert_delegated(final, added["chat_app_agent_id"], ZEBRA_PROMPT)

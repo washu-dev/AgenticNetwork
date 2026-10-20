@@ -1,0 +1,1028 @@
+from __future__ import annotations
+
+import asyncio
+import collections
+import contextlib
+import json
+import logging
+import mimetypes
+import os
+import re
+import time as _time
+from pathlib import Path
+from typing import Any, Sequence
+from urllib.parse import quote
+from uuid import uuid4
+
+import httpx
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
+from pydantic import BaseModel, Field
+
+from agentnet.a2a.client import A2AClient
+from agentnet.directory.card_oasf import load_agent_card
+from agentnet.directory.client import DirectoryClient
+from chat_app import github_issues
+from chat_app.auth import get_current_user, get_or_create_user, get_shib_email, is_admin
+from chat_app.auth_router import router as auth_router
+from chat_app.credentials_router import (
+    grants_router,
+    router as credentials_router,
+)
+from chat_app.env import allow_anon, setting, upload_dir
+from chat_app.planner.config import PlannerConfig, load_config
+from chat_app.planner.llm_client import LLMClient, OpenAIToolLoopClient
+from chat_app.planner.memory_store import MemoryStore
+from chat_app.planner.models import Channel
+from chat_app.planner.runtime import ContextOwnershipError, PlannerRuntime
+from chat_app.store import conversation_store
+from chat_app.store.db import close_db, fetch_user_credentials, init_db, ping_db
+from chat_app.store.grants import DbCredentialGate
+
+logger = logging.getLogger(__name__)
+
+# Bug-report auto-context caps: keep issues readable and avoid dumping large
+# conversation bodies (even into a private repo).
+_MAX_TRACE_ROWS = 10
+_MAX_FIELD_LEN = 200
+
+
+def _truncate(text: str | None, limit: int = _MAX_FIELD_LEN) -> str:
+    text = (text or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit] + " …(truncated)"
+
+
+def build_issue_payload(
+    req: "IssueRequest",
+    *,
+    reporter_email: str,
+    timestamp: str,
+    trace_rows: list[dict[str, Any]] | None = None,
+    agent_versions: list[str] | None = None,
+) -> tuple[str, str, list[str]]:
+    """Assemble the (title, body, labels) for a user-submitted issue.
+
+    Pure function so it can be unit-tested without GitHub or a running app.
+    """
+    is_bug = req.kind == "bug"
+    labels = ["user-submitted", "bug-report" if is_bug else "agent-creation-feedback"]
+
+    title = (req.summary or "").strip() or _truncate(req.description, 60) or "(no summary)"
+
+    lines: list[str] = [(req.description or "").strip(), ""]
+    ctx: list[str] = [
+        "<details><summary>Auto-captured context</summary>",
+        "",
+        f"- Reporter: {reporter_email}",
+        f"- Time (UTC): {timestamp}",
+        f"- Kind: {req.kind}",
+    ]
+    if is_bug:
+        if req.context_id:
+            ctx.append(f"- context_id: `{req.context_id}`")
+        if agent_versions:
+            ctx.append(f"- Agents: {', '.join(agent_versions)}")
+        if trace_rows:
+            ctx += [
+                "",
+                "Recent trace:",
+                "",
+                "| time | prompt | routed_to | latency_ms | state |",
+                "| --- | --- | --- | --- | --- |",
+            ]
+            for r in trace_rows[:_MAX_TRACE_ROWS]:
+                ctx.append(
+                    f"| {r.get('timestamp','')} | {_truncate(r.get('prompt',''), 80)} "
+                    f"| {r.get('routed_to','')} | {r.get('latency_ms','')} | {r.get('state','')} |"
+                )
+    else:
+        if req.step:
+            ctx.append(f"- Step: {req.step}")
+        if req.agent_id:
+            ctx.append(f"- Draft agent_id: `{req.agent_id}`")
+    ctx += ["", "</details>"]
+
+    body = "\n".join(lines + ctx)
+    return title, body, labels
+
+class IncomingMessage(BaseModel):
+    user_id: str = Field(default="demo-user")
+    channel: Channel = Channel.api
+    text: str
+    context_id: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ConfirmationRequest(BaseModel):
+    user_id: str = Field(default="demo-user")
+    channel: Channel = Channel.api
+    context_id: str
+    confirmed: bool = True
+    # pending_confirmation.prompt_id from the response that showed the prompt; without
+    # it (older clients) the answer goes to whatever prompt is pending.
+    prompt_id: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class FeedbackRequest(BaseModel):
+    context_id: str | None = None
+    rating: str                   # "up" or "down"
+    comment: str | None = None
+    agent_id: str | None = None
+    skill: str | None = None
+    prompt_text: str | None = None
+
+
+class IssueRequest(BaseModel):
+    """A user-submitted bug report or agent-creation feedback -> GitHub issue."""
+    kind: str                     # "bug" | "agent_creation_feedback"
+    summary: str
+    description: str
+    # bug context (optional)
+    context_id: str | None = None
+    # agent-creation feedback context (optional)
+    step: str | None = None       # draft|validate|submit|approved|rejected
+    agent_id: str | None = None
+
+
+def create_app(
+    *,
+    config: PlannerConfig | None = None,
+    directory_client: DirectoryClient | None = None,
+    a2a_client: A2AClient | None = None,
+    state_store: MemoryStore | None = None,
+    llm_client: LLMClient | None = None,
+    agent_card_paths: Sequence[str | Path] | None = None,
+) -> FastAPI:
+    cfg = config or load_config()
+    directory = directory_client or DirectoryClient(
+        fake_ads=cfg.fake_ads,
+        ads_url=cfg.ads_server_addr,
+    )
+    a2a = a2a_client or A2AClient()
+    store = state_store or MemoryStore()
+    if llm_client is None:
+        if not cfg.llm_enabled:
+            raise RuntimeError(
+                "PLANNER_LLM_ENABLED=false but no llm_client was provided. "
+                "Pass a ScriptedLLMClient for tests or enable LLM mode."
+            )
+        llm_client = OpenAIToolLoopClient(cfg)
+
+    # P4c: per-agent credential grants are DB-backed; without a DB there's nothing
+    # to enforce against, so the gate is None and enforcement is a pass-through.
+    credential_gate = DbCredentialGate() if os.getenv("REGISTRATION_DB_DSN") else None
+
+    runtime = PlannerRuntime(
+        config=cfg,
+        directory_client=directory,
+        a2a_client=a2a,
+        state_store=store,
+        llm_client=llm_client,
+        credential_gate=credential_gate,
+    )
+
+    # In fake-ADS mode, optionally pre-publish Agent Cards into the in-process directory.
+    for card_path in _agent_card_paths(agent_card_paths, allow_local=cfg.fake_ads):
+        directory.publish_agent_card(load_agent_card(card_path))
+
+    # Ring buffer of the last 200 requests. Each entry is a dict.
+    _request_log: collections.deque = collections.deque(maxlen=200)
+    _feedback_log: collections.deque = collections.deque(maxlen=500)
+    _agent_health: dict[str, dict] = {}
+
+    def _require_admin(request: Request) -> None:
+        # P4f: admin is the SSO identity ∈ ADMIN_EMAILS — no shared token, fail closed.
+        # _resolve_shib_user_id raises 401 when identity is missing (DB configured);
+        # a non-allowlisted authenticated user gets 403.
+        email = _resolve_shib_user_id(request)
+        if not is_admin(email):
+            raise HTTPException(status_code=403, detail="Admin access required")
+
+    db_configured = bool(os.getenv("REGISTRATION_DB_DSN"))
+
+    @contextlib.asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        # DB lifecycle is skipped when REGISTRATION_DB_DSN is unset (dev stack, unit tests).
+        if db_configured:
+            await init_db()
+        probe_loop = asyncio.create_task(_health_probe_loop())
+        try:
+            yield
+        finally:
+            probe_loop.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await probe_loop
+            # The LLM client keeps its HTTP clients for the process; close them here
+            # rather than leave them to garbage collection (see OpenAIToolLoopClient).
+            close_llm = getattr(llm_client, "aclose", None)
+            try:
+                if close_llm is not None:
+                    await close_llm()
+            finally:
+                if db_configured:
+                    await close_db()
+
+    app = FastAPI(title="AgenticNetwork chat app", version="0.1.0", lifespan=lifespan)
+    app.state.config = cfg
+    app.state.runtime = runtime
+    app.state.directory = directory
+    app.state.a2a = a2a
+    app.state.store = store
+
+    # Conversation history is persisted in Postgres (table created by init_db);
+    # a no-op without a DB, where the in-memory working context serves the session.
+
+    # Auth + credential routers (active whenever the DB is configured).
+    if os.getenv("REGISTRATION_DB_DSN"):
+        app.include_router(auth_router)
+        app.include_router(credentials_router)
+        app.include_router(grants_router)
+
+    @app.get("/me")
+    async def me(request: Request) -> dict[str, Any]:
+        # P4f: the UI shows/hides admin surfaces based on is_admin. Identity resolves as
+        # on every other route (demo-user when anonymous is allowed), and the first call
+        # creates the user: a users row with a DB, the in-memory store without one.
+        user = await get_or_create_user(_resolve_shib_user_id(request))
+        return {"id": str(user["id"]), "email": user["email"], "is_admin": is_admin(user["email"])}
+
+    @app.get("/health")
+    async def health() -> dict[str, str]:
+        return {"status": "ok", "fake_ads": str(cfg.fake_ads), "model": cfg.llm_model}
+
+    @app.get("/ready")
+    async def ready() -> JSONResponse:
+        # Unlike /health (liveness only), readiness checks what a chat turn depends on.
+        # A dependency that is not configured is reported but does not fail readiness.
+        directory_check, db_check, llm_check = await asyncio.gather(
+            _check_directory(directory), _check_db(), _check_llm()
+        )
+        checks = {"directory": directory_check, "db": db_check, "llm": llm_check}
+        is_ready = all(check["status"] != "error" for check in checks.values())
+        return JSONResponse(
+            status_code=200 if is_ready else 503,
+            content={"ready": is_ready, "checks": checks},
+        )
+
+    _reg_base = os.getenv("REGISTRATION_SERVICE_URL", "http://localhost:8091")
+    _reg_client = httpx.AsyncClient(base_url=_reg_base, timeout=30.0)
+
+    def _is_admin_reg_action(method: str, url: str) -> bool:
+        # P4f: the approver's trust-boundary actions are admin-only. Gate by
+        # method+path, NOT path alone — POST /agents/{id}/handler is the (open)
+        # code-upload step any authenticated user performs, and shares its path
+        # with GET /agents/{id}/handler (the admin-only source review). Matching
+        # the "/handler" suffix regardless of method wrongly blocked uploads.
+        if method == "GET":
+            return url.endswith("/handler") or url.endswith("/handler/download")
+        if method == "POST":
+            return url.endswith("/approve") or url.endswith("/reject")
+        return False
+
+    @app.api_route("/register/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+    async def proxy_registration(path: str, request: Request) -> Response:
+        url = f"/{path}"
+        # /internal/* is the host spawn loop's unauthenticated localhost API; never
+        # forward it. Refuse anything upstream could read differently (a leftover
+        # "%XX", dot segments, a leading "//" taken as a host) and forward the
+        # checked path re-quoted so a "?" or "#" in it stays part of the path.
+        segments = path.split("/")
+        if (segments[0] == "internal" or path.startswith("/") or "%" in path
+                or "." in segments or ".." in segments):
+            raise HTTPException(status_code=404, detail="Not Found")
+        # P4f: enforce admin at the SSO front door for the approver actions before
+        # forwarding. registration_service enforces the same allowlist as defense-in-depth.
+        if _is_admin_reg_action(request.method, url):
+            _require_admin(request)
+        body = await request.body()
+        headers = {k: v for k, v in request.headers.items()
+                   if k.lower() not in ("host", "content-length")}
+        resp = await _reg_client.request(
+            request.method, quote(url, safe="/"),
+            content=body, headers=headers, params=request.query_params,
+        )
+        return Response(content=resp.content, status_code=resp.status_code,
+                        headers=dict(resp.headers))
+
+    @app.get("/", response_class=HTMLResponse)
+    async def landing() -> HTMLResponse:
+        # P4e: public landing page — no identity required. The "Sign in with WashU"
+        # button links to /app, which the SP (and the hard-gate below) protects.
+        return HTMLResponse(_load_landing_html())
+
+    @app.get("/app", response_class=HTMLResponse)
+    async def chat_ui(request: Request) -> HTMLResponse:
+        # P4e: the chat UI is hard-gated at the chat app (defense-in-depth alongside the
+        # Apache SP). _resolve_shib_user_id raises 401 when a DB is configured and no
+        # identity is present; in dev/no-DB it falls back to demo-user and serves the UI.
+        _resolve_shib_user_id(request)
+        return HTMLResponse(_load_chat_html())
+
+    @app.get("/agents")
+    async def get_agents() -> dict[str, Any]:
+        try:
+            agents = directory.search_agents()
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=f"ADS unavailable: {exc}") from exc
+        return {
+            "count": len(agents),
+            "agents": [
+                {
+                    "agent_id": a.agent_id,
+                    "name": a.name,
+                    "organization": a.organization,
+                    "description": a.description,
+                    "endpoint": a.endpoint,
+                    "skills": sorted({s for cap in a.skills for s in cap.skill_tags + cap.custom_skill_tags}),
+                }
+                for a in agents
+            ],
+        }
+
+    @app.post("/messages")
+    async def post_message(request: Request) -> dict[str, Any]:
+        msg = await _incoming_message_from_request(request)
+        metadata = dict(msg.metadata)
+        await _inject_credentials(request, metadata)
+        try:
+            t0 = _time.monotonic()
+            result = await runtime.handle_message(
+                user_id=msg.user_id,
+                channel=msg.channel,
+                text=msg.text,
+                context_id=msg.context_id,
+                metadata=metadata,
+            )
+            latency_ms = int((_time.monotonic() - t0) * 1000)
+            _request_log.appendleft({
+                "timestamp": _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()),
+                "prompt": msg.text[:80],
+                "routed_to": result.selected_agents[-1]["agent_id"] if result.selected_agents else "planner",
+                "latency_ms": latency_ms,
+                "state": result.state,
+                "context_id": result.context_id,
+            })
+            try:
+                ctx = store.get_context(result.context_id)
+                await conversation_store.save(result.context_id, ctx.conversation_history, ctx.user_id)
+            except Exception:
+                pass
+        except HTTPException:
+            raise
+        except ContextOwnershipError as exc:
+            raise HTTPException(status_code=403, detail="You do not own this conversation.") from exc
+        except Exception as exc:
+            logger.exception("chat_app_message_failed")
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        return result.to_response()
+
+    @app.post("/messages/stream")
+    async def post_message_stream(request: Request) -> StreamingResponse:
+        msg = await _incoming_message_from_request(request)
+        metadata = dict(msg.metadata)
+        await _inject_credentials(request, metadata)
+
+        async def event_stream():
+            queue: asyncio.Queue[tuple[str, dict[str, Any] | None]] = asyncio.Queue()
+
+            async def progress(entry: dict[str, Any]) -> None:
+                await queue.put(("trace", entry))
+
+            async def run_message() -> None:
+                try:
+                    t0 = _time.monotonic()
+                    result = await runtime.handle_message(
+                        user_id=msg.user_id,
+                        channel=msg.channel,
+                        text=msg.text,
+                        context_id=msg.context_id,
+                        metadata=metadata,
+                        progress_callback=progress,
+                    )
+                    latency_ms = int((_time.monotonic() - t0) * 1000)
+                    now_ts = _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime())
+                    _request_log.appendleft({
+                        "timestamp": now_ts,
+                        "prompt": msg.text[:80],
+                        "routed_to": result.selected_agents[-1]["agent_id"] if result.selected_agents else "planner",
+                        "latency_ms": latency_ms,
+                        "state": result.state,
+                        "context_id": result.context_id,
+                    })
+                    try:
+                        ctx = store.get_context(result.context_id)
+                        await conversation_store.save(result.context_id, ctx.conversation_history, ctx.user_id)
+                    except Exception:
+                        pass
+                    await queue.put(("final", result.to_response()))
+                except asyncio.CancelledError:
+                    await queue.put(("error", {"detail": "Request was cancelled or timed out."}))
+                    raise
+                except ContextOwnershipError:
+                    await queue.put(("error", {"detail": "You do not own this conversation."}))
+                except Exception as exc:
+                    logger.exception("chat_app_message_stream_failed")
+                    await queue.put(("error", {"detail": str(exc)}))
+                finally:
+                    await queue.put(("done", None))
+
+            task = asyncio.create_task(run_message())
+            try:
+                get_task: asyncio.Task[tuple[str, dict[str, Any] | None]] = asyncio.ensure_future(queue.get())
+                while True:
+                    done, _ = await asyncio.wait({get_task}, timeout=15.0)
+                    if not done:
+                        yield ": heartbeat\n\n"
+                        continue
+                    event_name, payload = get_task.result()
+                    if event_name == "done":
+                        break
+                    yield _sse(event_name, payload or {})
+                    get_task = asyncio.ensure_future(queue.get())
+            finally:
+                get_task.cancel()
+                if not task.done():
+                    task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await task
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache"},
+        )
+
+    @app.post("/confirmations")
+    async def post_confirmation(req: ConfirmationRequest, request: Request) -> dict[str, Any]:
+        # Same identity rule as /messages: the header identity wins over the body.
+        user_id = _resolve_shib_user_id(request, req.user_id)
+        # The same ownership check as a chat "yes" or "no", which also knows the owner
+        # from the pending row when the conversation's history was never saved.
+        try:
+            await runtime._owned_context(user_id, req.channel, req.context_id)
+        except ContextOwnershipError as exc:
+            raise HTTPException(status_code=403, detail="You do not own this conversation.") from exc
+        # P4c: the confirm button must carry the same per-user credentials +
+        # auth_user_id as /messages, or a credential-consent resume dispatches
+        # with no key and records no grant.
+        await _inject_credentials(request, req.metadata)
+        # H2b: _answer_pending reads the pending action through to Postgres, so a confirm
+        # can resume a prompt raised on another process or before a restart, and claims it
+        # right before acting, so a second press or a chat reply racing it runs nothing.
+        # prompt_id names the prompt the button was shown on; a newer prompt is left alone.
+        result = await runtime._answer_pending(
+            req.context_id, req.channel, req.metadata, confirmed=req.confirmed, prompt_id=req.prompt_id,
+        )
+        return result.to_response()
+
+    @app.post("/feedback")
+    async def post_feedback(req: FeedbackRequest) -> dict[str, bool]:
+        _feedback_log.appendleft({
+            "timestamp": _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()),
+            "rating": req.rating,
+            "comment": req.comment or "",
+            "agent_id": req.agent_id or "",
+            "skill": req.skill or "",
+            "prompt_text": req.prompt_text or "",
+        })
+        return {"ok": True}
+
+    @app.post("/issues")
+    async def post_issue(req: IssueRequest, request: Request) -> dict[str, Any]:
+        """File a user-submitted bug report or agent-creation feedback as a GitHub issue."""
+        if req.kind not in ("bug", "agent_creation_feedback"):
+            raise HTTPException(status_code=422, detail="kind must be 'bug' or 'agent_creation_feedback'")
+
+        reporter_email = _resolve_shib_user_id(request)
+        timestamp = _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime())
+
+        trace_rows: list[dict[str, Any]] = []
+        agent_versions: list[str] = []
+        if req.kind == "bug":
+            if req.context_id:
+                trace_rows = [e for e in _request_log if e.get("context_id") == req.context_id]
+            try:
+                agent_versions = sorted(a.name for a in directory.search_agents())
+            except Exception:
+                # A directory blip must not block filing a report.
+                agent_versions = []
+
+        title, body, labels = build_issue_payload(
+            req,
+            reporter_email=reporter_email,
+            timestamp=timestamp,
+            trace_rows=trace_rows,
+            agent_versions=agent_versions,
+        )
+
+        try:
+            issue_url = await github_issues.create_issue(title, body, labels)
+        except github_issues.GitHubIssueError as exc:
+            logger.error("issue_submission_failed kind=%s: %s", req.kind, exc)
+            raise HTTPException(
+                status_code=502,
+                detail="Couldn't file your report — please try again or contact an admin.",
+            ) from exc
+
+        return {"ok": True, "issue_url": issue_url}
+
+    @app.get("/admin/stats")
+    async def admin_stats(request: Request, _: None = Depends(_require_admin)) -> dict[str, Any]:
+        try:
+            agents = directory.search_agents()
+            agent_count = len(agents)
+            ads_reachable = True
+        except Exception:
+            # Distinguish "ADS unreachable" from a genuine zero-agent directory so
+            # the dashboard doesn't silently report 0 during an ADS blip.
+            agent_count = None
+            ads_reachable = False
+
+        today_prefix = _time.strftime("%Y-%m-%d", _time.gmtime())
+        today_reqs = [r for r in _request_log if r["timestamp"].startswith(today_prefix)]
+        latencies = [r["latency_ms"] for r in today_reqs]
+        sorted_lat = sorted(latencies)
+
+        pos = sum(1 for f in _feedback_log if f["rating"] == "up")
+        neg = sum(1 for f in _feedback_log if f["rating"] == "down")
+
+        return {
+            "agents_connected": agent_count,
+            "ads_reachable": ads_reachable,
+            "requests_today": len(today_reqs),
+            "last_request_ts": _request_log[0]["timestamp"] if _request_log else None,
+            "avg_latency_ms": int(sum(latencies) / len(latencies)) if latencies else 0,
+            "p95_latency_ms": int(sorted_lat[int(len(sorted_lat) * 0.95)]) if sorted_lat else 0,
+            "feedback_total": len(_feedback_log),
+            "feedback_positive": pos,
+            "feedback_negative": neg,
+        }
+
+    @app.get("/admin/traces")
+    async def admin_traces(request: Request, _: None = Depends(_require_admin)) -> dict[str, Any]:
+        rows = [
+            {
+                "timestamp": entry["timestamp"],
+                "prompt": entry["prompt"],
+                "routed_to": entry["routed_to"],
+                "latency_ms": entry["latency_ms"],
+                "state": entry["state"],
+            }
+            for entry in _request_log
+        ]
+        return {"traces": rows}
+
+    @app.get("/admin/feedback")
+    async def admin_feedback(request: Request, _: None = Depends(_require_admin)) -> dict[str, Any]:
+        items = list(_feedback_log)
+        pos = sum(1 for f in items if f["rating"] == "up")
+        return {
+            "total": len(items),
+            "positive": pos,
+            "negative": len(items) - pos,
+            "items": items,
+        }
+
+    async def _probe_agent(agent_id: str, endpoint: str) -> None:
+        # Probe the canonical A2A liveness endpoint (the agent card) rather than
+        # GET / — A2A servers only accept POST at "/", so GET / returns 405, which
+        # spams agent logs and is a non-obvious "reachable" signal. The well-known
+        # card path returns 200 when the agent is up. Any HTTP response (<500) still
+        # counts as reachable, so agents on frameworks that don't serve that exact
+        # path aren't falsely marked down.
+        # Authenticate the probe for private Cloud Run (*.run.app) agents — same
+        # gated ID-token auth used for A2A calls; a no-op for other hosts.
+        from agentnet.a2a.transport import CloudRunIdTokenAuth
+
+        url = endpoint.rstrip("/") + "/.well-known/agent-card.json"
+        try:
+            async with httpx.AsyncClient(timeout=5.0, auth=CloudRunIdTokenAuth()) as client:
+                t0 = _time.monotonic()
+                r = await client.get(url)
+                latency_ms = (_time.monotonic() - t0) * 1000
+            reachable = r.status_code < 500
+        except Exception:
+            reachable = False
+            latency_ms = 0.0
+
+        prev = _agent_health.get(agent_id, {})
+        if reachable:
+            _agent_health[agent_id] = {
+                "status": "online",
+                "last_ok_ts": _time.monotonic(),
+                "avg_latency_ms": int(latency_ms),
+                "requests_today": prev.get("requests_today", 0),
+            }
+        else:
+            last_ok = prev.get("last_ok_ts")
+            elapsed = (_time.monotonic() - last_ok) if last_ok else float("inf")
+            _agent_health[agent_id] = {
+                "status": "degraded" if elapsed < 300 else "offline",
+                "last_ok_ts": last_ok,
+                "avg_latency_ms": prev.get("avg_latency_ms", 0),
+                "requests_today": prev.get("requests_today", 0),
+            }
+
+    async def _health_probe_loop() -> None:
+        # On-demand (scale-to-zero) agents must be excluded from probing: a probe
+        # HTTP-hits the agent's card URL, which cold-starts a min=0 Cloud Run agent
+        # and keeps it warm — defeating scale-to-zero. Skip by agent_id via
+        # CHAT_APP_HEALTH_PROBE_SKIP_AGENTS (comma-separated).
+        skip = {s.strip() for s in setting("CHAT_APP_HEALTH_PROBE_SKIP_AGENTS", "").split(",") if s.strip()}
+        while True:
+            try:
+                agents = directory.search_agents()
+                tasks = [
+                    _probe_agent(a.agent_id, a.endpoint)
+                    for a in agents
+                    if a.endpoint and a.agent_id not in skip
+                ]
+                if tasks:
+                    await asyncio.gather(*tasks, return_exceptions=True)
+            except Exception:
+                pass
+            await asyncio.sleep(60)
+
+    @app.get("/admin/agents/health")
+    async def admin_agents_health(request: Request, _: None = Depends(_require_admin)) -> dict[str, Any]:
+        try:
+            agents = directory.search_agents()
+            ads_reachable = True
+        except Exception:
+            agents = []
+            ads_reachable = False
+        rows = []
+        for a in agents:
+            h = _agent_health.get(a.agent_id, {"status": "unknown", "avg_latency_ms": 0, "requests_today": 0})
+            last_ok = h.get("last_ok_ts")
+            rows.append({
+                "agent_id": a.agent_id,
+                "name": a.name,
+                "endpoint": a.endpoint,
+                "status": h["status"],
+                "last_ping_s": int(_time.monotonic() - last_ok) if last_ok else None,
+                "avg_latency_ms": h["avg_latency_ms"],
+                "requests_today": h["requests_today"],
+            })
+        return {"agents": rows, "ads_reachable": ads_reachable}
+
+    async def _conversation_owner(context_id: str) -> str | None:
+        """Owner email of a context — in-memory working context first, else persisted."""
+        ctx = store.contexts.get(context_id)
+        if ctx is not None:
+            return ctx.user_id
+        return await conversation_store.owner(context_id)
+
+    @app.get("/sessions")
+    async def get_sessions(request: Request) -> dict[str, Any]:
+        # H2: identity comes from the authenticated principal, never a query param.
+        owner = _resolve_shib_user_id(request)
+        if os.getenv("REGISTRATION_DB_DSN"):
+            return {"sessions": await conversation_store.list_sessions(owner)}
+        # No DB (dev/test): derive the caller's sessions from in-memory contexts.
+        sessions = []
+        for ctx in store.contexts.values():
+            if ctx.user_id != owner:
+                continue
+            title = next(
+                (h[6:] for h in ctx.conversation_history if h.startswith("user: ")),
+                ctx.current_goal or "",
+            )
+            sessions.append({
+                "context_id": ctx.context_id,
+                "title": title[:60],
+                "started_at": ctx.created_at.isoformat(),
+                "last_active_at": ctx.updated_at.isoformat(),
+            })
+        sessions.sort(key=lambda s: s["last_active_at"], reverse=True)
+        return {"sessions": sessions}
+
+    @app.delete("/conversations/{context_id}")
+    async def delete_conversation(context_id: str, request: Request) -> dict[str, bool]:
+        owner = _resolve_shib_user_id(request)
+        existing = await _conversation_owner(context_id)
+        if existing is None:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        if existing != owner:
+            raise HTTPException(status_code=403, detail="You do not own this conversation.")
+        await conversation_store.delete(context_id)
+        await runtime._clear_pending(context_id)  # in-memory cache + durable
+        store.contexts.pop(context_id, None)
+        return {"ok": True}
+
+    @app.get("/conversations/{context_id}")
+    async def get_conversation(context_id: str, request: Request) -> dict[str, Any]:
+        owner = _resolve_shib_user_id(request)
+        existing = await _conversation_owner(context_id)
+        if existing is None:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        if existing != owner:
+            raise HTTPException(status_code=403, detail="You do not own this conversation.")
+        # Prefer persisted history (survives restarts); fall back to in-memory.
+        messages = await conversation_store.load(context_id)
+        if not messages:
+            ctx = store.contexts.get(context_id)
+            if ctx is not None:
+                messages = [
+                    {"role": r, "text": t}
+                    for r, t in conversation_store._parse_history(ctx.conversation_history)
+                ]
+        return {"context_id": context_id, "messages": messages or []}
+
+    @app.post("/admin/health/reset")
+    async def admin_health_reset(request: Request, _: None = Depends(_require_admin)) -> dict[str, bool]:
+        # Clears only this process's agent health cache; the directory is not touched.
+        _agent_health.clear()
+        return {"ok": True}
+
+    @app.delete("/admin/agents/{agent_id}")
+    async def admin_remove_agent(agent_id: str, request: Request, _: None = Depends(_require_admin)) -> dict[str, bool]:
+        try:
+            await asyncio.to_thread(directory.unpublish_agent, agent_id)
+        except Exception:
+            logger.warning("admin_remove_agent_unpublish_failed agent_id=%s", agent_id, exc_info=True)
+        _agent_health.pop(agent_id, None)
+        logger.info("admin_removed_agent agent_id=%s", agent_id)
+        return {"ok": True}
+
+    @app.post("/admin/agents/{agent_id}/ping")
+    async def admin_ping_agent(agent_id: str, request: Request, _: None = Depends(_require_admin)) -> dict[str, Any]:
+        try:
+            agents = directory.search_agents()
+        except Exception:
+            agents = []
+        agent = next((a for a in agents if a.agent_id == agent_id), None)
+        if not agent or not agent.endpoint:
+            raise HTTPException(status_code=404, detail="Agent not found or has no endpoint")
+        await _probe_agent(agent_id, agent.endpoint)
+        h = _agent_health.get(agent_id, {})
+        return {"agent_id": agent_id, "status": h.get("status", "unknown"), "avg_latency_ms": h.get("avg_latency_ms", 0)}
+
+    return app
+
+
+# /ready probe timeouts. dirctl is a subprocess, so the directory check gets longer.
+_READY_DIRECTORY_TIMEOUT_SECONDS = 5.0
+_READY_DB_TIMEOUT_SECONDS = 2.0
+_READY_LLM_TIMEOUT_SECONDS = 2.0
+
+
+def _check_error(exc: BaseException, timeout: float) -> str:
+    if isinstance(exc, (asyncio.TimeoutError, httpx.TimeoutException)):
+        return f"timed out after {timeout:g}s"
+    return f"{type(exc).__name__}: {exc}"[:500]
+
+
+async def _check_directory(directory: DirectoryClient) -> dict[str, Any]:
+    """Readiness of the directory: one cheap call through the configured backend."""
+    backend = "fake" if directory.fake_ads else "real"
+    timeout = _READY_DIRECTORY_TIMEOUT_SECONDS
+    try:
+        healthy = await asyncio.wait_for(asyncio.to_thread(directory.healthcheck), timeout)
+    except Exception as exc:
+        return {"status": "error", "backend": backend, "error": _check_error(exc, timeout)}
+    if not healthy:
+        return {"status": "error", "backend": backend, "error": "directory healthcheck failed"}
+    return {"status": "ok", "backend": backend}
+
+
+async def _check_db() -> dict[str, Any]:
+    """Readiness of Postgres; without REGISTRATION_DB_DSN the chat app runs DB-less."""
+    if not os.getenv("REGISTRATION_DB_DSN"):
+        return {"status": "not_configured"}
+    timeout = _READY_DB_TIMEOUT_SECONDS
+    try:
+        await asyncio.wait_for(ping_db(), timeout)
+    except Exception as exc:
+        return {"status": "error", "error": _check_error(exc, timeout)}
+    return {"status": "ok"}
+
+
+async def _check_llm() -> dict[str, Any]:
+    """Readiness of the OpenAI-compatible endpoint named by OPENAI_BASE_URL.
+
+    Any HTTP answer below 500 counts as reachable: /models may want other auth than
+    chat (Vertex mints its key per call) or be missing behind some gateways, while
+    chat completions still work. The status code is reported either way.
+    """
+    base_url = os.getenv("OPENAI_BASE_URL", "").strip()
+    if not base_url:
+        return {"status": "not_configured"}
+    url = base_url.rstrip("/") + "/models"
+    api_key = os.getenv("OPENAI_API_KEY")
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    timeout = _READY_LLM_TIMEOUT_SECONDS
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.get(url, headers=headers)
+    except Exception as exc:
+        return {"status": "error", "url": url, "error": _check_error(exc, timeout)}
+    if resp.status_code >= 500:
+        return {
+            "status": "error",
+            "url": url,
+            "status_code": resp.status_code,
+            "error": f"HTTP {resp.status_code} from {url}",
+        }
+    return {"status": "ok", "url": url, "status_code": resp.status_code}
+
+
+async def _refresh_google_token(creds: dict) -> dict:
+    """Exchange the stored refresh_token for a fresh access_token."""
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                creds.get("token_uri", "https://oauth2.googleapis.com/token"),
+                data={
+                    "client_id": creds["client_id"],
+                    "client_secret": creds["client_secret"],
+                    "refresh_token": creds["refresh_token"],
+                    "grant_type": "refresh_token",
+                },
+                timeout=10,
+            )
+        if resp.status_code == 200:
+            return {**creds, "access_token": resp.json()["access_token"]}
+        logger.warning("google_token_refresh_failed status=%d", resp.status_code)
+    except Exception:
+        logger.warning("google_token_refresh_error", exc_info=True)
+    return creds
+
+
+async def _inject_credentials(request: Request, metadata: dict[str, Any]) -> None:
+    """Fetch the current user's credentials and add them to metadata if auth is active."""
+    if not os.getenv("REGISTRATION_DB_DSN"):
+        return
+    try:
+        user = await get_current_user(request)
+        # P4c: the runtime keys credential grants on the DB user UUID (grants live
+        # under users.id, not the Shib email). Pass it through metadata.
+        metadata["auth_user_id"] = str(user["id"])
+        credentials = await fetch_user_credentials(user["id"])
+        if credentials:
+            if "google_oauth" in credentials and credentials["google_oauth"].get("refresh_token"):
+                credentials["google_oauth"] = await _refresh_google_token(credentials["google_oauth"])
+            metadata["credentials"] = credentials
+    except Exception:
+        pass
+
+
+def _anon_identity_allowed() -> bool:
+    """Whether an unauthenticated request may fall back to the ``demo-user`` identity.
+
+    Fail-closed once a real deployment DB is configured: with ``REGISTRATION_DB_DSN``
+    set, a missing Shibboleth header is a 401, not a silent collapse to a shared
+    identity. Anonymous is allowed when there is no DB (Tier A/B laptop runs and unit
+    tests) or when the operator explicitly opts in with ``CHAT_APP_ALLOW_ANON=1`` (local
+    dev against a real DB; the old name ``PLANNER_ALLOW_ANON`` still works).
+    """
+    if allow_anon():
+        return True
+    return not os.getenv("REGISTRATION_DB_DSN")
+
+
+def _resolve_shib_user_id(request: Request, anonymous: str = "demo-user") -> str:
+    """Return the authenticated identity for a request, or fail closed.
+
+    Uses the Shibboleth email when present, so a header identity always wins over a
+    body ``user_id``. When it's missing, returns ``anonymous`` only if
+    :func:`_anon_identity_allowed`; otherwise re-raises the 401 from
+    ``get_shib_email`` so anonymous callers can't be silently attributed to a shared
+    identity (multi-user hardening F3).
+    """
+    try:
+        return get_shib_email(request)
+    except HTTPException:
+        if _anon_identity_allowed():
+            return anonymous
+        raise
+
+
+async def _incoming_message_from_request(request: Request) -> IncomingMessage:
+    # Use the Shibboleth-authenticated email as user_id (fail-closed when a DB is set).
+    shib_user_id = _resolve_shib_user_id(request)
+
+    content_type = request.headers.get("content-type", "").lower()
+    if content_type.startswith("multipart/form-data"):
+        form = await request.form()
+        metadata = _parse_metadata_field(form.get("metadata"))
+        uploads = []
+        for key in ("image", "file", "attachment"):
+            uploads.extend(form.getlist(key))
+        uploaded_files = []
+        for upload in uploads:
+            if not (hasattr(upload, "filename") and hasattr(upload, "read")):
+                continue
+            uploaded_files.append(await _store_uploaded_file(upload))
+        if uploaded_files:
+            metadata["uploaded_files"] = uploaded_files
+        text = str(form.get("text") or "").strip()
+        if not text and uploaded_files:
+            text = f"I've attached a file: {uploaded_files[0]['filename']}"
+        context_id = _clean_optional_form_value(form.get("context_id"))
+        return IncomingMessage(
+            user_id=shib_user_id,
+            channel=Channel(str(form.get("channel") or Channel.api.value)),
+            text=text,
+            context_id=context_id,
+            metadata=metadata,
+        )
+
+    try:
+        payload = await request.json()
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail="Request body must be JSON or multipart/form-data.") from exc
+    msg = IncomingMessage.model_validate(payload)
+    msg.user_id = _resolve_shib_user_id(request, msg.user_id)
+    return msg
+
+
+def _parse_metadata_field(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if not isinstance(value, str) or not value.strip():
+        return {}
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _clean_optional_form_value(value: Any) -> str | None:
+    text = str(value or "").strip()
+    if not text or text.lower() in {"null", "undefined"}:
+        return None
+    return text
+
+
+async def _store_uploaded_file(upload: Any) -> dict[str, Any]:
+    filename = Path(str(upload.filename or "upload")).name
+    content_type = (
+        str(getattr(upload, "content_type", "") or "")
+        or mimetypes.guess_type(filename)[0]
+        or "application/octet-stream"
+    )
+    data = await upload.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Uploaded file was empty.")
+    max_bytes = int(setting("CHAT_APP_MAX_UPLOAD_BYTES", str(50 * 1024 * 1024)))
+    if len(data) > max_bytes:
+        raise HTTPException(status_code=413, detail=f"Upload exceeds {max_bytes} bytes.")
+    suffix = Path(filename).suffix.lower() or (mimetypes.guess_extension(content_type) or ".bin")
+    safe_stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", Path(filename).stem).strip("._") or "upload"
+    out_dir = upload_dir()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / f"{uuid4().hex}_{safe_stem}{suffix}"
+    path.write_bytes(data)
+    return {
+        "path": str(path),
+        "filename": filename,
+        "content_type": content_type,
+        "size": len(data),
+    }
+
+
+def _agent_card_paths(
+    paths: Sequence[str | Path] | None,
+    *,
+    allow_local: bool,
+) -> list[Path]:
+    if paths is not None:
+        items = [Path(p) for p in paths]
+        if items and not allow_local:
+            raise RuntimeError(
+                "Agent Card paths can only be loaded in fake-ADS mode. "
+                "Publish them to the real ADS service instead."
+            )
+        return items
+    if not allow_local:
+        return []
+    raw = setting("CHAT_APP_CARD_PATHS", "")
+    return [Path(item.strip()) for item in raw.split(",") if item.strip()]
+
+
+_CHAT_HTML_PATH = Path(__file__).parent / "web" / "index.html"
+_LANDING_HTML_PATH = Path(__file__).parent / "web" / "landing.html"
+
+
+def _load_chat_html() -> str:
+    """Read the chat UI HTML from disk on each request.
+
+    Reading on each request makes UI iteration cheap during development
+    (no server restart). The file is small so disk overhead is fine.
+    """
+    return _CHAT_HTML_PATH.read_text(encoding="utf-8")
+
+
+def _load_landing_html() -> str:
+    """Read the public landing-page HTML from disk on each request."""
+    return _LANDING_HTML_PATH.read_text(encoding="utf-8")
+
+
+def _sse(event_name: str, payload: dict[str, Any]) -> str:
+    data = json.dumps(payload, ensure_ascii=False, default=str)
+    return f"event: {event_name}\ndata: {data}\n\n"

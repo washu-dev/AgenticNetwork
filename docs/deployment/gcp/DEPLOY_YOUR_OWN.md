@@ -182,7 +182,7 @@ gcloud sql users create regsvc --instance="$SQL_INSTANCE" --password="$DB_PASSWO
 ```
 
 You don't create tables: each service's `init_db` creates its schema on startup
-(`registration_service/db.py`, `planner_agent/main_agent/db.py`). Cloud Run reaches the instance
+(`registration_service/db.py`, `chat_app/store/db.py`). Cloud Run reaches the instance
 through its built-in Cloud SQL connector (`--add-cloudsql-instances`), as a unix socket.
 
 ## 6. Secrets
@@ -193,10 +193,10 @@ Create each secret with `printf %s`, never `echo`: a trailing newline breaks bea
 | Secret | Env var the code reads | Read by | Required? |
 |---|---|---|---|
 | `registration-db-dsn` | `REGISTRATION_DB_DSN` | planner, registration | yes |
-| `credentials-encryption-key` | `CREDENTIALS_ENCRYPTION_KEY` | planner (`main_agent/crypto.py`) | yes |
+| `credentials-encryption-key` | `CREDENTIALS_ENCRYPTION_KEY` | planner (`chat_app/store/crypto.py`) | yes |
 | `llm-api-key` | `OPENAI_API_KEY` | planner | for a key-based LLM (step 10) |
 | `github-token` | `GITHUB_TOKEN` | registration (`supervisor.py`, build commits) | to register agents |
-| `github-issues-token` | `GITHUB_ISSUES_TOKEN` | planner (`main_agent/github_issues.py`) | only for in-app bug reports |
+| `github-issues-token` | `GITHUB_ISSUES_TOKEN` | planner (`chat_app/github_issues.py`) | only for in-app bug reports |
 
 The reference named the LLM secret `vllm-api-key`; any name works if you use it consistently.
 
@@ -320,7 +320,7 @@ delimiter, for example `--set-env-vars='^|^ADMIN_EMAILS=a@example.com,b@example.
 ## 10. Choose the LLM and deploy the planner
 
 The planner talks to any OpenAI-compatible Chat Completions endpoint
-(`planner_agent/main_agent/config.py`, `llm_client.py`). Pick one option; each sets `LLM_ENV` and
+(`chat_app/planner/config.py`, `llm_client.py`). Pick one option; each sets `LLM_ENV` and
 adds to `PLANNER_SECRETS` for the deploy command below.
 
 ```bash
@@ -373,13 +373,17 @@ connection errors, timeouts and 5xx answers.
 planner entrypoint waits for ADS before starting and doesn't read `$PORT`
 (`deployment/entrypoints/entrypoint-planner.sh`). `CHAT_APP_PORT=8080` makes the server listen
 where Cloud Run sends traffic. (The planner's settings were renamed; the old `MAIN_AGENT_*`
-names and `PLANNER_ALLOW_ANON` still work. See `planner_agent/README.md`.)
+names and `PLANNER_ALLOW_ANON` still work. See `chat_app/README.md`.) The start command is
+`python -m chat_app`: if you run an existing `planner` service deployed with the old
+`--args=-m,planner_agent.scripts.run_server`, change it to `--args=-m,chat_app` in the same deploy
+that rolls out a newer image (re-run the command below), because newer images no longer contain
+that module.
 
 ```bash
 gcloud run deploy planner \
   --image="${IMAGE_PREFIX}/agenticnetwork-planner:latest" \
   --region="$REGION" --service-account="$PLANNER_SA" \
-  --command=python --args=-m,planner_agent.scripts.run_server \
+  --command=python --args=-m,chat_app \
   --port=8080 --memory=1Gi --timeout=3600 \
   --min-instances=1 --max-instances=1 --no-cpu-throttling \
   --ingress=all --no-allow-unauthenticated \
@@ -392,7 +396,7 @@ gcloud run deploy planner \
 - `--no-cpu-throttling` keeps the planner's background agent-health loop running between requests.
 - `A2A_HTTP_TIMEOUT_SECONDS=120` (default 30) leaves time for a scaled-to-zero agent to cold-start.
 - `CHAT_APP_ALLOW_ANON=1`: with a database configured, the planner otherwise answers 401 to any
-  request without an SSO identity header (`main_agent/server.py`, `_anon_identity_allowed`), and the
+  request without an SSO identity header (`chat_app/server.py`, `_anon_identity_allowed`), and the
   proxy adds none. Everyone who reaches the planner then shares the `demo-user` identity, including
   its stored credentials, so IAM is your only access control (next step).
 

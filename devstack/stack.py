@@ -11,7 +11,7 @@ no database server, no SSO, no keys. The services, in start order:
     directory     a file-backed fake ``dirctl`` (devstack/bin/dirctl) shared by all
     mock-llm      deterministic OpenAI-compatible LLM (skipped with --llm openai)
     registration  registration_service, in-memory DB, real supervisor and spawner
-    planner       planner_agent, real dirctl backend, no DB
+    planner       the chat app (chat_app/, with its planner), real dirctl backend, no DB
     proxy         dev identity proxy: the browser's front door, signed in as the dev user
 
 then the seed agents (devstack/seeds/*.json) and any agents added with
@@ -415,7 +415,12 @@ class ServiceSpec:
 
 
 def planner_python() -> str:
-    return os.environ.get("PLANNER_PYTHON") or str(REPO / "planner_agent" / ".venv" / "bin" / "python")
+    """The chat app's interpreter: CHAT_APP_PYTHON, else the older PLANNER_PYTHON, else its venv."""
+    return (
+        os.environ.get("CHAT_APP_PYTHON")
+        or os.environ.get("PLANNER_PYTHON")
+        or str(REPO / "chat_app" / ".venv" / "bin" / "python")
+    )
 
 
 def registration_python() -> str:
@@ -490,7 +495,7 @@ def _service_specs(cfg: StackConfig) -> dict[str, ServiceSpec]:
         "planner": ServiceSpec(
             name="planner",
             command=[
-                planner_python(), "-m", "planner_agent.scripts.run_server",
+                planner_python(), "-m", "chat_app",
                 "--host", "127.0.0.1", "--port", str(cfg.port("planner")),
             ],
             env={
@@ -503,7 +508,7 @@ def _service_specs(cfg: StackConfig) -> dict[str, ServiceSpec]:
                 "CHAT_APP_UPLOAD_DIR": str(cfg.state_dir / "uploads"),
                 "ADMIN_EMAILS": cfg.dev_user,
             },
-            marker="planner_agent.scripts.run_server",
+            marker="-m chat_app",
             url=cfg.url("planner"),
             probe=lambda: probe_ready(cfg.url("planner")),
         ),
@@ -944,11 +949,14 @@ def preflight(cfg: StackConfig, running: dict[str, int | None]) -> list[str]:
     problems = []
     if sys.version_info < (3, 11):
         problems.append(f"devstack needs Python >= 3.11; this is {sys.version.split()[0]} ({sys.executable})")
-    for label, path in (("planner", planner_python()), ("registration", registration_python())):
+    for label, path, variable in (
+        ("planner", planner_python(), "CHAT_APP_PYTHON"),
+        ("registration", registration_python(), "REGISTRATION_PYTHON"),
+    ):
         if not os.access(path, os.X_OK):
             problems.append(
                 f"{label} interpreter not found: {path}. Create the venv (see docs/DEVSTACK.md) "
-                f"or set {label.upper()}_PYTHON."
+                f"or set {variable}."
             )
     if not os.access(DIRCTL_SHIM, os.X_OK):
         problems.append(f"fake dirctl is not executable: {DIRCTL_SHIM} (chmod +x it)")
@@ -1265,7 +1273,7 @@ def cmd_add_agent(args: argparse.Namespace) -> int:
     summary = {
         "name": body["name"],
         "id": agent.get("id"),
-        "planner_agent_id": planner_entry.get("agent_id"),
+        "chat_app_agent_id": planner_entry.get("agent_id"),
         "status": agent.get("status"),
         "endpoint_url": agent.get("endpoint_url"),
         "ads_cid": agent.get("ads_cid"),
@@ -1316,7 +1324,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 
     check("python3", sys.version_info >= (3, 11), f"{sys.version.split()[0]} at {sys.executable} (needs >= 3.11)")
     for label, python, requirements in (
-        ("planner venv", planner_python(), REPO / "planner_agent" / "requirements.txt"),
+        ("planner venv", planner_python(), REPO / "chat_app" / "requirements.txt"),
         ("registration venv", registration_python(), REPO / "registration_service" / "requirements.txt"),
     ):
         if not os.access(python, os.X_OK):

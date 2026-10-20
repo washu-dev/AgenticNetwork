@@ -10,7 +10,7 @@ on:
     paths:
       - "deployment/**"
       - "devstack/**"
-      - "planner_agent/**"
+      - "chat_app/**"
       - "registration_service/**"
       - "agent_skeleton/**"
       - "agentnet/**"
@@ -20,7 +20,7 @@ on:
     paths:
       - "deployment/**"
       - "devstack/**"
-      - "planner_agent/**"
+      - "chat_app/**"
       - "registration_service/**"
       - "agent_skeleton/**"
       - "agentnet/**"

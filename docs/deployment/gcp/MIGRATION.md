@@ -246,7 +246,7 @@ and does **not** inject it).
    the VM `vllm-relay`, then allow `tcp:8100` from `10.8.0.0/28` to that tag.
 4. **Deploy** with a command override that bypasses the entrypoint's ADS-wait:
    `gcloud run deploy planner --image=di2washu/agenticnetwork-planner:latest --port=8080
-   --command=python --args=-m,planner_agent.scripts.run_server,--fake-ads
+   --command=python --args=-m,chat_app,--fake-ads
    --vpc-connector=planner-connector
    --set-env-vars=MAIN_AGENT_PORT=8080,AGENT_NETWORK_FAKE_ADS=true,PLANNER_ALLOW_ANON=1,OPENAI_BASE_URL=http://10.128.0.2:8100/v1,MAIN_AGENT_LLM_MODEL=openai/gpt-oss-120b
    --set-secrets=OPENAI_API_KEY=vllm-api-key:latest --min-instances=1 --max-instances=1

@@ -85,6 +85,19 @@ def test_the_chat_app_gets_the_new_setting_names(tmp_path, monkeypatch):
     assert not any(name.startswith("MAIN_AGENT_") for name in env)
 
 
+def test_the_chat_app_runs_from_its_package_and_venv(tmp_path, monkeypatch):
+    for name in ("CHAT_APP_PYTHON", "PLANNER_PYTHON"):
+        monkeypatch.delenv(name, raising=False)
+    assert stack.planner_python() == str(stack.REPO / "chat_app" / ".venv" / "bin" / "python")
+    monkeypatch.setenv("PLANNER_PYTHON", "/old/python")
+    assert stack.planner_python() == "/old/python"  # the older name still works
+    monkeypatch.setenv("CHAT_APP_PYTHON", "/new/python")
+    assert stack.planner_python() == "/new/python"  # and the new name wins
+    spec = stack._service_specs(stack.StackConfig(state_dir=tmp_path))["planner"]
+    assert spec.command[:3] == ["/new/python", "-m", "chat_app"]
+    assert spec.marker in shlex.join(spec.command)
+
+
 def test_env_file_parsing(tmp_path):
     env_file = tmp_path / ".devstack.env"
     env_file.write_text(

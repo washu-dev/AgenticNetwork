@@ -20,8 +20,9 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 # Folders to scan. A folder that does not exist (yet, or any more) is skipped.
 _SCAN_ROOTS = ("registration_service", "agent_skeleton", "agentnet")
 # This repo's top-level packages. Imports of anything else count as third-party.
-# ads_utils and agent_directory_service were merged into agentnet; they stay listed
-# so a leftover import of either fails here instead of passing as third-party.
+# ads_utils and agent_directory_service were merged into agentnet, and planner_agent
+# became chat_app; they stay listed so a leftover import of any of them fails here
+# instead of passing as third-party.
 _OWN_PACKAGES = frozenset({
     "planner_agent", "chat_app", "registration_service", "agent_skeleton",
     "agentnet", "ads_utils", "agent_directory_service", "devstack",

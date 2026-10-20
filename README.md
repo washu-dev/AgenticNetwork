@@ -50,7 +50,7 @@ From the repo root:
 
 ```bash
 # One-time setup: one venv per service
-python3 -m venv planner_agent/.venv && planner_agent/.venv/bin/pip install -r planner_agent/requirements.txt
+python3 -m venv chat_app/.venv && chat_app/.venv/bin/pip install -r chat_app/requirements.txt
 python3 -m venv registration_service/.venv && registration_service/.venv/bin/pip install -r registration_service/requirements.txt
 scripts/stack doctor                # checks Python, both venvs, the fake dirctl and ports
 
@@ -85,10 +85,10 @@ What to run before a pull request, and what CI checks, is in [`CONTRIBUTING.md`]
 
 | Path | What it is |
 |---|---|
-| [`planner_agent/`](planner_agent/README.md) | The planner: orchestrator, HTTP API and chat UI (port 8090). |
+| [`chat_app/`](chat_app/README.md) | The chat app: sign-in, chat UI, conversations, users' keys and admin pages, with the planner (the LLM loop that picks agents) inside it (port 8090). |
 | [`registration_service/`](registration_service/README.md) | Registers, spawns and monitors agents and publishes their cards; web UI and REST API (port 8091). |
 | [`agent_skeleton/`](agent_skeleton/README.md) | The agent runtime that registered agents run on, plus a small demo agent. |
-| [`agentnet/`](agentnet/README.md) | Shared library for the directory (ADS) and A2A calls, used by the planner and the registration service; plus operator tooling to publish, inspect, diagnose and repair directory records (`scripts/ads`). |
+| [`agentnet/`](agentnet/README.md) | Shared library for the directory (ADS) and A2A calls, used by the chat app and the registration service; plus operator tooling to publish, inspect, diagnose and repair directory records (`scripts/ads`). |
 | [`devstack/`](docs/DEVSTACK.md), [`scripts/stack`](scripts/stack) | The dev stack (mock LLM, fake `dirctl`, dev identity proxy, seed agents) and its CLI. |
 | [`tests/pipeline/`](tests/pipeline/) | Full-chain test that drives the dev stack over HTTP. |
 | [`deployment/`](deployment/README.md) | Dockerfiles, entrypoints, Slurm and Google Cloud scripts, config templates. |

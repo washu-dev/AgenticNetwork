@@ -448,7 +448,7 @@ lines removed or rewritten.
 | Move the email-specific heuristics out of the generic loop | 150 | cards declaring input fields and a write tag |
 | Run `dirctl` off the event loop (calls are now time-bounded) | 40 | a cache TTL and concurrency tests |
 | Drop the `channel` field everywhere | 40 | a written A2A metadata contract |
-| Retire `planner_agent/scripts/doctor.sh` | 150 | `scripts/stack doctor` covering real ADS and LLM reachability |
+| Retire `chat_app/scripts/doctor.sh` | 150 | `scripts/stack doctor` covering real ADS and LLM reachability |
 | **Registration internals** | | |
 | Retire the legacy handler-type names and config shapes, with `container_runner`'s legacy envelope | 230 | a one-time DB migration on ENGR and GCP |
 | Put all SQL behind `db.py` helpers, then replace `fake_db.py`'s SQL matching | 260 | one typed pool-exhausted error; a tier-2 Postgres test |
@@ -471,7 +471,7 @@ lines removed or rewritten.
 | Rewrite the protocol-duplication docs | 80 | the protocol consolidation |
 | `SECURITY.md` becomes a public policy; this file becomes a roadmap/changelog or goes | 260 | the security fixes; release sign-off |
 | A docs link and `§`-reference check in CI | 60 | the doc fixes landing |
-| Stale docs in the sibling repos: `agent-directory/ads_utils/README.md`; `agent-skeleton/CARD_AUTHORING_PLAN.md` (converter cleanup; a card path now under `planner_agent/tests/fixtures/agent_cards/`); `KNOWN_ISSUES.md` (a lab IP) | 6 | a session in those repos |
+| Stale docs in the sibling repos: `agent-directory/ads_utils/README.md`; `agent-skeleton/CARD_AUTHORING_PLAN.md` (converter cleanup; a card path now under `chat_app/tests/fixtures/agent_cards/`); `KNOWN_ISSUES.md` (a lab IP) | 6 | a session in those repos |
 | **Ops docs scope** | | |
 | Ship or move the WashU ops docs (`docs/deployment/engr`, `gcp/*`, `DOWNSTREAM`, `MULTI_CONTRIBUTOR`, `TESTING_CHANGES`) | 3,300 | Ronak and the PIs/DI2; then scrub or move, and filter history |
 | Merge the three ENGR test-instance docs; consolidate the GCP design and progress logs | 850 | the decision above; resuming GCP work |

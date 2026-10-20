@@ -36,7 +36,7 @@ and [`docs/deployment/DOWNSTREAM_CONSIDERATIONS.md`](docs/deployment/DOWNSTREAM_
 #2–#3 (the at-scale hardening plan). Update this file when the posture changes.
 
 - **Identity at the front door.** Users sign in at one authenticated gateway, which injects
-  identity headers (`eppn`/`mail`/`remote-user`) that the planner trusts (`main_agent/auth.py`).
+  identity headers (`eppn`/`mail`/`remote-user`) that the planner trusts (`chat_app/auth.py`).
   The planner has no authentication of its own, so it must be reachable only through the gateway.
   It fails closed (401) without an identity when a DB is configured, and a login identity always
   wins over a request-body `user_id`.
@@ -44,7 +44,7 @@ and [`docs/deployment/DOWNSTREAM_CONSIDERATIONS.md`](docs/deployment/DOWNSTREAM_
   (`require_admin`: 401 without an identity, 403 if not listed; an empty list means no admins).
   The planner and the registration service both enforce it.
 - **Credentials: encrypted at rest, scoped per agent.** Per-user API keys and OAuth tokens are
-  AES-256-GCM encrypted (`main_agent/crypto.py`, `CREDENTIALS_ENCRYPTION_KEY`). At request time
+  AES-256-GCM encrypted (`chat_app/store/crypto.py`, `CREDENTIALS_ENCRYPTION_KEY`). At request time
   the planner decrypts them and passes the target agent only the types it declared and the user
   granted, in the A2A task metadata, never through the LLM ([`docs/AUTH.md`](docs/AUTH.md) §4).
   The exceptions, and what happens to the credentials after that hop, are in §2.
@@ -57,7 +57,7 @@ and [`docs/deployment/DOWNSTREAM_CONSIDERATIONS.md`](docs/deployment/DOWNSTREAM_
 | Surface | Auth today | Notes |
 |---|---|---|
 | Public URL `agenticweb.engr.wustl.edu` | **WashU Shibboleth SSO** (Apache `mod_shib`) | The one authenticated front door. TLS at nginx. |
-| Planner `:8090` | **None of its own** — trusts Apache-injected `eppn`/`mail`/`remote-user` headers (`main_agent/auth.py`), fail-closed (401) when a DB is configured | Safe **only** behind the Shib proxy. Reached raw (or via an SSH tunnel) with a spoofed identity header, auth is bypassed. |
+| Planner `:8090` | **None of its own** — trusts Apache-injected `eppn`/`mail`/`remote-user` headers (`chat_app/auth.py`), fail-closed (401) when a DB is configured | Safe **only** behind the Shib proxy. Reached raw (or via an SSH tunnel) with a spoofed identity header, auth is bypassed. |
 | Planner admin (`/admin/*`) | **SSO identity ∈ `ADMIN_EMAILS`** (`require_admin`); fail-closed (empty list → no admins) | The shared `X-Admin-Token`/`MAIN_AGENT_ADMIN_TOKEN` + `POST /admin/login` are retired. See [`docs/AUTH.md`](docs/AUTH.md) §2. |
 | Specialist ports (9103, 9104, 19105–19108) | **None** — empty `securitySchemes`, bind `0.0.0.0` | Any process on the node's localhost can drive Gmail send, calendar/file writes, code execution, geolocation **directly**, skipping the planner's policy. |
 | Registration service `:8091` | Admin endpoints fail-closed on `ADMIN_EMAILS` (dev-open under `FAKE_DB=1`); `/internal/*` has **no access check in code** | Approval is the trust boundary for uploaded code. `/internal/*` relies on `:8091` not being reachable from outside; the planner's `/register` proxy refuses it (see §2). Agent responses show configs with secret values redacted (`server.py::_public_config`). |
@@ -95,7 +95,7 @@ trusted node."* Everything inside the node trusts everything else.
   image geolocation / re-identification) doubling as the production location engine.
   Be aware of its doxxing power.
 - **Per-user secrets are decrypted and injected into unauthenticated specialists.** Keys
-  are AES-256-GCM encrypted at rest (`main_agent/crypto.py`, `CREDENTIALS_ENCRYPTION_KEY`)
+  are AES-256-GCM encrypted at rest (`chat_app/store/crypto.py`, `CREDENTIALS_ENCRYPTION_KEY`)
   — good — but at request time the planner **decrypts** them and injects them into the
   A2A task context in plaintext (`server.py::_inject_credentials` → task `metadata`).
   Injection is **scoped** to the creds the target agent *declared* and the user *granted*

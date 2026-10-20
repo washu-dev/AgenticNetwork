@@ -15,8 +15,8 @@ LLM-powered services that **discover each other through a shared directory** and
 then **call each other over a standard agent-to-agent protocol** to complete a
 task. There are three kinds of thing in the repo:
 
-- **One orchestrator** — the **planner** (`planner_agent/`). The "brain" you talk
-  to. It has *no domain skills of its own*; it discovers other agents and
+- **One orchestrator** — the **planner**, inside the chat app (`chat_app/planner/`).
+  The "brain" you talk to. It has *no domain skills of its own*; it discovers other agents and
   delegates whole tasks to them. It is deliberately **agent-agnostic**: adding a
   new agent to the directory makes it usable with **zero planner code changes**.
 - **Specialist agents** — live in the separate [`agent-directory`](https://github.com/washu-dev/agent-directory)
@@ -56,11 +56,11 @@ task. There are three kinds of thing in the repo:
 ```
 
 **Request lifecycle (end to end):**
-1. A user message hits the planner's FastAPI server (`main_agent/server.py`,
+1. A user message hits the chat app's FastAPI server (`chat_app/server.py`,
    `POST /messages` or `/messages/stream`).
-2. `MainAgentRuntime` (`main_agent/runtime.py`) runs a tool loop. The LLM
-   (`main_agent/llm_client.py`) sees only **5 primitives** defined in
-   `main_agent/tools.py`: `list_agents`, `describe_agent`, `call_agent`,
+2. `PlannerRuntime` (`chat_app/planner/runtime.py`) runs a tool loop. The LLM
+   (`chat_app/planner/llm_client.py`) sees only **5 primitives** defined in
+   `chat_app/planner/tools.py`: `list_agents`, `describe_agent`, `call_agent`,
    `ask_user`, `final_answer`.
 3. `list_agents`/`describe_agent` query ADS via `DirectoryClient`
    (`agentnet/directory/`), which shells out to `dirctl` (or uses an in-process
@@ -87,8 +87,8 @@ whole `agentnet/scripts/` suite exists to detect and repair this.
 
 | Component | Role | Default port | Environment | LLM API surface |
 |---|---|---|---|---|
-| `planner_agent` | Orchestrator + chat UI | **8090** | pip venv (`requirements.txt`) | OpenAI **Chat Completions** (vLLM-ready; migrated 2026-06) |
-| `agentnet` | Shared directory (ADS) + A2A library; ADS operator tooling (`scripts/ads`) | dir at **8888** (routing 8999) | runs in the planner and registration venvs | n/a (`dirctl`) |
+| `chat_app` | Chat app: sign-in, chat UI, and the planner (orchestrator) inside it | **8090** | pip venv (`requirements.txt`) | OpenAI **Chat Completions** (vLLM-ready; migrated 2026-06) |
+| `agentnet` | Shared directory (ADS) + A2A library; ADS operator tooling (`scripts/ads`) | dir at **8888** (routing 8999) | runs in the chat app and registration venvs | n/a (`dirctl`) |
 | `registration_service` | Agent self-registration web UI + manager | **8091** | pip venv (`requirements.txt`) | n/a |
 
 **[`agent-directory`](https://github.com/washu-dev/agent-directory) repo (specialist agents):**
@@ -127,14 +127,14 @@ and a local identity proxy, and returns when everything is ready. Open
 it. No Docker, database, SSO or API key. Setup, a real LLM and adding agents:
 [`docs/DEVSTACK.md`](docs/DEVSTACK.md).
 
-### Tier A — Planner only, fake directory (pure laptop, no `dirctl`)
-The planner has an in-process fake directory, so you need only Python + an API key.
+### Tier A — Chat app only, fake directory (pure laptop, no `dirctl`)
+The chat app has an in-process fake directory, so you need only Python + an API key.
 ```bash
 cd /path/to/AgenticNetwork
-python3 -m venv planner_agent/.venv
-planner_agent/.venv/bin/python -m pip install -r planner_agent/requirements.txt
-cp planner_agent/.env.example planner_agent/.env.local   # set OPENAI_API_KEY=sk-...
-planner_agent/scripts/start.sh --fake-ads \
+python3 -m venv chat_app/.venv
+chat_app/.venv/bin/python -m pip install -r chat_app/requirements.txt
+cp chat_app/.env.example chat_app/.env.local   # set OPENAI_API_KEY=sk-...
+chat_app/scripts/start.sh --fake-ads \
   --card ../agent-directory/email_agent/email_agent.card.json \
   --card ../agent-directory/coding_agent/coding_agent.card.json
 ```
@@ -143,7 +143,7 @@ Open **http://localhost:8090/app** for the chat UI. (Agents are "discovered" fro
 
 ### Tier B — Full local network (laptop, more setup)
 - Install the **`dirctl`** binary (the only non-Python dependency; `brew tap
-  agntcy/dir` or a release binary). `planner_agent/scripts/doctor.sh` checks it.
+  agntcy/dir` or a release binary). `chat_app/scripts/doctor.sh` checks it.
 - Start the directory daemon + local OCI registry (`localhost:5000`). Scout
   bundles a `docker-compose.yml` that brings up a directory daemon.
 - Start each agent on its own port, pointing at `localhost:8888`.
@@ -206,7 +206,7 @@ Python version, even run on a different machine or container.
 
 | Env | Components | How to create |
 |---|---|---|
-| pip venv | `planner_agent` | `python3 -m venv planner_agent/.venv && .../pip install -r planner_agent/requirements.txt` |
+| pip venv | `chat_app` | `python3 -m venv chat_app/.venv && .../pip install -r chat_app/requirements.txt` |
 | pip venv | `registration_service` | `python3 -m venv registration_service/.venv && .../pip install -r registration_service/requirements.txt` |
 | pip venv (editable) | `scout_agent` | `python3 -m venv .venv && .venv/bin/pip install -e .` (needs Python ≥3.11) |
 | pip venv (optional) | `agentnet` with `ADS_BACKEND=sdk` | `python3 -m venv agentnet/.venv && .../pip install -r agentnet/requirements-sdk.txt` (point `scripts/ads` at it with `ADS_PYTHON`) |
@@ -246,7 +246,7 @@ client at the vLLM base URL with a dummy key + the served model name) and, for
 the Responses-API agents, an **API rewrite** to Chat Completions.
 
 **Update (2026-06):** the **planner is now migrated to Chat Completions**
-(`main_agent/llm_client.py`, commit `c4d8048` "added planner vllm support") and a
+(`chat_app/planner/llm_client.py`, commit `c4d8048` "added planner vllm support") and a
 containerized ENGR deployment (`deployment/`, §4 Tier D) wires every agent to vLLM via
 `OPENAI_BASE_URL`. **`email_agent` has since migrated too** (see table below) — the
 only agent still on the OpenAI **Responses** API is **geospatial** — so the planner
@@ -257,7 +257,7 @@ web UI (:8090) now runs against self-hosted gpt-oss-120b without a rewrite.
 | `scout_agent` | Chat Completions | env `OPENAI_BASE_URL` (works by accident; code edit optional) | No | 🟢 trivial |
 | `coding_agent` | litellm (Chat) | env `OPENAI_API_BASE` + 1-line edit in `coding_agent.py` runner | No | 🟢 trivial–moderate |
 | `intelligence_agent` | litellm (Chat) | env `OPENAI_API_BASE` only | No | 🟢 trivial |
-| `planner_agent` | **Chat Completions** ✅ | env `OPENAI_BASE_URL` | **Done** — migrated 2026-06 (`main_agent/llm_client.py`) | 🟢 complete |
+| `chat_app` (planner) | **Chat Completions** ✅ | env `OPENAI_BASE_URL` | **Done** — migrated 2026-06 (`chat_app/planner/llm_client.py`) | 🟢 complete |
 | `email_agent` | **Chat Completions** ✅ | env `OPENAI_BASE_URL` | **Done** — already migrated (`email_agent.py`, `chat.completions.create`) | 🟢 complete |
 | `disaster_response_agent` | **Chat Completions** ✅ | env `OPENAI_BASE_URL` | **Done** — migrated 2026-06 (`build_response`) | 🟢 complete |
 | `geoSpatial_agent` + `attack_bundle` | **Responses + Gemini** | edit client ctors | **Yes** + capability gaps | 🔴 hard |
@@ -361,11 +361,11 @@ gateway: it strips client identity headers and injects `mail: dev@example.test`.
 **Key files:**
 | File | Role |
 |---|---|
-| `main_agent/auth.py` | `get_shib_email()` — reads Shibboleth headers; `get_current_user()` — FastAPI dependency |
-| `main_agent/auth_router.py` | `/auth/*` endpoints: logout, Google OAuth connect flow |
-| `main_agent/credentials_router.py` | `/me/credentials/*` — store/list/delete per-user API keys |
-| `main_agent/crypto.py` | AES-256-GCM encrypt/decrypt (`CREDENTIALS_ENCRYPTION_KEY` env var) |
-| `main_agent/db.py` | Postgres pool + schema: `users`, `user_credentials`, `agent_credential_grants`, `conversation_messages`, `pending_confirmations` (conversation history + pending confirmations moved off SQLite to Postgres — H2/H2b) |
+| `chat_app/auth.py` | `get_shib_email()` — reads Shibboleth headers; `get_current_user()` — FastAPI dependency |
+| `chat_app/auth_router.py` | `/auth/*` endpoints: logout, Google OAuth connect flow |
+| `chat_app/credentials_router.py` | `/me/credentials/*` — store/list/delete per-user API keys |
+| `chat_app/store/crypto.py` | AES-256-GCM encrypt/decrypt (`CREDENTIALS_ENCRYPTION_KEY` env var) |
+| `chat_app/store/db.py` | Postgres pool + schema: `users`, `user_credentials`, `agent_credential_grants`, `conversation_messages`, `pending_confirmations` (conversation history + pending confirmations moved off SQLite to Postgres — H2/H2b) |
 
 **Per-user Google OAuth** — users can connect their Google account via
 `GET /auth/google` → Google consent → `GET /auth/google/callback`. The resulting
@@ -438,8 +438,8 @@ summaries), plus a repo-hygiene job and the full-chain and scenario pipeline;
 needs the `pytest-asyncio` plugin, and most of its suite fails without it.
 
 ```bash
-# Planner (no network, no ADS, no OpenAI key — uses ScriptedLLMClient + fake ADS)
-planner_agent/.venv/bin/python -m pytest planner_agent/tests -q
+# Chat app and its planner (no network, no ADS, no OpenAI key — uses ScriptedLLMClient + fake ADS)
+chat_app/.venv/bin/python -m pytest chat_app/tests -q
 
 # Registration (registration_service/tests/conftest.py sets FAKE_DB=1)
 registration_service/.venv/bin/python -m pytest registration_service/tests -q
@@ -451,7 +451,7 @@ registration_service/.venv/bin/python -m pytest agent_skeleton/tests -q
 # venvs (a2a-sdk 0.3.2 and 0.3.26), so test it with both.
 # print_versions lists the deps of the venv running it.
 registration_service/.venv/bin/python -m pytest agentnet/tests -q
-planner_agent/.venv/bin/python -m pytest agentnet/tests -q
+chat_app/.venv/bin/python -m pytest agentnet/tests -q
 registration_service/.venv/bin/python -m agentnet.scripts.print_versions
 
 # Dev stack: mock LLM, fake dirctl, identity proxy, stack CLI safety checks
@@ -468,8 +468,8 @@ registration_service/.venv/bin/python -m pytest tests/pipeline -q
 # `--rmi local` removes this project's images (<project>-<service>).
 (cd deployment/compose && export COMPOSE_PROJECT_NAME=agenticnetwork-test FRONT_DOOR_PORT=18081 && docker compose up -d --build && docker compose run --rm seed && ./smoke.sh; docker compose down -v --rmi local)
 
-# Planner end-to-end self-check (env, dirctl, ADS reachability, server, OpenAI, tests)
-planner_agent/scripts/doctor.sh
+# Chat app end-to-end self-check (env, dirctl, ADS reachability, server, OpenAI, tests)
+chat_app/scripts/doctor.sh
 
 # ADS operator commands (wrapper)
 scripts/ads -list | -raw-list | -diag | -watch | -repair | -repair-delete | -publish <card> | -remove <cid> | -delete <cid>
@@ -506,12 +506,12 @@ planner → saved history → register an agent → shut down with nothing left 
 
 | Path | What it is |
 |---|---|
-| `planner_agent/main_agent/runtime.py` | Orchestrator tool loop, ADS/A2A dispatch, policy, dedup |
-| `planner_agent/main_agent/llm_client.py` | OpenAI **Chat Completions** client (the planner's LLM call; vLLM-compatible, migrated from Responses 2026-06) |
-| `planner_agent/main_agent/tools.py` | The 5 tool schemas + system prompt |
-| `planner_agent/main_agent/server.py` | FastAPI surface + chat UI serving |
-| `planner_agent/main_agent/web/index.html` | Single-file chat UI |
-| `planner_agent/scripts/start.sh` / `doctor.sh` | Launcher / self-check |
+| `chat_app/planner/runtime.py` | Orchestrator tool loop, ADS/A2A dispatch, policy, dedup |
+| `chat_app/planner/llm_client.py` | OpenAI **Chat Completions** client (the planner's LLM call; vLLM-compatible, migrated from Responses 2026-06) |
+| `chat_app/planner/tools.py` | The 5 tool schemas + system prompt |
+| `chat_app/server.py` | FastAPI surface + chat UI serving |
+| `chat_app/web/index.html` | Single-file chat UI |
+| `chat_app/scripts/start.sh` / `doctor.sh` | Launcher / self-check |
 | `scripts/ads` | ADS operator dispatcher |
 | `agentnet/directory/backends.py` | Real/fake ADS backends (dirctl) |
 | `agentnet/directory/card_oasf.py` | Agent Card ↔ OASF record |

@@ -96,8 +96,8 @@ token.json
 *.ckpt
 *.pptx
 
-# Local databases, exports and deploy state. state/ is anchored because
-# planner_agent/main_agent/state/ is source.
+# Local databases, exports and deploy state. state/ is anchored so only the
+# top-level folder is ignored, never a source folder of that name.
 *.sqlite
 *.sqlite3
 *.db

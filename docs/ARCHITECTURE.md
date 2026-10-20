@@ -9,8 +9,9 @@ AgenticNetwork is an **"internet of agents"**: independent LLM-powered HTTP serv
 discover each other through a shared directory and call each other over a standard
 agent-to-agent protocol.
 
-- **One orchestrator** — the **planner** (`planner_agent/`). The brain you talk to. It has
-  *no domain skills of its own*; it discovers other agents and delegates whole tasks. It is
+- **One orchestrator** — the **planner**, inside the chat app (`chat_app/planner/`). The
+  brain you talk to. It has *no domain skills of its own*; it discovers other agents and
+  delegates whole tasks. It is
   deliberately **agent-agnostic**: adding an agent to the directory makes it usable with zero
   planner code changes. Deep dive: [PLANNER.md](PLANNER.md).
 - **Specialist agents** — each wraps one capability behind an HTTP endpoint (email, coding,
@@ -40,7 +41,7 @@ You (browser / curl)
    │  POST /messages
    ▼
 Planner FastAPI  (server.py)
-   │  MainAgentRuntime.handle_message  (runtime.py)
+   │  PlannerRuntime.handle_message  (runtime.py)
    ▼
 LLM tool loop  (llm_client.py) — the model sees only 5 primitives (tools.py):
    list_agents · describe_agent · call_agent · ask_user · final_answer
@@ -59,10 +60,10 @@ response (with a tool trace) back to the caller.
 ```
 
 1. A user message hits `POST /messages` (or `/messages/stream` for SSE) in
-   `main_agent/server.py`.
-2. `MainAgentRuntime` (`main_agent/runtime.py`) runs a bounded tool loop. The LLM
-   (`main_agent/llm_client.py`, OpenAI Chat Completions — vLLM-compatible) sees only the **5
-   primitives** in `main_agent/tools.py`.
+   `chat_app/server.py`.
+2. `PlannerRuntime` (`chat_app/planner/runtime.py`) runs a bounded tool loop. The LLM
+   (`chat_app/planner/llm_client.py`, OpenAI Chat Completions — vLLM-compatible) sees only the **5
+   primitives** in `chat_app/planner/tools.py`.
 3. `list_agents` / `describe_agent` query ADS via `DirectoryClient`
    (`agentnet/directory/`), which shells out to `dirctl` — or uses an in-process fake in
    `--fake-ads` mode.

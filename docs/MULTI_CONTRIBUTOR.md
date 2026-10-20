@@ -68,7 +68,7 @@ to make the personal ones group-owned, exactly like Slurm already is.**
 
 ### The hard constraint: prod Postgres holds real secrets
 
-The planner writes to the **`registration`** database (`planner_agent/main_agent/db.py:104`,
+The planner writes to the **`registration`** database (`chat_app/store/db.py:104`,
 `REGISTRATION_DB_DSN`), which is the **persistent** DB on the shared `/engrfs` volume. It
 contains **AES-256-GCM-encrypted Google OAuth refresh tokens**, users' OpenAI/Anthropic/Brave/
 Google API keys (`user_credentials`), credential grants, and chat history. Therefore:

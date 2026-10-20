@@ -29,10 +29,10 @@ The request path (user → planner → directory → A2A → agent → answer) a
 
 | Suite | Command | Tests | Line coverage | What it covers |
 |---|---|---|---|---|
-| Planner | `planner_agent/.venv/bin/python -m pytest planner_agent/tests -q` | 162 (+12) | 74% | The tool loop (scripted LLM, fake directory), the HTTP API (identity, conversation ownership, streaming, confirmations), credential discovery and enforcement, `/ready`, startup, bug reports, that every import of the repo's own code resolves |
+| Chat app | `chat_app/.venv/bin/python -m pytest chat_app/tests -q` | 162 (+12) | 74% | The tool loop (scripted LLM, fake directory), the HTTP API (identity, conversation ownership, streaming, confirmations), credential discovery and enforcement, `/ready`, startup, bug reports, that every import of the repo's own code resolves |
 | Registration | `registration_service/.venv/bin/python -m pytest registration_service/tests -q` | 319 | 80% | The API, upload checks, the image build manifest, the native supervisor and agent processes, the Cloud Run backend (mocked), which handler module the runner starts for each handler type, streaming and uploaded-tools agents, credentials, the fake database, that every import of the repo's own code (here and in `agent_skeleton/`) resolves |
 | Agent skeleton | `registration_service/.venv/bin/python -m pytest agent_skeleton/tests -q` | 70 | 73% | The spec-driven engine, the `call_endpoint` tool and its secret redaction, per-operation tools, preset tools, the multi-endpoint manager, the generator, credentials kept out of the LLM prompt, the tool-schema and handler contract |
-| agentnet (directory + A2A) | `registration_service/.venv/bin/python -m pytest agentnet/tests -q`, and the same with `planner_agent/.venv/bin/python` | 38 in each venv | 52% | Card ↔ record conversion, the `dirctl` CLI backend (mocked), the registration service's publisher (id-only skills, no legacy routing, its errors), the fake-directory flag, route summaries and routing wake-up |
+| agentnet (directory + A2A) | `registration_service/.venv/bin/python -m pytest agentnet/tests -q`, and the same with `chat_app/.venv/bin/python` | 38 in each venv | 52% | Card ↔ record conversion, the `dirctl` CLI backend (mocked), the registration service's publisher (id-only skills, no legacy routing, its errors), the fake-directory flag, route summaries and routing wake-up |
 | Dev stack | `registration_service/.venv/bin/python -m pytest devstack/tests -q` | 55 | 52% | The mock LLM, the fake `dirctl`, the identity proxy, the stack CLI's checks that need no running services |
 | Pipeline | `registration_service/.venv/bin/python -m pytest tests/pipeline -q` | 19 | — | The running system, end to end (next section) |
 
@@ -60,7 +60,7 @@ CLI's `up`, the fake `dirctl` behind `devstack/bin/dirctl`, and agent processes.
 suite exercises much of that code without measuring it.
 
 The registration venv runs four suites because it installs `agent_skeleton`. agentnet's suite
-also runs in the planner venv, because agentnet runs inside both services (`a2a-sdk` 0.3.2 and
+also runs in the chat app venv, because agentnet runs inside both services (`a2a-sdk` 0.3.2 and
 0.3.26). Do not set `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`: the registration
 suite needs the `pytest-asyncio` plugin, and coverage comes from the `pytest-cov` plugin.
 
@@ -70,9 +70,9 @@ CI prints a coverage table for each unit suite (report only, no threshold). Loca
 `pytest-cov` installed in the venv:
 
 ```bash
-planner_agent/.venv/bin/python -m pip install pytest-cov
-planner_agent/.venv/bin/python -m pytest planner_agent/tests -q --cov=planner_agent --cov-report=
-planner_agent/.venv/bin/python -m coverage report --omit='*/tests/*'
+chat_app/.venv/bin/python -m pip install pytest-cov
+chat_app/.venv/bin/python -m pytest chat_app/tests -q --cov=chat_app --cov-report=
+chat_app/.venv/bin/python -m coverage report --omit='*/tests/*'
 ```
 
 Swap in the other component and venv for the other suites. The data file `.coverage` is ignored
@@ -161,8 +161,8 @@ fake `dirctl` (`push`, then `routing publish`) and unpublished afterwards.
 
 - **Unit test:** put it in the component's `tests/` folder and run it with that component's venv.
   Keep it offline and use the fakes already there: the planner's `ScriptedLLMClient`
-  (`planner_agent/main_agent/llm_client.py`), `DirectoryClient(fake_ads=True)` and the cards in
-  `planner_agent/tests/fixtures/agent_cards/`; registration's `FAKE_DB=1`
+  (`chat_app/planner/llm_client.py`), `DirectoryClient(fake_ads=True)` and the cards in
+  `chat_app/tests/fixtures/agent_cards/`; registration's `FAKE_DB=1`
   (`registration_service/tests/conftest.py` sets it).
 - **Pipeline test:** only if the behaviour needs the running system. Drive it through
   `scripts/stack`, HTTP and the fake `dirctl`, never by importing service code. A step of a
@@ -191,7 +191,7 @@ fake `dirctl` (`push`, then `routing publish`) and unpublished afterwards.
 - A `ConnectTimeout` on the first chat after a restart was traced to the planner leaving its LLM
   clients for the garbage collector to close at an arbitrary moment. It showed up when the
   restarted stack registered more agents than the restart test's own. It is fixed (one client per
-  endpoint, closed on shutdown) and guarded by `planner_agent/tests/test_llm_client.py`; a
+  endpoint, closed on shutdown) and guarded by `chat_app/tests/test_llm_client.py`; a
   recurrence is a regression, not load.
 - A security scenario that fails today goes in as a strict expected failure,
   `@pytest.mark.xfail(strict=True, reason="...")`: the suite stays green while the bug exists and

@@ -1,4 +1,5 @@
-# Planner agent (orchestrator + chat UI) — port 8090
+# Chat app (web server, chat UI and the planner) — port 8090. The file, image,
+# service and conda env keep the name "planner".
 # Build from repo root:
 #   docker build --platform linux/amd64 -f deployment/dockerfiles/Dockerfile.planner \
 #       -t di2washu/agenticnetwork-planner:latest .
@@ -17,12 +18,12 @@ WORKDIR /app
 
 RUN conda install -n base -c conda-forge mamba -y --quiet
 
-COPY planner_agent/requirements.txt planner_agent/requirements.txt
+COPY chat_app/requirements.txt chat_app/requirements.txt
 RUN mamba create -n planner-agent python=3.13 pip -y --quiet \
     && /opt/conda/envs/planner-agent/bin/pip install --quiet \
-        -r /app/planner_agent/requirements.txt
+        -r /app/chat_app/requirements.txt
 
-COPY planner_agent/ planner_agent/
+COPY chat_app/ chat_app/
 COPY agentnet/ agentnet/
 COPY deployment/entrypoints/entrypoint-planner.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh

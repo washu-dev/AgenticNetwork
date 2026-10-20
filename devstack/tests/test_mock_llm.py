@@ -23,7 +23,7 @@ AGENTS = [
 
 
 def planner_body(user_text: str, observations: list[dict]) -> dict:
-    """A request shaped like planner_agent/main_agent/llm_client.py sends it."""
+    """A request shaped like chat_app/planner/llm_client.py sends it."""
     messages = [
         {"role": "system", "content": "You are the planner."},
         {"role": "user", "content": json.dumps({"user_text": user_text, "context_id": "ctx-1", "instructions": "..."})},

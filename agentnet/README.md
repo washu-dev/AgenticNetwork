@@ -1,7 +1,7 @@
 # agentnet
 
 The one shared library for talking to the directory (ADS) and to agents over A2A.
-The chat app (`planner_agent/`) searches the directory and calls agents with it, and
+The chat app (`chat_app/`) searches the directory and calls agents with it, and
 the registration service publishes and unpublishes the agents it runs with it. It
 also holds the operator scripts for inspecting and repairing a live directory.
 
@@ -167,5 +167,5 @@ registration_service/.venv/bin/python -m agentnet.scripts.validate_agent_endpoin
 ```bash
 # dirctl is mocked; run with both service venvs (a2a-sdk 0.3.2 and 0.3.26)
 registration_service/.venv/bin/python -m pytest agentnet/tests -q -p no:cacheprovider
-planner_agent/.venv/bin/python -m pytest agentnet/tests -q -p no:cacheprovider
+chat_app/.venv/bin/python -m pytest agentnet/tests -q -p no:cacheprovider
 ```

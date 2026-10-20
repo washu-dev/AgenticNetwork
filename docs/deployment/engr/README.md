@@ -545,7 +545,7 @@ planner :8090      ← trusts those headers as the user id       ← ephemeral S
 - **How the browser reaches it:** the gateway host terminates TLS (nginx), runs the
   WashU Shibboleth login (Apache + `mod_shib`), and reverse-proxies to the planner's
   `:8090`. The planner's only "auth" is trusting the identity headers Apache injects
-  (`planner_agent/main_agent/auth.py`) — so it must **only** be reached through that
+  (`chat_app/auth.py`) — so it must **only** be reached through that
   proxy, never exposed raw.
 - **Where the link comes from:** `agenticweb.engr.wustl.edu` is a WashU-registered DNS
   name pointing at the gateway host; the Shibboleth SP on it is registered with WashU's

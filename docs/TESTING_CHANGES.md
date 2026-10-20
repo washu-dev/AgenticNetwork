@@ -39,7 +39,7 @@ code taken at build time. There are two cases:
   git fetch && git checkout my-change && git pull
   ```
 
-- **You changed a service's code** (e.g. Python under `planner_agent/`, or an agent in the
+- **You changed a service's code** (e.g. Python under `chat_app/`, or an agent in the
   `agent-directory` repo): the running container uses the **baked-in** copy, so a `git pull` alone
   won't take effect — you must rebuild **that one service's** image, under **your own tag** so you
   don't overwrite the image prod uses (`:latest`). On your laptop:

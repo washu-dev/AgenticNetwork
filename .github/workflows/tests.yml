@@ -30,10 +30,10 @@ jobs:
       matrix:
         include:
           # Python versions follow each component's Docker image / packaging.
-          - component: planner_agent
+          - component: chat_app
             python: "3.13"
-            deps: planner_agent/requirements.txt
-            install: pip install -r planner_agent/requirements.txt
+            deps: chat_app/requirements.txt
+            install: pip install -r chat_app/requirements.txt
           - component: registration_service
             python: "3.11"
             deps: registration_service/requirements.txt
@@ -44,7 +44,7 @@ jobs:
             deps: agent_skeleton/pyproject.toml
             install: pip install -e ./agent_skeleton pytest
           # agentnet runs inside both services, so its tests run in each service's
-          # environment: registration's (a2a-sdk 0.3.2) and the planner's (0.3.26).
+          # environment: registration's (a2a-sdk 0.3.2) and the chat app's (0.3.26).
           # dirctl is mocked.
           - component: agentnet
             label: agentnet, a2a-sdk 0.3.2
@@ -54,8 +54,8 @@ jobs:
           - component: agentnet
             label: agentnet, a2a-sdk 0.3.26
             python: "3.13"
-            deps: planner_agent/requirements.txt
-            install: pip install -r planner_agent/requirements.txt
+            deps: chat_app/requirements.txt
+            install: pip install -r chat_app/requirements.txt
           - component: devstack
             python: "3.11"
             deps: registration_service/requirements.txt
@@ -129,7 +129,7 @@ jobs:
   # PIPELINE (tier 1, native): the full-chain test and the scenario tests
   # (tests/pipeline, Goal 1 in docs/OPEN_SOURCE_RELEASE.md). Each starts the dev
   # stack with `scripts/stack up` and drives it over HTTP only. Services run as
-  # local processes from the two venvs below (planner on a2a-sdk 0.3.26;
+  # local processes from the two venvs below (chat app on a2a-sdk 0.3.26;
   # registration and the agents it spawns on 0.3.2); the test runner itself
   # needs only pytest.
   # ---------------------------------------------------------------------------
@@ -145,13 +145,13 @@ jobs:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: |
-            planner_agent/requirements.txt
+            chat_app/requirements.txt
             registration_service/requirements.txt
       - name: Create service venvs
         run: |
-          python -m venv planner_agent/.venv
-          planner_agent/.venv/bin/python -m pip install --upgrade pip
-          planner_agent/.venv/bin/python -m pip install -r planner_agent/requirements.txt
+          python -m venv chat_app/.venv
+          chat_app/.venv/bin/python -m pip install --upgrade pip
+          chat_app/.venv/bin/python -m pip install -r chat_app/requirements.txt
           python -m venv registration_service/.venv
           registration_service/.venv/bin/python -m pip install --upgrade pip
           # From the repo root: the file's "-e ./agent_skeleton" is CWD-relative.

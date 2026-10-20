@@ -139,7 +139,7 @@ Chat Completions (CLAUDE.md §7 is kept current on this).
   email/geospatial until self-hosted inference is the actual target — they work
   against hosted OpenAI today.
 - *Future / at scale (per agent):*
-  - **planner.** Already Chat-ready (`main_agent/llm_client.py`). For scale-out pass
+  - **planner.** Already Chat-ready (`chat_app/planner/llm_client.py`). For scale-out pass
     `base_url=` explicitly rather than relying on the SDK reading `OPENAI_BASE_URL`
     from env, and front the ephemeral vLLM node with a stable gateway (#3). Make it
     the **stateless, horizontally-autoscaled front door** (per-turn state lives on
@@ -205,7 +205,7 @@ Chat Completions (CLAUDE.md §7 is kept current on this).
     stale `scout_agent/scripts/call_scout.py` (passes SLIM transport params the
     current factory rejects → `TypeError`).
 
-- **Enablers already in the repo.** The planner's `main_agent/llm_client.py` is the
+- **Enablers already in the repo.** The planner's `chat_app/planner/llm_client.py` is the
   Chat-Completions **reference implementation** for the email/geospatial rewrites;
   the disaster agent's already-migrated client (`OPENAI_BASE_URL` wiring + dummy-key
   guard) is a worked example of the endpoint side.
@@ -221,7 +221,7 @@ Chat Completions (CLAUDE.md §7 is kept current on this).
 - **References.**
   - `../email_agent/email_agent.py` (`_openai_client`, already Chat Completions),
     `../geoSpatial_agent/geospatial_agent.py` + `attack_bundle/src/{config,pipeline_simple}.py`
-  - `../planner_agent/main_agent/llm_client.py` (Chat-Completions reference),
+  - `../chat_app/planner/llm_client.py` (Chat-Completions reference),
     `../disaster_response_agent/disaster_response_agent.py` (`build_response`)
   - `../scout_agent/scout/{config.py,network/directory.py,cli.py}`
   - CLAUDE.md §7 (LLM/self-hosting), §9 (caveats); [`AGENT_INTEGRATION_SPEC.md`](AGENT_INTEGRATION_SPEC.md) §4
@@ -288,7 +288,7 @@ agent inherits, so they are tracked once here rather than repeated per agent.
 
 - **Status:** Deferred (future development) — 2026-08-03 — **Option 1 (repoint gateway upstream); secure leg = Option A (gateway mints a Google ID token → planner run.app). Design settled, build deferred at end of summer 2026** (a deliberate stop; prereqs 1+2 done — reg service + planner on Cloud SQL). Ready-to-execute runbook: `gcp/IMPLEMENTATION_CLOUDRUN_BACKEND.md` Step 10. **Update 2026-10-13:** cloud is a critical leg of the project going forward, so resuming it is a priority; this is the next GCP step. Step 10 in the repo is a build outline, not a full runbook.
 - **Raised:** 2026-07-30 (migration planning)
-- **Scope:** the out-of-repo WashU ENGR gateway (nginx + Apache + `mod_shib`); the GCP planner Cloud Run service (ingress, `PLANNER_ALLOW_ANON`); `main_agent/auth.py` (header trust); Cloud SQL; `docs/deployment/gcp/MIGRATION.md`, `docs/deployment/gcp/IMPLEMENTATION_CLOUDRUN_BACKEND.md` (Steps 9–10 + Go-live)
+- **Scope:** the out-of-repo WashU ENGR gateway (nginx + Apache + `mod_shib`); the GCP planner Cloud Run service (ingress, `PLANNER_ALLOW_ANON`); `chat_app/auth.py` (header trust); Cloud SQL; `docs/deployment/gcp/MIGRATION.md`, `docs/deployment/gcp/IMPLEMENTATION_CLOUDRUN_BACKEND.md` (Steps 9–10 + Go-live)
 
 **Problem.** `https://agenticweb.engr.wustl.edu` is the public entry point users bookmark; today it
 routes to the ENGR (Slurm) planner. Once the GCP stack is fully live we want that same hostname to
@@ -302,7 +302,7 @@ front door** carrying three load-bearing functions, not a bare pointer:
 3. **Reverse-proxy** to the planner upstream.
 
 The security crux: **the planner has no login of its own — it blindly trusts those injected headers**
-(`main_agent/auth.py` `get_shib_email`). So the real question is not "where does DNS point" but "where
+(`chat_app/auth.py` `get_shib_email`). So the real question is not "where does DNS point" but "where
 does the SP live, and how is the planner made reachable *only* through it" — anyone who reaches the
 planner directly can forge `eppn` and impersonate any WashU user. DNS is the easy 10%.
 
@@ -345,7 +345,7 @@ services proxy`), **no Cloud SQL, no SP in front** — i.e. not yet safe to expo
 - **Staging.** Validate the whole auth chain (real SAML login → headers arriving → sessions/creds
   working) on a *scratch* name (or `gcloud run services proxy`) first; only then flip the gateway upstream.
 
-- **Enablers already in the repo.** The planner already reads Shibboleth headers (`main_agent/auth.py`)
+- **Enablers already in the repo.** The planner already reads Shibboleth headers (`chat_app/auth.py`)
   and refreshes Google OAuth tokens (`server.py` `_refresh_google_token`), so no planner login code is
   needed — only the front-door plumbing. The `vllm-relay` VM (autossh under systemd) is a working
   template for the reverse tunnel option.

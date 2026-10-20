@@ -9,17 +9,19 @@ one-command start goals.
 
 The system is split across two repos:
 
-- **This repo (`AgenticNetwork`)** owns the infrastructure: planner, ADS operator
-  tooling, registration service, and the `agent_skeleton` agent runtime.
+- **This repo (`AgenticNetwork`)** owns the infrastructure: the chat app (with its
+  planner), ADS operator tooling, registration service, and the `agent_skeleton`
+  agent runtime.
 - **[`agent-directory`](https://github.com/washu-dev/agent-directory)** owns the
   specialist agents: email, coding, intelligence, geoSpatial, disaster_response, scout.
 
 Within this repo:
-- `agentnet/` is the one shared directory (ADS) and A2A library that the planner
+- `agentnet/` is the one shared directory (ADS) and A2A library that the chat app
   and the registration service import. It also owns ADS operation, publication,
   route inspection, diagnostics, and repair tooling (`agentnet/scripts/`, run
   through `scripts/ads`).
-- `planner_agent/` owns the product main-agent runtime.
+- `chat_app/` is the web service people sign in to and chat in. The planner
+  (`chat_app/planner/`) is the LLM loop inside it that chooses agents and calls them.
 - `agent_skeleton/` is the agent runtime that every hosted agent imports, plus
   a small demo agent and the wrapper generator. Build new agents as
   [`docs/BUILDING_AGENTS.md`](docs/BUILDING_AGENTS.md) describes, not by copying
@@ -51,11 +53,11 @@ For ADS changes:
 
 ```bash
 registration_service/.venv/bin/python -m pytest -q -p no:cacheprovider agentnet/tests
-planner_agent/.venv/bin/python -m pytest -q -p no:cacheprovider agentnet/tests
+chat_app/.venv/bin/python -m pytest -q -p no:cacheprovider agentnet/tests
 registration_service/.venv/bin/python -m agentnet.scripts.print_versions
 ```
 
-agentnet runs in both service venvs (registration on `a2a-sdk` 0.3.2, the planner
+agentnet runs in both service venvs (registration on `a2a-sdk` 0.3.2, the chat app
 on 0.3.26), so run its tests with both; `scripts/ads` uses the registration venv
 (`ADS_PYTHON` overrides it). All suites and the dev stack:
 `CLAUDE.md` §10; CI runs them (`.github/workflows/tests.yml`).
