@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
+import subprocess
 import sys
 import types
 from pathlib import Path
@@ -102,6 +104,21 @@ def test_submit_sbatch_copies_every_renamed_setting_for_older_images() -> None:
         if new not in ("CHAT_APP_PORT", "CHAT_APP_ALLOW_ANON")
     }
     assert copied == expected
+
+
+@pytest.mark.parametrize("offset, expected", [(100, "http://localhost:8191"), (0, "")])
+def test_submit_sbatch_points_a_test_chat_app_at_its_own_registration_service(offset, expected) -> None:
+    # A test instance (PORT_OFFSET != 0) forwards /register/* to its own, offset
+    # registration service; prod leaves the URL to .env or the chat app's default.
+    sbatch = (Path(__file__).resolve().parents[2] / "deployment" / "submit.sbatch").read_text()
+    ports = sbatch[sbatch.index("export REGISTRATION_SERVICE_PORT="):]
+    ports = ports[:ports.index("\nfi\n", ports.index('if [ "$PORT_OFFSET" -ne 0 ]')) + 4]
+    env_vars = {"PATH": os.environ["PATH"], "PORT_OFFSET": str(offset)}
+    out = subprocess.run(
+        ["bash", "-c", ports + 'printf %s "${REGISTRATION_SERVICE_URL:-}"'],
+        env=env_vars, capture_output=True, text=True, check=True,
+    )
+    assert out.stdout == expected
 
 
 def test_an_empty_new_name_still_counts_as_set() -> None:

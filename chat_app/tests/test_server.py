@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import gzip
+import http.server
+import threading
 import uuid
+from pathlib import Path
 
 import httpx
 import pytest
@@ -315,7 +319,8 @@ def test_register_proxy_allows_non_admin_handler_upload(monkeypatch) -> None:
     # so a method-agnostic suffix match wrongly returned 403 here (the reported bug).
     monkeypatch.setenv("ADMIN_EMAILS", "admin@example.com")
     # Dead upstream: the proxy forwarding the request (rather than rejecting it)
-    # is what proves the request cleared the admin gate.
+    # is what proves the request cleared the admin gate. The failed connection
+    # answers 503.
     monkeypatch.setenv("REGISTRATION_SERVICE_URL", "http://127.0.0.1:9")
     asyncio.run(_register_proxy_allows_non_admin_handler_upload())
 
@@ -323,12 +328,12 @@ def test_register_proxy_allows_non_admin_handler_upload(monkeypatch) -> None:
 async def _register_proxy_allows_non_admin_handler_upload() -> None:
     app = _final_answer_app()
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client:
-        with pytest.raises(httpx.TransportError):
-            await client.post(
-                "/register/agents/some-id/handler",
-                headers={"mail": "bob@example.com"},
-                content=b"code",
-            )
+        resp = await client.post(
+            "/register/agents/some-id/handler",
+            headers={"mail": "bob@example.com"},
+            content=b"code",
+        )
+    assert resp.status_code == 503 and "could not be reached" in resp.json()["detail"], resp.text
 
 
 def test_register_proxy_never_forwards_internal_routes(monkeypatch) -> None:
@@ -355,6 +360,134 @@ async def _register_proxy_never_forwards_internal_routes() -> None:
         ]:
             resp = await client.request(method, path, headers={"mail": "admin@example.com"})
             assert resp.status_code == 404, (path, resp.text)
+
+
+class _GzipRegistration(http.server.BaseHTTPRequestHandler):
+    """A registration service stand-in that replies gzip-encoded."""
+
+    body = b'[{"id": "a1", "name": "echo"}]' * 20
+    accept_encoding: list[str | None] = []
+
+    def do_GET(self) -> None:
+        type(self).accept_encoding.append(self.headers.get("Accept-Encoding"))
+        payload = gzip.compress(self.body)
+        self.send_response(201)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Encoding", "gzip")
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Connection", "close")
+        self.send_header("Location", "/agents/a1")
+        self.send_header("Set-Cookie", "a=1")
+        self.send_header("Set-Cookie", "b=2")
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def log_message(self, *args) -> None:
+        pass
+
+
+def test_register_proxy_returns_headers_that_match_the_body_it_sends(monkeypatch) -> None:
+    # The pass-through sends the decoded body, so it drops the upstream's encoding,
+    # length and hop-by-hop headers and keeps the rest (each Set-Cookie separately).
+    # It asks upstream only for encodings httpx can decode, whatever the browser accepts.
+    _GzipRegistration.accept_encoding = []
+    upstream = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _GzipRegistration)
+    threading.Thread(target=upstream.serve_forever, daemon=True).start()
+    try:
+        monkeypatch.setenv("REGISTRATION_SERVICE_URL", f"http://127.0.0.1:{upstream.server_port}")
+        resp = asyncio.run(_get(_final_answer_app(), "/register/agents",
+                                {"accept-encoding": "gzip, deflate, br, zstd"}))
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+    [sent] = _GzipRegistration.accept_encoding
+    assert "br" not in sent and "zstd" not in sent, sent
+    assert resp.status_code == 201
+    assert resp.content == _GzipRegistration.body
+    assert "content-encoding" not in resp.headers
+    assert "connection" not in resp.headers
+    assert resp.headers["content-length"] == str(len(_GzipRegistration.body))
+    assert resp.headers["content-type"] == "application/json"
+    assert resp.headers["location"] == "/agents/a1"
+    assert resp.headers.get_list("set-cookie") == ["a=1", "b=2"]
+
+
+@pytest.mark.parametrize(
+    "timeout, status, says",
+    [
+        (httpx.ReadTimeout, 504, "still working on this request"),
+        (httpx.ConnectTimeout, 503, "nothing was changed"),
+        (httpx.PoolTimeout, 503, "nothing was changed"),
+        (httpx.ConnectError, 503, "nothing was changed"),
+    ],
+)
+def test_register_proxy_timeout_says_whether_the_request_was_received(
+    monkeypatch, timeout, status, says
+) -> None:
+    # One agent's changes run one at a time in the registration service, so a
+    # request it received can wait there longer than the pass-through's timeout
+    # and still complete (504). A request that never reached it changed nothing
+    # (503). Either way the UI shows a JSON message, not a bare 500.
+    monkeypatch.setenv("ADMIN_EMAILS", "admin@example.com")
+    real_client = httpx.AsyncClient
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        raise timeout("timed out", request=request)
+
+    def client(*args, **kwargs):
+        if kwargs.get("base_url"):  # the /register pass-through client
+            kwargs["transport"] = httpx.MockTransport(upstream)
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", client)
+    app = _final_answer_app()
+    monkeypatch.setattr(httpx, "AsyncClient", real_client)
+
+    async def reject():
+        async with real_client(transport=httpx.ASGITransport(app=app), base_url="http://t") as c:
+            return await c.post(
+                "/register/agents/00000000-0000-0000-0000-000000000001/reject",
+                json={"reason": "x"}, headers={"mail": "admin@example.com"},
+            )
+
+    resp = asyncio.run(reject())
+    assert resp.status_code == status, resp.text
+    assert says in resp.json()["detail"]
+
+
+def test_chat_ui_lists_every_agent_with_uploaded_code_for_approval() -> None:
+    # Only agents that ship code (custom, llm with uploaded tools, legacy
+    # tool_loop) are ever unapproved, so the approvals list filters on approval
+    # and an uploaded handler alone, like the registration page. A custom-only
+    # filter would hide the other two.
+    # A source check of the page's script (the suite runs no JavaScript).
+    html = (Path(__file__).resolve().parents[1] / "web" / "index.html").read_text()
+    assert "(agents || []).filter(a => !a.approved && a.has_handler)" in html
+    assert "a.handler_type === 'custom' && !a.approved" not in html
+
+
+def test_chat_ui_approves_only_the_code_revision_it_showed() -> None:
+    # An approval names the code the admin was shown in the code viewer; without
+    # one, Approve opens the viewer instead of approving. The registration
+    # service refuses it (409) if newer code was uploaded after that.
+    # A source check of the page's script (the suite runs no JavaScript).
+    html = (Path(__file__).resolve().parents[1] / "web" / "index.html").read_text()
+    approve = html.split("async function approveAgentReq(id, btn) {", 1)[1].split("\n}\n", 1)[0]
+    assert "const revision = _shownRevision[id];" in approve
+    assert "toggleApprovalCode(id)" in approve
+    assert "body: JSON.stringify({ revision })" in approve
+    assert "if (pre.isConnected) _shownRevision[id] = data.revision;" in html
+    # Reopened after the code changed: the earlier review (for an archive, the
+    # download) no longer covers it, so the stored revision is dropped.
+    toggle = html.split("async function toggleApprovalCode(id) {", 1)[1].split("\n}\n", 1)[0]
+    assert "if (prev && prev !== data.revision) {\n      delete _shownRevision[id];" in toggle
+    assert "Download it again and review it" in toggle
+    # A registration service that reports no revision (older than this page)
+    # cannot be approved from here; the viewer says why instead of storing none.
+    assert "if (!data.revision) {" in toggle
+    assert "reports no code revision" in toggle
+    assert "Agents with uploaded code awaiting admin review" in html
+    assert "Custom uploaded agents awaiting admin review" not in html
 
 
 # ---------------------------------------------------------------------------

@@ -150,13 +150,15 @@ export DISASTER_AGENT_A2A_PORT=$((19108 + PORT_OFFSET))
 ADS_PORT=$((8888 + PORT_OFFSET))
 ADS_ROUTING_PORT=$((8999 + PORT_OFFSET))
 PG_PORT=$((5432 + PORT_OFFSET))
-# Repoint clients (agents, planner, registration) at THIS instance's ADS + Postgres.
-# Only for an offset (test) instance — prod keeps whatever .env / the entrypoint
-# defaults provide, so prod behavior is unchanged by this block.
+# Repoint clients (agents, planner, registration) at THIS instance's ADS, Postgres and
+# registration service. Only for an offset (test) instance — prod keeps whatever .env /
+# the entrypoint defaults provide, so prod behavior is unchanged by this block.
 if [ "$PORT_OFFSET" -ne 0 ]; then
     export ADS_SERVER_ADDR="localhost:${ADS_PORT}"
     export PGPORT="$PG_PORT"
     export REGISTRATION_DB_DSN="postgresql://postgres@localhost:${PG_PORT}/registration"
+    # The chat app's /register/* pass-through goes to this instance's registration service.
+    export REGISTRATION_SERVICE_URL="http://localhost:${REGISTRATION_SERVICE_PORT}"
     # Offset the registration service's dynamic custom-agent port pool too, so a test
     # instance's spawned custom agents don't collide with prod's on a shared node.
     export CUSTOM_AGENT_PORT_START=$((19200 + PORT_OFFSET))
@@ -295,11 +297,11 @@ export HANDLER_FILES_DIR="${HANDLER_FILES_DIR:-/workspace/registration_service/u
 # depends on it — is a no-op without a GitHub PAT and target repo. If they're
 # missing, custom agents will NOT be rebuilt or restarted on redeploy; they'll be
 # reconciled to 'stopped' and then purged. Surface this loudly rather than let it
-# fail silently (see supervisor._cluster_build_enabled / recover_live_agents).
+# fail silently (see supervisor._oob_build_enabled / recover_live_agents).
 if [ "$SPAWN_BACKEND" = "cluster" ]; then
     if [ -z "${GITHUB_TOKEN:-}" ] || [ -z "${GITHUB_REPO:-}" ]; then
         echo "[submit] WARN: SPAWN_BACKEND=cluster but GITHUB_TOKEN/GITHUB_REPO are unset."
-        echo "[submit]       Custom-agent build + restart-on-redeploy is DISABLED;"
+        echo "[submit]       Custom-agent build + restart-on-redeploy is DISABLED (approvals fail);"
         echo "[submit]       registered custom agents will not come back after a redeploy."
         echo "[submit]       Set them in $SECRETS_FILE (GITHUB_TOKEN) and .env (GITHUB_REPO)."
     fi

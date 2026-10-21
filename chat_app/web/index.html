@@ -1120,7 +1120,7 @@ body {
       <!-- Pending Approvals -->
       <div class="av-section" id="av-section-approvals">
         <div class="av-page-header">
-          <div><div class="av-page-title">Pending Approvals</div><div class="av-page-sub">Custom uploaded agents awaiting admin review</div></div>
+          <div><div class="av-page-title">Pending Approvals</div><div class="av-page-sub">Agents with uploaded code awaiting admin review</div></div>
           <button type="button" class="av-btn av-btn-ghost av-btn-sm" onclick="loadApprovals()">Refresh</button>
         </div>
         <div class="av-card">
@@ -1312,16 +1312,22 @@ function adminFetch(url, opts = {}) {
   return fetch(url, opts);
 }
 
-// ── Pending Approvals (custom uploaded agents) ──
+// ── Pending Approvals (agents with uploaded code) ──
 let _approvalsTimer = null;
 let _approvalsSig = null;
+// The revision (a hash of the uploaded code) the code viewer showed, which the
+// Approve button sends back: the service refuses the approval (409) if the stored
+// code has changed since. Approve needs one, so the code is reviewed first.
+const _shownRevision = {};
 
 async function loadApprovals() {
   try {
     const agents = await adminFetch('/register/agents').then(r => r.ok ? r.json() : []);
-    // Only surface custom agents that have actually uploaded a handler — a failed
-    // two-step upload can leave a codeless, unapprovable record (approve returns 409).
-    const pending = (agents || []).filter(a => a.handler_type === 'custom' && !a.approved && a.has_handler);
+    // Only agents that ship code are ever unapproved (the registration page uses
+    // the same rule), so `!a.approved` alone finds them. Only surface those that
+    // have actually uploaded their code — a failed two-step upload can leave a
+    // codeless, unapprovable record (approve returns 409).
+    const pending = (agents || []).filter(a => !a.approved && a.has_handler);
     const badge = document.getElementById('approvals-badge');
     if (badge) { badge.textContent = pending.length; badge.style.display = pending.length ? '' : 'none'; }
     // Only re-render when the pending set actually changes, so an expanded code
@@ -1345,7 +1351,8 @@ function renderApprovals(list) {
     return;
   }
   tb.innerHTML = list.map(a => {
-    const cfg = a.config || {};
+    // An llm agent's uploaded tools carry their own Python version and requirements.
+    const cfg = (a.config && a.config.tools && a.config.tools.source === 'upload') ? a.config.tools : (a.config || {});
     const skills = (a.oasf_skills || []).map(s => `<span class="cap-raw">${uvEsc((s.name || '').split('/').pop())}</span>`).join('');
     const reqs = cfg.requirements || [];
     const submitted = a.created_at ? new Date(a.created_at).toLocaleString() : '—';
@@ -1384,7 +1391,11 @@ async function toggleApprovalCode(id) {
   pre.textContent = 'Loading…';
   try {
     const r = await adminFetch(`/register/agents/${encodeURIComponent(id)}/handler`);
-    if (!r.ok) { pre.textContent = r.status === 404 ? 'No handler file uploaded yet.' : `Error ${r.status}`; return; }
+    if (!r.ok) {
+      const b = await r.json().catch(() => ({}));
+      pre.textContent = r.status === 404 ? 'No handler file uploaded yet.' : (typeof b.detail === 'string' ? b.detail : `Error ${r.status}`);
+      return;
+    }
     const data = await r.json();
     const warn = (data.warnings && data.warnings.length)
       ? `<div class="appr-warn">⚠ Advisory (not blocking): ${data.warnings.map(uvEsc).join('; ')}</div>` : '';
@@ -1406,6 +1417,16 @@ async function toggleApprovalCode(id) {
     } else {
       pre.innerHTML = notes + `<div>${uvEsc(data.source || '(empty)')}</div>`;
     }
+    // What the admin reviewed (for an archive, the download) is the code this
+    // viewer last showed. If the stored code changed since, Approve has no
+    // revision until the viewer is opened again.
+    const prev = _shownRevision[id];
+    if (!data.revision) {   // a registration service older than this page
+      pre.insertAdjacentHTML('afterbegin', `<div class="appr-warn">The registration service is older than this page and reports no code revision, so this page cannot approve. Update the registration service first.</div>`);
+    } else if (prev && prev !== data.revision) {
+      delete _shownRevision[id];
+      pre.insertAdjacentHTML('afterbegin', `<div class="appr-warn">The code changed since you last opened it. ${data.is_archive ? 'Download it again and review it' : 'Review it again'}, then close and reopen this view to approve it.</div>`);
+    } else if (pre.isConnected) _shownRevision[id] = data.revision;   // still on screen
   } catch (e) { pre.textContent = 'Failed to load: ' + (e.message || e); }
 }
 
@@ -1423,11 +1444,21 @@ async function downloadHandlerArchive(id) {
 }
 
 async function approveAgentReq(id, btn) {
+  const revision = _shownRevision[id];
+  if (!revision) {
+    const row = document.getElementById('appr-code-row-' + id);
+    if (row && row.style.display === 'none') toggleApprovalCode(id);
+    alert('Review the code first (it is open below), and follow any notice at its top. Then approve.');
+    return;
+  }
   if (btn) { btn.disabled = true; btn.textContent = 'Approving…'; }
   try {
-    const r = await adminFetch(`/register/agents/${encodeURIComponent(id)}/approve`, { method: 'POST' });
+    const r = await adminFetch(`/register/agents/${encodeURIComponent(id)}/approve`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ revision }),
+    });
     if (!r.ok) {
       const b = await r.json().catch(() => ({}));
+      if (r.status === 409) { delete _shownRevision[id]; _approvalsSig = null; loadApprovals(); }
       throw new Error(typeof b.detail === 'string' ? b.detail : `HTTP ${r.status}`);
     }
     loadApprovals();

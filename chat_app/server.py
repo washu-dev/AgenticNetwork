@@ -46,6 +46,13 @@ logger = logging.getLogger(__name__)
 _MAX_TRACE_ROWS = 10
 _MAX_FIELD_LEN = 200
 
+# Registration-service response headers the /register/* pass-through does not copy:
+# hop-by-hop headers, and the encoding and length of a body httpx has already decoded.
+_UNFORWARDED_RESPONSE_HEADERS = frozenset({
+    "connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te",
+    "trailer", "transfer-encoding", "upgrade", "content-encoding", "content-length",
+})
+
 
 def _truncate(text: str | None, limit: int = _MAX_FIELD_LEN) -> str:
     text = (text or "").strip()
@@ -203,6 +210,10 @@ def create_app(
 
     db_configured = bool(os.getenv("REGISTRATION_DB_DSN"))
 
+    # Client for the /register/* pass-through; the lifespan closes it on shutdown.
+    _reg_base = os.getenv("REGISTRATION_SERVICE_URL", "http://localhost:8091")
+    _reg_client = httpx.AsyncClient(base_url=_reg_base, timeout=30.0)
+
     @contextlib.asynccontextmanager
     async def lifespan(_app: FastAPI):
         # DB lifecycle is skipped when REGISTRATION_DB_DSN is unset (dev stack, unit tests).
@@ -219,6 +230,7 @@ def create_app(
             # rather than leave them to garbage collection (see OpenAIToolLoopClient).
             close_llm = getattr(llm_client, "aclose", None)
             try:
+                await _reg_client.aclose()
                 if close_llm is not None:
                     await close_llm()
             finally:
@@ -267,9 +279,6 @@ def create_app(
             content={"ready": is_ready, "checks": checks},
         )
 
-    _reg_base = os.getenv("REGISTRATION_SERVICE_URL", "http://localhost:8091")
-    _reg_client = httpx.AsyncClient(base_url=_reg_base, timeout=30.0)
-
     def _is_admin_reg_action(method: str, url: str) -> bool:
         # P4f: the approver's trust-boundary actions are admin-only. Gate by
         # method+path, NOT path alone — POST /agents/{id}/handler is the (open)
@@ -298,14 +307,38 @@ def create_app(
         if _is_admin_reg_action(request.method, url):
             _require_admin(request)
         body = await request.body()
+        # Drop the browser's Accept-Encoding so httpx asks only for encodings it decodes.
         headers = {k: v for k, v in request.headers.items()
-                   if k.lower() not in ("host", "content-length")}
-        resp = await _reg_client.request(
-            request.method, quote(url, safe="/"),
-            content=body, headers=headers, params=request.query_params,
-        )
-        return Response(content=resp.content, status_code=resp.status_code,
-                        headers=dict(resp.headers))
+                   if k.lower() not in ("host", "content-length", "accept-encoding")}
+        try:
+            resp = await _reg_client.request(
+                request.method, quote(url, safe="/"),
+                content=body, headers=headers, params=request.query_params,
+            )
+        except httpx.ReadTimeout:
+            # The request was sent, and the registration service still completes
+            # it: one agent's changes run one at a time, so this one may be
+            # waiting for another.
+            return JSONResponse(status_code=504, content={"detail": (
+                "The registration service is still working on this request (another "
+                "change to this agent may be in progress). Refresh later to see the "
+                "result: it can take several minutes, and repeating the action queues "
+                "it again."
+            )})
+        except (httpx.TimeoutException, httpx.ConnectError):
+            # No connection, or a connect, write or pool timeout: the service did
+            # not receive the request.
+            return JSONResponse(status_code=503, content={"detail": (
+                "The registration service could not be reached; nothing was changed. "
+                "Try again."
+            )})
+        # httpx has already decoded the body, so the upstream's encoding, length and
+        # hop-by-hop headers no longer describe it; Starlette sets Content-Length.
+        out = Response(content=resp.content, status_code=resp.status_code)
+        for name, value in resp.headers.multi_items():
+            if name.lower() not in _UNFORWARDED_RESPONSE_HEADERS:
+                out.headers.append(name, value)
+        return out
 
     @app.get("/", response_class=HTMLResponse)
     async def landing() -> HTMLResponse:
