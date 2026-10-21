@@ -45,6 +45,12 @@ from agentnet.models import PublishedRecord
 
 logger = logging.getLogger(__name__)
 
+# How dirctl reports a CID the directory does not store: dirctl v1.2.0's
+# `routing unpublish` looks the record up first and fails with
+# "... code = NotFound desc = failed to lookup record: record not found: <cid>";
+# the dev stack's fake dirctl prints "record not found: <cid>".
+_RECORD_NOT_FOUND = "record not found"
+
 
 class DirectoryPublisher:
     """Publishes and unpublishes an agent card to/from the ADS routing index.
@@ -93,7 +99,9 @@ class DirectoryPublisher:
             ValueError: If the card is invalid or has no 'oasf:<name>:<id>' tag.
             DirectoryUnavailable: If dirctl is missing, the server is
                 unreachable, or the routing index does not reflect the record
-                within the timeout.
+                within the timeout. Once the record is stored, the exception's
+                ``cid`` names it: it may still be routed later, so the caller
+                keeps the CID to unpublish it.
         """
         self._require_server_addr()
 
@@ -121,9 +129,13 @@ class DirectoryPublisher:
             if not cid:
                 raise DirectoryUnavailable("dirctl push did not return a CID")
 
-            self._run(["pull", cid, "--output", "json"])
-            self._run(["routing", "publish", cid, "--output", "json"])
-            self._wait_for_routing_index(cid)
+            try:
+                self._run(["pull", cid, "--output", "json"])
+                self._run(["routing", "publish", cid, "--output", "json"])
+                self._wait_for_routing_index(cid)
+            except DirectoryUnavailable as exc:
+                exc.cid = cid
+                raise
 
             logger.info(
                 "ads_publish agent_id=%s cid=%s server=%s",
@@ -147,7 +159,11 @@ class DirectoryPublisher:
             cid: The CID returned by publish(). No-op if None or empty.
 
         Returns:
-            True if unpublished, False if skipped (no cid).
+            True if the record is no longer routed: it was unpublished, or the
+            directory does not have it at all (dirctl reports "record not found",
+            e.g. after a directory reset or when it was removed earlier). False
+            if skipped (no cid) or on any other failure (unreachable, timed out,
+            another error), so the caller keeps the CID and can retry.
         """
         if not cid:
             return False
@@ -156,6 +172,9 @@ class DirectoryPublisher:
             logger.info("ads_unpublish cid=%s server=%s", cid, self.server_addr)
             return True
         except DirectoryUnavailable as exc:
+            if _RECORD_NOT_FOUND in str(exc).lower():
+                logger.info("ads_unpublish_not_found cid=%s server=%s", cid, self.server_addr)
+                return True
             logger.warning("ads_unpublish_failed cid=%s error=%s", cid, exc)
             return False
 

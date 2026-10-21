@@ -93,7 +93,10 @@ pub.unpublish(record.backend_ref)
 `server_addr` is not passed, and runs the `dirctl` binary named by `DIRCTL_BIN`
 (default `dirctl` on `PATH`). It raises `DirectoryUnavailable` on any directory
 failure. Callers should catch it and log a warning rather than crash, since ADS may
-not be up yet at startup.
+not be up yet at startup. `unpublish` does not raise: it returns `True` once the
+record is no longer routed, including when the directory does not have the CID at
+all (dirctl's "record not found", e.g. after a directory reset), and `False` on any
+other failure, so the caller keeps the CID and retries.
 
 A card declares its own routing skill with an `oasf:<name>:<id>` tag (build it with
 `oasf_skill_tag(name, id)` from `directory/card_oasf.py`) on one of its skills. The

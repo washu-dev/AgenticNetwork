@@ -155,3 +155,19 @@ def test_concurrent_pushes_from_many_processes_all_land(env, tmp_path):
     stored = json.loads(dirctl(env, "search", "--output", "json").stdout)
     assert sorted(stored) == sorted(cids)
     json.loads(Path(env["FAKE_DIRCTL_STATE"]).read_text())  # still valid JSON
+
+
+def test_publisher_counts_an_unknown_cid_as_removed(env, tmp_path, monkeypatch):
+    # The registration service's DirectoryPublisher against this fake: after a
+    # dev-stack reset the directory no longer has a CID a row still records, and
+    # unpublishing it succeeds so the row can be cleared.
+    from agentnet.directory.publisher import DirectoryPublisher
+
+    monkeypatch.setenv("FAKE_DIRCTL_STATE", env["FAKE_DIRCTL_STATE"])
+    pub = DirectoryPublisher(server_addr="127.0.0.1:8888", dirctl_path=str(SHIM))
+    cid = push(env, tmp_path, record("alpha"))
+    dirctl(env, "routing", "publish", cid)
+
+    assert pub.unpublish(cid) is True
+    assert routed_cids(env) == []
+    assert pub.unpublish("bae-missing") is True
