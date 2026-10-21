@@ -56,8 +56,13 @@ from agent_skeleton import AgentHandler
 
 class MyHandler(AgentHandler):
     async def handle_structured(self, user_input, files=None, context=None):
-        return {"answer": "..."}   # "answer" is required; other keys are structured output
+        return {"answer": "..."}   # "answer" (a string) is required; other keys are structured output
 ```
+
+`handle_structured` may also be a plain `def`: the executor runs a sync handler in
+a worker thread, so blocking code doesn't stall the server. A sync handler that
+overruns `max_runtime_seconds` is reported failed but cannot be stopped, so
+long blocking work should check its own deadline.
 
 ### The name `agent_skeleton` is reserved
 
@@ -240,7 +245,9 @@ The loop ([`llm_loop.py`](llm_loop.py), `run_tool_loop`):
 3. Append the assistant message (**with** its `tool_calls`) to history.
 4. For each call: `json.loads(arguments)` → dispatch to the spec's Python function →
    append a `{"role": "tool", "tool_call_id", "content"}` message.
-5. Re-call the model with the grown history. Repeat (capped at `MAX_TOOL_STEPS`).
+5. Re-call the model with the grown history. Repeat (capped at `MAX_TOOL_STEPS`);
+   the call after the last round sends `tool_choice="none"`, so the model answers
+   in text, and if it still gives none the answer says the step limit was reached.
 
 **Why resend the whole history?** vLLM / Chat Completions is *stateless* — no
 server-side memory. The agent keeps the conversation locally and resends it each

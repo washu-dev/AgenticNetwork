@@ -75,7 +75,10 @@ def run_tool_loop(
     dispatch: Callable[[str, dict[str, Any]], dict[str, Any]],
     max_steps: int = MAX_TOOL_STEPS,
 ) -> tuple[str, list[dict[str, Any]]]:
-    """Run the bounded tool-calling loop. Returns (final_text, tool_log)."""
+    """Run the bounded tool-calling loop. Returns (final_text, tool_log).
+
+    After ``max_steps`` tool rounds the closing call can't call tools; if it
+    still has no text, final_text says the step limit was reached."""
     client = build_openai_client()
     try:
         messages: list[Any] = [
@@ -90,7 +93,7 @@ def run_tool_loop(
         response = client.chat.completions.create(**request_kwargs)
         tool_log: list[dict[str, Any]] = []
 
-        for _ in range(max_steps):
+        for step in range(max_steps):
             tool_calls = _extract_tool_calls(response)
             if not tool_calls:
                 break  # the model is done; its content is the final answer
@@ -116,7 +119,16 @@ def run_tool_loop(
                 )
 
             request_kwargs["messages"] = messages
+            if step == max_steps - 1 and tool_schemas:
+                # Last allowed step: the closing call must answer in text. The tools
+                # stay listed (the history refers to them) but can't be called.
+                request_kwargs["tool_choice"] = "none"
             response = client.chat.completions.create(**request_kwargs)
+        else:
+            # Step limit reached. A model that still answers with a tool call has
+            # no text; say why instead of returning an empty answer.
+            if not _final_text(response):
+                return f"Stopped at the {max_steps}-step tool limit without a final answer.", tool_log
 
         return _final_text(response), tool_log
     finally:

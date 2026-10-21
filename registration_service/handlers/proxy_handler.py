@@ -71,7 +71,8 @@ class ProxyExecutor(AgentExecutor):
             result = await await_with_heartbeat(updater, self._forward(payload, headers))
         except Exception as exc:
             logger.exception("proxy_failed agent_id=%s upstream=%s", self._agent_id, self._upstream_url)
-            await updater.complete(
+            # A failed task, as custom and llm agents report their errors.
+            await updater.failed(
                 message=updater.new_agent_message(
                     [Part(root=TextPart(text=f"Upstream request failed: {exc}"))]
                 )
@@ -89,9 +90,11 @@ class ProxyExecutor(AgentExecutor):
             artifact_id=f"{self._agent_id}-proxy-response",
             name="proxy_response",
         )
-        await updater.complete(
-            message=updater.new_agent_message([Part(root=TextPart(text=reply_text))])
-        )
+        message = updater.new_agent_message([Part(root=TextPart(text=reply_text))])
+        if _upstream_failed(result):
+            await updater.failed(message=message)
+        else:
+            await updater.complete(message=message)
 
     async def _forward(self, payload: dict[str, Any], headers: dict[str, str]) -> Any:
         async with httpx.AsyncClient(timeout=_PROXY_TIMEOUT_SECONDS) as client:
@@ -108,6 +111,16 @@ def _get_user_text(context: Any) -> str:
         return str(context.get_user_input())
     except Exception:
         return ""
+
+
+def _upstream_failed(result: Any) -> bool:
+    """True if the upstream's JSON-RPC response reports a failure: a non-null
+    ``error`` member, or a task whose state is ``failed``."""
+    if not isinstance(result, dict):
+        return False
+    body = result.get("result")
+    status = body.get("status") if isinstance(body, dict) else None
+    return result.get("error") is not None or (isinstance(status, dict) and status.get("state") == "failed")
 
 
 def _extract_text(result: Any) -> str:

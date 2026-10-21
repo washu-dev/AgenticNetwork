@@ -41,9 +41,10 @@ class HandlerExecutor(AgentExecutorBase):
     Runs handle_structured() as a background task and, while it's in flight,
     emits a `working` status update every ``heartbeat_seconds`` so long-running
     handlers keep the caller's streaming connection alive (P3). Enforces a
-    ``max_runtime_seconds`` ceiling: on overrun the task is cancelled and the
-    task is marked failed. Fast handlers finish before the first beat, so their
-    behavior is unchanged.
+    ``max_runtime_seconds`` ceiling: on overrun the task is marked failed and an
+    async handler is cancelled (a sync one runs in a worker thread, which cannot
+    be stopped, so it runs to its end). Fast handlers finish before the first
+    beat, so their behavior is unchanged.
     """
 
     def __init__(
@@ -67,20 +68,18 @@ class HandlerExecutor(AgentExecutorBase):
 
         # P4d: per-user credentials arrive in the request params metadata (the
         # planner injects them scoped to this agent's declared+granted creds).
-        # Pass a context dict only to handlers that opted in by declaring the
-        # parameter — 2-arg handlers are called exactly as before. NEVER log the
+        # Only handlers that opted in by declaring the parameter get the context
+        # dict — 2-arg handlers are called exactly as before. NEVER log the
         # context: it holds raw secrets.
-        if _handler_accepts_context(self.handler.handle_structured):
-            request_meta = getattr(context, "metadata", None) or {}
-            handler_context = {
-                "credentials": request_meta.get("credentials") or {},
-                "user_id": request_meta.get("user_id"),
-            }
-            task = asyncio.ensure_future(
-                self.handler.handle_structured(user_input, files, handler_context)
-            )
-        else:
-            task = asyncio.ensure_future(self.handler.handle_structured(user_input, files))
+        request_meta = getattr(context, "metadata", None) or {}
+        handler_context = {
+            "credentials": request_meta.get("credentials") or {},
+            "user_id": request_meta.get("user_id"),
+        }
+        args, kwargs = _call_args(
+            self.handler.handle_structured, user_input, files, handler_context
+        )
+        task = asyncio.ensure_future(_call(self.handler.handle_structured, args, kwargs))
         elapsed = 0.0
         while True:
             # asyncio.wait does NOT cancel the task on timeout — it just tells us
@@ -116,12 +115,17 @@ class HandlerExecutor(AgentExecutorBase):
             )
             return
 
-        if "answer" not in result:
+        if not isinstance(result, dict) or not isinstance(result.get("answer"), str):
+            if not isinstance(result, dict):
+                got = f"type: {type(result).__name__}"
+            elif "answer" not in result:
+                got = f"keys: {list(result.keys())}"
+            else:
+                got = f"answer of type: {type(result['answer']).__name__}"
             await updater.failed(
                 message=updater.new_agent_message(
                     [text_part(
-                        "handle_structured() must return a dict with an 'answer' key. "
-                        f"Got keys: {list(result.keys())}"
+                        f"handle_structured() must return a dict with a string 'answer'. Got {got}"
                     )]
                 )
             )
@@ -144,26 +148,46 @@ class HandlerExecutor(AgentExecutorBase):
         await updater.reject()
 
 
-def _handler_accepts_context(fn) -> bool:
-    """True if ``handle_structured`` opts into the P4d credential context.
+def _call_args(fn, user_input, files, handler_context) -> tuple[tuple, dict]:
+    """The (args, kwargs) to call ``handle_structured`` (bound, so no ``self``) with.
 
-    Accepts either a ``context`` keyword or a 3rd positional parameter beyond
-    ``user_input`` and ``files`` (``fn`` is bound, so ``self`` is excluded). A
-    handler that accepts ``**kwargs`` also opts in.
+    A handler opts into the P4d credential context by declaring it: a ``context``
+    parameter gets it by keyword, a 3rd positional parameter beyond ``user_input``
+    and ``files`` gets it positionally, and ``**kwargs`` gets ``context=``. Any
+    other handler, or one whose signature can't be read, gets ``(user_input,
+    files)``. Read from the signature, never by calling.
     """
+    plain: tuple[tuple, dict] = ((user_input, files), {})
     try:
         params = inspect.signature(fn).parameters
     except (ValueError, TypeError):
-        return False
-    if "context" in params:
-        return True
-    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
-        return True
+        return plain
+    named = params.get("context")
+    if named is not None and named.kind is not inspect.Parameter.POSITIONAL_ONLY:
+        return (user_input, files), {"context": handler_context}
     positional = [
         p for p in params.values()
         if p.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.POSITIONAL_ONLY)
     ]
-    return len(positional) >= 3  # user_input, files, <context>
+    if len(positional) >= 3:  # user_input, files, <context>
+        return (user_input, files, handler_context), {}
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return (user_input, files), {"context": handler_context}
+    return plain
+
+
+async def _call(fn, args: tuple, kwargs: dict):
+    # Calling inside the task means a call that can't bind fails the task like any
+    # other handler error. An async handle_structured is awaited; a sync one (the
+    # upload validator accepts both) runs in a worker thread so it can't block the
+    # event loop or the heartbeat. A thread can't be interrupted, so on a runtime
+    # overrun the task is marked failed while the sync body runs to its end.
+    if inspect.iscoroutinefunction(fn):
+        return await fn(*args, **kwargs)
+    result = await asyncio.to_thread(fn, *args, **kwargs)
+    if inspect.isawaitable(result):  # a sync wrapper around an async body
+        result = await result
+    return result
 
 
 def _extract_files(context: "RequestContext") -> list[FileInput]:

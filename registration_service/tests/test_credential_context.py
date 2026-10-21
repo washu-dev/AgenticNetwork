@@ -17,7 +17,7 @@ from a2a.types import TaskState, TaskStatusUpdateEvent  # noqa: E402
 from agent_skeleton.base import AgentHandler  # noqa: E402
 from agent_skeleton.handler_executor import (  # noqa: E402
     HandlerExecutor,
-    _handler_accepts_context,
+    _call_args,
 )
 
 SECRET = "sk-super-secret-value"
@@ -61,9 +61,10 @@ def test_accepts_context_detection():
     class Kwargs(AgentHandler):
         async def handle_structured(self, user_input, files=[], **kw): return {"answer": "x"}
 
-    assert _handler_accepts_context(TwoArg({}).handle_structured) is False
-    assert _handler_accepts_context(ThreeArg({}).handle_structured) is True
-    assert _handler_accepts_context(Kwargs({}).handle_structured) is True
+    ctx = {"credentials": {}}
+    assert _call_args(TwoArg({}).handle_structured, "q", [], ctx) == (("q", []), {})
+    assert _call_args(ThreeArg({}).handle_structured, "q", [], ctx) == (("q", []), {"context": ctx})
+    assert _call_args(Kwargs({}).handle_structured, "q", [], ctx) == (("q", []), {"context": ctx})
 
 
 # ── injection ────────────────────────────────────────────────────────────────

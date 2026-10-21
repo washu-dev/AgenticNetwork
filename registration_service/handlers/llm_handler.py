@@ -74,10 +74,11 @@ class LLMAgentExecutor(AgentExecutor):
                 ),
             )
         except Exception as exc:
+            # Same final state and text as HandlerExecutor reports for custom agents.
             logger.exception("llm_handler_failed agent_id=%s", self._agent_id)
-            await updater.complete(
+            await updater.failed(
                 message=updater.new_agent_message(
-                    [Part(root=TextPart(text=f"LLM call failed: {exc}"))]
+                    [Part(root=TextPart(text=f"Agent failed: {exc}"))]
                 )
             )
             return

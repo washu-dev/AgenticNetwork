@@ -77,6 +77,14 @@ def test_handler_files_default_is_not_a_shared_list():
     assert asyncio.run(_Echo({}).handle("hi")) == "hi:[]"
 
 
+def test_handle_accepts_a_sync_handle_structured():
+    class SyncEcho(AgentHandler):
+        def handle_structured(self, user_input, files=None, context=None):
+            return {"answer": f"sync:{user_input}"}
+
+    assert asyncio.run(SyncEcho({}).handle("hi")) == "sync:hi"
+
+
 def test_non_numeric_port_names_the_variable(monkeypatch):
     monkeypatch.setenv("AGENT_A2A_PORT", "eighty")
     with pytest.raises(ValueError, match="AGENT_A2A_PORT must be an integer, got 'eighty'"):

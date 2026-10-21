@@ -1,4 +1,5 @@
 from __future__ import annotations
+import inspect
 import mimetypes
 import tempfile
 from abc import ABC, abstractmethod
@@ -85,19 +86,20 @@ class AgentHandler(ABC):
         context: dict | None = None,
     ) -> dict:
         """
-        Core logic. Must return a dict containing an "answer" key.
+        Core logic. May be ``async def`` or a plain ``def``. Must return a dict
+        with a string "answer"; otherwise the executor reports the task as failed.
 
         The "answer" value is the human-readable text response shown to the user.
         All other keys are passed to the planner as structured output.
 
         ``context`` is optional and injected only if this method declares it (see
         the class docstring); it carries per-user credentials the agent declared.
-
-        Raises ValueError at runtime if "answer" is missing.
         """
         ...
 
     async def handle(self, user_input: str, files: list[FileInput] | None = None) -> str:
         """Returns the "answer" from handle_structured. Override if needed."""
-        result = await self.handle_structured(user_input, files or [])
+        result = self.handle_structured(user_input, files or [])
+        if inspect.isawaitable(result):
+            result = await result
         return result.get("answer", str(result))
