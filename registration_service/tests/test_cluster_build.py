@@ -482,3 +482,52 @@ async def test_recover_live_agent_without_upload_is_stopped(monkeypatch, handler
     assert got["status"] == "stopped"
     assert await sup.spawn_queue() == []
     await db.close_db()
+
+
+# ── Liveness probe ────────────────────────────────────────────────────────────────
+
+class _RouteClient(_FakeClient):
+    """Answers by path (404 for anything unrouted) and records the URLs asked."""
+
+    def __init__(self, routes: dict[str, int], seen: list[str]):
+        self._routes, self._seen = routes, seen
+
+    async def get(self, url, **kw):
+        self._seen.append(url)
+        path = "/" + url.split("/", 3)[3]
+        return _Resp(self._routes.get(path, 404))
+
+
+@pytest.mark.parametrize(
+    "routes,alive",
+    [
+        pytest.param({"/.well-known/agent-card.json": 200}, True, id="serves-card"),
+        pytest.param({"/health": 404}, False, id="other-listener"),
+        pytest.param({"/.well-known/agent-card.json": 503}, False, id="card-error"),
+    ],
+)
+async def test_cluster_is_alive_requires_the_agent_card(monkeypatch, routes, alive):
+    """Cluster agents are A2A apps: they serve the agent card and have no /health,
+    so a listener without the card is not the agent."""
+    from registration_service import backend as backend_mod
+
+    seen: list[str] = []
+    monkeypatch.setattr(backend_mod.httpx, "AsyncClient", lambda *a, **k: _RouteClient(routes, seen))
+    backend = ClusterBackend()
+    backend.record_pid("agent-1", 4242, 19250)
+
+    assert await backend.is_alive("agent-1") is alive
+    assert seen == ["http://localhost:19250/.well-known/agent-card.json"]
+
+
+@pytest.mark.parametrize("pid", [1, 0, -1])
+async def test_cluster_backend_ignores_a_pid_that_is_not_a_single_process(pid):
+    """The host loop sends SIGTERM to each queued PID; os.kill treats 0 and -1 as
+    groups of processes. The API refuses such reports; the backend ignores them
+    too."""
+    backend = ClusterBackend()
+    backend.record_pid("agent-1", pid, 19250)
+    backend.discard_pid(pid)
+    await backend.stop("agent-1")
+
+    assert backend.pending_stops() == [] and not backend.has_process("agent-1")

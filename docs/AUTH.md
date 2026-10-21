@@ -61,7 +61,10 @@ Admin is **not** a separate password. It's derived from the same SSO identity:
   **403**. It gates all `/admin/*` routes **and** the admin `/register/*` pass-through subpaths
   (`approve`, `reject`, `handler`, `handler/download`).
 - `registration_service/server.py::_require_admin` re-checks the forwarded identity as
-  defense-in-depth (dev-open under `FAKE_DB=1`).
+  defense-in-depth (dev-open under `FAKE_DB=1`). It alone gates `DELETE /agents/{id}?force=true`
+  (delete although the directory did not confirm the card's removal), which the chat app forwards
+  without its own check (on the service itself:
+  `curl -X DELETE 'http://localhost:8091/agents/<id>?force=true' -H "mail: <admin>"`).
 - `/me` returns `is_admin`; the UI shows the Admin entry / dashboard only to admins.
 
 The old shared `X-Admin-Token` / `MAIN_AGENT_ADMIN_TOKEN` and `POST /admin/login` are **retired**

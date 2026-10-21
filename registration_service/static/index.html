@@ -333,7 +333,7 @@
             </div>
           </div>
           <div class="form-group">
-            <label class="field-label">Project archive <span class="hint">— .zip; the entry file must sit at the archive root, next to importable siblings</span></label>
+            <label class="field-label">Project archive <span class="hint">— .zip; the entry file must sit at the archive root, next to importable siblings; files under .git/, .venv/ and __pycache__/ are skipped but count toward the 2,000-file limit; zip only the project's files (no virtualenv, no .env secrets)</span></label>
             <label class="btn btn-sm btn-outline" style="cursor:pointer">
               Choose .zip file
               <input type="file" accept=".zip,application/zip" style="display:none" onchange="loadZipFile(this)">
@@ -402,7 +402,7 @@
 
         <div id="tl-zip" style="display:none">
           <div class="form-group">
-            <label class="field-label">Project archive <span class="hint">— .zip; the tools file must sit at the archive root, next to importable siblings</span></label>
+            <label class="field-label">Project archive <span class="hint">— .zip; the tools file must sit at the archive root, next to importable siblings; files under .git/, .venv/ and __pycache__/ are skipped but count toward the 2,000-file limit; zip only the project's files (no virtualenv, no .env secrets)</span></label>
             <label class="btn btn-sm btn-outline" style="cursor:pointer">
               Choose .zip file
               <input type="file" accept=".zip,application/zip" style="display:none" onchange="loadTlZip(this)">
@@ -989,9 +989,12 @@ async function deleteAgent(id, name) {
   if (!confirm(`Delete "${name}"?\n\nThis stops the agent and removes it from ADS.`)) return;
   try {
     const res = await fetch(`${API_PREFIX}/agents/${id}`, { method: 'DELETE' });
-    if (!res.ok && res.status !== 204) throw new Error(res.statusText);
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(fmtDetail(body.detail) || res.statusText || `HTTP ${res.status}`);
+    }
     loadAgents();
-  } catch (e) { alert('Delete failed: ' + e.message); }
+  } catch (e) { alert('Delete failed: ' + e.message); loadAgents(); }
 }
 
 // ── Alerts ────────────────────────────────────────────────────────────────────

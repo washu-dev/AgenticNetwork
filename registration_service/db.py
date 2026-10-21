@@ -115,6 +115,17 @@ async def get_pool() -> asyncpg.Pool:
     return _pool  # type: ignore[return-value]
 
 
+# Dead agents the startup purge deletes. Spared: a 'failed' agent that built (has
+# image_ref) — the build succeeded and only the deploy step failed, which is
+# retryable on recovery (supervisor._recover_cloud_agents); and any row that still
+# holds an ads_cid — its card is still in the directory and the CID is the only
+# handle to remove it (recovery retries, then clears it). fake_db._is_purgeable
+# mirrors this.
+_PURGEABLE_SQL = (
+    "(status = 'stopped' OR (status = 'failed' AND image_ref IS NULL)) AND ads_cid IS NULL"
+)
+
+
 async def init_db() -> None:
     """Create connection pool and run schema migrations."""
     global _pool
@@ -132,18 +143,12 @@ async def init_db() -> None:
         await conn.execute(_SCHEMA_SQL)
         from registration_service.port_pool import seed_ports
         await seed_ports(conn)
-        # Clean up dead agents from previous runs so ports are freed. Spare a
-        # 'failed' agent that built (has image_ref): the build succeeded and only
-        # the deploy step failed, which is retryable on recovery
-        # (supervisor._recover_cloud_agents) — deleting it would strand the work.
+        # Clean up dead agents from previous runs so ports are freed.
         await conn.execute(
             "UPDATE port_pool SET in_use = false, agent_id = NULL "
-            "WHERE agent_id IN (SELECT id FROM agents "
-            "WHERE status = 'stopped' OR (status = 'failed' AND image_ref IS NULL))"
+            f"WHERE agent_id IN (SELECT id FROM agents WHERE {_PURGEABLE_SQL})"
         )
-        await conn.execute(
-            "DELETE FROM agents WHERE status = 'stopped' OR (status = 'failed' AND image_ref IS NULL)"
-        )
+        await conn.execute(f"DELETE FROM agents WHERE {_PURGEABLE_SQL}")
     logger.info("db_init dsn=%s", dsn.split("@")[-1])
 
 

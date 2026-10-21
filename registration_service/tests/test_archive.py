@@ -15,6 +15,7 @@ import pytest
 from registration_service.archive import (
     ArchiveError,
     list_tree,
+    tree_revision,
     unpack_archive,
     zip_tree,
 )
@@ -43,7 +44,7 @@ def _zip(files: dict[str, str], *, symlink: str | None = None) -> bytes:
 
 def test_unpack_stores_tree_and_returns_manifest(tmp_path: Path) -> None:
     dest = tmp_path / "agent"
-    manifest = unpack_archive(
+    manifest, _ = unpack_archive(
         _zip({"handler.py": HANDLER, "refbot/__init__.py": "x = 1", "pyproject.toml": "[project]"}),
         dest,
         "handler.py",
@@ -96,10 +97,31 @@ def test_reject_symlink(tmp_path: Path) -> None:
         unpack_archive(_zip({"handler.py": HANDLER}, symlink="link"), tmp_path / "a", "handler.py")
 
 
+def test_symlink_in_a_virtualenv_says_to_leave_it_out(tmp_path: Path) -> None:
+    with pytest.raises(ArchiveError, match="symlink: '.venv/bin/python' \\(zip only the project's files"):
+        unpack_archive(
+            _zip({"handler.py": HANDLER}, symlink=".venv/bin/python"), tmp_path / "a", "handler.py"
+        )
+
+
 @pytest.mark.parametrize("reserved", ["Dockerfile", "agent_skeleton/__init__.py", "foo.card.json"])
 def test_reject_reserved_root_names(tmp_path: Path, reserved: str) -> None:
     with pytest.raises(ArchiveError, match="Reserved name"):
         unpack_archive(_zip({"handler.py": HANDLER, reserved: "x"}), tmp_path / "a", "handler.py")
+
+
+@pytest.mark.parametrize(
+    "member",
+    ["__pycache__/handler.cpython-312.pyc", "lib/__pycache__/a.cpython-312.pyc",
+     ".venv/lib/python3.12/site-packages/x.pth", ".git/config"],
+)
+def test_members_inside_platform_directories_are_not_extracted(tmp_path: Path, member: str) -> None:
+    # The stored tree is then exactly what the manifest, the revision and the
+    # build cover: no bytecode or venv the approver never saw.
+    dest = tmp_path / "a"
+    manifest, skipped = unpack_archive(_zip({"handler.py": HANDLER, member: "x"}), dest, "handler.py")
+    assert manifest == ["handler.py"] and skipped == [member]
+    assert sorted(p.relative_to(dest).as_posix() for p in dest.rglob("*")) == ["handler.py"]
 
 
 def test_reject_missing_entry_file(tmp_path: Path) -> None:
@@ -112,6 +134,18 @@ def test_reject_too_many_files(tmp_path: Path, monkeypatch) -> None:
     files = {"handler.py": HANDLER, "a.py": "1", "b.py": "2", "c.py": "3"}
     with pytest.raises(ArchiveError, match="too many files"):
         unpack_archive(_zip(files), tmp_path / "a", "handler.py")
+
+
+def test_too_many_files_names_the_skipped_ones_to_leave_out(tmp_path: Path, monkeypatch) -> None:
+    # Members under .venv/, .git/ and __pycache__/ are skipped but still counted,
+    # so a zipped virtualenv hits the cap; the error says so and how to avoid it.
+    monkeypatch.setenv("MAX_ARCHIVE_FILES", "3")
+    files = {"handler.py": HANDLER, "__pycache__/h.pyc": "x"}
+    files.update({f".venv/lib/m{i}.py": "1" for i in range(4)})
+    with pytest.raises(ArchiveError) as err:
+        unpack_archive(_zip(files), tmp_path / "a", "handler.py")
+    assert "too many files (6 > 3), 5 of them under .git/, .venv/ or __pycache__/" in str(err.value)
+    assert "zip -r agent.zip handler.py mypkg" in str(err.value)
 
 
 def test_reject_oversize_uncompressed(tmp_path: Path, monkeypatch) -> None:
@@ -164,7 +198,7 @@ def test_reject_pyproject_impersonating_framework(tmp_path: Path, pyproject: str
 
 def test_accept_clean_pyproject_packaging_own_code(tmp_path: Path) -> None:
     """A well-formed custom upload (own dist name, only its own package) is accepted."""
-    manifest = unpack_archive(
+    manifest, _ = unpack_archive(
         _zip(
             {
                 "handler.py": HANDLER,
@@ -176,3 +210,26 @@ def test_accept_clean_pyproject_packaging_own_code(tmp_path: Path) -> None:
         "handler.py",
     )
     assert "pyproject.toml" in manifest and "handler.py" in manifest
+
+
+def test_tree_revision_changes_with_any_path_or_byte(tmp_path: Path) -> None:
+    def revision(files: dict[str, str]) -> str:
+        root = tmp_path / f"t{len(list(tmp_path.iterdir()))}"
+        for rel, data in files.items():
+            (root / rel).parent.mkdir(parents=True, exist_ok=True)
+            (root / rel).write_text(data)
+        return tree_revision(root)
+
+    base = revision({"handler.py": HANDLER, "lib/a.py": "x = 1\n"})
+    assert len(base) == 64 and int(base, 16) >= 0
+    assert revision({"lib/a.py": "x = 1\n", "handler.py": HANDLER}) == base
+    assert revision({"handler.py": HANDLER, "lib/a.py": "x = 2\n"}) != base
+    assert revision({"handler.py": HANDLER, "lib/b.py": "x = 1\n"}) != base
+    assert revision({"handler.py": HANDLER, "lib/a.py": "x = 1\n", "extra.txt": ""}) != base
+    # A path and a content boundary cannot be traded for each other.
+    assert revision({"ab": "c"}) != revision({"a": "bc"})
+    # The service's own per-agent venv and bytecode are not part of the upload.
+    assert revision({
+        "handler.py": HANDLER, "lib/a.py": "x = 1\n",
+        ".venv/bin/python": "", "lib/__pycache__/a.cpython-311.pyc": "",
+    }) == base

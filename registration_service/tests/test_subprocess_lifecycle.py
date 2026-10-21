@@ -4,8 +4,9 @@ Spawns REAL agent processes. Each test checks one property the one-command dev
 stack relies on: agent output lands in a per-agent log file (no undrained
 pipes), agents run in their own session and import the repo without the
 caller's PYTHONPATH, readiness means "serves its agent card" (not "anything
-answers HTTP"), a failed spawn leaves nothing running and frees its port, and
-nothing outlives the service — not on shutdown, not when it is SIGKILLed.
+answers HTTP"), a failed spawn leaves nothing running and frees its port, an
+install step that does not end is killed, and nothing outlives the service —
+not on shutdown, not when it is SIGKILLed.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ import sys
 import textwrap
 import time
 import uuid
+from pathlib import Path
 
 import httpx
 import pytest
@@ -200,3 +202,188 @@ async def test_agent_exits_when_the_service_is_sigkilled(tmp_path) -> None:
             service.wait()
         if agent_pid and pid_alive(agent_pid):
             os.killpg(agent_pid, signal.SIGKILL)
+
+
+def _hanging_install_step(tmp_path: Path) -> tuple[list[str], Path]:
+    """A stand-in for a pip run that never ends and has started a child of its
+    own; it writes both PIDs to a file once running."""
+    pids = tmp_path / "pids"
+    script = textwrap.dedent(f'''
+        import os, subprocess, sys, time
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        open({str(pids)!r}, "w").write(f"{{os.getpid()}} {{child.pid}}")
+        time.sleep(60)
+    ''')
+    return [sys.executable, "-c", script], pids
+
+
+async def _pids_once_running(pids: Path) -> list[int]:
+    for _ in range(100):
+        if pids.exists() and pids.read_text():
+            return [int(p) for p in pids.read_text().split()]
+        await asyncio.sleep(0.05)
+    raise AssertionError("install step never started")
+
+
+async def test_an_install_step_past_its_time_limit_is_killed_and_raises(
+    monkeypatch, tmp_path
+) -> None:
+    # A local spawn installs holding the agent's lock, so each install step is
+    # bounded (AGENT_INSTALL_TIMEOUT_SECONDS), and nothing it started outlives it.
+    from registration_service import backend as backend_mod
+
+    monkeypatch.setenv("AGENT_INSTALL_TIMEOUT_SECONDS", "1")
+    cmd, pids = _hanging_install_step(tmp_path)
+
+    # Ends promptly: a child left holding the output pipe would keep it waiting.
+    with pytest.raises(RuntimeError, match="timed out after 1s"):
+        await asyncio.wait_for(backend_mod._run(cmd), 10)
+
+    for pid in await _pids_once_running(pids):
+        assert _wait_gone(pid, 5)
+
+
+async def test_a_cancelled_install_step_leaves_no_process(tmp_path) -> None:
+    # Shutdown cancels a health-loop restart that may be installing.
+    from registration_service import backend as backend_mod
+
+    cmd, pids = _hanging_install_step(tmp_path)
+    task = asyncio.create_task(backend_mod._run(cmd))
+    running = await _pids_once_running(pids)
+
+    task.cancel()
+    done, _ = await asyncio.wait({task}, timeout=10)
+    assert done and task.cancelled()
+
+    for pid in running:
+        assert _wait_gone(pid, 5)
+
+
+def _install_step_with_detached_child(tmp_path: Path, then: str) -> tuple[list[str], Path]:
+    """A stand-in for a pip run that starts a child in a session of its own
+    (outside the step's process group, still holding the step's output open),
+    writes the child's PID to a file, then runs ``then``."""
+    pid_file = tmp_path / "detached"
+    script = textwrap.dedent(f'''
+        import subprocess, sys, time
+        child = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True
+        )
+        open({str(pid_file)!r}, "w").write(str(child.pid))
+        {then}
+    ''')
+    return [sys.executable, "-c", script], pid_file
+
+
+@pytest.mark.parametrize("then, raises", [
+    ("pass", None),                      # the step succeeds at once
+    ("time.sleep(60)", "timed out"),     # the step is past its time limit
+])
+async def test_an_install_step_ends_with_its_own_process(monkeypatch, tmp_path, then, raises) -> None:
+    # A child that left the step's group outlives the kill and keeps the
+    # output open; the step's result does not wait for it.
+    from registration_service import backend as backend_mod
+
+    monkeypatch.setenv("AGENT_INSTALL_TIMEOUT_SECONDS", "2")
+    cmd, pid_file = _install_step_with_detached_child(tmp_path, then)
+    try:
+        if raises:
+            with pytest.raises(RuntimeError, match=raises):
+                await asyncio.wait_for(backend_mod._run(cmd), 5)
+        else:
+            await asyncio.wait_for(backend_mod._run(cmd), 5)
+    finally:
+        if pid_file.exists() and pid_file.read_text():
+            os.kill(int(pid_file.read_text()), signal.SIGKILL)
+
+
+async def test_a_failed_install_step_reports_the_end_of_its_output() -> None:
+    from registration_service import backend as backend_mod
+
+    cmd = [sys.executable, "-c", "print('x' * 3000); print('pip: no matching distribution'); raise SystemExit(3)"]
+    with pytest.raises(RuntimeError, match=r"command failed \(3\)") as failed:
+        await backend_mod._run(cmd)
+    assert str(failed.value).endswith("pip: no matching distribution\n")
+
+
+async def test_installing_the_project_leaves_the_stored_tree_as_uploaded(monkeypatch, tmp_path) -> None:
+    """pip builds a project in the directory it installs from (setuptools writes
+    build/ and *.egg-info/ there). The install runs from a copy, so the stored
+    tree, and the revision an admin approved, stay what was uploaded."""
+    from registration_service import backend as backend_mod
+    from registration_service.archive import list_tree, tree_revision
+    from registration_service.models import upload_spec
+
+    handler_dir = tmp_path / "agent"
+    (handler_dir / "mypkg").mkdir(parents=True)
+    (handler_dir / "handler.py").write_text("x = 1\n")
+    (handler_dir / "mypkg" / "__init__.py").write_text("")
+    (handler_dir / "pyproject.toml").write_text("[project]\nname = 'mypkg'\nversion = '0.1'\n")
+    (handler_dir / ".venv" / "bin").mkdir(parents=True)
+    (handler_dir / ".venv" / "bin" / "python").write_text("")  # the venv exists
+    before = tree_revision(handler_dir)
+    installed: list[list[str]] = []
+
+    async def pip_builds_in_tree(cmd: list[str]) -> None:
+        project = Path(cmd[-1])
+        installed.append(list_tree(project))
+        (project / "mypkg.egg-info").mkdir()
+        (project / "mypkg.egg-info" / "PKG-INFO").write_text("Name: mypkg\n")
+        (project / "build" / "lib" / "mypkg").mkdir(parents=True)
+        (project / "build" / "lib" / "mypkg" / "__init__.py").write_text("")
+
+    monkeypatch.setattr(backend_mod, "_run", pip_builds_in_tree)
+    spec = upload_spec(CustomConfig(class_name="H"))
+    await SubprocessBackend()._ensure_venv(handler_dir, spec)
+
+    assert installed == [["handler.py", "mypkg/__init__.py", "pyproject.toml"]]
+    assert tree_revision(handler_dir) == before
+
+
+async def test_a_spawn_cancelled_while_copying_the_project_leaves_no_copy(monkeypatch, tmp_path) -> None:
+    """The copy runs in a thread, which a cancel does not stop. The cancelled
+    install waits for it before removing the temporary directory, so the
+    cancel propagates and no copy is left behind."""
+    import shutil
+    import tempfile
+    import threading
+
+    from registration_service import backend as backend_mod
+    from registration_service.models import upload_spec
+
+    handler_dir = tmp_path / "agent"
+    (handler_dir / ".venv" / "bin").mkdir(parents=True)
+    (handler_dir / ".venv" / "bin" / "python").write_text("")  # the venv exists
+    (handler_dir / "handler.py").write_text("x = 1\n")
+    (handler_dir / "pyproject.toml").write_text("[project]\nname = 'p'\nversion = '0.1'\n")
+    temp_root = tmp_path / "tmp"
+    temp_root.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(temp_root))
+    started, proceed, copied = threading.Event(), threading.Event(), threading.Event()
+    copytree = shutil.copytree
+
+    def slow_copytree(*args, **kwargs):
+        started.set()
+        proceed.wait(5)
+        try:
+            return copytree(*args, **kwargs)
+        finally:
+            copied.set()
+
+    async def no_install(cmd: list[str]) -> None:
+        pass
+
+    monkeypatch.setattr(shutil, "copytree", slow_copytree)
+    monkeypatch.setattr(backend_mod, "_run", no_install)
+    spec = upload_spec(CustomConfig(class_name="H"))
+    install = asyncio.create_task(SubprocessBackend()._ensure_venv(handler_dir, spec))
+    assert await asyncio.to_thread(started.wait, 5)
+
+    install.cancel()
+    await asyncio.wait({install}, timeout=0.2)
+    proceed.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await install
+    assert await asyncio.to_thread(copied.wait, 5)
+    assert list(temp_root.iterdir()) == []

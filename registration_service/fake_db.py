@@ -31,12 +31,14 @@ def _coerce_uuid(v: Any) -> uuid.UUID:
 
 
 def _is_purgeable(agent: dict) -> bool:
-    """Mirror init_db's startup purge: delete 'stopped' agents and 'failed' agents
-    that never built. Spare 'failed'+image_ref rows — a built agent whose deploy
-    step failed is retryable on recovery, so it must survive the restart."""
-    return agent["status"] == "stopped" or (
-        agent["status"] == "failed" and agent.get("image_ref") is None
-    )
+    """Mirror init_db's startup purge (db._PURGEABLE_SQL): delete 'stopped' agents
+    and 'failed' agents that never built. Spare 'failed'+image_ref rows — a built
+    agent whose deploy step failed is retryable on recovery, so it must survive the
+    restart — and rows that still hold an ads_cid (a card not yet removed)."""
+    return (
+        agent["status"] == "stopped"
+        or (agent["status"] == "failed" and agent.get("image_ref") is None)
+    ) and agent.get("ads_cid") is None
 
 
 class FakeRecord(dict):
@@ -168,7 +170,7 @@ class FakeConnection:
                 a["updated_at"] = _now()
 
         elif "set status = 'stopped'" in s:
-            # supervisor stop_and_unpublish: UPDATE agents SET status='stopped', ads_cid=NULL ...
+            # fake_supervisor stop / cluster recovery: UPDATE agents SET status='stopped', ads_cid=NULL ...
             uid = args[0]
             a = self._s.agents.get(_coerce_uuid(uid))
             if a:
@@ -179,7 +181,7 @@ class FakeConnection:
         elif s.startswith("delete from agents where id"):
             self._s.agents.pop(_coerce_uuid(args[0]), None)
 
-        elif s.startswith("delete from agents where status = 'stopped'"):
+        elif s.startswith("delete from agents where (status = 'stopped'"):
             stale = [k for k, v in self._s.agents.items() if _is_purgeable(v)]
             for k in stale:
                 del self._s.agents[k]
@@ -316,15 +318,16 @@ async def init_fake_db() -> None:
     pool = get_fake_pool()
     pool._store.seed_ports()
     conn = pool._conn
-    # Mirror the cleanup that init_db() does on real postgres (spares failed+built).
+    # The cleanup init_db() does on real postgres, in the same statements; the
+    # fake applies them with _is_purgeable (spares failed+built rows and rows
+    # still holding an ads_cid).
+    from registration_service.db import _PURGEABLE_SQL
+
     await conn.execute(
-        "update port_pool set in_use = false, agent_id = null "
-        "where agent_id in (select id from agents "
-        "where status = 'stopped' or (status = 'failed' and image_ref is null))"
+        "UPDATE port_pool SET in_use = FALSE, agent_id = NULL "
+        f"WHERE agent_id IN (SELECT id FROM agents WHERE {_PURGEABLE_SQL})"
     )
-    await conn.execute(
-        "delete from agents where status = 'stopped' or (status = 'failed' and image_ref is null)"
-    )
+    await conn.execute(f"DELETE FROM agents WHERE {_PURGEABLE_SQL}")
 
 
 def reset_fake_db() -> None:

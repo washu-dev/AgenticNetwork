@@ -10,12 +10,15 @@ that is_alive/stop never touch HTTP.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from registration_service import db, supervisor as sup_mod
 from registration_service.backend import (
     CloudRunBackend,
     _cloudrun_service_id,
+    _CloudRunClient,
     _deploy_spec,
     make_backend,
 )
@@ -75,6 +78,7 @@ class _FakePublisher:
 
     def unpublish(self, cid):
         self.unpublished.append(cid)
+        return True  # DirectoryPublisher.unpublish: True once the directory confirmed
 
 
 def _custom_config() -> CustomConfig:
@@ -257,6 +261,37 @@ async def test_stop_deletes_service(monkeypatch):
     assert fake.deleted == ["agent-paper-reviewer"]
     assert await backend.is_alive(aid) is False
     await db.close_db()
+
+
+@_aio
+async def test_cloud_run_operations_wait_a_bounded_time(monkeypatch):
+    """A deploy or delete holds the agent lock, so the client gives up on a Cloud
+    Run operation after CLOUDRUN_OPERATION_TIMEOUT_SECONDS instead of waiting
+    forever (google-api-core's default)."""
+    pytest.importorskip("google.api_core.exceptions")
+    monkeypatch.setenv("CLOUDRUN_OPERATION_TIMEOUT_SECONDS", "42")
+    waits: list = []
+
+    class _Operation:
+        async def result(self, timeout=None):
+            waits.append(timeout)
+            return SimpleNamespace(uri="https://agent-x.a.run.app")
+
+    class _Services:
+        async def create_service(self, **_):
+            return _Operation()
+
+        async def delete_service(self, **_):
+            return _Operation()
+
+    client = _CloudRunClient.__new__(_CloudRunClient)
+    client._parent = "projects/example/locations/us-central1"
+    client._services = _Services()
+    client._build_service = lambda spec: SimpleNamespace()
+
+    assert await client.create_or_replace({"service_id": "agent-x"}) == "https://agent-x.a.run.app"
+    await client.delete("agent-x")
+    assert waits == [42.0, 42.0]
 
 
 def test_make_backend_selects_cloudrun(monkeypatch):

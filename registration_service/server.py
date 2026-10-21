@@ -18,12 +18,19 @@ from fastapi.responses import FileResponse, JSONResponse
 
 from agentnet.directory.publisher import DirectoryPublisher
 from registration_service import db
-from registration_service.archive import ArchiveError, _clear_dir, list_tree, unpack_archive, zip_tree
-from registration_service.backend import _handler_files_dir, _image_slug
+from registration_service.archive import (
+    ArchiveError,
+    list_tree,
+    tree_revision,
+    unpack_archive,
+    zip_tree,
+)
+from registration_service.backend import _cloudrun_service_id, _handler_files_dir, _image_slug
 from registration_service.db import get_pool
 from registration_service.lifespan import lifespan
 from registration_service.models import (
     AgentResponse,
+    ApproveRequest,
     CustomConfig,
     OASFSkill,
     RegisterRequest,
@@ -36,7 +43,13 @@ from registration_service.credential_catalog import CATALOG as CREDENTIAL_CATALO
 from registration_service.flags import fake_db_enabled, fake_supervisor_enabled
 from registration_service.oasf_skills import OASF_SKILLS, has_routable_skill
 from registration_service.port_pool import assign_port
-from registration_service.supervisor import _deserialize_config, _uploads_code, get_supervisor
+from registration_service.supervisor import (
+    LaunchRefused,
+    _agent_lock,
+    _deserialize_config,
+    _uploads_code,
+    get_supervisor,
+)
 from registration_service.validator import validate_handler, validate_tool_module
 
 
@@ -47,6 +60,50 @@ from registration_service.validator import validate_handler, validate_tool_modul
 
 def _handler_dir(agent_id: Any) -> Path:
     return _handler_files_dir() / str(agent_id)
+
+
+# The per-agent lock (supervisor._agent_lock) is shared with the supervisor's
+# launch paths. The endpoints take it with the canonical id (_canonical_id), so
+# every spelling of the UUID shares one lock, one handler directory and one
+# backend process key.
+
+
+def _replace_dir(new: Path, target: Path) -> None:
+    """Put ``new`` in place of ``target`` by renames (same filesystem), so the
+    stored tree is never a mix of the old upload and the new one."""
+    old = target.with_name(f".replaced-{target.name}-{uuid.uuid4().hex}")
+    if target.exists():
+        target.rename(old)
+    try:
+        new.rename(target)
+    except OSError:
+        if old.exists():
+            old.rename(target)
+        raise
+    shutil.rmtree(old, ignore_errors=True)
+
+
+async def _revoke_approval(agent_id: str) -> None:
+    """Return an uploaded-code agent to the pre-approval state. The caller holds
+    the agent's lock (_agent_lock).
+
+    Approval is revoked first, so no spawn can start meanwhile. Unless the agent
+    is 'registered' or 'stopped' with no image and no card, it is stopped and
+    its card removed: a launch that failed part way (a Cloud Run deploy whose
+    service was created) can leave it running, and so can a stop that failed at
+    startup (_reset_revoked_rows), which this then retries. A 'building' or
+    'image_ready' one leaves the build poll and the spawn queue with its
+    status. image_ref is cleared, so the next approval goes through the normal
+    build path.
+    """
+    uid = _parse_uuid(agent_id)
+    agent = await db.get_agent(uid)
+    if agent is None:
+        raise HTTPException(status_code=404, detail="Uploaded-code agent not found")
+    await db.update_agent(uid, approved=False)
+    if agent["status"] not in ("registered", "stopped") or agent.get("image_ref") or agent.get("ads_cid"):
+        await get_supervisor().stop_and_unpublish(agent_id)
+    await db.update_agent(uid, status="registered", image_ref=None)
 
 
 # ZIP local-file-header magic; used as a fallback when the filename lacks a suffix.
@@ -207,14 +264,24 @@ async def register_agent(req: RegisterRequest) -> AgentResponse:
     """
     # Enforce unique names: the name's slug drives the registered_agents/ dir, the
     # Docker image tag, and the ADS routing key — duplicate names collide on all
-    # three (e.g. two "Echo Test" agents share echo-test). Reject up front.
+    # three (e.g. two "Echo Test" agents share echo-test). The Cloud Run service id
+    # sanitizes the slug further and cuts it at 63 characters ('weather_bot' and
+    # 'Weather Bot' both become agent-weather-bot), and every deploy, stop and
+    # health check names the service by it. Reject either clash up front.
     new_slug = _image_slug(req.name)
+    new_service = _cloudrun_service_id(req.name)
     async with (await get_pool()).acquire() as conn:
         existing = await conn.fetch("SELECT * FROM agents ORDER BY created_at DESC")
-    if any(_image_slug(r["name"]) == new_slug for r in existing):
+    if any(
+        _image_slug(r["name"]) == new_slug or _cloudrun_service_id(r["name"]) == new_service
+        for r in existing
+    ):
         raise HTTPException(
             status_code=409,
-            detail=f"An agent with a conflicting name already exists (slug '{new_slug}'): {req.name!r}",
+            detail=(
+                f"An agent with a conflicting name already exists (slug '{new_slug}', "
+                f"Cloud Run service '{new_service}'): {req.name!r}"
+            ),
         )
 
     # At least one skill must carry an id so the card gets a routable
@@ -246,47 +313,49 @@ async def register_agent(req: RegisterRequest) -> AgentResponse:
         return _row_to_response(agent)
 
     pool = await get_pool()
+    agent_id = str(uuid.uuid4())
+    # Held from the insert to the response: a delete or restart that names the
+    # new agent waits for its first launch, then stops it and removes its card.
+    async with _agent_lock(agent_id):
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                typed_config = req.typed_config()
+                oasf_skills_data = [s.model_dump() for s in req.oasf_skills]
 
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            agent_id = str(uuid.uuid4())
-            typed_config = req.typed_config()
-            oasf_skills_data = [s.model_dump() for s in req.oasf_skills]
+                # Insert agent first (port nullable) so the FK in port_pool is satisfied.
+                await conn.execute(
+                    """
+                    INSERT INTO agents
+                        (id, name, description, handler_type, oasf_skills, config, status)
+                    VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, 'registered')
+                    """,
+                    uuid.UUID(agent_id),
+                    req.name,
+                    req.description,
+                    req.canonical_handler_type,
+                    json.dumps(oasf_skills_data),
+                    json.dumps(typed_config.model_dump()),
+                )
 
-            # Insert agent first (port nullable) so the FK in port_pool is satisfied.
-            await conn.execute(
-                """
-                INSERT INTO agents
-                    (id, name, description, handler_type, oasf_skills, config, status)
-                VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, 'registered')
-                """,
-                uuid.UUID(agent_id),
-                req.name,
-                req.description,
-                req.canonical_handler_type,
-                json.dumps(oasf_skills_data),
-                json.dumps(typed_config.model_dump()),
-            )
+                try:
+                    port = await assign_port(conn, agent_id)
+                except RuntimeError as exc:
+                    raise HTTPException(status_code=503, detail=str(exc))
 
-            try:
-                port = await assign_port(conn, agent_id)
-            except RuntimeError as exc:
-                raise HTTPException(status_code=503, detail=str(exc))
+                await conn.execute(
+                    "UPDATE agents SET port = $1 WHERE id = $2",
+                    port,
+                    uuid.UUID(agent_id),
+                )
 
-            await conn.execute(
-                "UPDATE agents SET port = $1 WHERE id = $2",
-                port,
-                uuid.UUID(agent_id),
-            )
+        try:
+            await get_supervisor().spawn_and_publish(agent_id)
+        except Exception as exc:
+            logger.error("register_agent_spawn_failed agent_id=%s error=%s", agent_id, exc)
+            raise HTTPException(status_code=500, detail=f"Agent registered but failed to start: {exc}")
 
-    try:
-        await get_supervisor().spawn_and_publish(agent_id)
-    except Exception as exc:
-        logger.error("register_agent_spawn_failed agent_id=%s error=%s", agent_id, exc)
-        raise HTTPException(status_code=500, detail=f"Agent registered but failed to start: {exc}")
-
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow("SELECT * FROM agents WHERE id = $1", uuid.UUID(agent_id))
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM agents WHERE id = $1", uuid.UUID(agent_id))
 
     return _row_to_response(row)
 
@@ -314,21 +383,43 @@ async def get_agent(agent_id: str) -> AgentResponse:
 
 
 @app.delete("/agents/{agent_id}", status_code=204, tags=["agents"])
-async def delete_agent(agent_id: str) -> Response:
-    """Stop and unregister an agent."""
-    agent = await db.get_agent(_parse_uuid(agent_id))
-    if not agent:
-        raise HTTPException(status_code=404, detail="Agent not found")
+async def delete_agent(agent_id: str, request: Request, force: bool = False) -> Response:
+    """Stop and unregister an agent.
 
-    await get_supervisor().stop_and_unpublish(agent_id)
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        await conn.execute("DELETE FROM agents WHERE id = $1", _parse_uuid(agent_id))
+    If the directory does not confirm removing the agent's card, the agent is
+    stopped but its row (which holds the card's CID) is kept and the call fails
+    with 503, so the delete can be retried once the directory is reachable.
+    ``?force=true`` (admin-only) deletes the row and files even then; the CID of
+    the card left in the directory is logged as a warning.
+    """
+    if force:
+        _require_admin(request)
+    agent_id = _canonical_id(agent_id)
+    async with _agent_lock(agent_id):
+        agent = await db.get_agent(agent_id)
+        if not agent:
+            raise HTTPException(status_code=404, detail="Agent not found")
 
-    # Clean up any uploaded handler files / per-agent venv.
-    handler_dir = _handler_dir(agent_id)
-    if handler_dir.exists():
-        shutil.rmtree(handler_dir, ignore_errors=True)
+        removed = await get_supervisor().stop_and_unpublish(agent_id)
+        if not removed and not force:
+            raise HTTPException(
+                status_code=503,
+                detail="Directory unavailable: the agent is stopped but its card could "
+                "not be removed. Try the delete again; an admin can force it "
+                "(?force=true), which leaves the card in the directory.",
+            )
+        if not removed:
+            logger.warning(
+                "agent_force_deleted_card_left agent_id=%s cid=%s", agent_id, agent["ads_cid"]
+            )
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("DELETE FROM agents WHERE id = $1", _parse_uuid(agent_id))
+
+        # Clean up any uploaded handler files / per-agent venv.
+        handler_dir = _handler_dir(agent_id)
+        if handler_dir.exists():
+            shutil.rmtree(handler_dir, ignore_errors=True)
 
     # Remove the committed build context from the agent-directory repo (uploaded-code
     # agents on the cluster build path only). Best-effort — never blocks the delete.
@@ -339,34 +430,40 @@ async def delete_agent(agent_id: str) -> Response:
 
 @app.post("/agents/{agent_id}/restart", response_model=AgentResponse, tags=["agents"])
 async def restart_agent(agent_id: str) -> AgentResponse:
-    """Manually restart an agent."""
+    """Manually restart an agent.
+
+    Holds the agent's lock from the stop to the end of the spawn, so an upload
+    cannot replace the files the new process is started from.
+    """
+    agent_id = _canonical_id(agent_id)
     pool = await get_pool()
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            "SELECT * FROM agents WHERE id = $1", _parse_uuid(agent_id)
-        )
-    if row is None:
-        raise HTTPException(status_code=404, detail="Agent not found")
-
-    await get_supervisor().stop_and_unpublish(agent_id)
-
-    # Re-assign a port and set status back to registered before re-spawning.
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            try:
-                port = await assign_port(conn, agent_id)
-            except RuntimeError as exc:
-                raise HTTPException(status_code=503, detail=str(exc))
-            await conn.execute(
-                "UPDATE agents SET port = $1, status = 'registered', updated_at = now() WHERE id = $2",
-                port,
-                _parse_uuid(agent_id),
+    async with _agent_lock(agent_id):
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM agents WHERE id = $1", _parse_uuid(agent_id)
             )
+        if row is None:
+            raise HTTPException(status_code=404, detail="Agent not found")
 
-    try:
-        await get_supervisor().spawn_and_publish(agent_id)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Restart failed: {exc}")
+        await get_supervisor().stop_and_unpublish(agent_id)
+
+        # Re-assign a port and set status back to registered before re-spawning.
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                try:
+                    port = await assign_port(conn, agent_id)
+                except RuntimeError as exc:
+                    raise HTTPException(status_code=503, detail=str(exc))
+                await conn.execute(
+                    "UPDATE agents SET port = $1, status = 'registered', updated_at = now() WHERE id = $2",
+                    port,
+                    _parse_uuid(agent_id),
+                )
+
+        try:
+            await get_supervisor().spawn_and_publish(agent_id)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Restart failed: {exc}")
 
     async with pool.acquire() as conn:
         row = await conn.fetchrow("SELECT * FROM agents WHERE id = $1", _parse_uuid(agent_id))
@@ -382,12 +479,18 @@ async def upload_handler(agent_id: str, file: UploadFile = File(...)) -> dict:
     - ``.py``  → stored as ``{handler_dir}/{entry_file}`` (single-file, as before).
     - ``.zip`` → validated + unpacked into ``{handler_dir}/`` preserving structure;
       the archive root is the project root, and ``entry_file`` must sit at it.
+      Members under ``.git/``, ``.venv/`` or ``__pycache__/`` are not extracted
+      (a warning says how many were skipped).
 
-    The entry file is AST-validated (structural errors block with 422; advisory
-    warnings are returned and shown to the approver). Re-upload always resets
-    approval to False.
+    The upload is unpacked and validated in a staging directory: a rejected one
+    (422) leaves the stored files and the agent row as they were. The entry file is
+    AST-validated (structural errors block with 422; advisory warnings are returned
+    and shown to the approver). An accepted upload replaces the stored tree by
+    rename and returns the agent to the pre-approval state (``_revoke_approval``):
+    a running agent is stopped and unpublished until an admin approves the new code.
     """
-    agent = await db.get_agent(_parse_uuid(agent_id))
+    agent_id = _canonical_id(agent_id)
+    agent = await db.get_agent(agent_id)
     if not agent or not _uploads_code(agent):
         raise HTTPException(status_code=404, detail="Uploaded-code agent not found")
 
@@ -397,44 +500,54 @@ async def upload_handler(agent_id: str, file: UploadFile = File(...)) -> dict:
     raw = await file.read()
     is_zip = _is_zip_upload(file.filename, raw)
     handler_dir = _handler_dir(agent_id)
-
-    if is_zip:
-        try:
-            unpack_archive(raw, handler_dir, entry_file)
-        except ArchiveError as exc:
-            raise HTTPException(status_code=422, detail={"errors": [str(exc)]})
-        entry_path = handler_dir / entry_file
-        source = entry_path.read_text(encoding="utf-8", errors="replace")
-    else:
-        try:
-            source = raw.decode("utf-8")
-        except UnicodeDecodeError:
-            raise HTTPException(status_code=422, detail={"errors": ["File is not valid UTF-8 text"]})
-        handler_dir.mkdir(parents=True, exist_ok=True)
-        entry_path = handler_dir / entry_file
-        entry_path.write_text(source)
-
-    # Validate the entry file only (structural blocks; the blocklist is advisory,
-    # docs/DECISIONS.md D2).
-    # An uploaded TOOL module checks the tool contract (TOOL_SCHEMAS/TOOL_REGISTRY or
-    # build_tools); a custom handler checks the AgentHandler subclass. Which one is
-    # decided by the config, not the handler_type name.
-    if isinstance(config, CustomConfig):
-        result = validate_handler(source, config.class_name)
-    else:
-        result = validate_tool_module(source)
-    if not result.ok:
+    # Next to handler_dir (same filesystem, so the swap below is a rename); the dot
+    # prefix keeps it apart from the per-agent directories.
+    staging = handler_dir.with_name(f".upload-{handler_dir.name}-{uuid.uuid4().hex}")
+    staging.mkdir(parents=True)
+    skipped: list[str] = []
+    try:
         if is_zip:
-            _clear_dir(handler_dir)  # don't leave a rejected tree on disk
-        raise HTTPException(status_code=422, detail={"errors": result.errors})
+            try:
+                _, skipped = unpack_archive(raw, staging, entry_file)
+            except ArchiveError as exc:
+                raise HTTPException(status_code=422, detail={"errors": [str(exc)]})
+            source = (staging / entry_file).read_text(encoding="utf-8", errors="replace")
+        else:
+            try:
+                source = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                raise HTTPException(status_code=422, detail={"errors": ["File is not valid UTF-8 text"]})
+            (staging / entry_file).write_text(source)
 
-    await db.update_agent(
-        _parse_uuid(agent_id),
-        handler_file_path=str(entry_path),
-        is_archive=is_zip,
-        approved=False,
-    )
-    return {"status": "uploaded", "errors": [], "warnings": result.warnings}
+        # Validate the entry file only (structural blocks; the blocklist is advisory,
+        # docs/DECISIONS.md D2).
+        # An uploaded TOOL module checks the tool contract (TOOL_SCHEMAS/TOOL_REGISTRY or
+        # build_tools); a custom handler checks the AgentHandler subclass. Which one is
+        # decided by the config, not the handler_type name.
+        if isinstance(config, CustomConfig):
+            result = validate_handler(source, config.class_name)
+        else:
+            result = validate_tool_module(source)
+        if not result.ok:
+            raise HTTPException(status_code=422, detail={"errors": result.errors})
+
+        async with _agent_lock(agent_id):
+            await _revoke_approval(agent_id)
+            _replace_dir(staging, handler_dir)
+            await db.update_agent(
+                _parse_uuid(agent_id),
+                handler_file_path=str(handler_dir / entry_file),
+                is_archive=is_zip,
+            )
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)  # gone already once swapped in
+    warnings = list(result.warnings)
+    if skipped:
+        warnings.append(
+            f"Skipped {len(skipped)} file(s) under .git/, .venv/ or __pycache__/: "
+            "uploads never include these directories"
+        )
+    return {"status": "uploaded", "errors": [], "warnings": warnings}
 
 
 @app.get("/agents/{agent_id}/handler", tags=["custom"])
@@ -445,16 +558,26 @@ async def get_handler_source(agent_id: str, request: Request) -> dict:
     - multi-file agent  → a ``manifest`` of the stored tree + a ``download_url``
       pointing at the zip (GET .../handler/download), so the whole project can be
       inspected. In both cases advisory ``warnings`` from the entry file are included.
+
+    ``revision`` identifies this exact upload (``archive.tree_revision``); an
+    approval that sends it back is refused if the code changed since. The read
+    holds the agent lock, so no upload replaces the tree while it is read and
+    the source, manifest and revision describe the same upload.
     """
     _require_admin(request)
-    agent = await db.get_agent(_parse_uuid(agent_id))
-    if not agent or not _uploads_code(agent):
-        raise HTTPException(status_code=404, detail="Uploaded-code agent not found")
-    path = agent.get("handler_file_path")
-    if not path or not Path(path).exists():
-        raise HTTPException(status_code=404, detail="No handler file uploaded")
+    agent_id = _canonical_id(agent_id)
+    async with _agent_lock(agent_id):
+        agent = await db.get_agent(agent_id)
+        if not agent or not _uploads_code(agent):
+            raise HTTPException(status_code=404, detail="Uploaded-code agent not found")
+        path = agent.get("handler_file_path")
+        if not path or not Path(path).exists():
+            raise HTTPException(status_code=404, detail="No handler file uploaded")
 
-    entry_source = Path(path).read_text(encoding="utf-8", errors="replace")
+        handler_dir = _handler_dir(agent_id)
+        revision = tree_revision(handler_dir)
+        entry_source = Path(path).read_text(encoding="utf-8", errors="replace")
+        manifest = list_tree(handler_dir) if agent.get("is_archive") else None
     config = _deserialize_config(agent)
     spec = upload_spec(config)                    # non-None: _uploads_code() passed
     if isinstance(config, CustomConfig):
@@ -464,13 +587,13 @@ async def get_handler_source(agent_id: str, request: Request) -> dict:
         warnings = validate_tool_module(entry_source).warnings
         credentials: list = []   # uploaded tool modules declare no per-user creds (v1)
 
-    if agent.get("is_archive"):
-        handler_dir = _handler_dir(agent_id)
+    if manifest is not None:
         return {
             "is_archive": True,
             "entry_file": Path(path).name,
-            "manifest": list_tree(handler_dir),
+            "manifest": manifest,
             "download_url": f"/agents/{agent_id}/handler/download",
+            "revision": revision,
             "warnings": warnings,
             "system_packages": spec.system_packages,   # apt, flagged for review
             "credentials": credentials,
@@ -479,6 +602,7 @@ async def get_handler_source(agent_id: str, request: Request) -> dict:
         "is_archive": False,
         "source": entry_source,
         "handler_file_path": path,
+        "revision": revision,
         "warnings": warnings,
         "system_packages": spec.system_packages,         # apt, flagged for review
         "credentials": credentials,
@@ -489,7 +613,8 @@ async def get_handler_source(agent_id: str, request: Request) -> dict:
 async def download_handler_archive(agent_id: str, request: Request) -> Response:
     """Admin-only: download the stored project tree as a zip (multi-file inspection)."""
     _require_admin(request)
-    agent = await db.get_agent(_parse_uuid(agent_id))
+    agent_id = _canonical_id(agent_id)
+    agent = await db.get_agent(agent_id)
     if not agent or not _uploads_code(agent):
         raise HTTPException(status_code=404, detail="Uploaded-code agent not found")
     handler_dir = _handler_dir(agent_id)
@@ -504,33 +629,79 @@ async def download_handler_archive(agent_id: str, request: Request) -> Response:
 
 
 @app.post("/agents/{agent_id}/approve", tags=["custom"])
-async def approve_agent(agent_id: str, request: Request) -> dict:
-    """Admin-only: approve a custom agent and start it."""
-    _require_admin(request)
-    agent = await db.get_agent(_parse_uuid(agent_id))
-    if not agent or not _uploads_code(agent):
-        raise HTTPException(status_code=404, detail="Uploaded-code agent not found")
-    if not agent.get("handler_file_path"):
-        raise HTTPException(status_code=409, detail="No handler file uploaded yet")
+async def approve_agent(
+    agent_id: str, request: Request, body: ApproveRequest | None = None
+) -> dict:
+    """Admin-only: approve an uploaded-code agent and start it.
 
-    await db.update_agent(_parse_uuid(agent_id), approved=True)
-    try:
-        await get_supervisor().spawn_and_publish(agent_id)
-    except Exception as exc:
-        logger.error("approve_spawn_failed agent_id=%s error=%s", agent_id, exc)
-        raise HTTPException(status_code=500, detail=f"Approved but failed to start: {exc}")
+    The admin UI, and any caller that reviewed the code first, sends
+    ``{"revision": ...}`` with the revision of the code it reviewed (from
+    GET /agents/{id}/handler). If the stored code no longer has that revision
+    (an upload landed after the review), nothing is approved and the call fails
+    with 409. Without a revision, the code stored when the approval runs is
+    approved. An agent already approved whose build or launch is in progress
+    ('building', 'image_ready') is not approved again (409). An unapproved
+    agent is first returned to the pre-approval state (``_revoke_approval``),
+    which stops what may still run for it (left by a revoke, delete or startup
+    stop that did not finish, or by an earlier version), so the approval starts
+    from there. A launch the backend refuses (LaunchRefused: on a build
+    backend, an agent not waiting for its first build, or missing build
+    credentials) leaves the approval as it was and answers with the refusal's
+    status (409 or 503).
+    """
+    _require_admin(request)
+    agent_id = _canonical_id(agent_id)
+    async with _agent_lock(agent_id):
+        current = await db.get_agent(agent_id)
+        if not current or not _uploads_code(current):
+            raise HTTPException(status_code=404, detail="Uploaded-code agent not found")
+        if not current.get("handler_file_path"):
+            raise HTTPException(status_code=409, detail="No handler file uploaded yet")
+        if current["approved"] and current["status"] in ("building", "image_ready"):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Already approved; its build or launch is in progress ({current['status']}). "
+                    "If the build failed, restart the agent to build it again, or upload "
+                    "fixed code (which returns it to approval)."
+                ),
+            )
+        reviewed = body.revision if body else None
+        if reviewed is not None and tree_revision(_handler_dir(agent_id)) != reviewed:
+            raise HTTPException(
+                status_code=409,
+                detail="The uploaded code changed since it was reviewed; review it again.",
+            )
+        if not current["approved"]:
+            await _revoke_approval(agent_id)
+        await db.update_agent(_parse_uuid(agent_id), approved=True)
+        try:
+            await get_supervisor().spawn_and_publish(agent_id)
+        except LaunchRefused as exc:
+            await db.update_agent(_parse_uuid(agent_id), approved=current["approved"])
+            raise HTTPException(status_code=exc.status_code, detail=str(exc))
+        except Exception as exc:
+            logger.error("approve_spawn_failed agent_id=%s error=%s", agent_id, exc)
+            raise HTTPException(status_code=500, detail=f"Approved but failed to start: {exc}")
     return {"status": "ok"}
 
 
 @app.post("/agents/{agent_id}/reject", tags=["custom"])
 async def reject_agent(agent_id: str, body: RejectRequest, request: Request) -> dict:
-    """Admin-only: reject a custom agent (leaves it registered, not approved)."""
+    """Admin-only: reject a custom agent, or revoke an earlier approval.
+
+    The agent returns to the pre-approval state (``_revoke_approval``): if it is
+    running it is stopped and its card removed, and any queued build or spawn
+    for it is dropped.
+    """
     _require_admin(request)
-    agent = await db.get_agent(_parse_uuid(agent_id))
+    agent_id = _canonical_id(agent_id)
+    agent = await db.get_agent(agent_id)
     if not agent or not _uploads_code(agent):
         raise HTTPException(status_code=404, detail="Uploaded-code agent not found")
 
-    await db.update_agent(_parse_uuid(agent_id), approved=False, status="registered")
+    async with _agent_lock(agent_id):
+        await _revoke_approval(agent_id)
     logger.info("agent_rejected agent_id=%s reason=%s", agent_id, body.reason)
     return {"status": "ok"}
 
@@ -562,6 +733,12 @@ def _parse_uuid(value: str) -> uuid.UUID:
         return uuid.UUID(value)
     except ValueError:
         raise HTTPException(status_code=422, detail=f"Invalid UUID: {value!r}")
+
+
+def _canonical_id(value: str) -> str:
+    """The agent id in its one canonical spelling (lowercase, hyphenated), for
+    the keys an id names: the agent lock, the handler directory, backend state."""
+    return str(_parse_uuid(value))
 
 
 _REDACTED = "[redacted]"

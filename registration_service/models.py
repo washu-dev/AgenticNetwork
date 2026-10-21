@@ -514,9 +514,17 @@ class RejectRequest(BaseModel):
     reason: str = ""
 
 
+class ApproveRequest(BaseModel):
+    # The revision of the code the approver reviewed (GET /agents/{id}/handler).
+    # When given, the approval is refused (409) unless the stored code still has it.
+    revision: str | None = None
+
+
 class SpawnedReport(BaseModel):
     agent_id: uuid.UUID
-    pid: int
+    # A report the service does not take has its PID queued for the host loop
+    # to stop, so only the PID of a single process is accepted.
+    pid: int = Field(gt=1)
 
 
 class AgentResponse(BaseModel):

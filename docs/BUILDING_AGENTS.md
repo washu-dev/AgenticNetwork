@@ -52,8 +52,22 @@ class MyHandler(AgentHandler):
         creds = (context or {}).get("credentials") or {}
         api_key = (creds.get("openai_api_key") or {}).get("api_key")
         ...
-        return {"answer": "...", "data": {...}}   # "answer" is required; other keys are structured output
+        return {"answer": "...", "data": {...}}   # "answer" (a string) is required; other keys are structured output
 ```
+
+`handle_structured` may also be a plain `def`: it then runs in a worker thread, and if it overruns
+`max_runtime_seconds` it is reported failed but not stopped (see
+[agent_skeleton/README.md](../agent_skeleton/README.md)).
+
+Upload a single `.py`, or a `.zip` whose root holds the entry file next to the packages it imports.
+Zip only the project's own files, for example `zip -r agent.zip handler.py mypkg requirements.txt`.
+Every file in the upload is stored, shown to the approver and, on the cluster and Cloud Run,
+committed to the agent-directory repository and built into the agent's image, which is public on
+Docker Hub: never include `.env` files or other secrets. Those two backends also take text files
+only, so a stray binary such as `.DS_Store` makes the approval fail. Files under `.git/`, `.venv/`
+and `__pycache__/` are skipped (the upload response says how many), so the approver reviews exactly
+the code that runs. They still count toward the archive's file limit (2,000), which a virtualenv
+alone usually exceeds (and one named `venv/` or `env/` is not skipped at all).
 
 **The credential seam (P4d):** `HandlerExecutor.execute` inspects your `handle_structured`
 signature — if it accepts a 3rd `context` param (or `**kwargs`), the executor extracts credentials

@@ -97,6 +97,10 @@ teammate access: `gcloud run services add-iam-policy-binding planner --region=us
   `gcloud run services update planner --region=us-central1 --image=di2washu/agenticnetwork-planner:latest --command=python --args=-m,chat_app`
   (append `,--fake-ads` only if the current override still has it). Details:
   [DEPLOY_YOUR_OWN.md](DEPLOY_YOUR_OWN.md) step 10.
+- **Update `registration` before `planner`.** The chat app's approval view needs the code revision
+  that the registration service reports since the 2026-10-21 approval fixes; in front of an older
+  `registration` revision it says so and cannot approve. A config-only `planner` update also pulls
+  the shared `:latest` (above), so push and roll out `registration` first.
 - **The register→deploy loop:** register a `custom` agent → approve (fires a commit to `agent-directory`) →
   the `build-custom-agent.yml` GitHub Action builds the image → the reg service's build poll deploys it via
   the `CloudRunBackend`. Full trace + acceptance test: [IMPLEMENTATION_CLOUDRUN_BACKEND.md](IMPLEMENTATION_CLOUDRUN_BACKEND.md).
@@ -109,7 +113,8 @@ teammate access: `gcloud run services add-iam-policy-binding planner --region=us
   won't be re-picked-up after a re-register.
 - An **`update_updated_at` trigger** force-sets `updated_at=now()`, so you can't backdate a row; to force a
   redeploy, set `status`/`image_ref` directly and restart (recovery deploys it).
-- The startup purge deletes `stopped`/`failed` rows (it spares `failed`+`image_ref` so recovery can retry).
+- The startup purge deletes `stopped`/`failed` rows (it spares `failed`+`image_ref` so recovery can retry, and
+  any row that still holds an `ads_cid`, so its card is removed first).
 - **asyncpg returns JSONB columns as strings** — deserialize (`json.loads`) before use; `FAKE_DB` returns dicts,
   so tests can miss this class of bug.
 

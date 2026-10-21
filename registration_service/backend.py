@@ -27,19 +27,23 @@ import asyncio
 import json
 import logging
 import os
+import shutil
 import signal
 import sys
+import tempfile
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
 
+from registration_service.archive import IGNORED_DIRS
 from registration_service.models import AnyConfig, UploadSpec, normalize_handler_type, upload_spec
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_HEALTH_TIMEOUT_SECONDS = 30.0
+_DEFAULT_INSTALL_TIMEOUT_SECONDS = 600.0
 _HEALTH_POLL_INTERVAL_SECONDS = 0.5
 # SIGTERM -> SIGKILL grace when stopping an agent's process group.
 _STOP_GRACE_SECONDS = 5.0
@@ -312,7 +316,21 @@ class SubprocessBackend(ContainerBackend):
             # if the system site-packages don't already carry it.
             await _run([str(py), "-m", "pip", "install", "--quiet", "-e", str(_AGENT_SKELETON_DIR)])
         if spec.install_project and _has_build_metadata(handler_dir):
-            await _run([str(py), "-m", "pip", "install", "--quiet", str(handler_dir)])
+            # From a copy: pip builds in the source tree (build/, *.egg-info/),
+            # and the stored tree must stay the code the admin reviewed.
+            with tempfile.TemporaryDirectory() as tmp:
+                project = Path(tmp) / "project"
+                copy = asyncio.ensure_future(asyncio.to_thread(
+                    shutil.copytree, handler_dir, project, ignore=shutil.ignore_patterns(*IGNORED_DIRS)
+                ))
+                try:
+                    await asyncio.shield(copy)
+                except asyncio.CancelledError:
+                    # A cancel does not stop the copy thread: let it finish
+                    # before the directory is removed, so no copy is left.
+                    await asyncio.gather(copy, return_exceptions=True)
+                    raise
+                await _run([str(py), "-m", "pip", "install", "--quiet", str(project)])
         if spec.requirements:
             await _run([str(py), "-m", "pip", "install", "--quiet", *spec.requirements])
         return str(py)
@@ -405,7 +423,7 @@ class ClusterBackend(ContainerBackend):
     env where `srun` works — pulls /internal/spawn-queue, runs `srun --overlap`,
     and reports the PID back via /internal/spawned (which calls record_pid).
 
-    So here: spawn() is a no-op; is_alive() polls the agent's /health; stop()
+    So here: spawn() is a no-op; is_alive() fetches the agent's card; stop()
     queues the PID for the host loop to kill via /internal/stop-queue.
     """
 
@@ -432,8 +450,24 @@ class ClusterBackend(ContainerBackend):
         logger.info("cluster_spawn_noop agent_id=%s port=%d (host loop spawns)", agent_id, port)
 
     def record_pid(self, agent_id: str, pid: int, port: int) -> None:
+        if pid <= 1:
+            logger.warning("cluster_pid_ignored agent_id=%s pid=%d (not a single process)", agent_id, pid)
+            return
         self._procs[agent_id] = (pid, port)
         logger.info("cluster_pid_recorded agent_id=%s pid=%d port=%d", agent_id, pid, port)
+
+    def has_process(self, agent_id: str) -> bool:
+        """True from a reported launch until the agent is stopped."""
+        return agent_id in self._procs
+
+    def discard_pid(self, pid: int) -> None:
+        """Queue a reported process that is not the agent's recorded one for the
+        host loop to kill, leaving the recorded one as it is."""
+        if pid <= 1:
+            logger.warning("cluster_pid_ignored pid=%d (not a single process)", pid)
+            return
+        self._stop_pids.append(pid)
+        logger.info("cluster_stop_queued pid=%d (launch not taken)", pid)
 
     def pending_stops(self) -> list[int]:
         out = self._stop_pids[:]
@@ -451,24 +485,50 @@ class ClusterBackend(ContainerBackend):
         if rec is None:
             return False
         _pid, port = rec
+        # Same readiness rule as SubprocessBackend: the agent's A2A app serves its
+        # card (container_runner has no /health, so a 404 there proves nothing).
         try:
             async with httpx.AsyncClient(timeout=2.0) as client:
-                resp = await client.get(f"http://localhost:{port}/health")
-            return resp.status_code < 500
+                resp = await client.get(f"http://localhost:{port}{_READY_PATH}")
+            return resp.status_code == 200
         except Exception:
             return False
 
 
+def _install_timeout_seconds() -> float:
+    return float(os.getenv("AGENT_INSTALL_TIMEOUT_SECONDS", str(_DEFAULT_INSTALL_TIMEOUT_SECONDS)))
+
+
 async def _run(cmd: list[str]) -> None:
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-    )
-    out, _ = await proc.communicate()
-    if proc.returncode != 0:
-        tail = (out or b"").decode(errors="replace")[-1500:]
-        raise RuntimeError(f"command failed ({proc.returncode}): {' '.join(cmd)}\n{tail}")
+    """Run one install step (venv, pip). A spawn holds the agent's lock, so the
+    step is bounded by AGENT_INSTALL_TIMEOUT_SECONDS: on timeout it fails the
+    spawn, and on timeout or cancellation its process group is killed.
+
+    The output goes to a temporary file, not a pipe, so the wait ends when the
+    step exits, even if something it started outside its group still holds
+    the output open."""
+    with tempfile.TemporaryFile() as out:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=out,
+            stderr=asyncio.subprocess.STDOUT,
+            # Own process group, so the kill below also reaches what pip started
+            # (a build backend, git); no controlling terminal to prompt on.
+            start_new_session=True,
+        )
+        timeout = _install_timeout_seconds()
+        try:
+            await asyncio.wait_for(proc.wait(), timeout)
+        except asyncio.TimeoutError:
+            raise RuntimeError(f"command timed out after {timeout:g}s: {' '.join(cmd)}") from None
+        finally:
+            if proc.returncode is None:
+                _signal_group(proc.pid, signal.SIGKILL)
+                await proc.wait()
+        if proc.returncode != 0:
+            out.seek(max(0, out.seek(0, os.SEEK_END) - 1500))
+            tail = out.read().decode(errors="replace")
+            raise RuntimeError(f"command failed ({proc.returncode}): {' '.join(cmd)}\n{tail}")
 
 
 def _image_slug(name: str) -> str:
@@ -524,6 +584,12 @@ def _sa_member(sa_email: str | None) -> str | None:
     if not sa_email:
         return None
     return sa_email if sa_email.startswith("serviceAccount:") else f"serviceAccount:{sa_email}"
+
+
+def _cloudrun_operation_timeout() -> float:
+    """Seconds to wait for a Cloud Run deploy or delete before it counts as
+    failed. A deploy or stop holds the agent's lock, so it must end."""
+    return float(os.getenv("CLOUDRUN_OPERATION_TIMEOUT_SECONDS", "900"))
 
 
 def _forward_env_keys() -> tuple[str, ...]:
@@ -649,12 +715,18 @@ class _CloudRunClient:
         except AlreadyExists:
             service.name = name
             op = await self._services.update_service(service=service)
-        result = await op.result()
+        result = await op.result(timeout=_cloudrun_operation_timeout())
         return result.uri
 
     async def delete(self, service_id: str) -> None:
-        op = await self._services.delete_service(name=self._service_name(service_id))
-        await op.result()
+        """Delete the service; one that does not exist counts as deleted."""
+        from google.api_core.exceptions import NotFound
+
+        try:
+            op = await self._services.delete_service(name=self._service_name(service_id))
+            await op.result(timeout=_cloudrun_operation_timeout())
+        except NotFound:
+            return
 
     async def get(self, service_id: str) -> dict | None:
         from google.api_core.exceptions import NotFound

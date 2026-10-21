@@ -80,14 +80,18 @@ trusted node."* Everything inside the node trusts everything else.
   rest of the uploaded tree. `system_packages` (apt) are charset-sanitized against shell
   injection but are **not an allowlist**. (An upload's `entry_file` must be a bare `*.py`
   name; path traversal there was fixed on 2026-10-13.)
-- **Registration `/internal/*` has no access check.** `POST /internal/spawned` marks an agent
-  live and publishes its card with no approval check (`supervisor.finalize_spawned`);
-  `GET /internal/stop-queue` drains pending stops. Since 2026-10-13 the chat app's `/register/{path}`
-  pass-through refuses `internal/` paths (404, regression-tested), so signed-in users can no longer reach
-  them through the front door, but anything that reaches `:8091` directly still can. A loopback
-  check in registration would not help (the proxy and the ENGR spawn loop both connect from
-  localhost); a shared secret sent by `deployment/spawn_agent_loop.py` would. The routes exist on
-  GCP too, where registration is IAM-private.
+- **Registration `/internal/*` has no access check.** `POST /internal/spawned` records a PID and
+  publishes the card of an approved agent waiting for that launch (`supervisor.finalize_spawned`;
+  an unapproved, superseded or repeated launch is stopped instead, and a backend without a host
+  loop ignores the report), so anything that reaches the route can report a PID for an approved
+  agent; `GET /internal/stop-queue` drains pending stops. A report the service does not take has
+  its PID queued for the host loop to stop, and only PIDs above 1 are accepted (the loop signals
+  only PIDs it launched). Since 2026-10-13 the chat app's `/register/{path}` pass-through refuses
+  `internal/` paths (404, regression-tested), so signed-in users can no longer reach them through
+  the front door, but anything that reaches `:8091` directly still can. A loopback check in
+  registration would not help (the proxy and the ENGR spawn loop both connect from localhost); a
+  shared secret sent by `deployment/spawn_agent_loop.py` would. The routes exist on GCP too,
+  where registration is IAM-private.
 - **`coding_agent` runs mini-swe-agent in YOLO mode** (bash without confirmation),
   contained only by a per-request scratch workspace. Run it in a container/VM; in
   multi-tenant use it needs a strong per-request sandbox (gVisor/Kata/microVM).

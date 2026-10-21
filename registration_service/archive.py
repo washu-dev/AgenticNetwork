@@ -11,6 +11,7 @@ The archive root is the project root: the entry file and any importable siblings
 
 from __future__ import annotations
 
+import hashlib
 import io
 import os
 import re
@@ -31,9 +32,13 @@ RESERVED_ROOT_NAMES = {"agent_skeleton", "Dockerfile"}
 # project must not re-declare/install it (see ``_framework_impersonation_reason``).
 _FRAMEWORK_PACKAGE = "agent_skeleton"
 
-# Directories skipped when re-zipping / listing a stored tree (build artifacts,
-# never part of the uploaded project).
+# Directories the platform creates in a stored tree (the local backend's venv and
+# bytecode cache), and git's. list_tree, the revision, the download and the build
+# skip them, so an upload's members under them are not extracted: what is reviewed
+# is then all of the stored code.
 IGNORED_DIRS = {".venv", "__pycache__", ".git"}
+# How to leave them out: zip only the project's own files.
+_LEAVE_OUT_HINT = "zip only the project's files, e.g. zip -r agent.zip handler.py mypkg requirements.txt"
 
 
 def _max_uncompressed() -> int:
@@ -100,11 +105,13 @@ def _framework_impersonation_reason(
     return None
 
 
-def unpack_archive(raw: bytes, dest: Path, entry_file: str) -> list[str]:
+def unpack_archive(raw: bytes, dest: Path, entry_file: str) -> tuple[list[str], list[str]]:
     """Validate a .zip's bytes and extract it into ``dest``.
 
-    ``dest`` is cleared first (re-upload resets the stored tree). Returns the
-    sorted manifest of extracted file paths (relative, posix). Raises
+    ``dest`` is cleared first (the upload endpoint passes a fresh staging
+    directory and swaps it in only after validation). Returns the sorted
+    manifest of extracted file paths (relative, posix) and the sorted paths of
+    the members skipped because they sit under IGNORED_DIRS. Raises
     ArchiveError on any violation before touching the filesystem.
     """
     try:
@@ -115,19 +122,28 @@ def unpack_archive(raw: bytes, dest: Path, entry_file: str) -> list[str]:
     infos = [i for i in zf.infolist() if not i.is_dir()]
 
     if len(infos) > _max_files():
+        # Skipped members count too: the cap bounds what is read, not what is kept.
+        ignored = sum(1 for i in infos if IGNORED_DIRS.intersection(Path(i.filename).parts))
+        hint = (
+            f", {ignored} of them under .git/, .venv/ or __pycache__/; leave those out "
+            f"({_LEAVE_OUT_HINT})"
+            if ignored else ""
+        )
         raise ArchiveError(
-            f"Archive has too many files ({len(infos)} > {_max_files()})"
+            f"Archive has too many files ({len(infos)} > {_max_files()}){hint}"
         )
 
     dest_resolved = dest.resolve()
     total = 0
     manifest: list[str] = []
+    skipped: list[str] = []
     for info in infos:
         name = info.filename
 
         # Symlinks are never allowed (they can point outside the tree).
         if stat.S_ISLNK(info.external_attr >> 16):
-            raise ArchiveError(f"Archive contains a symlink: {name!r}")
+            raise ArchiveError(f"Archive contains a symlink: {name!r}" + (
+                f" ({_LEAVE_OUT_HINT})" if IGNORED_DIRS.intersection(Path(name).parts) else ""))
 
         # Absolute paths and parent traversal (zip-slip).
         if name.startswith("/") or Path(name).is_absolute():
@@ -143,6 +159,9 @@ def unpack_archive(raw: bytes, dest: Path, entry_file: str) -> list[str]:
             raise ArchiveError(f"Reserved name at archive root: {top!r}")
         if len(parts) == 1 and name.endswith(".card.json"):
             raise ArchiveError(f"Reserved name at archive root: {name!r}")
+        if any(part in IGNORED_DIRS for part in parts):
+            skipped.append(name)
+            continue
 
         total += info.file_size
         if total > _max_uncompressed():
@@ -177,8 +196,8 @@ def unpack_archive(raw: bytes, dest: Path, entry_file: str) -> list[str]:
 
     # All checks passed — clear dest, then extract only the validated members.
     _clear_dir(dest)
-    zf.extractall(dest, members=infos)
-    return sorted(manifest)
+    zf.extractall(dest, members=manifest)
+    return sorted(manifest), sorted(skipped)
 
 
 def _clear_dir(path: Path) -> None:
@@ -203,6 +222,19 @@ def list_tree(root: Path) -> list[str]:
             continue
         out.append(rel.as_posix())
     return sorted(out)
+
+
+def tree_revision(root: Path) -> str:
+    """The revision of a stored project tree: a sha256 hex digest of the files
+    list_tree returns (what the approver reviews and downloads). Each relative
+    path and each file's bytes is length-prefixed, in sorted path order, so any
+    change to a path or a byte gives a different revision."""
+    digest = hashlib.sha256()
+    for rel in list_tree(root):
+        for part in (rel.encode("utf-8"), (root / rel).read_bytes()):
+            digest.update(len(part).to_bytes(8, "big"))
+            digest.update(part)
+    return digest.hexdigest()
 
 
 def zip_tree(root: Path) -> bytes:

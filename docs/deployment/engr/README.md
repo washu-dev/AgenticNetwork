@@ -454,11 +454,16 @@ upload no code (plain `llm`, `proxy`) have no cluster spawn path at all. Consequ
   though its build context is committed in the `agent-directory` GitHub registry and its image
   is on Docker Hub. Recovery is **DB-driven, not registry-driven**: nothing enumerates the
   GitHub registry / Docker Hub to decide what should be running.
-- To bring such an agent back, re-approve it via the registration UI (rebuilds/re-queues), or
+- To bring such an agent back, restart it in the registration UI (it is rebuilt and re-queued), or
   set its DB row back to `status='live'` before the deploy so `recover_live_agents` picks it up.
 - The `agent-directory` GitHub registry is a **build-context store**, not the source of truth
   for what runs; deleting a stale entry there (see the delete flow) doesn't stop a running agent
   and leaving one there doesn't start it.
+
+**A custom agent stays `building`**
+The registration service waits for the agent's image without a time limit. If the image build
+failed (see the agent-directory repository's GitHub Actions log), approving again returns 409:
+restart the agent to commit and build again, or upload fixed code, which returns it to approval.
 
 **`ModuleNotFoundError` or wrong Python version in agent logs**
 The cluster auto-mounts its system anaconda (Python 3.7) into containers. All

@@ -34,14 +34,15 @@ class FakeSupervisor:
         await _set_status(agent_id, "live", endpoint_url=endpoint_url, ads_cid="fake-cid")
         logger.info("fake_supervisor spawn agent_id=%s port=%d", agent_id, port)
 
-    async def stop_and_unpublish(self, agent_id: str) -> None:
+    async def stop_and_unpublish(self, agent_id: str) -> bool:
+        """Like Supervisor.stop_and_unpublish; the (fake) card is always removed."""
         pool = await get_pool()
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT ads_cid, port FROM agents WHERE id = $1", uuid.UUID(agent_id)
             )
         if row is None:
-            return
+            return True
 
         port: int | None = row["port"]
         async with pool.acquire() as conn:
@@ -53,6 +54,7 @@ class FakeSupervisor:
                 uuid.UUID(agent_id),
             )
         logger.info("fake_supervisor stop agent_id=%s", agent_id)
+        return True
 
     async def recover_live_agents(self) -> None:
         pass

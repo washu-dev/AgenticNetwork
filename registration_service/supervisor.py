@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import uuid
+import weakref
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -21,7 +22,7 @@ from a2a.types import AgentCard, AgentCapabilities, AgentSkill
 from registration_service.card_credentials import build_credentials_extension
 from registration_service.card_resources import build_resources_extension
 
-from registration_service.archive import list_tree
+from registration_service.archive import list_tree, tree_revision
 from registration_service.backend import (
     _AGENT_SKELETON_DIR,
     ContainerBackend,
@@ -53,6 +54,22 @@ _BUILD_POLL_SECONDS = 30.0
 _BACKOFF_BASE_SECONDS = 5.0
 _MAX_RESTART_ATTEMPTS = 3
 
+# One lock per agent. Every change to an agent's code, approval or launch holds
+# it, so they run one at a time: the API's registration, upload, source review,
+# approve, reject, restart and delete (server.py), and the supervisor's own
+# launches (a health-loop restart attempt, the build poll's move to
+# 'image_ready', a Cloud Run deploy, and the cluster host loop's report of a
+# started process). Startup recovery needs no lock (the Cloud Run deploy it
+# runs takes one anyway): it runs before the API serves and before the health
+# and build loops start. Keyed by the canonical id (the UUID's str), so every
+# spelling of the id shares one lock. An entry lives only while a holder or
+# waiter references its lock.
+_agent_locks: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.WeakValueDictionary()
+
+
+def _agent_lock(agent_id: str) -> asyncio.Lock:
+    return _agent_locks.setdefault(str(agent_id), asyncio.Lock())
+
 
 def _backend_flag(backend: object, name: str, default: bool) -> bool:
     """Read a ContainerBackend capability flag defensively.
@@ -77,6 +94,17 @@ def _oob_build_enabled() -> bool:
         and bool(os.getenv("GITHUB_TOKEN"))
         and bool(os.getenv("GITHUB_REPO"))
     )
+
+
+class LaunchRefused(RuntimeError):
+    """The backend cannot start the agent in its current state or configuration.
+    Raised before anything is started or changed; ``status_code`` is the HTTP
+    status the API answers with (409 for the agent's state, 503 for missing
+    configuration)."""
+
+    def __init__(self, status_code: int, detail: str) -> None:
+        super().__init__(detail)
+        self.status_code = status_code
 
 
 class Supervisor:
@@ -143,19 +171,30 @@ class Supervisor:
                 "to ADS stored-but-not-routed (undiscoverable). Fix its oasf_skills."
             )
 
-        # Cluster build pipeline: on first approval, commit the build context to
-        # agent-directory and wait (status='building') for the image to appear on
-        # Docker Hub. The build-poll loop re-invokes spawn_and_publish once the
-        # image exists, at which point status is already 'building' and we fall
-        # through to the actual spawn below.
-        if (
-            uploads_code
-            and _oob_build_enabled()
-            and agent.get("status") == "registered"
-        ):
-            # First approval: commit the build context and wait for the image. The
-            # build-poll loop flips status to 'image_ready'; the host spawn loop then
-            # launches it and calls finalize_spawned (see Note #8).
+        # Out-of-band build (cluster, Cloud Run): uploaded code runs only from the
+        # image built for its approval. The approval commits the build context to
+        # agent-directory and waits (status='building') for the image on Docker
+        # Hub; the build poll marks it 'image_ready', and the host loop (cluster,
+        # finalize_spawned, see Note #8) or the Cloud Run deploy
+        # (_deploy_ready_agent) launches it. There is no direct spawn here: on
+        # the cluster spawn() starts nothing, and on Cloud Run it would deploy
+        # whatever ':latest' holds. So an agent that is not waiting for its first
+        # build (one already building or launching, or a live, failed or stopped
+        # one) is refused; a restart sends it through the build again.
+        owns_build = _backend_flag(self._backend, "owns_build", False)
+        if uploads_code and (owns_build or _oob_build_enabled()):
+            if not _oob_build_enabled():
+                raise LaunchRefused(
+                    503,
+                    f"Agent {agent_id} ships uploaded code, which this backend runs only "
+                    "from a built image: set GITHUB_TOKEN and GITHUB_REPO for the build.",
+                )
+            if agent.get("status") != "registered":
+                raise LaunchRefused(
+                    409,
+                    f"Agent {agent_id} is {agent.get('status')!r}, not waiting for a "
+                    "build; restart it to rebuild and redeploy.",
+                )
             await self._commit_to_github(agent, oasf_skills)
             await _set_status(agent_id, "building")
             logger.info("custom_build_started agent_id=%s name=%s", agent_id, name)
@@ -168,7 +207,7 @@ class Supervisor:
         # Without this guard such an agent would be published to ADS and marked
         # 'live' with no process behind it (a ghost-live row the planner would then
         # dispatch to). Fail loudly instead of creating that phantom.
-        if _backend_flag(self._backend, "owns_build", False) and not uploads_code:
+        if owns_build and not uploads_code:
             await _set_status(agent_id, "failed")
             raise RuntimeError(
                 f"handler_type={handler_type!r} with this config is not supported on "
@@ -183,11 +222,12 @@ class Supervisor:
         # after the new publish could remove the new one. If the directory is
         # down the row keeps the CID: the card is still there, and the next
         # publish (or a later stop) replaces or retries it.
-        if agent.get("ads_cid") and await self._unpublish(agent_id, agent["ads_cid"]):
-            await update_agent(agent_id, ads_cid=None)
+        await self._remove_card(agent_id, agent.get("ads_cid"))
 
         try:
-            await self._backend.spawn(
+            # An off-host backend (Cloud Run) returns the agent's URL; local and
+            # cluster backends return None and the card advertises localhost:port.
+            endpoint_url = await self._backend.spawn(
                 agent_id=agent_id,
                 name=name,
                 description=description,
@@ -201,7 +241,8 @@ class Supervisor:
             raise
 
         await self._publish_and_set_live(
-            agent_id, name, description, oasf_skills, port, _declared_credentials(config)
+            agent_id, name, description, oasf_skills, port, _declared_credentials(config),
+            endpoint_url=endpoint_url,
         )
 
     async def _publish_and_set_live(
@@ -221,7 +262,15 @@ class Supervisor:
 
         endpoint_url overrides the advertised URL — an off-host backend (Cloud Run)
         passes its run.app URL; the local/cluster paths default to localhost:port.
-        resources surfaces the agent's declared sizing on the card (Step 8)."""
+        resources surfaces the agent's declared sizing on the card (Step 8).
+
+        Every caller holds the agent's lock (_agent_lock) and has checked the
+        row under it (approved, and for a built image still the launch the row
+        waits for), so no reject, upload or delete lands between that check and
+        the 'live' write. (Startup recovery runs before the API serves.)"""
+        row = await get_agent(agent_id)
+        old_cid = row.get("ads_cid")
+
         endpoint_url = endpoint_url or f"http://localhost:{port}/"
         card = _build_agent_card(
             agent_id, name, description, oasf_skills, port, credentials, resources
@@ -235,7 +284,16 @@ class Supervisor:
             ads_cid = record.backend_ref
             logger.info("ads_published agent_id=%s cid=%s", agent_id, ads_cid)
         except DirectoryUnavailable as exc:
-            logger.warning("ads_publish_skipped agent_id=%s reason=%s", agent_id, str(exc).replace("\n", " | "))
+            # A record stored before the failure may still be routed later: the
+            # row keeps its CID, so a stop or delete removes it.
+            ads_cid = exc.cid
+            logger.warning("ads_publish_skipped agent_id=%s cid=%s reason=%s", agent_id, ads_cid, str(exc).replace("\n", " | "))
+
+        # The row still records an earlier card that could not be removed before
+        # (a different CID; an equal one is the card just published). The
+        # directory is reachable now, so retry; the new CID replaces it either way.
+        if old_cid and ads_cid and old_cid != ads_cid and not await self._unpublish(agent_id, old_cid):
+            logger.warning("ads_stale_card_left agent_id=%s cid=%s replaced_by=%s", agent_id, old_cid, ads_cid)
 
         await _set_status(agent_id, "live", endpoint_url=endpoint_url, ads_cid=ads_cid)
 
@@ -252,6 +310,17 @@ class Supervisor:
             logger.warning("ads_unpublish_failed agent_id=%s cid=%s error=%s", agent_id, ads_cid, exc)
             return False
 
+    async def _remove_card(self, agent_id: str, cid: str | None) -> bool:
+        """Unpublish ``cid`` and clear the row's ads_cid once the directory
+        confirms. True if no card is left; otherwise the row keeps the CID, so
+        a later stop, publish or startup retries it."""
+        if not cid:
+            return True
+        if not await self._unpublish(agent_id, cid):
+            return False
+        await update_agent(agent_id, ads_cid=None)
+        return True
+
     async def shutdown(self) -> None:
         """Stop the agent processes this service owns, then drop their cards.
 
@@ -266,43 +335,127 @@ class Supervisor:
         stopped: list[str] = await stop_all() if stop_all else []
         for agent_id in stopped:
             agent = await get_agent(agent_id)
-            if agent and agent.get("ads_cid") and await self._unpublish(agent_id, agent["ads_cid"]):
-                await update_agent(agent_id, ads_cid=None)
+            if agent:
+                await self._remove_card(agent_id, agent.get("ads_cid"))
         if stopped:
             logger.info("supervisor_shutdown stopped=%d", len(stopped))
 
-    async def stop_and_unpublish(self, agent_id: str) -> None:
-        """Unpublish from ADS, stop the subprocess, release the port."""
+    async def stop_and_unpublish(self, agent_id: str) -> bool:
+        """Unpublish from ADS, stop the subprocess, release the port. Returns
+        True if no card is left in the directory.
+
+        The caller holds the agent's lock (_agent_lock), so a health-loop
+        restart pending for the agent is sleeping or waiting for that lock,
+        never in the middle of an attempt; it is cancelled first. The row keeps
+        its ads_cid if the directory did not confirm the removal: the card is
+        still there, and startup recovery (or the next stop) retries it.
+        """
+        restart = self._restart_tasks.pop(agent_id, None)
+        if restart is not None:
+            restart.cancel()
+            await asyncio.gather(restart, return_exceptions=True)
+
         pool = await get_pool()
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT ads_cid, port FROM agents WHERE id = $1", uuid.UUID(agent_id)
             )
         if row is None:
-            return
+            return True
 
-        ads_cid: str | None = row["ads_cid"]
         port: int | None = row["port"]
-
-        if ads_cid:
-            await self._unpublish(agent_id, ads_cid)
+        # Removed (and the CID cleared) before the stop, so a failing
+        # backend.stop below cannot leave the row holding a card that is gone.
+        removed = await self._remove_card(agent_id, row["ads_cid"])
 
         await self._backend.stop(agent_id)
 
-        async with pool.acquire() as conn:
-            if port:
+        if port:
+            async with pool.acquire() as conn:
                 await release_port(conn, port)
-            await conn.execute(
-                "UPDATE agents SET status = 'stopped', ads_cid = NULL, updated_at = now() "
-                "WHERE id = $1",
-                uuid.UUID(agent_id),
-            )
-        logger.info("agent_stopped agent_id=%s", agent_id)
+        await update_agent(agent_id, status="stopped")
+        logger.info("agent_stopped agent_id=%s card_removed=%s", agent_id, removed)
+        return removed
+
+    async def _retry_unpublish_stale_cards(self) -> None:
+        """Remove cards still recorded on rows that are not live, or that lost
+        their approval: a stop, revoke or respawn that ran while the directory
+        was unreachable, or an earlier version's upload that kept the status.
+        Each CID is cleared once the directory confirms; otherwise it stays for
+        the next startup.
+
+        An approved 'building' row keeps its CID: clearing it would move
+        updated_at, which the build poll compares the image's push time against.
+        That card is removed when the agent publishes (the old-CID retry in
+        _publish_and_set_live) or is stopped.
+
+        If the directory does not answer a quick probe, the pass is skipped, so
+        an outage does not hold up startup by one dirctl timeout per card.
+
+        On the cluster the registration step starts only with the Slurm job,
+        after the job has recreated the directory's database (`dir`) and its
+        container: every recorded card is already gone and its CID is just
+        cleared. A restart of the registration service alone within a job would
+        need `_remove_card` here instead.
+        """
+        stale = [
+            agent
+            for status in ("stopped", "failed", "registered", "image_ready", "building", "live")
+            for agent in await list_agents_by_status(status)
+            if agent.get("ads_cid") and (status not in ("building", "live") or not agent["approved"])
+        ]
+        if not stale:
+            return
+        if _backend_flag(self._backend, "needs_host_loop", False):
+            for agent in stale:
+                await update_agent(str(agent["id"]), ads_cid=None)
+            return
+        try:
+            await self._directory_call(self._publisher.healthcheck)
+        except DirectoryUnavailable as exc:
+            logger.warning("ads_stale_cards_kept count=%d reason=%s", len(stale), exc)
+            return
+        for agent in stale:
+            await self._remove_card(str(agent["id"]), agent["ads_cid"])
+
+    async def _reset_revoked_rows(self) -> None:
+        """Return to the pre-approval state each row that lost its approval while
+        something may still run for it: one that is not 'registered' or
+        'stopped', or 'registered' with an image. A revoke whose backend stop
+        raised leaves such a row, and so did earlier versions' upload and reject,
+        which kept the status or the service. What the backend runs for the
+        agent is stopped and the row set 'registered' with no image; its card
+        went in the sweep before. A stop that raises is logged and the row left
+        as it is, for the next startup or an admin's reject."""
+        for status in ("live", "failed", "building", "image_ready", "registered"):
+            for agent in await list_agents_by_status(status):
+                if agent["approved"] or (status == "registered" and not agent.get("image_ref")):
+                    continue
+                agent_id = str(agent["id"])
+                try:
+                    await self._return_to_approval(agent_id)
+                except Exception as exc:
+                    logger.error("recovery_revoke_failed agent_id=%s error=%s", agent_id, exc)
+                    continue
+                logger.info("recovery_revoked agent_id=%s %s -> registered", agent_id, status)
+
+    async def _return_to_approval(self, agent_id: str) -> None:
+        """Stop what the backend runs for an agent whose approval was revoked and
+        set the pre-approval state, so nothing relaunches or queues it."""
+        await self._backend.stop(agent_id)
+        await update_agent(agent_id, status="registered", image_ref=None)
 
     async def restart_with_backoff(self, agent_id: str) -> None:
         """Attempt up to _MAX_RESTART_ATTEMPTS restarts with exponential backoff.
 
-        Sets status='failed' if all attempts are exhausted.
+        Each attempt holds the agent's lock (the backoff sleep does not), so a
+        reject, upload, restart or delete waits for an attempt in progress and
+        then sees the card it published. An attempt first re-reads the row and
+        stops restarting, leaving the status alone, if the agent was deleted,
+        stopped, re-registered or sent to the build, lost its approval, or is
+        live and running again (a restart through the API). A row still 'live'
+        without approval (a revoke whose backend stop raised) is returned to the
+        pre-approval state instead. Sets status='failed' if all attempts fail.
         """
         for attempt in range(1, _MAX_RESTART_ATTEMPTS + 1):
             delay = _BACKOFF_BASE_SECONDS * (2 ** (attempt - 1))
@@ -314,18 +467,33 @@ class Supervisor:
                 delay,
             )
             await asyncio.sleep(delay)
-            await self._backend.stop(agent_id)
-            try:
-                await self.spawn_and_publish(agent_id)
-                logger.info("restart_succeeded agent_id=%s attempt=%d", agent_id, attempt)
-                return
-            except Exception as exc:
-                logger.warning(
-                    "restart_failed agent_id=%s attempt=%d error=%s", agent_id, attempt, exc
-                )
-
-        logger.error("restart_exhausted agent_id=%s", agent_id)
-        await _set_status(agent_id, "failed")
+            async with _agent_lock(agent_id):
+                row = await get_agent(agent_id)
+                if row is not None and row["status"] == "live" and not row["approved"]:
+                    await self._remove_card(agent_id, row.get("ads_cid"))
+                    await self._return_to_approval(agent_id)
+                    logger.info("restart_revoked agent_id=%s -> registered", agent_id)
+                    return
+                if (
+                    row is None
+                    or row["status"] not in ("live", "failed")
+                    or not row["approved"]
+                    or (row["status"] == "live" and await self._backend.is_alive(agent_id))
+                ):
+                    logger.info("restart_not_needed agent_id=%s", agent_id)
+                    return
+                await self._backend.stop(agent_id)
+                try:
+                    await self.spawn_and_publish(agent_id)
+                    logger.info("restart_succeeded agent_id=%s attempt=%d", agent_id, attempt)
+                    return
+                except Exception as exc:
+                    logger.warning(
+                        "restart_failed agent_id=%s attempt=%d error=%s", agent_id, attempt, exc
+                    )
+                if attempt == _MAX_RESTART_ATTEMPTS:
+                    logger.error("restart_exhausted agent_id=%s", agent_id)
+                    await _set_status(agent_id, "failed")
 
     async def recover_live_agents(self) -> None:
         """On startup, reconcile agents that were 'live' before the last shutdown.
@@ -350,8 +518,17 @@ class Supervisor:
         separate VM) persist independently of this singleton, so a 'live' row is
         usually still real. Reconcile against actual services via the backend API
         (see `_recover_cloud_agents`) rather than re-spawning blindly.
+
+        First, on every backend: retry removing cards that rows which are not live,
+        or lost their approval, still record (`_retry_unpublish_stale_cards`), then
+        stop what runs for rows that lost their approval and return them to
+        'registered' (`_reset_revoked_rows`). The branches below see only
+        approved rows (or unapproved ones whose stop failed).
         """
         pool = await get_pool()
+
+        await self._retry_unpublish_stale_cards()
+        await self._reset_revoked_rows()
 
         # Cloud: agents + their decoupled cards outlive this process — reconcile via
         # the API instead of re-spawning. (Checked before the subprocess branch,
@@ -454,29 +631,34 @@ class Supervisor:
                             failed at (or after) the deploy step, so retry it. A row
                             that failed *before* a build has no image_ref and is left
                             alone. Deploy failures shouldn't strand an agent forever.
+        Only approved rows: _reset_revoked_rows returned the others to
+        'registered', and one still here is one whose stop failed just now.
         """
+
+        async def approved(status: str) -> list[dict[str, Any]]:
+            return [a for a in await list_agents_by_status(status) if a["approved"]]
+
         confirmed = redeployed = 0
-        for agent in await list_agents_by_status("live"):
+        for agent in await approved("live"):
             agent_id = str(agent["id"])
             if await self._backend.is_alive(agent_id):
                 confirmed += 1
                 logger.info("recovery_confirmed_cloud agent_id=%s name=%s", agent_id, agent["name"])
                 continue
-            # Service is gone — drop the stale card (best-effort) then redeploy.
-            stale_cid = agent.get("ads_cid")
-            if stale_cid:
-                await self._unpublish(agent_id, stale_cid)
+            # Service is gone — drop the stale card (best-effort) then redeploy. The
+            # CID stays on the row until the directory confirms the removal.
+            await self._remove_card(agent_id, agent.get("ads_cid"))
             logger.info("recovery_redeploy_cloud agent_id=%s name=%s (service gone)", agent_id, agent["name"])
             await self._deploy_ready_agent(agent)
             redeployed += 1
-        for agent in await list_agents_by_status("image_ready"):
+        for agent in await approved("image_ready"):
             logger.info(
                 "recovery_deploy_stranded_cloud agent_id=%s name=%s (image_ready)",
                 agent["id"], agent["name"],
             )
             await self._deploy_ready_agent(agent)
             redeployed += 1
-        for agent in await list_agents_by_status("failed"):
+        for agent in await approved("failed"):
             if not agent.get("image_ref"):
                 continue  # failed before a build → not a deploy retry, leave it
             logger.info(
@@ -521,7 +703,7 @@ class Supervisor:
             # Lifecycle is owned externally (Slurm + the host spawn loop for
             # cluster; Cloud Run self-heals) — the supervisor doesn't health-restart
             # these. (Known limitation for cluster: a crashed agent isn't
-            # auto-respawned — re-approve to redeploy.)
+            # auto-respawned — restart it to rebuild and redeploy.)
             return
         pool = await get_pool()
         async with pool.acquire() as conn:
@@ -579,7 +761,18 @@ class Supervisor:
                 # (the CloudRunBackend deploy then falls back to ':latest') rather
                 # than blocking the transition to image_ready.
                 image_ref = await _image_digest_on_dockerhub(image)
-                await update_agent(str(agent["id"]), status="image_ready", image_ref=image_ref)
+                # A reject or re-upload (and maybe a new approval) can land while
+                # Docker Hub answers: advance only the row as it was listed.
+                async with _agent_lock(str(agent["id"])):
+                    current = await get_agent(agent["id"])
+                    if not (
+                        current
+                        and current["status"] == "building"
+                        and current.get("approved")
+                        and current["updated_at"] == agent["updated_at"]
+                    ):
+                        continue
+                    await update_agent(str(agent["id"]), status="image_ready", image_ref=image_ref)
                 logger.info(
                     "custom_image_ready agent_id=%s image=%s image_ref=%s -> image_ready",
                     agent["id"], image, image_ref,
@@ -599,58 +792,84 @@ class Supervisor:
         publish its card. The cluster path defers this to the host srun loop; this
         is the no-host-loop equivalent.
 
+        The deploy holds the agent's lock from the row check to the 'live' (or
+        'failed') write, so a reject, upload or delete waits for it and then
+        stops what it deployed. A row that lost its approval, was deleted, or was
+        stopped or sent back through the build since it was listed is not
+        deployed: the change that did so has already stopped the agent. A deploy
+        that fails deletes the service it may have created.
+
         NOTE: a restart between the image_ready transition and a successful deploy
         would strand the row at image_ready (the build poll only scans 'building').
         Step 6 (recover_live_agents reconcile) closes that window; for now the
         deploy fires inline in the same poll iteration.
         """
         agent_id = str(agent["id"])
-        name = agent["name"]
-        description = agent["description"]
-        handler_type = agent["handler_type"]
-        port: int = agent["port"]
-        config = _deserialize_config(agent)
-        raw_skills = agent["oasf_skills"]
-        oasf_skills = raw_skills if isinstance(raw_skills, list) else json.loads(raw_skills)
-        raw_res = agent.get("resources")
-        resources = json.loads(raw_res) if isinstance(raw_res, str) else raw_res
+        async with _agent_lock(agent_id):
+            agent = await get_agent(agent_id)
+            if agent is None or not agent["approved"] or agent["status"] not in ("image_ready", "live", "failed"):
+                logger.info("cloud_deploy_skipped agent_id=%s status=%s", agent_id, agent and agent["status"])
+                return
+            name = agent["name"]
+            description = agent["description"]
+            handler_type = agent["handler_type"]
+            port: int = agent["port"]
+            config = _deserialize_config(agent)
+            raw_skills = agent["oasf_skills"]
+            oasf_skills = raw_skills if isinstance(raw_skills, list) else json.loads(raw_skills)
+            raw_res = agent.get("resources")
+            resources = json.loads(raw_res) if isinstance(raw_res, str) else raw_res
 
-        # Same belt-and-suspenders as spawn_and_publish: never deploy an agent that
-        # would publish stored-but-not-routed (undiscoverable) — fail before the
-        # backend creates a live-but-invisible service.
-        if not has_routable_skill(oasf_skills):
-            logger.error("cloud_deploy_unroutable agent_id=%s -> failed", agent_id)
-            await _set_status(agent_id, "failed")
-            return
+            # Same belt-and-suspenders as spawn_and_publish: never deploy an agent that
+            # would publish stored-but-not-routed (undiscoverable) — fail before the
+            # backend creates a live-but-invisible service.
+            if not has_routable_skill(oasf_skills):
+                logger.error("cloud_deploy_unroutable agent_id=%s -> failed", agent_id)
+                await _set_status(agent_id, "failed")
+                return
 
-        try:
-            endpoint_url = await self._backend.spawn(
-                agent_id=agent_id,
-                name=name,
-                description=description,
-                handler_type=handler_type,
-                config=config,
-                port=port,
+            try:
+                endpoint_url = await self._backend.spawn(
+                    agent_id=agent_id,
+                    name=name,
+                    description=description,
+                    handler_type=handler_type,
+                    config=config,
+                    port=port,
+                )
+            except Exception as exc:
+                logger.error("cloud_deploy_spawn_failed agent_id=%s error=%s", agent_id, exc)
+                # A failure after Cloud Run created the service (granting the
+                # invoker, a revision that never becomes ready) leaves it running.
+                # Delete it: the startup purge can remove a failed row without an
+                # image_ref, and nothing would delete the service after that.
+                try:
+                    await self._backend.stop(agent_id)
+                except Exception as stop_exc:
+                    logger.error("cloud_deploy_cleanup_failed agent_id=%s error=%s", agent_id, stop_exc)
+                await _set_status(agent_id, "failed")
+                return
+
+            await self._publish_and_set_live(
+                agent_id, name, description, oasf_skills, port,
+                _declared_credentials(config), endpoint_url=endpoint_url, resources=resources,
             )
-        except Exception as exc:
-            logger.error("cloud_deploy_spawn_failed agent_id=%s error=%s", agent_id, exc)
-            await _set_status(agent_id, "failed")
-            return
-
-        await self._publish_and_set_live(
-            agent_id, name, description, oasf_skills, port,
-            _declared_credentials(config), endpoint_url=endpoint_url, resources=resources,
-        )
         logger.info("cloud_deployed_live agent_id=%s url=%s", agent_id, endpoint_url)
 
     # ── Host-loop spawn coordination (cluster, Note #8) ──────────────────────────
 
     async def spawn_queue(self) -> list[dict[str, Any]]:
-        """Agents ready for the host loop to srun (status='image_ready')."""
+        """Agents ready for the host loop to srun: approved and 'image_ready'.
+        (A reject or upload revokes approval before it moves the row back.)
+        A row whose launch was reported is left out while that report publishes
+        (finalize_spawned records the process first): a second launch would
+        compete with the first for the agent's port."""
         if not _backend_flag(self._backend, "needs_host_loop", False):
             return []
         out: list[dict[str, Any]] = []
         for agent in await list_agents_by_status("image_ready"):
+            if not agent["approved"] or self._backend.has_process(str(agent["id"])):
+                continue
             raw = agent["config"]
             config = raw if isinstance(raw, dict) else json.loads(raw)
             argv, env = cluster_srun_argv(
@@ -665,24 +884,48 @@ class Supervisor:
         return out
 
     async def finalize_spawned(self, agent_id: str, pid: int) -> None:
-        """Called by the host loop after a successful srun: record PID, publish, go live."""
-        pool = await get_pool()
-        async with pool.acquire() as conn:
-            row = await conn.fetchrow("SELECT * FROM agents WHERE id = $1", uuid.UUID(agent_id))
-        if row is None:
-            logger.warning("finalize_spawned_unknown agent_id=%s", agent_id)
-            return
-        agent = dict(row)
-        port: int = agent["port"]
-        raw_skills = agent["oasf_skills"]
-        oasf_skills = raw_skills if isinstance(raw_skills, list) else json.loads(raw_skills)
+        """Called by the host loop after a successful srun: record PID, publish, go live.
 
-        if _backend_flag(self._backend, "needs_host_loop", False):
+        Holds the agent's lock, so a reject, upload or delete waits for the
+        publish and then stops the agent. Only an approved row waiting for its
+        launch ('image_ready') takes the reported process. Any other report is
+        stopped: its PID is queued for the host loop to kill, and the process
+        recorded for the agent, if any, is left as it is. That covers an agent
+        deleted, rejected or superseded after the host loop took it off the
+        queue (the change that did so already stopped what ran for it), and a
+        repeated report for a row already live. If the publish fails with
+        anything but a directory outage (an invalid card, a database error),
+        the taken process is stopped, the row set 'failed' and the error
+        raised. Only the cluster backend has a host loop; on the others a
+        report is ignored.
+        """
+        if not _backend_flag(self._backend, "needs_host_loop", False):
+            logger.warning("finalize_spawned_ignored agent_id=%s pid=%s (no host loop)", agent_id, pid)
+            return
+        async with _agent_lock(agent_id):
+            agent = await get_agent(agent_id)
+            if agent is None or not agent["approved"] or agent["status"] != "image_ready":
+                self._backend.discard_pid(pid)
+                logger.info(
+                    "spawn_report_discarded agent_id=%s pid=%s status=%s",
+                    agent_id, pid, agent and agent["status"],
+                )
+                return
+            port: int = agent["port"]
             self._backend.record_pid(agent_id, pid, port)
-        await self._publish_and_set_live(
-            agent_id, agent["name"], agent["description"], oasf_skills, port,
-            _declared_credentials(_deserialize_config(agent)),
-        )
+            raw_skills = agent["oasf_skills"]
+            oasf_skills = raw_skills if isinstance(raw_skills, list) else json.loads(raw_skills)
+            try:
+                await self._publish_and_set_live(
+                    agent_id, agent["name"], agent["description"], oasf_skills, port,
+                    _declared_credentials(_deserialize_config(agent)),
+                )
+            except Exception as exc:
+                # Nothing relaunches or stops a recorded process left unpublished.
+                logger.error("spawn_report_publish_failed agent_id=%s pid=%s error=%s", agent_id, pid, exc)
+                await self._backend.stop(agent_id)
+                await _set_status(agent_id, "failed")
+                raise
         logger.info("custom_spawned_live agent_id=%s pid=%s port=%s", agent_id, pid, port)
 
     def stop_queue(self) -> list[int]:
@@ -753,6 +996,18 @@ class Supervisor:
                 config=config,
                 oasf_skills=oasf_skills,
             ),
+            # Differs on every approval, so each one commits a changed tree and the
+            # build workflow (which builds the agent dirs a push changed) always
+            # builds a new image, also for unchanged code and card (a reject then
+            # approve, or a re-upload of the same files). The build poll waits for
+            # an image newer than this approval.
+            f"{base}/.approval": json.dumps(
+                {
+                    "approved_at": datetime.now(timezone.utc).isoformat(),
+                    "revision": tree_revision(handler_dir),
+                },
+                indent=2,
+            ) + "\n",
         }
         # The user's uploaded project tree → src/ (entry file at the src root, next
         # to importable siblings). Covers both single-file and multi-file uploads.
@@ -772,7 +1027,7 @@ class Supervisor:
             files[f"{base}/agent_skeleton/{rel}"] = content
 
         await _github_commit_files(
-            repo, token, files, f"Register custom agent: {name}"
+            repo, token, files, f"Register custom agent: {name}", directory=base
         )
         logger.info("github_committed agent_id=%s dir=%s files=%d", agent["id"], base, len(files))
 
@@ -804,14 +1059,18 @@ def _vendored_skeleton_files() -> dict[str, str]:
 
 
 async def _github_commit_files(
-    repo: str, token: str, files: dict[str, str], message: str
+    repo: str, token: str, files: dict[str, str], message: str, *, directory: str
 ) -> None:
-    """Commit multiple files in ONE commit via the Git Data API.
+    """Commit ``files`` as the whole content of ``directory``, in ONE commit via
+    the Git Data API.
 
     A single atomic commit is important: the build workflow triggers on push to
     registered_agents/**, and committing files one at a time (Contents API) would
     fire the build before the Dockerfile exists. Tree entries use inline `content`,
-    so no separate blob-creation round-trips are needed.
+    so no separate blob-creation round-trips are needed. A file an earlier commit
+    put under ``directory`` that ``files`` does not name is deleted in the same
+    commit, so the image is built from exactly these files (the build copies the
+    whole directory).
     """
     headers = {
         "Authorization": f"Bearer {token}",
@@ -827,10 +1086,20 @@ async def _github_commit_files(
         base_commit_sha = ref["object"]["sha"]
         base_commit = (await client.get(f"{api}/git/commits/{base_commit_sha}")).raise_for_status().json()
         base_tree_sha = base_commit["tree"]["sha"]
+        listing = (
+            await client.get(f"{api}/git/trees/{base_tree_sha}", params={"recursive": "1"})
+        ).raise_for_status().json()
+        if listing.get("truncated"):
+            raise RuntimeError(f"Cannot list {repo}'s tree to replace {directory}/: listing truncated")
 
+        prefix = directory.rstrip("/") + "/"
         tree = [
             {"path": path, "mode": "100644", "type": "blob", "content": content}
             for path, content in files.items()
+        ] + [
+            {"path": it["path"], "mode": it["mode"], "type": "blob", "sha": None}
+            for it in listing.get("tree", [])
+            if it.get("type") == "blob" and it["path"].startswith(prefix) and it["path"] not in files
         ]
         new_tree = (
             await client.post(f"{api}/git/trees", json={"base_tree": base_tree_sha, "tree": tree})

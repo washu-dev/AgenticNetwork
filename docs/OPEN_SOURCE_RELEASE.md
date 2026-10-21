@@ -84,7 +84,33 @@ repository goes public.
   ([gcp/README.md](deployment/gcp/README.md#dev-workflow)). The old `MAIN_AGENT_*` setting
   names still work.
 - **Approve → commit:** run one live approval on a test instance. `build_manifest` changed,
-  and the unit tests do not exercise the live GitHub commit.
+  and the unit tests do not exercise the live GitHub commit. Each approval's commit now replaces
+  the whole `registered_agents/<slug>/` directory (files the new upload no longer has are
+  deleted) and adds `registered_agents/<slug>/.approval`, so every approval rebuilds the image.
+  Check that the test approval's commit shows `.approval` and that CI rebuilt the image.
+- **Approval lifecycle (2026-10-21 fix set):** changes an operator or admin will notice.
+  - The first startup stops what runs for each unapproved row left by earlier versions (an
+    upload or reject that kept the status or the service) and resets it to `registered`. On
+    Cloud Run this deletes those services. Those agents need a new approval: check that they
+    show as pending and that no `agent-<slug>` service is left for them.
+  - On the cluster and Cloud Run, an approval without `GITHUB_TOKEN`/`GITHUB_REPO` returns 503
+    and starts nothing (before, the cluster spawned directly and Cloud Run deployed `:latest`).
+  - On the cluster and Cloud Run, approving an agent that is already approved and `live`,
+    `failed` or `stopped` returns 409 (before, it redeployed). Restart it instead, which commits
+    again and waits for a CI rebuild.
+  - An upload or a reject now stops and unpublishes a running agent.
+  - `DELETE /agents/{id}` returns 503 and keeps the row when the directory does not confirm the
+    unpublish; `?force=true` (admin only) deletes it anyway.
+  - Errors in `llm` and `proxy` handlers end the A2A task `failed`, not `completed`, and the
+    `llm` error text changed from "LLM call failed:" to "Agent failed:".
+  - The `init_db` purge (`db._PURGEABLE_SQL`) keeps `stopped` and `failed` rows that still hold
+    an `ads_cid`.
+  - Registration refuses a name whose Cloud Run service id (`agent-<slug>`, sanitized, cut at 63
+    characters) matches an existing agent's, such as `weather_bot` next to `Weather Bot`. Check
+    that no two production rows already share one.
+  - Deploy order on Cloud Run: update `registration` before `planner`. The chat app's approval
+    view needs the code revision that the new registration service reports; in front of an older
+    one it says so and cannot approve. On ENGR one job deploys both from one tree.
 - **Tool-loop agents** (`llm` + uploaded tools) now advertise streaming, but only in images
   rebuilt with this skeleton. Of the vendored copies in `agent-directory`, only
   `registered_agents/echo-test` has the tool-loop path, and it still says `streaming=False`.

@@ -7,7 +7,8 @@ Runs in submit.sbatch's native Slurm environment — where `srun` works — beca
   1. GET  /internal/spawn-queue  → agents marked image_ready (with srun argv + env)
   2. launches each via `srun --overlap` (in the background) and
      POST /internal/spawned {agent_id, pid}
-  3. GET  /internal/stop-queue   → PIDs to kill (agents deleted/stopped)
+  3. GET  /internal/stop-queue   → PIDs to kill (agents deleted/stopped); only
+     PIDs this loop launched are signalled
 
 Stdlib only (urllib + subprocess) so it needs no pip deps or jq on the host.
 """
@@ -49,7 +50,7 @@ def _post(path: str, payload: dict) -> bool:
         return False
 
 
-def _reap() -> None:
+def _reap(launched: set[int]) -> None:
     """Reap any exited child srun processes so killed agents don't linger as zombies."""
     while True:
         try:
@@ -58,12 +59,14 @@ def _reap() -> None:
             return
         if pid == 0:
             return
+        launched.discard(pid)
 
 
 def main() -> None:
     print(f"[spawn-loop] starting reg={REG} poll={POLL}s logs={LOGS}", flush=True)
+    launched: set[int] = set()  # srun PIDs this loop started and has not reaped
     while True:
-        _reap()
+        _reap(launched)
         for item in _get("/internal/spawn-queue") or []:
             aid = item["agent_id"]
             argv = item["argv"]
@@ -79,11 +82,15 @@ def main() -> None:
             except Exception as exc:  # noqa: BLE001
                 print(f"[spawn-loop] launch FAILED {aid}: {exc}", flush=True)
                 continue
+            launched.add(proc.pid)
             if _post("/internal/spawned", {"agent_id": aid, "pid": proc.pid}):
                 print(f"[spawn-loop] reported pid {proc.pid} for {aid}", flush=True)
 
         stops = _get("/internal/stop-queue") or {"pids": []}
         for pid in stops.get("pids", []):
+            if pid not in launched:
+                print(f"[spawn-loop] skipped stop of pid {pid}: not launched by this loop", flush=True)
+                continue
             try:
                 os.kill(int(pid), signal.SIGTERM)
                 print(f"[spawn-loop] killed pid {pid}", flush=True)

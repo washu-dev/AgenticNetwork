@@ -272,8 +272,10 @@ no `author` override is needed).
   `exp+540`; `POST /app/installations/{id}/access_tokens`; cache until ~60s before the ~1h
   expiry). `_github_commit_files` and `_delete_from_github` fetch the token from it instead of
   `os.environ["GITHUB_TOKEN"]`.
-- `_cluster_build_enabled()`: accept **App creds OR `GITHUB_TOKEN`** so the change can land inert
-  (PAT keeps working until the App secrets are populated — a clean, reversible cutover).
+- `_oob_build_enabled()`: accept **App creds OR `GITHUB_TOKEN`** so the change can land inert
+  (PAT keeps working until the App secrets are populated — a clean, reversible cutover). While
+  the gate is false, an approval on a build backend (cluster, Cloud Run) is refused with
+  `LaunchRefused` (503).
 - Update `deployment/secrets.env.example` + this doc.
 
 *Verify:* register a test agent → the `registered_agents/…` commit and the "Build custom agent

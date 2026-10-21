@@ -312,6 +312,7 @@ What the `CloudRunBackend` reads (`registration_service/backend.py`):
 | `IMAGE_REGISTRY` | Docker Hub namespace of the custom-agent images (default `di2washu`, so set it) |
 | `VPC_CONNECTOR` | optional; attaches a connector to agents for private egress. The reference left it unset. If you set it, grant `roles/vpcaccess.user` to `REG_SA` (see the script's comments) |
 | `CLOUDRUN_FORWARD_ENV` | optional, comma-separated extra env vars to copy into agents |
+| `CLOUDRUN_OPERATION_TIMEOUT_SECONDS` | optional (default `900`); how long a deploy or delete may take before it counts as failed (a failed deploy marks the agent `failed`). Other requests for that agent wait for it meanwhile |
 
 Every agent gets copies of `OPENAI_BASE_URL`, `OPENAI_API_KEY`, `AGENT_MODEL` and `ADS_SERVER_ADDR`
 from the registration service's own environment, plus anything in `CLOUDRUN_FORWARD_ENV`. They are
@@ -422,7 +423,7 @@ gcloud run services proxy registration --region="$REGION" --port=8091
 # open http://localhost:8091/
 ```
 
-Admin actions on the registration service (approve, reject, review uploaded code) check the
+Admin actions on the registration service (approve, reject, review uploaded code, force delete) check the
 `mail` header against `ADMIN_EMAILS` (`registration_service/server.py`, `_require_admin`):
 
 ```bash

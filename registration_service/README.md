@@ -30,7 +30,11 @@ the loop*:
 > and for `llm` + `tools.source == "upload"`. Those agents are created
 > **not-approved**, must have their code uploaded (`POST /agents/{id}/handler`), and
 > must be approved by an admin before they spawn; on the cluster and Cloud Run they
-> go through the GitHub→Docker Hub per-agent image build (see below).
+> go through the GitHub→Docker Hub per-agent image build (see below). A re-upload is
+> validated before it replaces the stored code (a rejected one changes nothing); an
+> accepted re-upload, like `POST /agents/{id}/reject`, returns the agent to the
+> pre-approval state, so a running agent is stopped and unpublished until an admin
+> approves again.
 > `models.upload_spec(config)` returns the shared build parameters, so one
 > `generate_dockerfile` serves both.
 
@@ -99,11 +103,11 @@ registration submitted under a legacy name is *persisted* under the canonical on
 | `POST` | `/agents` | Register and start a new agent |
 | `GET` | `/agents` | List all agents with status |
 | `GET` | `/agents/{id}` | Single agent detail |
-| `DELETE` | `/agents/{id}` | Stop, unpublish, and remove an agent |
+| `DELETE` | `/agents/{id}` | Stop, unpublish, and remove an agent (503, row kept, if the directory can't confirm the unpublish: retry, or an admin adds `?force=true` to delete it anyway and log the card's CID) |
 | `POST` | `/agents/{id}/restart` | Manually restart an agent |
-| `POST`/`GET` | `/agents/{id}/handler` | Upload / fetch a custom agent's handler code |
+| `POST`/`GET` | `/agents/{id}/handler` | Upload / fetch a custom agent's handler code (the fetch includes the code's `revision`) |
 | `GET` | `/agents/{id}/handler/download` | Download an uploaded handler archive |
-| `POST` | `/agents/{id}/approve` \| `/reject` | Admin approval gate for custom agents |
+| `POST` | `/agents/{id}/approve` \| `/reject` | Admin approval gate for custom agents (reject also stops and unpublishes a running agent). Approve takes an optional `{"revision": ...}`, the reviewed code's revision: 409 if the code changed since |
 | `GET`/`POST` | `/internal/{spawn-queue,spawned,stop-queue}` | Host-side cluster spawn-loop coordination (not user-facing). No access check in code: keep port 8091 off public networks. The chat app's `/register` pass-through refuses these paths (see SECURITY.md) |
 
 ## Local development (no postgres, no ADS)
@@ -187,9 +191,10 @@ the component you are working on.
 | `AGENT_BIND_HOST` | `0.0.0.0` | Address subprocess agents bind (the dev stack sets `127.0.0.1`) |
 | `AGENT_LOG_DIR` | `logs/agents` | Per-agent log files of subprocess agents |
 | `AGENT_SPAWN_HEALTH_TIMEOUT_SECONDS` | `30` | How long a subprocess agent may take to answer its first health check |
+| `AGENT_INSTALL_TIMEOUT_SECONDS` | `600` | Limit for each install step (venv, `pip install`) of a subprocess agent's spawn; past it the step is killed and the spawn fails |
 | `MAX_ARCHIVE_FILES` / `MAX_ARCHIVE_UNCOMPRESSED` | `2000` / 25 MB | Limits for uploaded handler archives |
 | `FAKE_DB` / `FAKE_SUPERVISOR` | off / = `FAKE_DB` | In-memory DB; no-op supervisor (see Local development) |
-| GCP (`cloudrun`) | — | `GCP_PROJECT`, `GCP_REGION`, `AGENT_RUNTIME_SA`, `PLANNER_INVOKER_SA`, `VPC_CONNECTOR`, `CLOUDRUN_FORWARD_ENV`; see docs/deployment/gcp/ |
+| GCP (`cloudrun`) | — | `GCP_PROJECT`, `GCP_REGION`, `AGENT_RUNTIME_SA`, `PLANNER_INVOKER_SA`, `VPC_CONNECTOR`, `CLOUDRUN_FORWARD_ENV`, `CLOUDRUN_OPERATION_TIMEOUT_SECONDS` (default `900`: how long a deploy or delete may take); see docs/deployment/gcp/ |
 
 ## Deployment (ENGR cluster)
 

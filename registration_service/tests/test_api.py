@@ -309,3 +309,14 @@ async def test_public_config_leaves_plain_configs_alone(client: AsyncClient) -> 
     })).json()
     assert created["config"]["upstream_url"] == "http://example.com/api"
     assert created["config"]["auth_header"] is None
+
+
+async def test_registration_page_shows_why_a_delete_failed() -> None:
+    # A delete the directory blocks returns 503 with a detail saying so (and that
+    # an admin can force it); the page shows that detail, not just the status text.
+    # A source check of the page's script (the suite runs no JavaScript).
+    from pathlib import Path
+
+    html = (Path(__file__).resolve().parents[1] / "static" / "index.html").read_text()
+    delete = html.split("async function deleteAgent(id, name) {", 1)[1].split("\n}\n", 1)[0]
+    assert "fmtDetail(body.detail)" in delete
