@@ -3,7 +3,7 @@
 Open work and ideas left over from the summer 2026 build of AgenticNetwork, during Washington
 University in St. Louis's Digital Transformation Research Corps (DTRC). The list was drawn up after
 the summer and cleaned up for this repository: statuses were checked against the code on
-2026-10-20, and items that are finished or concern things outside this repository were removed.
+2026-10-20 (S4, S5, S27 and S57 updated 2026-10-21), and items that are finished or concern things outside this repository were removed.
 Item IDs (S1–S109) are kept from the original working list, so gaps in the numbering are those
 removed items. Nothing here is a commitment. Ideas are research directions, not features.
 
@@ -33,10 +33,9 @@ distinctive design questions; the rest make it easier for newcomers to build on.
 5. **S72: an `examples/` folder,** one agent per onboarding path (S68, S69, S71).
 6. **S82 with S103: a first-agent tutorial,** ending in a real request and response, plus a table of
    what an agent can send and receive today.
-7. **S27: four skeleton correctness issues,** including the tool loop's silent stop after four steps.
-8. **S4: the chat app's approvals list misses uploaded-tools agents.** A small fix with a test.
-9. **S107 with S28: open one GitHub issue per open item** and label the newcomer-friendly ones.
-10. **S84: a one-to-two-page roadmap** built from the ideas in sections 4, 5, 7 and 10.
+7. **S27: the remaining skeleton correctness issues,** including the tool loop's low default step limit.
+8. **S107 with S28: open one GitHub issue per open item** and label the newcomer-friendly ones.
+9. **S84: a one-to-two-page roadmap** built from the ideas in sections 4, 5, 7 and 10.
 
 Plain-language terms used below:
 - **A2A, Agent Card, directory (ADS):** see the root [`README.md`](../README.md#how-it-works).
@@ -62,6 +61,9 @@ For context, these summer items are finished and no longer listed:
 - All LLM calls use the Chat Completions API, so any OpenAI-compatible endpoint works (OpenAI,
   vLLM, Ollama).
 - The in-repo `agent_skeleton/` carries every fix from the summer's separate skeleton copy.
+- The chat app's approvals list shows every agent with uploaded code awaiting approval, not only
+  `custom` ones; the skeleton-package upload error points to `agent_skeleton/README.md`; Slurm test
+  instances (`PORT_OFFSET` ≠ 0) export their own `REGISTRATION_SERVICE_URL` (2026-10-21).
 
 ---
 
@@ -69,8 +71,6 @@ For context, these summer items are finished and no longer listed:
 
 | ID | Item | Type | Status (2026-10-20) | Priority | Next step | Effort |
 |---|---|---|---|---|---|---|
-| S4 | The chat app's admin "Pending approvals" list decides by handler-type name, so uploaded-tools `llm` agents never reach approvers there | Task | Open. `chat_app/web/index.html` filters on `handler_type === 'custom'` (cluster recovery was already switched to `carries_upload`) | Important | Filter on "not approved and has uploaded code", as the registration UI does, and add a test | S |
-| S5 | The upload-check error for packages that claim to be the skeleton points to `REGISTERING.md`, which doesn't exist in this repo | Task | Open (`registration_service/archive.py`) | Nice | Point it to `docs/BUILDING_AGENTS.md` or `agent_skeleton/README.md` | S |
 | S6 | Test registration against a real Postgres for every agent shape, not only the in-memory test database | Task | Partly done. The Compose CI tier runs registration on real Postgres, but registers only the echo seed (an `llm` agent with no tools); the unit tests use the in-memory database | Important | Register one agent of each shape in the Compose tier: `proxy`; `llm` with presets, HTTP operations and an upload; `custom` with an upload and an approval | S |
 
 ## 2. Registration and agent ingestion
@@ -98,7 +98,7 @@ For context, these summer items are finished and no longer listed:
 |---|---|---|---|---|---|---|
 | S24 | Publish `agent_skeleton` as a versioned package, so external agents pin a release instead of carrying a vendored copy | Task | Open. The in-repo copy is the single maintained skeleton; agents built during the summer each carry their own copy | Important | Publish a package and record the decision in `docs/DECISIONS.md` | M |
 | S25 | Separate the template you copy from the library you install, so authors never edit installed files | Task | Open. `agent_skeleton/` is a flat layout and its README says to edit `tool_schemas.py`, `tools.py` and `prompt.py` inside the package | Important | Move to a `src/` layout and add a template in `examples/` or a `new-agent` command (the README was reworded on 2026-10-20 to call these the demo agent's files and say not to edit them) | M |
-| S27 | Four skeleton correctness issues | Task | Open: (1) the tool loop stops silently at `MAX_TOOL_STEPS=4` (`agent_skeleton/config.py`, `llm_loop.py`); (2) `HandlerExecutor.cancel` leaves the handler running; (3) a handler that returns a non-dict isn't failed cleanly; (4) `call_endpoint` with `protocol="a2a"` drops the structured payload | Important | Raise the default step limit (about 8) and return an explicit step-limit error; fix the other three, each with a test | M |
+| S27 | Remaining skeleton correctness issues | Task | Partly done (2026-10-21): the tool loop now ends with an explicit step-limit message instead of an empty answer, and a handler result without a string `answer` fails the task cleanly. Open: (1) the default step limit is still `MAX_TOOL_STEPS=4` (`agent_skeleton/config.py`); (2) `HandlerExecutor.cancel` leaves the handler running; (4) `call_endpoint` with `protocol="a2a"` drops the structured payload | Important | Raise the default step limit (about 8); fix (2) and (4), each with a test | M |
 | S28 | Newcomer conveniences: a local `serve-handler` / `test-handler` command to run and smoke-test an `AgentHandler` without registering; optional `.env` loading for it; a pre-serve structural check of an agent folder using registration's rules | Idea | Not started (`agent_skeleton/serve.py` has `check`, `serve-a2a` and `serve-wrapper`) | Nice (good first issues) | Label them for newcomers (S107) | S |
 | S30 | Small docs fixes for contributors | Task | Open: document the reserved `agent_skeleton` package name in `docs/BUILDING_AGENTS.md` and `docs/REGISTRATION_SERVICE.md`; replace links to example agents in a separate, unpublished repository with an in-repo example (S72) | Important | One docs change, with S5 | S |
 
@@ -136,7 +136,6 @@ For context, these summer items are finished and no longer listed:
 | S54 | Finish the Cloud Run deployment: a public front door (HTTPS load balancer plus sign-in), and the rest of the services on Cloud Run | Task | Paused. `docs/deployment/gcp/DEPLOY_YOUR_OWN.md` doesn't cover a public front door and hasn't been re-run on a fresh project | Nice (the release doesn't depend on it) | Write the front-door guide and re-run the deploy guide end to end on a fresh project | L |
 | S55 | On-demand agents everywhere ("scale to zero"), a demand-driven scheduler, and how many instances to run under load | Idea | Partly done. Cloud Run agents scale to zero (`registration_service/backend.py`); Slurm, Compose and the native stack start every agent at boot, and the chat app relies on a manual `CHAT_APP_HEALTH_PROBE_SKIP_AGENTS` list | Nice | Replace the manual list with a flag on the card or registry row; keep the scheduler on the roadmap | L |
 | S56 | Hardware and GPU requirements in the Agent Card; GPU agents | Idea | Partly done. A resource-requirements card extension exists (`registration_service/card_resources.py`: cpu, memory, concurrency, max instances, gpu) for Cloud Run sizing; no backend hosts GPU agents yet | Nice | Document the extension as the standard, and document "GPU agents = a self-hosted endpoint registered as a proxy agent" until a GPU-capable backend exists | S |
-| S57 | Slurm test instances (`PORT_OFFSET` ≠ 0) should talk to their own registration service | Task | Open. `deployment/submit.sbatch` exports the offset registration port but not `REGISTRATION_SERVICE_URL`, so a test chat app's `/register/*` pass-through falls back to the default port on a shared node | Nice | Export `REGISTRATION_SERVICE_URL` with the offset | S |
 | S58 | Development shouldn't depend on one person's accounts; rebuild one service without restarting everything | Task | Partly done. The dev stack and Compose need no personal accounts. Registration build commits still go out under a single token (`docs/MULTI_CONTRIBUTOR.md`; a GitHub App is planned) | Important | Move registration commits to a GitHub App or bot identity; document redeploying one service on Slurm | M |
 | S59 | Agents on different cluster nodes | Question | Open; the Slurm deployment assumes one node (agents' card URLs are localhost), and the limit is documented | Nice | Support cross-node addresses, or keep the limit documented | M |
 | S60 | Infrastructure as code instead of console and `gcloud` steps | Question | Open. Only an IAM script is scripted (`deployment/scripts/gcp_iam_step7.sh`); a plan is in `docs/deployment/gcp/MIGRATION.md` | Nice | Terraform/OpenTofu or Pulumi for the Cloud Run deployment | M |
