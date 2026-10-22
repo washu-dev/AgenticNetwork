@@ -20,6 +20,9 @@ from registration_service.supervisor import (
 
 pytestmark = pytest.mark.asyncio
 
+# An agent-directory commit SHA: the build workflow tags the image with it.
+_COMMIT = "0123456789abcdef0123456789abcdef01234567"
+
 
 class _FakeBackend:
     def __init__(self) -> None:
@@ -83,12 +86,14 @@ async def test_cluster_approve_commits_and_defers(monkeypatch):
 
     async def fake_commit(a, skills):
         committed["name"] = a["name"]
+        return _COMMIT
 
     monkeypatch.setattr(sup, "_commit_to_github", fake_commit)
     await sup.spawn_and_publish(str(agent["id"]))
 
     got = await db.get_agent(agent["id"])
     assert got["status"] == "building"
+    assert got["build_commit"] == _COMMIT   # the build poll waits for this tag
     assert committed.get("name") == "Paper Reviewer"
     await db.close_db()
 
@@ -142,6 +147,83 @@ async def test_build_poll_marks_image_ready(monkeypatch):
     got = await db.get_agent(agent["id"])
     assert got["status"] == "image_ready"   # waits for the host loop, not live yet
     assert got["image_ref"] == "sha256:deadbeef"
+    await db.close_db()
+
+
+async def test_build_poll_waits_for_the_image_of_the_approvals_commit(monkeypatch):
+    """':latest' may hold another approval's build. The poll asks Docker Hub for
+    the tag of the commit the approval made, and records that tag's digest."""
+    _cluster_env(monkeypatch)
+    await _fresh_db()
+    agent = await _make_custom(approved=True)
+    await db.update_agent(agent["id"], status="building", build_commit=_COMMIT)
+    pushed: set[str] = {"latest"}
+    asked: list[tuple] = []
+
+    async def exists(image, since=None, *, tag="latest"):
+        asked.append((image, since, tag))
+        return tag in pushed
+
+    async def digest(image, tag="latest"):
+        return f"sha256:{tag[:6]}"
+
+    monkeypatch.setattr(sup_mod, "_image_exists_on_dockerhub", exists)
+    monkeypatch.setattr(sup_mod, "_image_digest_on_dockerhub", digest)
+    sup = Supervisor(backend=ClusterBackend(), publisher=_FakePublisher())
+
+    await sup._check_building_agents()
+    assert (await db.get_agent(agent["id"]))["status"] == "building"
+    assert asked == [("di2washu/agenticnetwork-custom-paper-reviewer", None, _COMMIT)]
+
+    pushed.add(_COMMIT)
+    await sup._check_building_agents()
+    got = await db.get_agent(agent["id"])
+    assert got["status"] == "image_ready"
+    assert got["image_ref"] == f"sha256:{_COMMIT[:6]}"
+    await db.close_db()
+
+
+async def test_build_poll_row_without_a_commit_waits_for_latest_since_approval(monkeypatch):
+    """A row that started building before build_commit was recorded keeps the
+    earlier check: a ':latest' pushed at or after its approval."""
+    _cluster_env(monkeypatch)
+    await _fresh_db()
+    agent = await _make_custom(approved=True)
+    await db.update_agent(agent["id"], status="building")
+    row = await db.get_agent(agent["id"])
+    asked: list[tuple] = []
+
+    async def exists(image, since=None, *, tag="latest"):
+        asked.append((since, tag))
+        return True
+
+    async def digest(image, tag="latest"):
+        asked.append(("digest", tag))
+        return "sha256:feed"
+
+    monkeypatch.setattr(sup_mod, "_image_exists_on_dockerhub", exists)
+    monkeypatch.setattr(sup_mod, "_image_digest_on_dockerhub", digest)
+    sup = Supervisor(backend=ClusterBackend(), publisher=_FakePublisher())
+    await sup._check_building_agents()
+
+    assert asked == [(row["updated_at"], "latest"), ("digest", "latest")]
+    assert (await db.get_agent(agent["id"]))["status"] == "image_ready"
+    await db.close_db()
+
+
+async def test_spawn_queue_runs_the_image_of_the_approvals_commit(monkeypatch):
+    _cluster_env(monkeypatch)
+    await _fresh_db()
+    agent = await _make_custom(approved=True)
+    await db.update_agent(
+        agent["id"], status="image_ready", port=19202, build_commit=_COMMIT,
+        image_ref="sha256:feed",
+    )
+    sup = Supervisor(backend=ClusterBackend(), publisher=_FakePublisher())
+
+    (entry,) = await sup.spawn_queue()
+    image = f"--container-image=di2washu/agenticnetwork-custom-paper-reviewer:{_COMMIT}"
+    assert image in entry["argv"]
     await db.close_db()
 
 
@@ -277,6 +359,23 @@ async def test_image_exists_true(monkeypatch):
     assert await _image_exists_on_dockerhub("di2washu/agenticnetwork-custom-x") is True
 
 
+async def test_image_exists_asks_for_the_given_tag(monkeypatch):
+    urls: list[str] = []
+
+    class _Recording(_FakeClient):
+        async def get(self, url, **kw):
+            urls.append(url)
+            return self._resp
+
+    monkeypatch.setattr(
+        sup_mod.httpx, "AsyncClient", lambda *a, **k: _Recording(_Resp(200, {})),
+    )
+    assert await _image_exists_on_dockerhub("di2washu/agenticnetwork-custom-x", tag=_COMMIT)
+    assert await _image_digest_on_dockerhub("di2washu/agenticnetwork-custom-x", _COMMIT) is None
+    tag_url = f"https://hub.docker.com/v2/repositories/di2washu/agenticnetwork-custom-x/tags/{_COMMIT}"
+    assert urls == [tag_url, tag_url]
+
+
 async def test_image_exists_false_on_404(monkeypatch):
     monkeypatch.setattr(
         sup_mod.httpx, "AsyncClient", lambda *a, **k: _FakeClient(_Resp(404)),
@@ -301,6 +400,30 @@ async def test_image_digest_none_on_404(monkeypatch):
 
 # ── Recovery on redeploy: a live custom agent is re-queued, not lost ──────────────
 
+async def test_recover_live_agent_requeues_the_image_of_its_commit(monkeypatch):
+    """A live agent with a recorded commit comes back from that commit's image,
+    not from whatever ':latest' holds now."""
+    _cluster_env(monkeypatch)
+    await _fresh_db()
+    agent = await _make_custom(approved=True)
+    await db.update_agent(agent["id"], status="live", port=19203, build_commit=_COMMIT)
+    asked: list[str] = []
+
+    async def exists(image, since=None, *, tag="latest"):
+        asked.append(tag)
+        return tag == _COMMIT
+
+    monkeypatch.setattr(sup_mod, "_image_exists_on_dockerhub", exists)
+    sup = Supervisor(backend=ClusterBackend(), publisher=_FakePublisher())
+    await sup.recover_live_agents()
+
+    assert asked == [_COMMIT]
+    assert (await db.get_agent(agent["id"]))["status"] == "image_ready"
+    (entry,) = await sup.spawn_queue()
+    assert f"--container-image=di2washu/agenticnetwork-custom-paper-reviewer:{_COMMIT}" in entry["argv"]
+    await db.close_db()
+
+
 async def test_recover_live_agent_requeues_not_stops(monkeypatch):
     """Regression: recover_live_agents must NOT pass row['updated_at'] as the
     Docker Hub freshness bound. `updated_at` is bumped on go-live, which is always
@@ -317,11 +440,12 @@ async def test_recover_live_agent_requeues_not_stops(monkeypatch):
 
     seen_since = []
 
-    async def exists(image, since=None):
+    async def exists(image, since=None, *, tag="latest"):
         # Mirror the real contract: if a `since` bound is (wrongly) passed, an image
-        # built before go-live would be rejected — which is exactly the bug.
+        # built before go-live would be rejected — which is exactly the bug. A row
+        # built before build_commit was recorded has only ':latest' to check.
         seen_since.append(since)
-        return since is None
+        return since is None and tag == "latest"
 
     monkeypatch.setattr(sup_mod, "_image_exists_on_dockerhub", exists)
     sup = Supervisor(backend=ClusterBackend(), publisher=_FakePublisher())
@@ -394,8 +518,8 @@ async def test_recover_live_uploaded_tools_agent_requeues(monkeypatch, handler_t
 
     checked = []
 
-    async def exists(image, since=None):
-        checked.append(image)
+    async def exists(image, since=None, *, tag="latest"):
+        checked.append(f"{image}:{tag}")
         return True
 
     monkeypatch.setattr(sup_mod, "_image_exists_on_dockerhub", exists)
@@ -406,7 +530,7 @@ async def test_recover_live_uploaded_tools_agent_requeues(monkeypatch, handler_t
     assert got["status"] == "image_ready", "uploaded-tools agent should be re-queued"
     assert got["port"] == 19201 and got["ads_cid"] is None
     # The image the build poll waited for (and the host loop will srun).
-    assert checked == ["di2washu/agenticnetwork-custom-tool-runner"]
+    assert checked == ["di2washu/agenticnetwork-custom-tool-runner:latest"]
 
     queue = await sup.spawn_queue()
     assert [e["agent_id"] for e in queue] == [str(agent["id"])]
@@ -429,7 +553,7 @@ async def test_recover_live_uploaded_agent_without_image_is_stopped(monkeypatch)
     )
     await db.update_agent(agent["id"], status="live")
 
-    async def missing(image, since=None):
+    async def missing(image, since=None, *, tag="latest"):
         return False
 
     monkeypatch.setattr(sup_mod, "_image_exists_on_dockerhub", missing)
@@ -471,7 +595,7 @@ async def test_recover_live_agent_without_upload_is_stopped(monkeypatch, handler
     )
     await db.update_agent(agent["id"], status="live")
 
-    async def exists(image, since=None):
+    async def exists(image, since=None, *, tag="latest"):
         raise AssertionError("Docker Hub must not be consulted for an agent with no image")
 
     monkeypatch.setattr(sup_mod, "_image_exists_on_dockerhub", exists)

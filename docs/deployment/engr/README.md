@@ -446,7 +446,8 @@ Known limitation. The 6 core agents are hardcoded as `srun` steps in `submit.sba
 so they always launch with the job. Custom agents are **not** in that static set — their
 (re)start is driven entirely by the registration service's Postgres DB: on startup
 `Supervisor.recover_live_agents` re-queues only uploaded-code rows (`custom`, or `llm` with
-uploaded tools) with `status='live'` (and whose image still exists on Docker Hub) to
+uploaded tools) with `status='live'` (and whose image, the one tagged with its approval's commit,
+still exists on Docker Hub) to
 `image_ready`, and the host spawn loop (`spawn_agent_loop.py`) then `srun`s them. Agents that
 upload no code (plain `llm`, `proxy`) have no cluster spawn path at all. Consequences:
 - If the Postgres data dir is fresh/reset, or the custom agent's row isn't `status='live'`
@@ -464,6 +465,11 @@ upload no code (plain `llm`, `proxy`) have no cluster spawn path at all. Consequ
 The registration service waits for the agent's image without a time limit. If the image build
 failed (see the agent-directory repository's GitHub Actions log), approving again returns 409:
 restart the agent to commit and build again, or upload fixed code, which returns it to approval.
+The service waits for the image tagged with the approval's commit SHA (the row's `build_commit`),
+not for `:latest`. If the build workflow in `GITHUB_REPO` pushes only `:latest`, every new
+approval stays `building`: update `build-custom-agent.yml` to tag `:${{ github.sha }}` too
+(`agent-directory` does from 2026-10-22), then restart the agents approved meanwhile, since their
+commits were built without the tag.
 
 **`ModuleNotFoundError` or wrong Python version in agent logs**
 The cluster auto-mounts its system anaconda (Python 3.7) into containers. All

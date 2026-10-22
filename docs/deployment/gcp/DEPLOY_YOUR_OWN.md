@@ -479,15 +479,16 @@ gcloud logging read 'resource.type="cloud_run_revision" AND resource.labels.serv
 ([docs/REGISTRATION_SERVICE.md](../../REGISTRATION_SERVICE.md); building one:
 [docs/BUILDING_AGENTS.md](../../BUILDING_AGENTS.md)), then approve it as an admin. The registration
 service commits the build context to `GITHUB_REPO`; a GitHub Action there builds the image and pushes
-it to Docker Hub as `${IMAGE_REGISTRY}/agenticnetwork-custom-<name>:latest`; the build poll sees the
-image, and the `CloudRunBackend` deploys `agent-<name>` (min instances 0, max 1, as `agent-runtime`,
-internal ingress), grants the chat app `run.invoker`, and publishes the card with the agent's
+it to Docker Hub as `${IMAGE_REGISTRY}/agenticnetwork-custom-<name>`, tagged with the commit's SHA
+and `:latest`; the build poll sees that commit's image, and the `CloudRunBackend` deploys it by
+digest as `agent-<name>` (min instances 0, max 1, as `agent-runtime`, internal ingress), grants the chat app `run.invoker`, and publishes the card with the agent's
 `run.app` URL. Limits today:
 
 - Only uploaded-code agents work on Cloud Run. The supervisor rejects prompt-only `llm` agents and
   proxy agents on this backend (`registration_service/supervisor.py`).
 - The build workflow (`build-custom-agent.yml`) lives in the separate `agent-directory` repository,
-  not in this one. You need your own copy of it in `GITHUB_REPO`, pushing to your namespace.
+  not in this one. You need your own copy of it in `GITHUB_REPO`, pushing to your namespace and
+  tagging each image with the commit's SHA (`${{ github.sha }}`): the build poll waits for that tag.
 - The build poll reads Docker Hub's public API without credentials (`_image_exists_on_dockerhub`),
   so custom-agent images must be **public on Docker Hub**, not in Artifact Registry.
 - An agent can ask for CPU, memory, concurrency and max instances in its registration
@@ -496,8 +497,8 @@ internal ingress), grants the chat app `run.invoker`, and publishes the card wit
   ([docs/AGENT_DIRECTORY.md](../../AGENT_DIRECTORY.md)).
 
 Step-by-step trace and acceptance test: [IMPLEMENTATION_CLOUDRUN_BACKEND.md](IMPLEMENTATION_CLOUDRUN_BACKEND.md).
-Known operational traps (the build poll's freshness guard, the `updated_at` trigger) are in
-[README.md](README.md#dev-workflow).
+Known operational traps (the `updated_at` trigger, and the build poll's freshness guard for
+rows approved before the service recorded build commits) are in [README.md](README.md#dev-workflow).
 
 **Deploy an existing agent by hand (unverified).** Deploy its image as a Cloud Run service with
 `--ingress=internal --no-allow-unauthenticated --min-instances=0 --service-account="$AGENT_SA"`,
@@ -579,7 +580,7 @@ From the reference deployment ([MIGRATION.md](MIGRATION.md#operational-gotchas-l
 | The proxy returns 404 | The service was deployed with `--ingress=internal`; use `--ingress=all` with `--no-allow-unauthenticated`. |
 | The first call to an agent times out | Cold start; raise `A2A_HTTP_TIMEOUT_SECONDS`. |
 | An agent is deployed but the planner can't find it | Its card has no routable OASF skill. |
-| A re-registered agent isn't redeployed | The build poll's freshness guard ignores images older than the agent's `updated_at`. |
+| An approved agent stays `building` | The build workflow in `GITHUB_REPO` doesn't push the `:<commit SHA>` tag the build poll waits for, or its build failed (see its Actions log). Fix it, then restart the agent. |
 | Planner-to-agent calls get 403 or 404 (unverified) | Internal ingress may require the planner's traffic to `*.run.app` to go through the VPC. Try `gcloud run services update planner --region="$REGION" --vpc-egress=all-traffic`; with that setting, a hosted LLM API also needs a Cloud NAT route to the internet. |
 
 ## Not covered

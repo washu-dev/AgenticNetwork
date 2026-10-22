@@ -32,6 +32,18 @@ def _handler_type_check_clauses() -> list[set[str]]:
     return clauses
 
 
+def test_columns_added_later_reach_existing_databases():
+    """CREATE TABLE IF NOT EXISTS skips a table that already exists, so a column
+    added to it later also needs ALTER TABLE ... ADD COLUMN IF NOT EXISTS, or every
+    write to it fails on a database created before the column."""
+    for column in (
+        "handler_file_path", "approved", "is_archive", "image_ref", "build_commit", "resources",
+    ):
+        assert re.search(
+            rf"ALTER TABLE agents ADD COLUMN IF NOT EXISTS {column}\b", db._SCHEMA_SQL
+        ), column
+
+
 def test_handler_type_check_clauses_cover_all_canonical_types():
     clauses = _handler_type_check_clauses()
     # Guard the guard: fail loudly if the schema stops declaring any such

@@ -130,6 +130,7 @@ class FakeConnection:
                 "endpoint_url": None,
                 "ads_cid": None,
                 "image_ref": None,
+                "build_commit": None,
                 "resources": None,
                 "created_at": now,
                 "updated_at": now,
@@ -248,17 +249,16 @@ class FakeConnection:
         if "select id from agents where status" in s and "'live'" in s:
             return [FakeRecord({"id": v["id"]}) for v in self._s.agents.values() if v["status"] == "live"]
 
-        # recover_live_agents (cluster): SELECT id, name, handler_type, config, port, updated_at ...
+        # recover_live_agents (cluster): SELECT id, name, handler_type, config, port, updated_at,
+        # build_commit ...
         if "from agents where status = 'live'" in s:
+            # Only the columns the query selects, as Postgres returns: a column the
+            # code reads but does not select, or selects but the table lacks, fails
+            # here too (KeyError).
+            selected = s.split("select ", 1)[1].split(" from agents", 1)[0]
+            columns = [c.strip() for c in selected.split(",")]
             return [
-                FakeRecord({
-                    "id": v["id"],
-                    "name": v["name"],
-                    "handler_type": v["handler_type"],
-                    "config": v["config"],
-                    "port": v["port"],
-                    "updated_at": v["updated_at"],
-                })
+                FakeRecord({c: v[c] for c in columns})
                 for v in self._s.agents.values()
                 if v["status"] == "live"
             ]
@@ -378,6 +378,7 @@ def fake_create_agent(
         "endpoint_url": None,
         "ads_cid": None,
         "image_ref": None,
+        "build_commit": None,
         "resources": resources,
         "created_at": now,
         "updated_at": now,

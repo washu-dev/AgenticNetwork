@@ -93,8 +93,8 @@ async def _revoke_approval(agent_id: str) -> None:
     service was created) can leave it running, and so can a stop that failed at
     startup (_reset_revoked_rows), which this then retries. A 'building' or
     'image_ready' one leaves the build poll and the spawn queue with its
-    status. image_ref is cleared, so the next approval goes through the normal
-    build path.
+    status. image_ref and build_commit are cleared, so the next approval goes
+    through the normal build path.
     """
     uid = _parse_uuid(agent_id)
     agent = await db.get_agent(uid)
@@ -103,7 +103,7 @@ async def _revoke_approval(agent_id: str) -> None:
     await db.update_agent(uid, approved=False)
     if agent["status"] not in ("registered", "stopped") or agent.get("image_ref") or agent.get("ads_cid"):
         await get_supervisor().stop_and_unpublish(agent_id)
-    await db.update_agent(uid, status="registered", image_ref=None)
+    await db.update_agent(uid, status="registered", image_ref=None, build_commit=None)
 
 
 # ZIP local-file-header magic; used as a fallback when the filename lacks a suffix.

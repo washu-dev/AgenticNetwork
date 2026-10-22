@@ -173,8 +173,9 @@ class Supervisor:
 
         # Out-of-band build (cluster, Cloud Run): uploaded code runs only from the
         # image built for its approval. The approval commits the build context to
-        # agent-directory and waits (status='building') for the image on Docker
-        # Hub; the build poll marks it 'image_ready', and the host loop (cluster,
+        # agent-directory, records the commit (build_commit) and waits
+        # (status='building') for the image the build workflow tags with that
+        # commit's SHA; the build poll marks it 'image_ready', and the host loop (cluster,
         # finalize_spawned, see Note #8) or the Cloud Run deploy
         # (_deploy_ready_agent) launches it. There is no direct spawn here: on
         # the cluster spawn() starts nothing, and on Cloud Run it would deploy
@@ -195,9 +196,11 @@ class Supervisor:
                     f"Agent {agent_id} is {agent.get('status')!r}, not waiting for a "
                     "build; restart it to rebuild and redeploy.",
                 )
-            await self._commit_to_github(agent, oasf_skills)
-            await _set_status(agent_id, "building")
-            logger.info("custom_build_started agent_id=%s name=%s", agent_id, name)
+            commit = await self._commit_to_github(agent, oasf_skills)
+            await update_agent(agent_id, status="building", build_commit=commit)
+            logger.info(
+                "custom_build_started agent_id=%s name=%s commit=%s", agent_id, name, commit
+            )
             return
 
         # An out-of-band-build backend (cluster, Cloud Run) only has a spawn path
@@ -384,8 +387,9 @@ class Supervisor:
         Each CID is cleared once the directory confirms; otherwise it stays for
         the next startup.
 
-        An approved 'building' row keeps its CID: clearing it would move
-        updated_at, which the build poll compares the image's push time against.
+        An approved 'building' row keeps its CID: for a row with no recorded
+        build_commit, clearing it would move updated_at, which the build poll
+        compares a ':latest' image's push time against.
         That card is removed when the agent publishes (the old-CID retry in
         _publish_and_set_live) or is stopped.
 
@@ -443,7 +447,7 @@ class Supervisor:
         """Stop what the backend runs for an agent whose approval was revoked and
         set the pre-approval state, so nothing relaunches or queues it."""
         await self._backend.stop(agent_id)
-        await update_agent(agent_id, status="registered", image_ref=None)
+        await update_agent(agent_id, status="registered", image_ref=None, build_commit=None)
 
     async def restart_with_backoff(self, agent_id: str) -> None:
         """Attempt up to _MAX_RESTART_ATTEMPTS restarts with exponential backoff.
@@ -556,7 +560,7 @@ class Supervisor:
         # ── Cluster backend: reconcile ghost 'live' rows to reality ──
         async with pool.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT id, name, handler_type, config, port, updated_at "
+                "SELECT id, name, handler_type, config, port, updated_at, build_commit "
                 "FROM agents WHERE status = 'live'"
             )
         if not rows:
@@ -576,11 +580,14 @@ class Supervisor:
             # know the image still exists; the `since` guard belongs in the
             # build-poll path (_check_building_agents), where updated_at really is
             # the approval time and a newer image is what we're waiting for.
+            # The image is the one the agent ran: its approval's commit tag, which
+            # spawn_queue launches, or ':latest' for a row without a recorded commit.
             redeployable = (
                 _uploads_code(dict(row))
                 and _oob_build_enabled()
                 and await _image_exists_on_dockerhub(
                     f"{_image_registry()}/agenticnetwork-custom-{_image_slug(row['name'])}",
+                    tag=row["build_commit"] or "latest",
                 )
             )
             async with pool.acquire() as conn:
@@ -756,11 +763,20 @@ class Supervisor:
         for agent in building:
             slug = _image_slug(agent["name"])
             image = f"{_image_registry()}/agenticnetwork-custom-{slug}"
-            if await _image_exists_on_dockerhub(image, agent.get("updated_at")):
+            # Wait for the image tagged with this approval's commit: ':latest' can
+            # hold another approval's build (an older build that finished last, or
+            # a newer one). A row that started building before build_commit was
+            # recorded waits, as before, for a ':latest' pushed since its approval.
+            commit = agent.get("build_commit")
+            if commit:
+                ready = await _image_exists_on_dockerhub(image, tag=commit)
+            else:
+                ready = await _image_exists_on_dockerhub(image, agent.get("updated_at"))
+            if ready:
                 # Best-effort digest capture: a failed lookup leaves image_ref=None
-                # (the CloudRunBackend deploy then falls back to ':latest') rather
-                # than blocking the transition to image_ready.
-                image_ref = await _image_digest_on_dockerhub(image)
+                # (the deploy then falls back to the commit tag, or ':latest' for a
+                # row without one) rather than blocking the transition to image_ready.
+                image_ref = await _image_digest_on_dockerhub(image, commit or "latest")
                 # A reject or re-upload (and maybe a new approval) can land while
                 # Docker Hub answers: advance only the row as it was listed.
                 async with _agent_lock(str(agent["id"])):
@@ -774,8 +790,8 @@ class Supervisor:
                         continue
                     await update_agent(str(agent["id"]), status="image_ready", image_ref=image_ref)
                 logger.info(
-                    "custom_image_ready agent_id=%s image=%s image_ref=%s -> image_ready",
-                    agent["id"], image, image_ref,
+                    "custom_image_ready agent_id=%s image=%s:%s image_ref=%s -> image_ready",
+                    agent["id"], image, commit or "latest", image_ref,
                 )
                 # Launch. Two shapes of out-of-band-build backend:
                 #  * cluster (needs_host_loop=True): hand off to the host spawn loop
@@ -879,6 +895,7 @@ class Supervisor:
                 handler_type=agent["handler_type"],
                 config=config,
                 port=agent["port"],
+                build_commit=agent.get("build_commit"),
             )
             out.append({"agent_id": str(agent["id"]), "port": agent["port"], "argv": argv, "env": env})
         return out
@@ -950,7 +967,9 @@ class Supervisor:
         except Exception as exc:
             logger.warning("github_delete_failed name=%s error=%s", name, exc)
 
-    async def _commit_to_github(self, agent: dict[str, Any], oasf_skills: list) -> None:
+    async def _commit_to_github(self, agent: dict[str, Any], oasf_skills: list) -> str:
+        """Commit the agent's build context to agent-directory and return the
+        commit's SHA, which the build workflow tags the image with."""
         from registration_service.build_manifest import MANIFEST_FILENAME, build_agent_manifest
         from registration_service.builder import generate_card_json, generate_dockerfile
 
@@ -999,8 +1018,8 @@ class Supervisor:
             # Differs on every approval, so each one commits a changed tree and the
             # build workflow (which builds the agent dirs a push changed) always
             # builds a new image, also for unchanged code and card (a reject then
-            # approve, or a re-upload of the same files). The build poll waits for
-            # an image newer than this approval.
+            # approve, or a re-upload of the same files). That build pushes the
+            # image tagged with the commit's SHA, which the build poll waits for.
             f"{base}/.approval": json.dumps(
                 {
                     "approved_at": datetime.now(timezone.utc).isoformat(),
@@ -1026,10 +1045,14 @@ class Supervisor:
         for rel, content in _vendored_skeleton_files().items():
             files[f"{base}/agent_skeleton/{rel}"] = content
 
-        await _github_commit_files(
+        commit = await _github_commit_files(
             repo, token, files, f"Register custom agent: {name}", directory=base
         )
-        logger.info("github_committed agent_id=%s dir=%s files=%d", agent["id"], base, len(files))
+        logger.info(
+            "github_committed agent_id=%s dir=%s files=%d commit=%s",
+            agent["id"], base, len(files), commit,
+        )
+        return commit
 
 
 def _vendored_skeleton_files() -> dict[str, str]:
@@ -1060,7 +1083,7 @@ def _vendored_skeleton_files() -> dict[str, str]:
 
 async def _github_commit_files(
     repo: str, token: str, files: dict[str, str], message: str, *, directory: str
-) -> None:
+) -> str:
     """Commit ``files`` as the whole content of ``directory``, in ONE commit via
     the Git Data API.
 
@@ -1113,6 +1136,7 @@ async def _github_commit_files(
         (
             await client.patch(f"{api}/git/refs/heads/{branch}", json={"sha": new_commit["sha"]})
         ).raise_for_status()
+    return new_commit["sha"]
 
 
 async def _delete_from_github(slug: str) -> None:
@@ -1166,14 +1190,17 @@ async def _delete_from_github(slug: str) -> None:
         ).raise_for_status()
 
 
-async def _image_exists_on_dockerhub(image_name: str, since: Any = None) -> bool:
-    """True if {image_name}:latest exists on Docker Hub (public repo, no auth).
+async def _image_exists_on_dockerhub(
+    image_name: str, since: Any = None, *, tag: str = "latest"
+) -> bool:
+    """True if {image_name}:{tag} exists on Docker Hub (public repo, no auth).
 
     When `since` (the agent's approval/update time) is provided, also require the
     tag's last_updated to be at or after it, so a stale image from a previous build
-    doesn't trigger a premature spawn.
+    doesn't trigger a premature spawn. A commit tag needs no `since`: only the
+    build of that commit pushes it.
     """
-    url = f"https://hub.docker.com/v2/repositories/{image_name}/tags/latest"
+    url = f"https://hub.docker.com/v2/repositories/{image_name}/tags/{tag}"
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.get(url)

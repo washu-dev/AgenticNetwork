@@ -70,8 +70,10 @@ Admin auth (`_require_admin`) is the SSO-identity `ADMIN_EMAILS` allowlist (dev-
 ## Data model (`db.py`)
 
 - **`agents`** — `id, name, description, handler_type, oasf_skills (jsonb), config (jsonb), port
-  (unique), status, handler_file_path, approved, is_archive, endpoint_url, ads_cid, created_at,
-  updated_at`. `status ∈ {registered, live, failed, stopped, building, image_ready}`.
+  (unique), status, handler_file_path, approved, is_archive, endpoint_url, ads_cid, image_ref,
+  build_commit, resources, created_at, updated_at`. `status ∈ {registered, live, failed, stopped,
+  building, image_ready}`. `build_commit` is the `agent-directory` commit an approval's build
+  context went into; `image_ref` is the digest of the image tagged with that commit.
 - **`port_pool`** — `port, in_use, agent_id`. `port_pool.assign_port` picks a free port
   (19200–19299) with `FOR UPDATE SKIP LOCKED`; `release_port` frees it.
 - **`FAKE_DB=1`** swaps in an in-memory `FakePool`/`FakeStore` (`fake_db.py`) and a no-op
@@ -95,7 +97,7 @@ Admin auth (`_require_admin`) is the SSO-identity `ADMIN_EMAILS` allowlist (dev-
    (a bare `*.py` name; paths are refused at registration). A rejected upload (422) leaves the
    stored files and the row unchanged. An accepted one replaces `HANDLER_FILES_DIR/{id}/` by
    rename and resets the agent to the pre-approval state: `approved=FALSE`, `status='registered'`,
-   `image_ref` cleared. A re-upload of a running, published or building agent therefore stops and
+   `image_ref` and `build_commit` cleared. A re-upload of a running, published or building agent therefore stops and
    unpublishes it: it is offline until an admin approves the new code, and that approval goes
    through the normal build path.
 3. Admin reviews via `GET /agents/{id}/handler` (source/manifest + warnings + declared
@@ -119,9 +121,11 @@ Admin auth (`_require_admin`) is the SSO-identity `ADMIN_EMAILS` allowlist (dev-
    state, 503 for missing build credentials (below).
    - **Cluster build** (`SPAWN_BACKEND=cluster` + `GITHUB_TOKEN` + `GITHUB_REPO`): commit a
      generated Dockerfile + card + the uploaded tree + vendored `agent_skeleton/` to GitHub under
-     `registered_agents/{slug}/`; `status='building'`; a build loop waits for the image
-     (`image_ready`); the host loop (`deployment/spawn_agent_loop.py`) polls `/internal/spawn-queue`,
-     runs `srun --overlap`, and reports the PID to `/internal/spawned` → `finalize_spawned` publishes
+     `registered_agents/{slug}/`; the row records the commit (`build_commit`) and goes
+     `status='building'`; a build loop waits for the image tagged with that commit's SHA, records
+     its digest (`image_ref`) and sets `image_ready`; the host loop
+     (`deployment/spawn_agent_loop.py`) polls `/internal/spawn-queue`, runs `srun --overlap` on that
+     commit's tag, and reports the PID to `/internal/spawned` → `finalize_spawned` publishes
      + `status='live'`. The commit replaces the whole directory: a file an earlier approval
      committed that the new upload no longer has is deleted, since the image build copies the
      directory. Each approval's commit also writes `registered_agents/{slug}/.approval`
@@ -129,7 +133,8 @@ Admin auth (`_require_admin`) is the SSO-identity `ADMIN_EMAILS` allowlist (dev-
      also for unchanged code (a reject then approve, or a re-upload of the same files).
    - **Cloud Run** (`SPAWN_BACKEND=cloudrun`): the same GitHub commit and image build; once the
      image is ready the supervisor calls `CloudRunBackend.spawn` itself (Cloud Run Admin API, no
-     host loop) to deploy a scale-to-zero service, and the card is published so it stays
+     host loop) to deploy a scale-to-zero service from that image's digest (the commit's tag if
+     the digest lookup failed), and the card is published so it stays
      discoverable at zero instances. A deploy that fails deletes the service it may have created
      and sets the agent `failed`. See
      [`docs/deployment/gcp/README.md`](deployment/gcp/README.md).
@@ -140,6 +145,18 @@ Admin auth (`_require_admin`) is the SSO-identity `ADMIN_EMAILS` allowlist (dev-
      service waits for the image without a time limit, so a build that fails (its log is in the
      agent-directory repository's Actions) leaves the agent `building`: restart it to build again,
      or upload fixed code, which returns it to approval.
+   - The agent runs the image built from its own approval's commit, never whatever `:latest`
+     holds (an older build that finished last, or another approval's). This needs the build
+     workflow in `GITHUB_REPO` to tag each image with the commit's SHA as well as `:latest`
+     (`agent-directory`'s `build-custom-agent.yml` does, from 2026-10-22). With a workflow that
+     pushes only `:latest`, new approvals stay `building`, so update the workflow before deploying
+     this service; an agent approved while the old workflow ran stays `building` after the update
+     (that commit was built without the tag), so restart it. A row that was already `building`
+     without a recorded commit still waits for a `:latest` pushed after its approval, and one
+     without a commit launches `:latest`. Before running an older version of the service
+     against the same database, run `UPDATE agents SET build_commit = NULL`: older versions
+     neither record nor clear the column, so a row they approve again would keep the earlier
+     approval's commit, and a later return to this version would run that commit's image.
    - **Local** (`SubprocessBackend`): spawn a subprocess directly (venv + `pip install` if
      `requirements`/`install_project`; the project is installed from a temporary copy, since pip
      builds in the directory it installs from and the stored tree must stay the reviewed code),
@@ -197,8 +214,8 @@ routing index in time also leaves its CID on the row, since the card may be rout
 startup purge spares rows that hold one, and startup recovery retries the unpublish and clears the
 CID once it succeeds. It first probes the directory and skips the retry if the directory does not
 answer, so an outage does not delay startup. An approved row still `building` keeps its CID until it
-publishes or is stopped (clearing it would move `updated_at`, which the build poll compares the
-image against). On the cluster the registration step starts only with the Slurm job, after the
+publishes or is stopped (for a row with no recorded commit, clearing it would move `updated_at`,
+which the build poll compares a `:latest` image against). On the cluster the registration step starts only with the Slurm job, after the
 directory's database and container are recreated, so recovery just clears the CIDs. A later publish
 for the agent also retries removing a card the row still records. Stopping a Cloud Run agent whose
 service no longer exists succeeds.

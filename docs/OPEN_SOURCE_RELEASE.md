@@ -88,6 +88,16 @@ repository goes public.
   the whole `registered_agents/<slug>/` directory (files the new upload no longer has are
   deleted) and adds `registered_agents/<slug>/.approval`, so every approval rebuilds the image.
   Check that the test approval's commit shows `.approval` and that CI rebuilt the image.
+- **Per-commit image tags (2026-10-22):** the registration service now waits for, and runs,
+  the custom-agent image tagged with its approval's `agent-directory` commit SHA, not `:latest`.
+  Push `agent-directory`'s `build-custom-agent.yml` change (it tags `:<commit SHA>` as well as
+  `:latest`) before deploying this service; otherwise new approvals stay `building`, and an
+  agent approved meanwhile needs a restart. On a test instance, check that an approval's image
+  appears on Docker Hub as `:<commit SHA>` and that the agent runs it. Before running an older
+  version against the same database (a rollback), clear the column with
+  `UPDATE agents SET build_commit = NULL`: older versions neither record nor clear it, so a row
+  they approve again would keep the earlier approval's commit, and this version would then run
+  that commit's image.
 - **Approval lifecycle (2026-10-21 fix set):** changes an operator or admin will notice.
   - The first startup stops what runs for each unapproved row left by earlier versions (an
     upload or reject that kept the status or the service) and resets it to `registered`. On

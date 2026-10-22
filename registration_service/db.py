@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS agents (
     endpoint_url      TEXT,
     ads_cid           TEXT,
     image_ref         TEXT,
+    build_commit      TEXT,
     resources         JSONB,
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -53,6 +54,11 @@ ALTER TABLE agents ADD COLUMN IF NOT EXISTS is_archive BOOLEAN NOT NULL DEFAULT 
 -- ('sha256:...'), captured at image_ready so CloudRunBackend can deploy by
 -- digest instead of a floating ':latest' tag.
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS image_ref TEXT;
+-- build_commit: the agent-directory commit an approval's build context went into.
+-- The build workflow tags the image with that commit's SHA, and the build poll,
+-- the cluster spawn and the Cloud Run deploy use that tag (or its digest), so an
+-- agent runs the image built for its own approval, not whatever ':latest' holds.
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS build_commit TEXT;
 -- resources: optional deploy sizing declared at registration (cpu/memory/
 -- concurrency/max_instances/gpu) that cloud backends map to service parameters.
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS resources JSONB;
@@ -176,6 +182,7 @@ _UPDATABLE_COLUMNS = {
     "ads_cid",
     "port",
     "image_ref",
+    "build_commit",
 }
 
 

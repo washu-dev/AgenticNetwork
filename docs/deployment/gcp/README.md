@@ -109,8 +109,10 @@ teammate access: `gcloud run services add-iam-policy-binding planner --region=us
   `registration-db-dsn` secret).
 
 **Operational gotchas** (learned the hard way — see MIGRATION.md / IMPLEMENTATION Step 9 for detail):
-- The build poll's **freshness guard** ignores an image older than the agent's `updated_at` — a stale image
-  won't be re-picked-up after a re-register.
+- The build poll waits for the image tagged with the approval's commit SHA (the row's `build_commit`); an
+  approved agent stuck in `building` means that tag was never pushed (the workflow lacks it, or the build
+  failed). Only a row approved before the service recorded commits uses the old **freshness guard**, which
+  ignores a `:latest` older than the agent's `updated_at`.
 - An **`update_updated_at` trigger** force-sets `updated_at=now()`, so you can't backdate a row; to force a
   redeploy, set `status`/`image_ref` directly and restart (recovery deploys it).
 - The startup purge deletes `stopped`/`failed` rows (it spares `failed`+`image_ref` so recovery can retry, and

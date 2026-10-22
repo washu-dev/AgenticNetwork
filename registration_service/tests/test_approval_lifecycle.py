@@ -191,7 +191,7 @@ def _cluster_supervisor(api, monkeypatch) -> Supervisor:
     """A real Supervisor on a ClusterBackend (no GitHub calls), serving the API."""
     _cluster_env(monkeypatch)
     sup = Supervisor(backend=ClusterBackend(), publisher=api.publisher)
-    sup._commit_to_github = AsyncMock()
+    sup._commit_to_github = AsyncMock(return_value=_COMMIT)
     sup.delete_github_context = AsyncMock()
     monkeypatch.setattr(sup_mod, "_supervisor", sup)
     return sup
@@ -526,14 +526,17 @@ async def test_startup_stops_what_runs_for_a_row_that_lost_its_approval(
     deployed."""
     api.backend.publishes_decoupled = backend_kind == "cloudrun"
     aid = await _uploaded(api)
-    await db.update_agent(aid, approved=False, status=status, image_ref="sha256:v1", ads_cid="cid-1")
+    await db.update_agent(
+        aid, approved=False, status=status, image_ref="sha256:v1", build_commit=_COMMIT,
+        ads_cid="cid-1",
+    )
     api.backend.alive.add(aid)
 
     await api.sup.recover_live_agents()
 
     row = await db.get_agent(aid)
     assert row["status"] == "registered" and row["approved"] is False
-    assert row["image_ref"] is None and row["ads_cid"] is None
+    assert row["image_ref"] is None and row["build_commit"] is None and row["ads_cid"] is None
     assert api.backend.stopped == [aid] and api.backend.spawned == []
     assert ("unpublish", "cid-1") in api.publisher.calls
 
@@ -597,7 +600,7 @@ async def test_approve_retries_the_stop_a_startup_could_not_make(api, monkeypatc
     _cluster_env(monkeypatch, "cloudrun")
     api.backend.publishes_decoupled = True
     api.backend.owns_build = True
-    api.sup._commit_to_github = AsyncMock()
+    api.sup._commit_to_github = AsyncMock(return_value=_COMMIT)
     aid = await _uploaded(api)
     await db.update_agent(aid, approved=False, status="registered", image_ref="sha256:v1")
     api.backend.alive.add(aid)
@@ -643,9 +646,9 @@ async def test_build_that_finishes_during_a_reject_is_not_queued(api, monkeypatc
     sup = Supervisor(backend=ClusterBackend(), publisher=api.publisher)
     monkeypatch.setattr(sup_mod, "_supervisor", sup)
     aid = await _uploaded(api)
-    await db.update_agent(aid, approved=True, status="building")
+    await db.update_agent(aid, approved=True, status="building", build_commit=_COMMIT)
 
-    async def image_exists(image, since=None):
+    async def image_exists(image, since=None, *, tag="latest"):
         # The reject lands while Docker Hub is being asked.
         resp = await api.client.post(f"/agents/{aid}/reject", json={"reason": "revoked"})
         assert resp.status_code == 200, resp.text
@@ -661,20 +664,23 @@ async def test_build_that_finishes_during_a_reject_is_not_queued(api, monkeypatc
 
     row = await db.get_agent(aid)
     assert row["status"] == "registered" and row["image_ref"] is None
+    assert row["build_commit"] is None
     assert await sup.spawn_queue() == []
 
 
 async def test_build_poll_does_not_advance_a_row_approved_again_meanwhile(api, monkeypatch) -> None:
     """A reject and a new approval land while Docker Hub answers: the image found
-    was checked against the earlier approval's time, so the row keeps waiting for
-    the build of the new one."""
+    is the earlier approval's build, so the row keeps waiting for the build of the
+    new one's commit."""
     _cluster_env(monkeypatch)
     api.backend.owns_build = True
-    api.sup._commit_to_github = AsyncMock()
+    api.sup._commit_to_github = AsyncMock(side_effect=[_COMMIT, _COMMIT_2])
     aid = await _uploaded(api)
     assert (await api.client.post(f"/agents/{aid}/approve")).status_code == 200
+    asked: list[str] = []
 
-    async def image_exists(image, since=None):
+    async def image_exists(image, since=None, *, tag="latest"):
+        asked.append(tag)
         resp = await api.client.post(f"/agents/{aid}/reject", json={"reason": "x"})
         assert resp.status_code == 200, resp.text
         await asyncio.sleep(0.001)  # the new approval gets a later updated_at
@@ -688,9 +694,10 @@ async def test_build_poll_does_not_advance_a_row_approved_again_meanwhile(api, m
     monkeypatch.setattr(sup_mod, "_image_digest_on_dockerhub", digest)
     await api.sup._check_building_agents()
 
+    assert asked == [_COMMIT]
     row = await db.get_agent(aid)
     assert row["status"] == "building" and row["approved"] is True
-    assert row["image_ref"] is None
+    assert row["image_ref"] is None and row["build_commit"] == _COMMIT_2
 
 
 async def test_reject_during_the_build_polls_row_check_is_not_overwritten(api, monkeypatch) -> None:
@@ -737,7 +744,7 @@ async def test_launch_reported_after_a_new_approval_is_discarded(api, monkeypatc
     keeps waiting for the new build."""
     _cluster_env(monkeypatch)
     sup = Supervisor(backend=ClusterBackend(), publisher=api.publisher)
-    sup._commit_to_github = AsyncMock()
+    sup._commit_to_github = AsyncMock(return_value=_COMMIT)
     monkeypatch.setattr(sup_mod, "_supervisor", sup)
     aid = await _uploaded(api)
     await db.update_agent(aid, approved=True, status="image_ready", image_ref="sha256:v1")
@@ -763,7 +770,7 @@ async def test_upload_during_a_cloud_deploy_waits_then_stops_it(api, monkeypatch
     approving the new code sends it through the build."""
     _cluster_env(monkeypatch, "cloudrun")
     api.backend.owns_build = True
-    api.sup._commit_to_github = AsyncMock()
+    api.sup._commit_to_github = AsyncMock(return_value=_COMMIT)
     aid = await _uploaded(api)
     await db.update_agent(aid, approved=True, status="image_ready", image_ref="sha256:v1")
     listed = await db.get_agent(aid)
@@ -884,7 +891,7 @@ async def test_cloud_deploy_of_a_superseded_launch_does_not_run(api, monkeypatch
     and the row keeps waiting for the new build."""
     _cluster_env(monkeypatch, "cloudrun")
     api.backend.owns_build = True
-    api.sup._commit_to_github = AsyncMock()
+    api.sup._commit_to_github = AsyncMock(return_value=_COMMIT)
     aid = await _uploaded(api)
     await db.update_agent(aid, approved=True, status="image_ready", image_ref="sha256:v1")
     listed = await db.get_agent(aid)
@@ -908,7 +915,7 @@ async def test_reupload_of_running_agent_rebuilds_on_next_approval(
 ) -> None:
     _cluster_env(monkeypatch, backend_name)
     api.backend.owns_build = True
-    api.sup._commit_to_github = AsyncMock()
+    api.sup._commit_to_github = AsyncMock(return_value=_COMMIT)
     aid = await _uploaded(api)
     assert (await api.client.post(f"/agents/{aid}/approve")).status_code == 200
     assert api.sup._commit_to_github.await_count == 1
@@ -934,6 +941,9 @@ async def test_reupload_of_running_agent_rebuilds_on_next_approval(
 # ── Approval is bound to the reviewed code ───────────────────────────────────────
 
 _CHANGED = "The uploaded code changed since it was reviewed; review it again."
+# The agent-directory commits that approvals' build contexts go into.
+_COMMIT = "a" * 40
+_COMMIT_2 = "b" * 40
 
 
 async def test_approve_with_the_reviewed_revision_starts_the_agent(api) -> None:
@@ -1681,10 +1691,15 @@ async def test_each_approval_commits_exactly_the_reviewed_tree(api, monkeypatch)
     aid = await _uploaded(api, _zip(V1_TREE))
     assert (await api.client.post(f"/agents/{aid}/approve")).status_code == 200
     assert f"{base}/src/mylib/__init__.py" in github.files
+    # The row records the commit, whose SHA tags the image the build pushes.
+    first = github.head
+    assert first != "c0" and (await db.get_agent(aid))["build_commit"] == first
 
     resp = await api.client.post(f"/agents/{aid}/handler", files=_py(V2_HANDLER_SRC))
     assert resp.status_code == 200, resp.text
+    assert (await db.get_agent(aid))["build_commit"] is None
     assert (await api.client.post(f"/agents/{aid}/approve")).status_code == 200
+    assert (await db.get_agent(aid))["build_commit"] == github.head != first
 
     src = {p for p in github.files if p.startswith(f"{base}/src/")}
     assert src == {f"{base}/src/handler.py"}

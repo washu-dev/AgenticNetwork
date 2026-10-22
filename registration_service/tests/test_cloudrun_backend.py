@@ -160,6 +160,23 @@ def test_deploy_spec_latest_fallback_when_no_digest():
     assert spec["image"].endswith("/agenticnetwork-custom-paper-reviewer:latest")
 
 
+_COMMIT = "0123456789abcdef0123456789abcdef01234567"
+
+
+def test_deploy_spec_uses_the_commit_tag_when_no_digest():
+    """Without a digest, deploy the image tagged with the approval's commit, not
+    ':latest', which may hold another approval's build. A digest still wins."""
+    common = dict(
+        agent_id="a1", name="Paper Reviewer", description="d", handler_type="custom",
+        config=_custom_config(), service_account=None, invoker_member=None,
+        vpc_connector=None, build_commit=_COMMIT,
+    )
+    spec = _deploy_spec(image_ref=None, **common)
+    assert spec["image"].endswith(f"/agenticnetwork-custom-paper-reviewer:{_COMMIT}")
+    spec = _deploy_spec(image_ref="sha256:deadbeef", **common)
+    assert spec["image"].endswith("/agenticnetwork-custom-paper-reviewer@sha256:deadbeef")
+
+
 def test_deploy_spec_forwards_llm_env(monkeypatch):
     monkeypatch.setenv("OPENAI_BASE_URL", "http://vllm:8100/v1")
     monkeypatch.setenv("OPENAI_API_KEY", "sk-placeholder")
@@ -221,6 +238,24 @@ async def test_spawn_falls_back_to_latest_when_image_ref_none(monkeypatch):
         handler_type="custom", config=_custom_config(), port=19110,
     )
     assert fake.created[0]["image"].endswith("agenticnetwork-custom-paper-reviewer:latest")
+    await db.close_db()
+
+
+@_aio
+async def test_spawn_deploys_the_commit_tag_when_image_ref_none(monkeypatch):
+    _cloud_env(monkeypatch)
+    await _fresh_db()
+    agent = await _make_custom(image_ref=None)
+    aid = str(agent["id"])
+    await db.update_agent(aid, build_commit=_COMMIT)
+
+    fake = _FakeCloudRunClient()
+    backend = CloudRunBackend(client=fake)
+    await backend.spawn(
+        agent_id=aid, name="Paper Reviewer", description="d",
+        handler_type="custom", config=_custom_config(), port=19110,
+    )
+    assert fake.created[0]["image"].endswith(f"agenticnetwork-custom-paper-reviewer:{_COMMIT}")
     await db.close_db()
 
 

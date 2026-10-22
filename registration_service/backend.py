@@ -127,6 +127,7 @@ def cluster_srun_argv(
     handler_type: str,
     config: dict,
     port: int,
+    build_commit: str | None = None,
 ) -> tuple[list[str], dict[str, str]]:
     """Build the host-side `srun --overlap` argv + per-agent env for an uploaded-code agent.
 
@@ -135,8 +136,16 @@ def cluster_srun_argv(
     Only custom agents reach this path (image_ready comes from the custom build flow).
     AGENT_CONFIG_JSON is passed via env (not --export) to avoid comma/quote breakage;
     --export=ALL then propagates it (and the host's OPENAI_* etc.) into the container.
+
+    The image is the one tagged with the approval's commit (``build_commit``), so
+    the agent runs the code that was approved even if ':latest' has moved on. A
+    tag, not the digest: pyxis reads an '@' in the image as a user separator.
+    A row without a commit (built before it was recorded) runs ':latest'.
     """
-    image = f"{_image_registry()}/agenticnetwork-custom-{_image_slug(name)}:latest"
+    image = (
+        f"{_image_registry()}/agenticnetwork-custom-{_image_slug(name)}"
+        f":{build_commit or 'latest'}"
+    )
     mounts = os.environ.get(
         "CLUSTER_WORKSPACE_MOUNT", "/engrfs/project/di2/AgenticNetwork:/workspace"
     )
@@ -610,15 +619,21 @@ def _deploy_spec(
     invoker_member: str | None,
     vpc_connector: str | None,
     resource: dict | None = None,
+    build_commit: str | None = None,
 ) -> dict:
     """Pure description of the Cloud Run service to deploy (no API calls).
 
     Image is composed here per the Step-3 contract: `image_ref` is a *bare* digest
-    (`sha256:...`), so deploy `name@digest`; fall back to `:latest` when it's None
-    (digest lookup is best-effort and older rows predate the column).
+    (`sha256:...`) of the image tagged with the approval's commit, so deploy
+    `name@digest`. When it's None (digest lookup is best-effort), deploy that
+    commit's tag, and `:latest` for a row with no recorded commit (older rows
+    predate both columns).
     """
     image_name = f"{_image_registry()}/agenticnetwork-custom-{_image_slug(name)}"
-    image = f"{image_name}@{image_ref}" if image_ref else f"{image_name}:latest"
+    if image_ref:
+        image = f"{image_name}@{image_ref}"
+    else:
+        image = f"{image_name}:{build_commit or 'latest'}"
 
     env = {
         k: os.environ[k] for k in _forward_env_keys() if os.environ.get(k) is not None
@@ -803,12 +818,14 @@ class CloudRunBackend(ContainerBackend):
         config: AnyConfig,
         port: int,
     ) -> str | None:
-        # image_ref (Step-3 contract) and resources (Step 8) are read off the agent
-        # row here; _deploy_spec falls back to :latest / default sizing when absent.
+        # image_ref (Step-3 contract), build_commit and resources (Step 8) are read
+        # off the agent row here; _deploy_spec falls back to the commit tag (or
+        # :latest) / default sizing when absent.
         from registration_service.db import get_agent
 
         row = await get_agent(agent_id)
         image_ref = (row or {}).get("image_ref")
+        build_commit = (row or {}).get("build_commit")
         # asyncpg returns JSONB as a string; fake_db returns a dict. Handle both
         # (same guard used for config/oasf_skills throughout the supervisor).
         resources = (row or {}).get("resources")
@@ -832,6 +849,7 @@ class CloudRunBackend(ContainerBackend):
             handler_type=handler_type,
             config=config,
             image_ref=image_ref,
+            build_commit=build_commit,
             service_account=self._service_account,
             invoker_member=self._invoker_member,
             vpc_connector=self._vpc_connector,
