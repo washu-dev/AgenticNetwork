@@ -520,6 +520,7 @@ body {
 }
 .appr-warn { white-space:normal; color:var(--wn,#d98b1f); margin-bottom:10px; font-family:inherit; font-size:12px; }
 .appr-tree-head { white-space:normal; color:var(--t3); margin-bottom:6px; font-family:inherit; font-size:12px; }
+.appr-owner { white-space:normal; color:var(--t3); margin-bottom:10px; font-family:inherit; font-size:12px; }
 .appr-tree { border-left:2px solid var(--border); padding-left:10px; }
 .appr-file { color:var(--t2); }
 .appr-file-entry { color:var(--t1); font-weight:600; }
@@ -1403,7 +1404,12 @@ async function toggleApprovalCode(id) {
       ? `<div class="appr-warn">📦 apt system packages (installed into the image): ${data.system_packages.map(uvEsc).join(', ')}</div>` : '';
     const creds = (data.credentials && data.credentials.length)
       ? `<div class="appr-warn">🔑 Requests user credentials: ${data.credentials.map(c => uvEsc(c.label) + ' (' + uvEsc(c.type) + (c.required ? ', required' : ', optional') + ')').join('; ')}</div>` : '';
-    const notes = warn + apt + creds;
+    // Who may change this code: its owner (the identity that registered the agent)
+    // or an admin. A registration service older than this page sends no owner_email.
+    const owner = !('owner_email' in data) ? ''
+      : data.owner_email ? `<div class="appr-owner">👤 Owner: ${uvEsc(data.owner_email)}</div>`
+      : `<div class="appr-warn">👤 No recorded owner: only admins can change this agent.</div>`;
+    const notes = owner + warn + apt + creds;
     if (data.is_archive) {
       // Multi-file project: show the file tree + a download of the whole tree
       // (this is the trust-boundary review, so the approver can inspect everything).

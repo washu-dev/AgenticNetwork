@@ -65,6 +65,13 @@ Admin is **not** a separate password. It's derived from the same SSO identity:
   (delete although the directory did not confirm the card's removal), which the chat app forwards
   without its own check (on the service itself:
   `curl -X DELETE 'http://localhost:8091/agents/<id>?force=true' -H "mail: <admin>"`).
+- **Agent owners.** `registration_service` records the identity that registers an agent as its
+  `owner_email` (lowercased). Deleting, restarting or uploading code to an agent is for that owner
+  or an admin (`registration_service/server.py::_require_owner_or_admin`, 403 otherwise; dev-open
+  under `FAKE_DB=1`). An agent with no owner (registered without an identity, or before
+  2026-10-22) is admin-only. The chat app forwards these requests with the caller's identity and
+  leaves the check to the service. The owner appears only in the admin code review; to hand an
+  agent over, an admin runs `UPDATE agents SET owner_email = '<email>' WHERE id = '<id>'`.
 - `/me` returns `is_admin`; the UI shows the Admin entry / dashboard only to admins.
 
 The old shared `X-Admin-Token` / `MAIN_AGENT_ADMIN_TOKEN` and `POST /admin/login` are **retired**

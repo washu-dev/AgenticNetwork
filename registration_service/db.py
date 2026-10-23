@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS agents (
     image_ref         TEXT,
     build_commit      TEXT,
     resources         JSONB,
+    owner_email       TEXT,
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -59,6 +60,11 @@ ALTER TABLE agents ADD COLUMN IF NOT EXISTS image_ref TEXT;
 -- the cluster spawn and the Cloud Run deploy use that tag (or its digest), so an
 -- agent runs the image built for its own approval, not whatever ':latest' holds.
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS build_commit TEXT;
+-- owner_email: the SSO identity that registered the agent (lowercased). Only it or
+-- an admin may delete, restart or upload code to the agent; a row without one
+-- (registered without an identity, or before this column) is admin-only. No API
+-- changes it; an admin can set it with UPDATE.
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS owner_email TEXT;
 -- resources: optional deploy sizing declared at registration (cpu/memory/
 -- concurrency/max_instances/gpu) that cloud backends map to service parameters.
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS resources JSONB;
@@ -199,6 +205,7 @@ async def create_agent(
     config: dict,
     approved: bool = True,
     resources: dict | None = None,
+    owner_email: str | None = None,
 ) -> dict[str, Any]:
     """Insert a new agent row, assign a port, and return the row as a dict."""
     if fake_db_enabled():
@@ -211,6 +218,7 @@ async def create_agent(
             config=config,
             approved=approved,
             resources=resources,
+            owner_email=owner_email,
         )
 
     from registration_service.port_pool import assign_port
@@ -222,8 +230,9 @@ async def create_agent(
             await conn.execute(
                 """
                 INSERT INTO agents
-                    (id, name, description, handler_type, oasf_skills, config, status, approved, resources)
-                VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, 'registered', $7, $8::jsonb)
+                    (id, name, description, handler_type, oasf_skills, config, status, approved,
+                     resources, owner_email)
+                VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, 'registered', $7, $8::jsonb, $9)
                 """,
                 agent_id,
                 name,
@@ -233,6 +242,7 @@ async def create_agent(
                 json.dumps(config),
                 approved,
                 json.dumps(resources) if resources is not None else None,
+                owner_email,
             )
             port = await assign_port(conn, str(agent_id))
             await conn.execute(

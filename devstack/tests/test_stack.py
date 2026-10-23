@@ -282,3 +282,24 @@ def test_failed_shutdown_keeps_recovery_state(tmp_path, monkeypatch):
     finally:
         proc.kill()
         proc.wait()
+
+
+def test_registration_calls_carry_the_dev_identity(monkeypatch, tmp_path) -> None:
+    """The stack's agents get the dev user as owner, so its own restarts pass the
+    registration service's owner check (enforced in the Compose stack)."""
+    cfg = stack.StackConfig(state_dir=tmp_path, dev_user="dev@example.test")
+    sent: list[tuple[str, str, dict]] = []
+
+    def fake_request(method, url, *, body=None, headers=None, timeout=5.0):
+        sent.append((method, url.rsplit("/", 1)[-1], dict(headers or {})))
+        if method == "POST" and url.endswith("/agents"):
+            return 201, json.dumps({"id": "a1", "ads_cid": "cid"}).encode()
+        return 200, b"{}"
+
+    monkeypatch.setattr(stack, "http_request", fake_request)
+    stack.register_agent(cfg, {"name": "Echo"})
+    stack.restart_agent(cfg, {"id": "a1", "name": "Echo"})
+    assert sent == [
+        ("POST", "agents", {"mail": "dev@example.test"}),
+        ("POST", "restart", {"mail": "dev@example.test"}),
+    ]

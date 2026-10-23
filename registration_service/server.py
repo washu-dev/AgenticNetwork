@@ -8,6 +8,7 @@ import logging
 import os
 import shutil
 import uuid
+import weakref
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -127,22 +128,50 @@ def _admin_emails() -> set[str]:
     return {e.strip().lower() for e in raw.split(",") if e.strip()}
 
 
-def _require_admin(request: Request) -> None:
-    """Fail-closed admin check on the forwarded SSO identity (P4f).
+def _caller_email(request: Request) -> str | None:
+    """The forwarded SSO identity, lowercased, or None when the request has none.
 
-    The chat app passes the approver's requests through, forwarding the Apache-injected
-    Shibboleth headers. Admin = that identity ∈ ADMIN_EMAILS; an empty allowlist means
-    no admins. Dev/test escape hatch: FAKE_DB=1 leaves it open (no Shibboleth locally).
+    The chat app passes requests through with the Apache-injected Shibboleth headers.
     """
-    if fake_db_enabled():
-        return
-    email = next(
+    return next(
         (request.headers.get(h, "").strip().lower() for h in _SHIB_HEADER_PRIORITY
          if request.headers.get(h, "").strip()),
         None,
     )
+
+
+def _require_admin(request: Request) -> None:
+    """Fail-closed admin check on the forwarded SSO identity (P4f).
+
+    Admin = the caller's identity ∈ ADMIN_EMAILS; an empty allowlist means no
+    admins. Dev/test escape hatch: FAKE_DB=1 leaves it open (no Shibboleth locally).
+    """
+    if fake_db_enabled():
+        return
+    email = _caller_email(request)
     if email is None or email not in _admin_emails():
         raise HTTPException(status_code=403, detail="Admin access required")
+
+
+def _require_owner_or_admin(request: Request, agent: dict[str, Any]) -> None:
+    """Fail-closed check for a change to one agent (delete, restart, code upload):
+    only its owner, the identity that registered it, or an admin may make it.
+
+    An agent with no recorded owner (registered without an identity, or before
+    owners were recorded) is admin-only. Dev-open under FAKE_DB=1, as _require_admin.
+    """
+    if fake_db_enabled():
+        return
+    email = _caller_email(request)
+    # Compared as stored by registration (lowercased); a hand-set value may not be.
+    owner = (agent.get("owner_email") or "").strip().lower() or None
+    if email is not None and (email == owner or email in _admin_emails()):
+        return
+    raise HTTPException(
+        status_code=403,
+        detail="Only the agent's owner or an admin can change it" if owner
+        else "This agent has no recorded owner, so only an admin can change it",
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -255,13 +284,106 @@ async def list_credential_catalog() -> list[dict]:
 # ── Agent CRUD ─────────────────────────────────────────────────────────────────
 
 @app.post("/agents", response_model=AgentResponse, status_code=201, tags=["agents"])
-async def register_agent(req: RegisterRequest) -> AgentResponse:
+async def register_agent(req: RegisterRequest, request: Request) -> AgentResponse:
     """Register a new agent and start it.
 
     Custom agents are created in a not-yet-approved state and are NOT started
     here — the handler file must be uploaded (POST /agents/{id}/handler) and an
     admin must approve (POST /agents/{id}/approve) before they spawn.
+
+    The caller's SSO identity is recorded as the agent's owner, who (with the
+    admins) may later delete, restart or upload code to it.
     """
+    owner_email = _caller_email(request)
+
+    if carries_upload(req.typed_config()):
+        # Uploaded-code agents are created NOT-approved and are
+        # NOT started here: the code must be uploaded (POST /agents/{id}/handler)
+        # and an admin must approve (POST /agents/{id}/approve) before they spawn.
+        async with _registration_lock():
+            await _check_new_agent(req)
+            agent = await db.create_agent(
+                name=req.name,
+                description=req.description,
+                handler_type=req.canonical_handler_type,
+                oasf_skills=[s.model_dump() for s in req.oasf_skills],
+                config=req.typed_config().model_dump(),
+                approved=False,
+                # Deploy sizing for cloud backends (CloudRunBackend). Only uploaded-code
+                # agents reach a cloud deploy path, so resources is persisted here; the
+                # subprocess-only handler types below ignore it.
+                resources=req.resources.model_dump() if req.resources else None,
+                owner_email=owner_email,
+            )
+        return _row_to_response(agent)
+
+    pool = await get_pool()
+    agent_id = str(uuid.uuid4())
+    # Held from the insert to the response: a delete or restart that names the
+    # new agent waits for its first launch, then stops it and removes its card.
+    async with _agent_lock(agent_id):
+        async with _registration_lock():
+            await _check_new_agent(req)
+            async with pool.acquire() as conn:
+                async with conn.transaction():
+                    typed_config = req.typed_config()
+                    oasf_skills_data = [s.model_dump() for s in req.oasf_skills]
+
+                    # Insert agent first (port nullable) so the FK in port_pool is satisfied.
+                    await conn.execute(
+                        """
+                        INSERT INTO agents
+                            (id, name, description, handler_type, oasf_skills, config, status,
+                             owner_email)
+                        VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, 'registered', $7)
+                        """,
+                        uuid.UUID(agent_id),
+                        req.name,
+                        req.description,
+                        req.canonical_handler_type,
+                        json.dumps(oasf_skills_data),
+                        json.dumps(typed_config.model_dump()),
+                        owner_email,
+                    )
+
+                    try:
+                        port = await assign_port(conn, agent_id)
+                    except RuntimeError as exc:
+                        raise HTTPException(status_code=503, detail=str(exc))
+
+                    await conn.execute(
+                        "UPDATE agents SET port = $1 WHERE id = $2",
+                        port,
+                        uuid.UUID(agent_id),
+                    )
+
+        try:
+            await get_supervisor().spawn_and_publish(agent_id)
+        except Exception as exc:
+            logger.error("register_agent_spawn_failed agent_id=%s error=%s", agent_id, exc)
+            raise HTTPException(status_code=500, detail=f"Agent registered but failed to start: {exc}")
+
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM agents WHERE id = $1", uuid.UUID(agent_id))
+
+    return _row_to_response(row)
+
+
+# One registration at a time checks names and inserts its row, so two that pick
+# the same name (or Cloud Run service id) cannot both pass the check. Kept like
+# the agent locks: a module-level Lock would bind to the first event loop that
+# waits on it.
+_registration_locks: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.WeakValueDictionary()
+
+
+def _registration_lock() -> asyncio.Lock:
+    return _registration_locks.setdefault("names", asyncio.Lock())
+
+
+async def _check_new_agent(req: RegisterRequest) -> None:
+    """Refuse a registration whose name clashes with an existing agent's (409) or
+    whose skills give the card no routing tag (400). The caller holds
+    _registration_lock until its row is inserted."""
     # Enforce unique names: the name's slug drives the registered_agents/ dir, the
     # Docker image tag, and the ADS routing key — duplicate names collide on all
     # three (e.g. two "Echo Test" agents share echo-test). The Cloud Run service id
@@ -294,71 +416,6 @@ async def register_agent(req: RegisterRequest) -> AgentResponse:
             "so the agent is discoverable in ADS.",
         )
 
-    if carries_upload(req.typed_config()):
-        # Uploaded-code agents are created NOT-approved and are
-        # NOT started here: the code must be uploaded (POST /agents/{id}/handler)
-        # and an admin must approve (POST /agents/{id}/approve) before they spawn.
-        agent = await db.create_agent(
-            name=req.name,
-            description=req.description,
-            handler_type=req.canonical_handler_type,
-            oasf_skills=[s.model_dump() for s in req.oasf_skills],
-            config=req.typed_config().model_dump(),
-            approved=False,
-            # Deploy sizing for cloud backends (CloudRunBackend). Only uploaded-code
-            # agents reach a cloud deploy path, so resources is persisted here; the
-            # subprocess-only handler types below ignore it.
-            resources=req.resources.model_dump() if req.resources else None,
-        )
-        return _row_to_response(agent)
-
-    pool = await get_pool()
-    agent_id = str(uuid.uuid4())
-    # Held from the insert to the response: a delete or restart that names the
-    # new agent waits for its first launch, then stops it and removes its card.
-    async with _agent_lock(agent_id):
-        async with pool.acquire() as conn:
-            async with conn.transaction():
-                typed_config = req.typed_config()
-                oasf_skills_data = [s.model_dump() for s in req.oasf_skills]
-
-                # Insert agent first (port nullable) so the FK in port_pool is satisfied.
-                await conn.execute(
-                    """
-                    INSERT INTO agents
-                        (id, name, description, handler_type, oasf_skills, config, status)
-                    VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, 'registered')
-                    """,
-                    uuid.UUID(agent_id),
-                    req.name,
-                    req.description,
-                    req.canonical_handler_type,
-                    json.dumps(oasf_skills_data),
-                    json.dumps(typed_config.model_dump()),
-                )
-
-                try:
-                    port = await assign_port(conn, agent_id)
-                except RuntimeError as exc:
-                    raise HTTPException(status_code=503, detail=str(exc))
-
-                await conn.execute(
-                    "UPDATE agents SET port = $1 WHERE id = $2",
-                    port,
-                    uuid.UUID(agent_id),
-                )
-
-        try:
-            await get_supervisor().spawn_and_publish(agent_id)
-        except Exception as exc:
-            logger.error("register_agent_spawn_failed agent_id=%s error=%s", agent_id, exc)
-            raise HTTPException(status_code=500, detail=f"Agent registered but failed to start: {exc}")
-
-        async with pool.acquire() as conn:
-            row = await conn.fetchrow("SELECT * FROM agents WHERE id = $1", uuid.UUID(agent_id))
-
-    return _row_to_response(row)
-
 
 @app.get("/agents", response_model=list[AgentResponse], tags=["agents"])
 async def list_agents() -> list[AgentResponse]:
@@ -384,7 +441,7 @@ async def get_agent(agent_id: str) -> AgentResponse:
 
 @app.delete("/agents/{agent_id}", status_code=204, tags=["agents"])
 async def delete_agent(agent_id: str, request: Request, force: bool = False) -> Response:
-    """Stop and unregister an agent.
+    """Stop and unregister an agent (its owner or an admin).
 
     If the directory does not confirm removing the agent's card, the agent is
     stopped but its row (which holds the card's CID) is kept and the call fails
@@ -399,6 +456,7 @@ async def delete_agent(agent_id: str, request: Request, force: bool = False) -> 
         agent = await db.get_agent(agent_id)
         if not agent:
             raise HTTPException(status_code=404, detail="Agent not found")
+        _require_owner_or_admin(request, agent)
 
         removed = await get_supervisor().stop_and_unpublish(agent_id)
         if not removed and not force:
@@ -429,8 +487,8 @@ async def delete_agent(agent_id: str, request: Request, force: bool = False) -> 
 
 
 @app.post("/agents/{agent_id}/restart", response_model=AgentResponse, tags=["agents"])
-async def restart_agent(agent_id: str) -> AgentResponse:
-    """Manually restart an agent.
+async def restart_agent(agent_id: str, request: Request) -> AgentResponse:
+    """Manually restart an agent (its owner or an admin).
 
     Holds the agent's lock from the stop to the end of the spawn, so an upload
     cannot replace the files the new process is started from.
@@ -444,6 +502,7 @@ async def restart_agent(agent_id: str) -> AgentResponse:
             )
         if row is None:
             raise HTTPException(status_code=404, detail="Agent not found")
+        _require_owner_or_admin(request, dict(row))
 
         await get_supervisor().stop_and_unpublish(agent_id)
 
@@ -473,8 +532,9 @@ async def restart_agent(agent_id: str) -> AgentResponse:
 # ── Custom handler: upload / approve / reject ───────────────────────────────────
 
 @app.post("/agents/{agent_id}/handler", status_code=200, tags=["custom"])
-async def upload_handler(agent_id: str, file: UploadFile = File(...)) -> dict:
+async def upload_handler(agent_id: str, request: Request, file: UploadFile = File(...)) -> dict:
     """Upload (or re-upload) a custom agent's code — a single ``.py`` or a ``.zip``.
+    Only the agent's owner or an admin may.
 
     - ``.py``  → stored as ``{handler_dir}/{entry_file}`` (single-file, as before).
     - ``.zip`` → validated + unpacked into ``{handler_dir}/`` preserving structure;
@@ -493,6 +553,7 @@ async def upload_handler(agent_id: str, file: UploadFile = File(...)) -> dict:
     agent = await db.get_agent(agent_id)
     if not agent or not _uploads_code(agent):
         raise HTTPException(status_code=404, detail="Uploaded-code agent not found")
+    _require_owner_or_admin(request, agent)
 
     config = _deserialize_config(agent)
     entry_file = upload_spec(config).entry_file   # non-None: _uploads_code() passed
@@ -597,6 +658,7 @@ async def get_handler_source(agent_id: str, request: Request) -> dict:
             "warnings": warnings,
             "system_packages": spec.system_packages,   # apt, flagged for review
             "credentials": credentials,
+            "owner_email": agent.get("owner_email"),    # who may change the code
         }
     return {
         "is_archive": False,
@@ -606,6 +668,7 @@ async def get_handler_source(agent_id: str, request: Request) -> dict:
         "warnings": warnings,
         "system_packages": spec.system_packages,         # apt, flagged for review
         "credentials": credentials,
+        "owner_email": agent.get("owner_email"),          # who may change the code
     }
 
 

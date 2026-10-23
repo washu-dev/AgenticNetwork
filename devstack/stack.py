@@ -761,10 +761,21 @@ def planner_agents(cfg: StackConfig) -> list[dict[str, Any]] | None:
     return [a for a in payload.get("agents") or [] if isinstance(a, dict)]
 
 
+def registration_identity(cfg: StackConfig) -> dict[str, str]:
+    """The SSO header the stack's own registration calls carry: the dev user, as the
+    identity proxy sends it. Registration records it as the agent's owner, and only
+    the owner or an admin may restart the agent (enforced where FAKE_DB is off, as in
+    the Compose stack)."""
+    return {"mail": cfg.dev_user}
+
+
 def register_agent(cfg: StackConfig, body: dict[str, Any]) -> dict[str, Any]:
     """POST /agents; returns the AgentResponse (or the existing agent on 409)."""
     name = body["name"]
-    status, raw = http_request("POST", f"{cfg.url('registration')}/agents", body=body, timeout=120.0)
+    status, raw = http_request(
+        "POST", f"{cfg.url('registration')}/agents", body=body,
+        headers=registration_identity(cfg), timeout=120.0,
+    )
     payload = json_or_none(raw)
     if status == 409:
         for agent in registered_agents(cfg):
@@ -827,7 +838,10 @@ def wait_until_listed(cfg: StackConfig, names: list[str], deadline: float) -> li
 
 
 def restart_agent(cfg: StackConfig, agent: dict[str, Any]) -> None:
-    status, raw = http_request("POST", f"{cfg.url('registration')}/agents/{agent.get('id')}/restart", timeout=120.0)
+    status, raw = http_request(
+        "POST", f"{cfg.url('registration')}/agents/{agent.get('id')}/restart",
+        headers=registration_identity(cfg), timeout=120.0,
+    )
     if status != 200:
         raise StackError(
             f"restarting {agent.get('name')!r}: {status or 'no response'}: {short(raw, 600)}",

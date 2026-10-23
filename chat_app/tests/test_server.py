@@ -314,8 +314,9 @@ async def _register_proxy_blocks_non_admin_handler_review() -> None:
 
 
 def test_register_proxy_allows_non_admin_handler_upload(monkeypatch) -> None:
-    # POST /agents/{id}/handler is the (open) code-upload step — a non-admin must
-    # NOT be blocked at the gate. It shares its path with the admin-only GET review,
+    # POST /agents/{id}/handler is the code-upload step an agent's owner performs
+    # (the registration service checks the owner) — a non-admin must NOT be
+    # blocked at the gate. It shares its path with the admin-only GET review,
     # so a method-agnostic suffix match wrongly returned 403 here (the reported bug).
     monkeypatch.setenv("ADMIN_EMAILS", "admin@example.com")
     # Dead upstream: the proxy forwarding the request (rather than rejecting it)
@@ -384,6 +385,65 @@ class _GzipRegistration(http.server.BaseHTTPRequestHandler):
 
     def log_message(self, *args) -> None:
         pass
+
+
+class _RecordingRegistration(http.server.BaseHTTPRequestHandler):
+    """A registration service stand-in that records each request's method, path
+    and forwarded identity."""
+
+    seen: list[tuple[str, str, str | None]] = []
+
+    def _reply(self) -> None:
+        type(self).seen.append((self.command, self.path, self.headers.get("mail")))
+        self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", "2")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(b"{}")
+
+    do_POST = do_DELETE = _reply
+
+    def log_message(self, *args) -> None:
+        pass
+
+
+def test_register_proxy_forwards_the_callers_identity(monkeypatch) -> None:
+    # The registration service records the caller's identity as an agent's owner and
+    # checks it on delete, restart and code upload. The chat app leaves those checks
+    # to it, so the pass-through must forward the identity header.
+    _RecordingRegistration.seen = []
+    upstream = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _RecordingRegistration)
+    threading.Thread(target=upstream.serve_forever, daemon=True).start()
+    try:
+        monkeypatch.setenv("REGISTRATION_SERVICE_URL", f"http://127.0.0.1:{upstream.server_port}")
+        asyncio.run(_register_proxy_forwards_the_callers_identity())
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+    assert _RecordingRegistration.seen == [
+        ("POST", "/agents", "bob@example.com"),
+        ("POST", "/agents/a1/handler", "bob@example.com"),
+        ("POST", "/agents/a1/restart", "bob@example.com"),
+        ("DELETE", "/agents/a1", "bob@example.com"),
+    ]
+
+
+async def _register_proxy_forwards_the_callers_identity() -> None:
+    app = _final_answer_app()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client:
+        for method, path in (
+            ("POST", "/register/agents"),
+            ("POST", "/register/agents/a1/handler"),
+            ("POST", "/register/agents/a1/restart"),
+            ("DELETE", "/register/agents/a1"),
+        ):
+            resp = await client.request(
+                method, path, headers={"mail": "bob@example.com"},
+                content=b"{}" if method == "POST" else None,
+            )
+            assert resp.status_code == 200, (path, resp.text)
 
 
 def test_register_proxy_returns_headers_that_match_the_body_it_sends(monkeypatch) -> None:

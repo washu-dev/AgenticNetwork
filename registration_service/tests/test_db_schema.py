@@ -38,6 +38,7 @@ def test_columns_added_later_reach_existing_databases():
     write to it fails on a database created before the column."""
     for column in (
         "handler_file_path", "approved", "is_archive", "image_ref", "build_commit", "resources",
+        "owner_email",
     ):
         assert re.search(
             rf"ALTER TABLE agents ADD COLUMN IF NOT EXISTS {column}\b", db._SCHEMA_SQL

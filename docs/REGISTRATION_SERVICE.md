@@ -50,30 +50,38 @@ old config JSON and are normalized **on read** — never rewritten — so
 
 - **Public:** `GET /health`, `GET /ready` (DB + directory; 503 if either errors), `GET /` (UI),
   `GET /oasf-skills`, `GET /credential-catalog`.
-- **Agent CRUD (public):** `POST /agents` (register), `GET /agents`, `GET /agents/{id}`,
-  `DELETE /agents/{id}` (stop + unpublish + delete + clean handler dir; if the directory does not
-  confirm the card's removal, 503 and the stopped row is kept so the delete can be retried;
-  `?force=true`, admin-only, deletes it anyway and logs the CID of the card left in the directory),
-  `POST /agents/{id}/restart`. Their `config` shows secret values as `[redacted]` (a proxy's
+- **Agent CRUD:** `POST /agents` (register; any signed-in user, whose SSO identity is recorded
+  as the agent's `owner_email`), `GET /agents`, `GET /agents/{id}`. For the agent's owner or an
+  admin only (`_require_owner_or_admin`, 403 otherwise): `DELETE /agents/{id}` (stop + unpublish
+  + delete + clean handler dir; if the directory does not confirm the card's removal, 503 and the
+  stopped row is kept so the delete can be retried; `?force=true`, admin-only, deletes it anyway
+  and logs the CID of the card left in the directory) and `POST /agents/{id}/restart`. An agent
+  with no owner (registered without an identity, or before owners were recorded on 2026-10-22)
+  is admin-only. Responses show secret `config` values as `[redacted]` (a proxy's
   `auth_header`, the values of `extra` and `tools.extra`, credentials in a URL;
-  `server.py::_public_config`); runtimes read the stored config.
-- **Custom upload/approval (admin-gated by `_require_admin`):** `POST /agents/{id}/handler`
-  (upload), `GET /agents/{id}/handler` (review source), `GET /agents/{id}/handler/download`,
+  `server.py::_public_config`) and leave out the owner; runtimes read the stored config.
+- **Custom upload (owner or admin):** `POST /agents/{id}/handler`.
+- **Custom review/approval (admin-gated by `_require_admin`):** `GET /agents/{id}/handler`
+  (review source; also names the owner), `GET /agents/{id}/handler/download`,
   `POST /agents/{id}/approve`, `POST /agents/{id}/reject`.
 - **Internal (ENGR host spawn loop):** `GET /internal/spawn-queue`, `POST /internal/spawned`,
   `GET /internal/stop-queue`. No access check in code: they rely on `:8091` not being reachable
   from outside, and the chat app's `/register` pass-through refuses them (see [`SECURITY.md`](../SECURITY.md) §2).
 
-Admin auth (`_require_admin`) is the SSO-identity `ADMIN_EMAILS` allowlist (dev-open under
-`FAKE_DB=1`) — see [AUTH.md](AUTH.md) §2.
+Admin auth (`_require_admin`) is the SSO-identity `ADMIN_EMAILS` allowlist; the owner check
+(`_require_owner_or_admin`) compares the same forwarded identity with the row's `owner_email`.
+Both are dev-open under `FAKE_DB=1` — see [AUTH.md](AUTH.md) §2.
 
 ## Data model (`db.py`)
 
 - **`agents`** — `id, name, description, handler_type, oasf_skills (jsonb), config (jsonb), port
   (unique), status, handler_file_path, approved, is_archive, endpoint_url, ads_cid, image_ref,
-  build_commit, resources, created_at, updated_at`. `status ∈ {registered, live, failed, stopped,
+  build_commit, resources, owner_email, created_at, updated_at`. `status ∈ {registered, live, failed, stopped,
   building, image_ready}`. `build_commit` is the `agent-directory` commit an approval's build
   context went into; `image_ref` is the digest of the image tagged with that commit.
+  `owner_email` is the SSO identity that registered the agent (lowercased; none if the request
+  had no identity); no API changes it, and an admin hands an agent over with
+  `UPDATE agents SET owner_email = '<email>' WHERE id = '<id>'`.
 - **`port_pool`** — `port, in_use, agent_id`. `port_pool.assign_port` picks a free port
   (19200–19299) with `FOR UPDATE SKIP LOCKED`; `release_port` frees it.
 - **`FAKE_DB=1`** swaps in an in-memory `FakePool`/`FakeStore` (`fake_db.py`) and a no-op

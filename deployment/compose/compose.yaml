@@ -184,6 +184,9 @@ services:
       PYTHONDONTWRITEBYTECODE: "1"
       PYTHONUNBUFFERED: "1"
       SEED_MODEL: ${DEVSTACK_SPECIALIST_MODEL:-${PLANNER_LLM_MODEL:-${MAIN_AGENT_LLM_MODEL:-mock-specialist}}}
+      # The seed registers and restarts as the user the front door signs in, so that
+      # user owns the seed agents.
+      DEV_USER_EMAIL: ${DEV_USER_EMAIL:-dev@example.test}
     command:
       - python
       - -c
@@ -196,6 +199,7 @@ services:
             state_dir=Path("/tmp/seed"),
             llm="mock" if model.startswith("mock-") else "openai",
             specialist_model=model,
+            dev_user=os.environ["DEV_USER_EMAIL"],
         )
         try:
             names = stack.ensure_agents(cfg, time.monotonic() + 300)

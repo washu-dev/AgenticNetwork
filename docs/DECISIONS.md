@@ -11,6 +11,20 @@ superseded, mark it and add a new entry rather than editing history.
 
 ---
 
+## D14 — Changing an agent is for its owner or an admin
+**Decision.** The registration service records the SSO identity that registers an agent
+(`agents.owner_email`). Deleting, restarting and uploading code to an agent are allowed to that
+owner or an admin; an agent without an owner is admin-only. Registering, listing and reading
+agents stay open to any signed-in user; reviewing code, approving and rejecting stay admin-only
+(D8). **Context.** One deployment serves many users, whose agents share one registry; without a
+recorded owner the service could not tell who should manage an agent. Decided 2026-10-22 over
+admin-only changes (uploading code is every author's own step) and an open, trust-the-group
+policy (deployments of the open-source release would inherit it). **Rationale.** The identity is
+already forwarded for D8's admin checks, so ownership costs one column and one check, and it
+fails closed. One owner per agent; co-owners or a hand-over API can come later (an admin can
+set the column). **Code.** `registration_service/server.py::_caller_email`,
+`_require_owner_or_admin`, `register_agent`; `db.py` (`owner_email`).
+
 ## D13 — `llm` agents run the shared skeleton engine; tool capability is configuration, not a handler type
 **Decision.** The registration `llm` type runs on the skeleton's spec-driven tool loop
 (`spec.llm_wrapper_spec` + `llm_loop.run_agent`) instead of a single-turn call of its own. Where

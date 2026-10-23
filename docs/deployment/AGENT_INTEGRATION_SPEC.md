@@ -501,7 +501,8 @@ tied to the agent's own process lifecycle.
 ### Adding an agent via the registration service
 
 ```bash
-curl -s http://localhost:8091/agents -H 'Content-Type: application/json' -d '{
+curl -s http://localhost:8091/agents -H 'mail: you@example.com' \
+  -H 'Content-Type: application/json' -d '{
   "name": "my-agent",
   "description": "Does X",
   "handler_type": "llm",
@@ -512,7 +513,8 @@ curl -s http://localhost:8091/agents -H 'Content-Type: application/json' -d '{
 
 The service assigns a port, inserts a DB record, spawns the subprocess, waits for
 health, publishes to ADS, and returns the live agent record including `endpoint_url`
-and `ads_cid`.
+and `ads_cid`. The `mail` header (set by the SSO front door in a deployment) is recorded
+as the agent's owner: only that identity or an admin may later delete or restart it.
 
 ### Known limitation — card richness
 

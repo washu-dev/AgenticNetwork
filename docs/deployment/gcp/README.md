@@ -75,6 +75,10 @@ gcloud run services proxy registration --project=di2-agenticweb --region=us-cent
 ```
 Open http://localhost:8091/. Admin actions need the identity header, e.g.
 `curl -X POST http://localhost:8091/agents/<id>/approve -H 'mail: <you>@wustl.edu'` (must be in `ADMIN_EMAILS`).
+The proxy adds no identity, so register and upload with curl too, sending `-H 'mail: <you>@wustl.edu'`:
+that header records the agent's owner, and only the owner or an admin may upload, restart or delete
+it. An agent registered through the UI here has no owner, so its upload is refused
+([DEPLOY_YOUR_OWN.md step 13](DEPLOY_YOUR_OWN.md#13-add-agents)).
 
 The **agents** aren't accessed directly — the chat app's planner reaches them internally over the VPC. To grant a
 teammate access: `gcloud run services add-iam-policy-binding planner --region=us-central1

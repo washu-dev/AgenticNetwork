@@ -98,6 +98,12 @@ repository goes public.
   `UPDATE agents SET build_commit = NULL`: older versions neither record nor clear it, so a row
   they approve again would keep the earlier approval's commit, and this version would then run
   that commit's image.
+- **Agent owners (2026-10-22):** registration now records the registering identity as the
+  agent's owner, and only that owner or an admin may delete, restart or upload code to it. Rows
+  registered before this have no owner, so after the deploy only admins can change them: set
+  owners for agents people still manage (`UPDATE agents SET owner_email = '<email, lowercase>'
+  WHERE name = '<name>'`). On a test instance, check that a second account gets 403 on another
+  user's agent and that the owner and an admin succeed.
 - **Approval lifecycle (2026-10-21 fix set):** changes an operator or admin will notice.
   - The first startup stops what runs for each unapproved row left by earlier versions (an
     upload or reject that kept the status or the service) and resets it to `registered`. On

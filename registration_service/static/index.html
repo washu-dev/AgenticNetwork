@@ -843,9 +843,12 @@ async function submitRegistration() {
       if (!up.ok) {
         const body = await up.json().catch(() => ({ detail: up.statusText }));
         // Roll back the just-created agent so a failed upload doesn't leave a
-        // codeless "pending approval" orphan in the directory.
-        await fetch(`${API_PREFIX}/agents/${agent.id}`, { method: 'DELETE' }).catch(() => {});
-        throw new Error(fmtDetail(body.detail) || `HTTP ${up.status}`);
+        // codeless "pending approval" orphan in the directory. Say so if that
+        // fails too (e.g. a request without an SSO identity: such an agent has no
+        // owner, and only an admin can delete it).
+        const del = await fetch(`${API_PREFIX}/agents/${agent.id}`, { method: 'DELETE' }).catch(() => null);
+        const kept = del && del.ok ? '' : ` The agent record "${agent.name}" was kept; an admin can delete it.`;
+        throw new Error((fmtDetail(body.detail) || `HTTP ${up.status}`) + kept);
       }
       const upBody = await up.json().catch(() => ({}));
       const warnNote = (upBody.warnings && upBody.warnings.length)

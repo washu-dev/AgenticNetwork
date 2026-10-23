@@ -100,12 +100,12 @@ registration submitted under a legacy name is *persisted* under the canonical on
 | `GET` | `/ready` | Readiness: the DB and the directory (`dirctl`); 503 if either is in error |
 | `GET` | `/oasf-skills` | Full OASF skill list |
 | `GET` | `/credential-catalog` | Known credential types a custom agent may declare |
-| `POST` | `/agents` | Register and start a new agent |
+| `POST` | `/agents` | Register and start a new agent (the caller's SSO identity becomes its owner) |
 | `GET` | `/agents` | List all agents with status |
 | `GET` | `/agents/{id}` | Single agent detail |
-| `DELETE` | `/agents/{id}` | Stop, unpublish, and remove an agent (503, row kept, if the directory can't confirm the unpublish: retry, or an admin adds `?force=true` to delete it anyway and log the card's CID) |
-| `POST` | `/agents/{id}/restart` | Manually restart an agent |
-| `POST`/`GET` | `/agents/{id}/handler` | Upload / fetch a custom agent's handler code (the fetch includes the code's `revision`) |
+| `DELETE` | `/agents/{id}` | Stop, unpublish, and remove an agent; owner or admin (503, row kept, if the directory can't confirm the unpublish: retry, or an admin adds `?force=true` to delete it anyway and log the card's CID) |
+| `POST` | `/agents/{id}/restart` | Manually restart an agent; owner or admin |
+| `POST`/`GET` | `/agents/{id}/handler` | Upload (owner or admin) / fetch (admin; includes the code's `revision` and the owner) a custom agent's handler code |
 | `GET` | `/agents/{id}/handler/download` | Download an uploaded handler archive |
 | `POST` | `/agents/{id}/approve` \| `/reject` | Admin approval gate for custom agents (reject also stops and unpublishes a running agent). Approve takes an optional `{"revision": ...}`, the reviewed code's revision: 409 if the code changed since |
 | `GET`/`POST` | `/internal/{spawn-queue,spawned,stop-queue}` | Host-side cluster spawn-loop coordination (not user-facing). No access check in code: keep port 8091 off public networks. The chat app's `/register` pass-through refuses these paths (see SECURITY.md) |

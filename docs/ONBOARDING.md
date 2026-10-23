@@ -63,7 +63,10 @@ There are two lanes; pick by what you're building.
 **A. A user-contributed / self-service agent → use the registration service.** This is the
 managed path: it builds, spawns, health-checks, and **publishes to ADS for you**, and (for
 uploaded code) routes it through admin approval.
-- At `/register/` on the chat app's address (or `:8091` directly). Choose the handler type —
+- At `/register/` on the chat app's address (or `:8091` directly). Your SSO identity is recorded
+  as the agent's owner: only you or an admin can upload its code, restart or delete it. Reaching
+  `:8091` directly, nothing adds that identity, so send a `mail` header yourself (the local
+  `FAKE_DB=1` stack skips these checks). Choose the handler type —
   three of them, split on *who runs the loop*:
   - `llm` — we run the loop. A **Tools** field picks where its capabilities come from:
     none (prompt only), preset catalog tools, **uploaded tool code**, or typed HTTP

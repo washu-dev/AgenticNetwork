@@ -13,6 +13,7 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any, NoReturn
@@ -43,6 +44,15 @@ def _is_purgeable(agent: dict) -> bool:
 
 class FakeRecord(dict):
     """dict that mimics asyncpg.Record attribute/key access."""
+
+
+def _check_arity(sql: str, args: tuple | list) -> None:
+    """Postgres wants one argument per placeholder ($1..$n); asyncpg raises otherwise.
+    The handlers below read arguments by position, so without this a statement that
+    lost a placeholder would still pass here."""
+    n = max((int(m) for m in re.findall(r"\$(\d+)", sql)), default=0)
+    if n != len(args):
+        raise TypeError(f"the statement expects {n} arguments, {len(args)} were passed: {sql}")
 
 
 def _unhandled(method: str, sql: str) -> NoReturn:
@@ -108,12 +118,18 @@ class FakeConnection:
         return FakeTransaction(self._s)
 
     async def execute(self, sql: str, *args: Any) -> None:
+        _check_arity(sql, args)
         s = " ".join(sql.split()).lower()
 
         # ── agents table ──────────────────────────────────────────────────────
 
         if s.startswith("insert into agents"):
-            uid, name, desc, handler_type, oasf_raw, config_raw = args
+            # register_agent's insert also names owner_email: one more argument.
+            expected = 7 if "owner_email" in s else 6
+            if len(args) != expected:
+                raise TypeError(f"insert into agents: {expected} arguments expected, got {len(args)}")
+            uid, name, desc, handler_type, oasf_raw, config_raw, *rest = args
+            owner_email = rest[0] if rest else None
             now = _now()
             self._s.agents[_coerce_uuid(uid)] = {
                 "id": _coerce_uuid(uid),
@@ -131,6 +147,7 @@ class FakeConnection:
                 "ads_cid": None,
                 "image_ref": None,
                 "build_commit": None,
+                "owner_email": owner_email,
                 "resources": None,
                 "created_at": now,
                 "updated_at": now,
@@ -211,6 +228,8 @@ class FakeConnection:
             _unhandled("execute", s)
 
     async def executemany(self, sql: str, args_list: list) -> None:
+        for args in args_list:
+            _check_arity(sql, args)
         s = " ".join(sql.split()).lower()
         if "insert into port_pool" in s:
             for port, in_use, agent_id in args_list:
@@ -219,6 +238,7 @@ class FakeConnection:
         _unhandled("executemany", s)
 
     async def fetchrow(self, sql: str, *args: Any) -> FakeRecord | None:
+        _check_arity(sql, args)
         s = " ".join(sql.split()).lower()
 
         if "select ads_cid, port from agents where id" in s:
@@ -240,6 +260,7 @@ class FakeConnection:
         _unhandled("fetchrow", s)
 
     async def fetch(self, sql: str, *args: Any) -> list[FakeRecord]:
+        _check_arity(sql, args)
         s = " ".join(sql.split()).lower()
 
         if "select * from agents order by created_at desc" in s:
@@ -266,6 +287,7 @@ class FakeConnection:
         _unhandled("fetch", s)
 
     async def fetchval(self, sql: str, *args: Any) -> Any:
+        _check_arity(sql, args)
         s = " ".join(sql.split()).lower()
 
         if "select count(*) from port_pool" in s:
@@ -352,6 +374,7 @@ def fake_create_agent(
     config: dict,
     approved: bool = True,
     resources: dict | None = None,
+    owner_email: str | None = None,
 ) -> dict:
     s = _store()
     s.seed_ports()
@@ -379,6 +402,7 @@ def fake_create_agent(
         "ads_cid": None,
         "image_ref": None,
         "build_commit": None,
+        "owner_email": owner_email,
         "resources": resources,
         "created_at": now,
         "updated_at": now,

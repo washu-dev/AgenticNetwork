@@ -424,11 +424,18 @@ gcloud run services proxy registration --region="$REGION" --port=8091
 ```
 
 Admin actions on the registration service (approve, reject, review uploaded code, force delete) check the
-`mail` header against `ADMIN_EMAILS` (`registration_service/server.py`, `_require_admin`):
+`mail` header against `ADMIN_EMAILS` (`registration_service/server.py`, `_require_admin`). Delete, restart
+and code upload accept the agent's owner (the identity that registered it) or an admin
+(`_require_owner_or_admin`):
 
 ```bash
 curl -X POST http://localhost:8091/agents/<id>/approve -H "mail: ${ADMIN_EMAIL}"
 ```
+
+The proxy adds no identity of its own, so the registration UI's requests carry none. An agent
+registered there has no owner, and only an admin can change an ownerless agent, but the UI sends no
+`mail` header for an admin either: its code upload is refused and the agent record stays behind.
+Register and upload with curl instead ([step 13](#13-add-agents)).
 
 Behind the proxy that header is self-asserted, so give `run.invoker` only to people you'd trust
 as admins. To add a teammate:
@@ -475,9 +482,24 @@ gcloud logging read 'resource.type="cloud_run_revision" AND resource.labels.serv
 
 ## 13. Add agents
 
-**Register an agent (the automated path).** Upload the agent's code through the registration UI
-([docs/REGISTRATION_SERVICE.md](../../REGISTRATION_SERVICE.md); building one:
-[docs/BUILDING_AGENTS.md](../../BUILDING_AGENTS.md)), then approve it as an admin. The registration
+**Register an agent (the automated path).** Register it, upload its code and approve it as an admin
+(request body and upload format: [docs/REGISTRATION_SERVICE.md](../../REGISTRATION_SERVICE.md);
+building one: [docs/BUILDING_AGENTS.md](../../BUILDING_AGENTS.md)). Send your `mail` header on the
+register and upload calls: it records you as the agent's owner, and only the owner or an admin may
+upload, restart or delete it ([step 11](#11-access) explains why the UI can't do this here). With the
+registration proxy running (`jq` reads the new agent's ID):
+
+```bash
+OWNER=you@example.com
+AGENT_ID=$(curl -s http://localhost:8091/agents -H "mail: ${OWNER}" \
+  -H 'Content-Type: application/json' -d @my-agent.json | jq -r .id)   # handler_type "custom"
+curl -s -X POST "http://localhost:8091/agents/${AGENT_ID}/handler" -H "mail: ${OWNER}" \
+  -F file=@my-agent.zip
+curl -s -X POST "http://localhost:8091/agents/${AGENT_ID}/approve" -H "mail: ${ADMIN_EMAIL}"
+```
+
+If an upload is refused, delete the leftover record as an admin:
+`curl -X DELETE "http://localhost:8091/agents/${AGENT_ID}" -H "mail: ${ADMIN_EMAIL}"`. The registration
 service commits the build context to `GITHUB_REPO`; a GitHub Action there builds the image and pushes
 it to Docker Hub as `${IMAGE_REGISTRY}/agenticnetwork-custom-<name>`, tagged with the commit's SHA
 and `:latest`; the build poll sees that commit's image, and the `CloudRunBackend` deploys it by

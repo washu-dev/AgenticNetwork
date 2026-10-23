@@ -281,10 +281,11 @@ def create_app(
 
     def _is_admin_reg_action(method: str, url: str) -> bool:
         # P4f: the approver's trust-boundary actions are admin-only. Gate by
-        # method+path, NOT path alone — POST /agents/{id}/handler is the (open)
-        # code-upload step any authenticated user performs, and shares its path
-        # with GET /agents/{id}/handler (the admin-only source review). Matching
-        # the "/handler" suffix regardless of method wrongly blocked uploads.
+        # method+path, NOT path alone — POST /agents/{id}/handler is the code-upload
+        # step an agent's owner performs (the registration service checks the owner,
+        # as for delete and restart), and shares its path with GET /agents/{id}/handler
+        # (the admin-only source review). Matching the "/handler" suffix regardless of
+        # method wrongly blocked uploads.
         if method == "GET":
             return url.endswith("/handler") or url.endswith("/handler/download")
         if method == "POST":

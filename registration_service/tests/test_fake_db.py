@@ -6,6 +6,7 @@ SQL it doesn't model instead of silently succeeding.
 from __future__ import annotations
 
 import logging
+import re
 import socket
 import time
 import uuid
@@ -40,8 +41,22 @@ async def test_unknown_sql_raises_and_logs_a_warning(method: str, sql: str, capl
     async with pool.acquire() as conn:
         with caplog.at_level(logging.WARNING, logger="registration_service.fake_db"):
             with pytest.raises(NotImplementedError, match="fake_db does not handle"):
-                await getattr(conn, method)(sql, uuid.uuid4(), uuid.uuid4())
+                args = [uuid.uuid4() for _ in re.findall(r"\$\d+", sql)]   # one per placeholder
+                await getattr(conn, method)(sql, *args)
     assert any("fake_db_unhandled_sql" in r.getMessage() for r in caplog.records)
+    await db.close_db()
+
+
+@pytest.mark.parametrize("method", ["execute", "fetchrow", "fetch", "fetchval"])
+async def test_a_placeholder_without_its_argument_is_refused(method: str) -> None:
+    """As in asyncpg, the arguments must match the placeholders, so a statement that
+    lost one (or gained one) fails here rather than storing values in the wrong place."""
+    pool = await _fresh_db()
+    async with pool.acquire() as conn:
+        with pytest.raises(TypeError, match="expects 1 arguments, 2 were passed"):
+            await getattr(conn, method)("SELECT * FROM agents WHERE id = $1", uuid.uuid4(), "extra")
+        with pytest.raises(TypeError, match="expects 2 arguments, 1 were passed"):
+            await getattr(conn, method)("UPDATE agents SET name = $1 WHERE id = $2", "n")
     await db.close_db()
 
 
