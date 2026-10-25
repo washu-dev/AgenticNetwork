@@ -53,8 +53,10 @@ docker run -d --rm --name pending-store-pg -p 127.0.0.1:55432:5432 --user postgr
 
 then `docker exec pending-store-pg /usr/lib/postgresql/15/bin/createdb -h /tmp pending_test` and
 run the suite with
-`PLANNER_TEST_DATABASE_DSN=postgresql://postgres@127.0.0.1:55432/pending_test`. CI has no
-Postgres, so run them before merging a change to `pending_store.py`. They passed on Postgres
+`PLANNER_TEST_DATABASE_DSN=postgresql://postgres@127.0.0.1:55432/pending_test`. That variable is
+separate from `DATABASE_URL`: every chat app test starts with `DATABASE_URL` and the old
+`REGISTRATION_DB_DSN` cleared (`chat_app/tests/conftest.py`), so a value in your shell never puts
+the suite in DB mode. CI has no Postgres, so run them before merging a change to `pending_store.py`. They passed on Postgres
 15.19 on 2026-10-16. Line coverage counts the component's own code, its tests left out. It sees only code that
 runs inside the pytest process, so code a suite starts in a subprocess shows as missed: the stack
 CLI's `up`, the fake `dirctl` behind `devstack/bin/dirctl`, and agent processes. The pipeline

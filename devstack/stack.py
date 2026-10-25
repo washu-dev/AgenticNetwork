@@ -85,7 +85,7 @@ AGENT_PROCESS_MARKERS = ("registration_service/runner.py", "agent_skeleton.conta
 SMOKE_PROMPT = "Echo this back and summarize it: the devstack smoke test reached a specialist agent."
 _MOCK_MODEL_PREFIX = "mock-"
 # Variables a service may inherit from the caller's shell. Everything else (a stray
-# VIRTUAL_ENV, PYTHONHOME, REGISTRATION_DB_DSN, real keys) stays out, so the stack
+# VIRTUAL_ENV, PYTHONHOME, DATABASE_URL, real keys) stays out, so the stack
 # has no hidden dependencies. Add more with DEVSTACK_PASSTHROUGH_ENV=A,B.
 _PASSTHROUGH_ENV = (
     "PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "TMPDIR", "TZ", "TERM",

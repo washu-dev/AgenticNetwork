@@ -68,7 +68,7 @@ def _run(body):
 
 @pytest.fixture(autouse=True)
 def _database(monkeypatch):
-    monkeypatch.setenv("REGISTRATION_DB_DSN", DSN or "")
+    monkeypatch.setenv("DATABASE_URL", DSN or "")
 
 
 async def _sql(query, *args):

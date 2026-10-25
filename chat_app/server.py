@@ -35,7 +35,7 @@ from chat_app.planner.llm_client import LLMClient, OpenAIToolLoopClient
 from chat_app.planner.memory_store import MemoryStore
 from chat_app.planner.models import Channel
 from chat_app.planner.runtime import ContextOwnershipError, PlannerRuntime
-from chat_app.store import conversation_store
+from chat_app.store import conversation_store, db
 from chat_app.store.db import close_db, fetch_user_credentials, init_db, ping_db
 from chat_app.store.grants import DbCredentialGate
 
@@ -180,7 +180,7 @@ def create_app(
 
     # P4c: per-agent credential grants are DB-backed; without a DB there's nothing
     # to enforce against, so the gate is None and enforcement is a pass-through.
-    credential_gate = DbCredentialGate() if os.getenv("REGISTRATION_DB_DSN") else None
+    credential_gate = DbCredentialGate() if db.configured() else None
 
     runtime = PlannerRuntime(
         config=cfg,
@@ -208,7 +208,7 @@ def create_app(
         if not is_admin(email):
             raise HTTPException(status_code=403, detail="Admin access required")
 
-    db_configured = bool(os.getenv("REGISTRATION_DB_DSN"))
+    db_configured = db.configured()
 
     # Client for the /register/* pass-through; the lifespan closes it on shutdown.
     _reg_base = os.getenv("REGISTRATION_SERVICE_URL", "http://localhost:8091")
@@ -216,7 +216,7 @@ def create_app(
 
     @contextlib.asynccontextmanager
     async def lifespan(_app: FastAPI):
-        # DB lifecycle is skipped when REGISTRATION_DB_DSN is unset (dev stack, unit tests).
+        # DB lifecycle is skipped when no database is configured (dev stack, unit tests).
         if db_configured:
             await init_db()
         probe_loop = asyncio.create_task(_health_probe_loop())
@@ -248,7 +248,7 @@ def create_app(
     # a no-op without a DB, where the in-memory working context serves the session.
 
     # Auth + credential routers (active whenever the DB is configured).
-    if os.getenv("REGISTRATION_DB_DSN"):
+    if db.configured():
         app.include_router(auth_router)
         app.include_router(credentials_router)
         app.include_router(grants_router)
@@ -714,7 +714,7 @@ def create_app(
     async def get_sessions(request: Request) -> dict[str, Any]:
         # H2: identity comes from the authenticated principal, never a query param.
         owner = _resolve_shib_user_id(request)
-        if os.getenv("REGISTRATION_DB_DSN"):
+        if db.configured():
             return {"sessions": await conversation_store.list_sessions(owner)}
         # No DB (dev/test): derive the caller's sessions from in-memory contexts.
         sessions = []
@@ -824,8 +824,8 @@ async def _check_directory(directory: DirectoryClient) -> dict[str, Any]:
 
 
 async def _check_db() -> dict[str, Any]:
-    """Readiness of Postgres; without REGISTRATION_DB_DSN the chat app runs DB-less."""
-    if not os.getenv("REGISTRATION_DB_DSN"):
+    """Readiness of Postgres; without DATABASE_URL the chat app runs DB-less."""
+    if not db.configured():
         return {"status": "not_configured"}
     timeout = _READY_DB_TIMEOUT_SECONDS
     try:
@@ -888,7 +888,7 @@ async def _refresh_google_token(creds: dict) -> dict:
 
 async def _inject_credentials(request: Request, metadata: dict[str, Any]) -> None:
     """Fetch the current user's credentials and add them to metadata if auth is active."""
-    if not os.getenv("REGISTRATION_DB_DSN"):
+    if not db.configured():
         return
     try:
         user = await get_current_user(request)
@@ -907,15 +907,15 @@ async def _inject_credentials(request: Request, metadata: dict[str, Any]) -> Non
 def _anon_identity_allowed() -> bool:
     """Whether an unauthenticated request may fall back to the ``demo-user`` identity.
 
-    Fail-closed once a real deployment DB is configured: with ``REGISTRATION_DB_DSN``
-    set, a missing Shibboleth header is a 401, not a silent collapse to a shared
-    identity. Anonymous is allowed when there is no DB (Tier A/B laptop runs and unit
+    Fail-closed once a real deployment DB is configured: with ``DATABASE_URL`` (or the
+    old ``REGISTRATION_DB_DSN``) set, a missing Shibboleth header is a 401, not a
+    silent collapse to a shared identity. Anonymous is allowed when there is no DB (Tier A/B laptop runs and unit
     tests) or when the operator explicitly opts in with ``CHAT_APP_ALLOW_ANON=1`` (local
     dev against a real DB; the old name ``PLANNER_ALLOW_ANON`` still works).
     """
     if allow_anon():
         return True
-    return not os.getenv("REGISTRATION_DB_DSN")
+    return not db.configured()
 
 
 def _resolve_shib_user_id(request: Request, anonymous: str = "demo-user") -> str:

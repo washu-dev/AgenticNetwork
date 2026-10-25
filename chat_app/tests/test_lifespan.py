@@ -1,4 +1,4 @@
-"""Startup/shutdown: DB init/close only with REGISTRATION_DB_DSN, plus the health-probe loop."""
+"""Startup/shutdown: DB init/close only with DATABASE_URL, plus the health-probe loop."""
 
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ def test_lifespan_opens_and_closes_db_when_configured(monkeypatch) -> None:
     async def fake_close() -> None:
         calls.append("close")
 
-    monkeypatch.setenv("REGISTRATION_DB_DSN", "postgres://unused")
+    monkeypatch.setenv("DATABASE_URL", "postgres://unused")
     monkeypatch.setattr(server, "init_db", fake_init)
     monkeypatch.setattr(server, "close_db", fake_close)
     app = _app()
@@ -49,10 +49,10 @@ def test_lifespan_opens_and_closes_db_when_configured(monkeypatch) -> None:
 
 
 def test_lifespan_skips_db_without_dsn(monkeypatch) -> None:
-    monkeypatch.delenv("REGISTRATION_DB_DSN", raising=False)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
 
     async def boom() -> None:
-        raise AssertionError("DB must not be touched without REGISTRATION_DB_DSN")
+        raise AssertionError("DB must not be touched without DATABASE_URL")
 
     monkeypatch.setattr(server, "init_db", boom)
     monkeypatch.setattr(server, "close_db", boom)
@@ -66,7 +66,7 @@ def test_lifespan_skips_db_without_dsn(monkeypatch) -> None:
 
 
 def test_lifespan_closes_the_llm_client_on_shutdown(monkeypatch) -> None:
-    monkeypatch.delenv("REGISTRATION_DB_DSN", raising=False)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
     events: list[str] = []
 
     class ClosingLLM(ScriptedLLMClient):
@@ -90,7 +90,7 @@ def test_lifespan_closes_the_llm_client_on_shutdown(monkeypatch) -> None:
 def test_lifespan_closes_the_registration_pass_through_client(monkeypatch) -> None:
     # The /register/* pass-through keeps one HTTP client for the app's lifetime;
     # shutdown closes it rather than leaving its connections to garbage collection.
-    monkeypatch.delenv("REGISTRATION_DB_DSN", raising=False)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.setenv("REGISTRATION_SERVICE_URL", "http://registration.test:8091")
     closed: list[str] = []
     real_aclose = httpx.AsyncClient.aclose

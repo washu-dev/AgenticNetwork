@@ -37,6 +37,7 @@ from pathlib import Path
 
 import httpx
 
+from agentnet.settings import DATABASE_URL, OLD_DATABASE_NAMES
 from registration_service.archive import IGNORED_DIRS
 from registration_service.models import AnyConfig, UploadSpec, normalize_handler_type, upload_spec
 
@@ -51,6 +52,10 @@ _STOP_GRACE_SECONDS = 5.0
 # below 500 on /health" was not enough: the A2A app has no /health, so any
 # listener on the port (an orphan, another program) passed with a 404.
 _READY_PATH = "/.well-known/agent-card.json"
+# A spawned agent gets the service's environment minus the database address: agents
+# never need the platform's database, and many frameworks connect to whatever
+# DATABASE_URL names. (deployment/spawn_agent_loop.py does the same on the cluster.)
+_AGENT_ENV_EXCLUDED = (DATABASE_URL, *OLD_DATABASE_NAMES)
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _AGENT_SKELETON_DIR = _REPO_ROOT / "agent_skeleton"
@@ -233,7 +238,7 @@ class SubprocessBackend(ContainerBackend):
         # health loop) would orphan the first process, which still holds the port.
         await self.stop(agent_id)
 
-        env = {**os.environ}
+        env = {k: v for k, v in os.environ.items() if k not in _AGENT_ENV_EXCLUDED}
         env["AGENT_CONFIG_JSON"] = _config_envelope(
             agent_id, name, description, handler_type, config, port
         )

@@ -70,7 +70,7 @@ chat_app/
 │   ├── models.py           # ConversationContext, policy records; re-exports the wire models from agentnet
 │   ├── credential_gate.py  # CredentialGate protocol + InMemoryCredentialGate
 │   └── memory_store.py     # MemoryStore: in-process contexts and pending confirmations
-├── store/                  # Postgres storage (each part is a no-op without REGISTRATION_DB_DSN)
+├── store/                  # Postgres storage (each part is a no-op without DATABASE_URL)
 │   ├── db.py               # Postgres pool + schema (users, credentials, grants, conversations, pending)
 │   ├── crypto.py           # AES-256-GCM encrypt/decrypt for stored credentials
 │   ├── conversation_store.py  # conversation history
@@ -248,7 +248,7 @@ different values, the new name wins, and that is logged too. The full list is in
 | `ADS_SERVER_ADDR`              | —             | e.g. `localhost:8888`                                         |
 | `DIRCTL_TIMEOUT_SECONDS`       | `60`          | Per-call limit on `dirctl`; a hung call is killed (`/ready` uses 4s) |
 | `PYTHON_BIN`                   | auto-detected | Optional interpreter override for wrapper scripts             |
-| `REGISTRATION_DB_DSN`          | —             | Postgres DSN for users, conversation history, credentials and pending confirmations. Unset: users live in memory |
+| `DATABASE_URL`                 | —             | Postgres URL (`postgresql://` or `postgres://`; asyncpg rejects other schemes) for users, conversation history, credentials and pending confirmations. Set: a request without an SSO identity is a 401 unless `CHAT_APP_ALLOW_ANON=1`. Unset: users live in memory. The old name `REGISTRATION_DB_DSN` still works (logged once as deprecated); `DATABASE_URL` wins when both are set, and an empty value counts as unset |
 | `CREDENTIALS_ENCRYPTION_KEY`   | —             | 32-byte base64 key for AES-256-GCM credential encryption      |
 | `ADMIN_EMAILS`                 | —             | Comma-separated admin allowlist (matched against SSO identity); fail-closed |
 | `GITHUB_ISSUES_TOKEN` / `_REPO` | —            | Token and target `owner/name` for `POST /issues`. No default repo: use a private one (issues carry the reporter's email, prompts and trace). Either unset → 502 |
@@ -302,7 +302,7 @@ doesn't break the demo:
   LLM as-is and rendered through `final_answer`.
 - No deterministic keyword router. The LLM picks the agent.
 - No durable working state: `MemoryStore` lives in the process and resets
-  on restart. With `REGISTRATION_DB_DSN` set, conversation history and pending
+  on restart. With `DATABASE_URL` set, conversation history and pending
   confirmations also persist to Postgres (`store/conversation_store.py` /
   `store/pending_store.py` → `store/db.py`), keyed by SSO identity; without it
   they live only in memory.

@@ -26,10 +26,9 @@ runs, unit tests) every function is a no-op and the in-memory cache is the only 
 from __future__ import annotations
 
 import json
-import os
 from typing import Any
 
-from chat_app.store.db import get_pool
+from chat_app.store.db import configured, get_pool
 
 # A claimed row reads as "in progress" until CLAIM_TTL_SECONDS after its claim was last
 # refreshed, then as gone. The answer refreshes it every CLAIM_REFRESH_SECONDS while its
@@ -44,7 +43,7 @@ CLAIM_REFRESH_TIMEOUT_SECONDS = 10.0
 
 def enabled() -> bool:
     """Whether pending confirmations are persisted (a shared DB is configured)."""
-    return bool(os.getenv("REGISTRATION_DB_DSN"))
+    return configured()
 
 
 async def save(context_id: str, owner_email: str, payload: dict[str, Any]) -> None:

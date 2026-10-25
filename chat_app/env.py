@@ -4,8 +4,9 @@ Settings only this service reads use two prefixes: ``PLANNER_*`` for the planner
 loop (the LLM loop that picks agents) and ``CHAT_APP_*`` for the web server around
 it. The old names (mostly ``MAIN_AGENT_*``) still work, so existing ``.env`` files
 and deployments keep running; each old name in use is logged once as deprecated.
-Settings other services share (``REGISTRATION_DB_DSN``, ``ADMIN_EMAILS``,
-``OPENAI_*``, ``ADS_*`` and so on) keep their names and are not read here.
+Settings other services share (``DATABASE_URL``, ``ADMIN_EMAILS``, ``OPENAI_*``,
+``ADS_*`` and so on) are not read here. ``agentnet.settings`` reads the database
+address for both services, with its own fallback to the old name.
 
 This module imports nothing from the package, so every layer can read settings
 through it: the app (server.py, __main__.py), the planner (planner/config.py,

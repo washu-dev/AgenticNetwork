@@ -42,8 +42,9 @@ Browser → nginx (TLS) → Apache + mod_shib (Shibboleth SP) → reverse-proxy 
 `chat_app/server.py::_resolve_shib_user_id` is the single identity resolver for `/messages`,
 `/confirmations` and the data endpoints; a header identity always wins over a request-body
 `user_id`. When no header is present:
-- **DB configured** (`REGISTRATION_DB_DSN` set) → **401**, unless `CHAT_APP_ALLOW_ANON=1`
-  (exactly `1`; the old name `PLANNER_ALLOW_ANON` still works).
+- **DB configured** (`DATABASE_URL` set, or the old name `REGISTRATION_DB_DSN`; an empty value
+  counts as unset) → **401**, unless `CHAT_APP_ALLOW_ANON=1` (exactly `1`; the old name
+  `PLANNER_ALLOW_ANON` still works).
 - **No DB** (laptop/tests) → the body `user_id` on `/messages` and `/confirmations`, `demo-user`
   elsewhere.
 
@@ -90,7 +91,7 @@ The old shared `X-Admin-Token` / `MAIN_AGENT_ADMIN_TOKEN` and `POST /admin/login
 ## 4. Per-user credentials
 
 The mechanism for giving a user's own API keys to the agents that need them, without the LLM
-ever seeing a secret. Gated on `REGISTRATION_DB_DSN` — inert without a DB.
+ever seeing a secret. Gated on `DATABASE_URL` — inert without a DB.
 
 ### Storage
 - `chat_app/store/db.py::user_credentials(user_id, provider, encrypted, …)`, `UNIQUE(user_id, provider)`.

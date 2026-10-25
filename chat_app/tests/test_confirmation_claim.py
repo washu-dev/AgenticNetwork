@@ -533,7 +533,7 @@ def test_an_answer_on_another_process_while_the_press_runs_is_told_it_is_in_prog
 ) -> None:
     """The claimed row stays until the call is done, so the other process can tell. When
     the claim deleted the row, a late "yes" there found nothing and started an LLM turn."""
-    monkeypatch.delenv("REGISTRATION_DB_DSN", raising=False)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
     conversations, pending_rows = persisted
 
     async def go():
@@ -582,7 +582,7 @@ def test_with_a_database_the_row_decides_not_this_processs_copy(persisted) -> No
 
 
 def test_confirm_on_a_process_without_the_conversation_leaves_the_action_pending(persisted, monkeypatch) -> None:
-    monkeypatch.delenv("REGISTRATION_DB_DSN", raising=False)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
     conversations, pending_rows = persisted
 
     async def go():
@@ -683,7 +683,7 @@ def test_a_new_prompt_raised_while_the_claimed_call_runs_outlives_it(persisted, 
     """A message on another process can raise a new prompt while the confirmed call runs;
     saving it replaces the claimed row, and the finished answer deletes only the row it
     claimed, so the new prompt stays for its own answer."""
-    monkeypatch.delenv("REGISTRATION_DB_DSN", raising=False)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
     conversations, pending_rows = persisted
 
     async def go():
@@ -747,7 +747,7 @@ def test_pending_store_without_a_database_is_a_no_op(monkeypatch) -> None:
     async def no_pool():
         raise AssertionError("no database is configured")
 
-    monkeypatch.delenv("REGISTRATION_DB_DSN", raising=False)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.setattr(pending_store, "get_pool", no_pool)
 
     async def go():
@@ -798,7 +798,7 @@ def test_a_press_on_a_replaced_prompt_runs_nothing() -> None:
 
 def test_a_prompt_or_press_without_a_prompt_id_still_works(persisted, monkeypatch) -> None:
     """Older clients send no prompt_id, and a row an older planner saved has none."""
-    monkeypatch.delenv("REGISTRATION_DB_DSN", raising=False)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
     conversations, pending_rows = persisted
 
     async def go():

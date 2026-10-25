@@ -80,6 +80,10 @@ set, unless `PLANNER_ALLOW_ANON=1`. Without a DB (laptop/tests), it falls back t
 silently collapsing anonymous callers to a shared `demo-user` would misattribute and leak
 across users. Fail-closed only where a real deployment (a DB) exists keeps local dev friction-
 free. **Code.** `server.py::_resolve_shib_user_id` / `_anon_identity_allowed`.
+*2026-10-25:* both services now read the database address from `DATABASE_URL`
+(`agentnet/settings.py`), with `REGISTRATION_DB_DSN` still accepted as a fallback; either one,
+non-empty, makes the chat app require an identity (`chat_app/store/db.py::configured`). Agents the
+registration service starts no longer receive either variable.
 
 ## D8 — Admin is the SSO identity in an `ADMIN_EMAILS` allowlist (no shared token)
 **Decision.** Admin = an authenticated user whose email ∈ `ADMIN_EMAILS` (comma-separated),

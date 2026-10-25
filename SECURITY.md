@@ -135,12 +135,13 @@ trusted node."* Everything inside the node trusts everything else.
 - **On the subprocess backend, any signed-in user can start an agent without approval.** Only
   uploaded-code agents wait for admin approval (`registration_service/server.py`, `carries_upload`).
   An `llm` agent with `http` tools, or a `proxy` agent, starts at once as a subprocess of the
-  registration service, with its whole environment (`backend.py`, `env = {**os.environ}`) and its
-  network namespace. Such an agent can send any variable named in `auth_env` (the LLM key
-  included) to any URL, and can call the chat app and registration on `localhost` with identity
-  headers of its choosing. This applies to the dev stack and Docker Compose (no `SPAWN_BACKEND`);
-  the cluster and Cloud Run backends refuse non-upload agents (`supervisor.py`). Until approval
-  covers these agents, give accounts only to people you would trust as admins.
+  registration service, with its environment (all of it but `DATABASE_URL` and the old
+  `REGISTRATION_DB_DSN`; `backend.py`, `SubprocessBackend.spawn`) and its network namespace.
+  Such an agent can send any variable named in `auth_env` (the LLM key included) to any URL, and
+  can call the chat app and registration on `localhost` with identity headers of its choosing.
+  This applies to the dev stack and Docker Compose (no `SPAWN_BACKEND`); the cluster and Cloud Run
+  backends refuse non-upload agents (`supervisor.py`). Until approval covers these agents, give
+  accounts only to people you would trust as admins.
 
 ---
 

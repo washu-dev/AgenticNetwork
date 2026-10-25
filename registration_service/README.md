@@ -173,12 +173,12 @@ the component you are working on.
 
 | Variable | Default | Description |
 |---|---|---|
-| `REGISTRATION_DB_DSN` | — | Full asyncpg DSN. If unset, constructed from `PGHOST`/`PGPORT`/`PGUSER`/`PGPASSWORD`/`PGDATABASE` |
+| `DATABASE_URL` | — | Full Postgres URL (`postgresql://` or `postgres://`; asyncpg rejects other schemes). If unset, constructed from `PGHOST`/`PGPORT`/`PGUSER`/`PGPASSWORD`/`PGDATABASE`. The old name `REGISTRATION_DB_DSN` still works (logged once as deprecated); `DATABASE_URL` wins when both are set. Agents this service starts do not get either name |
 | `PGHOST` | `localhost` | Postgres host |
 | `PGPORT` | `5432` | Postgres port |
 | `PGUSER` | `postgres` | Postgres user |
 | `PGDATABASE` | `registration` | Database name |
-| `PGPASSWORD` | — | Postgres password (used when constructing the DSN from parts) |
+| `PGPASSWORD` | `postgres` | Postgres password (used when constructing the DSN from parts) |
 | `ADS_SERVER_ADDR` | — | ADS dirctl address, e.g. `localhost:8888` (consumed via `agentnet.directory.publisher`) |
 | `OPENAI_BASE_URL` | — | vLLM endpoint for spawned LLM agents |
 | `OPENAI_API_KEY` | — | API key (any non-empty value works with vLLM) |

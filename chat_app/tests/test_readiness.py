@@ -27,7 +27,7 @@ from chat_app.tests.test_runtime import FailA2A
 @pytest.fixture(autouse=True)
 def _no_configured_dependencies(monkeypatch) -> None:
     # Start every test from "nothing configured", whatever the caller's shell exports.
-    for name in ("REGISTRATION_DB_DSN", "OPENAI_BASE_URL", "OPENAI_API_KEY", "DIRCTL_BIN", "ADS_BACKEND"):
+    for name in ("DATABASE_URL", "OPENAI_BASE_URL", "OPENAI_API_KEY", "DIRCTL_BIN", "ADS_BACKEND"):
         monkeypatch.delenv(name, raising=False)
 
 
@@ -214,7 +214,7 @@ def test_ready_fails_when_llm_unreachable(monkeypatch) -> None:
 
 
 def test_ready_fails_when_db_pool_is_missing(monkeypatch) -> None:
-    monkeypatch.setenv("REGISTRATION_DB_DSN", "postgres://unused")
+    monkeypatch.setenv("DATABASE_URL", "postgres://unused")
     monkeypatch.setattr(db, "_pool", None)
     resp = _ready()
     assert resp.status_code == 503, resp.text
@@ -236,7 +236,7 @@ def test_ready_db_ok_when_select_1_succeeds(monkeypatch) -> None:
         async def acquire(self):
             yield Conn()
 
-    monkeypatch.setenv("REGISTRATION_DB_DSN", "postgres://unused")
+    monkeypatch.setenv("DATABASE_URL", "postgres://unused")
     monkeypatch.setattr(db, "_pool", Pool())
     resp = _ready()
     assert resp.status_code == 200, resp.text

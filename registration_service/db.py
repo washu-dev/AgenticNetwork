@@ -10,6 +10,7 @@ from typing import Any
 
 import asyncpg
 
+from agentnet.settings import database_url
 from registration_service.flags import fake_db_enabled
 
 logger = logging.getLogger(__name__)
@@ -110,7 +111,8 @@ $$;
 
 
 def _dsn() -> str:
-    dsn = os.getenv("REGISTRATION_DB_DSN")
+    """DATABASE_URL (or the old REGISTRATION_DB_DSN), else built from the PG* variables."""
+    dsn = database_url()
     if dsn:
         return dsn
     host = os.getenv("PGHOST", "localhost")

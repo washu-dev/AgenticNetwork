@@ -7,6 +7,8 @@ import os
 
 import asyncpg
 
+from agentnet.settings import database_configured, database_url
+
 logger = logging.getLogger(__name__)
 
 _pool: asyncpg.Pool | None = None
@@ -107,8 +109,19 @@ $$;
 """
 
 
+def configured() -> bool:
+    """Whether a database is configured (DATABASE_URL, or the old REGISTRATION_DB_DSN).
+
+    The chat app's one switch for DB mode: with it, users, history, credentials and
+    pending confirmations live in Postgres and a request without an SSO identity is
+    a 401 (unless CHAT_APP_ALLOW_ANON=1); without it, the app runs DB-less and an
+    anonymous request becomes ``demo-user``.
+    """
+    return database_configured()
+
+
 def _dsn() -> str:
-    dsn = os.getenv("REGISTRATION_DB_DSN")
+    dsn = database_url()
     if dsn:
         return dsn
     host = os.getenv("PGHOST", "localhost")

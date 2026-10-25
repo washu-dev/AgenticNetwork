@@ -5,8 +5,9 @@ The chat app and the registration service both use it. In the chat app, the plan
 (`chat_app/planner/`) searches the directory and calls agents with it, and the web
 server (`chat_app/server.py`) lists agents, checks their health and removes them
 (admin) with it. The registration service publishes and unpublishes the agents it
-runs with it. agentnet is a library, not a service: it runs inside those two. It
-also holds the operator scripts for inspecting and repairing a live directory.
+runs with it. Both read the database address through `settings.py`. agentnet is a
+library, not a service: it runs inside those two. It also holds the operator scripts
+for inspecting and repairing a live directory.
 
 ## The directory (ADS)
 
@@ -39,6 +40,8 @@ the planner never sees it. This is the most common failure mode, and most of the
 agentnet/
 ├── models.py              wire models (DiscoveredAgent, A2A task/message/part, PublishedRecord)
 │                          and the required-credentials extension URI
+├── settings.py            the database address both services read: DATABASE_URL, falling back
+│                          to the old REGISTRATION_DB_DSN (standard library only)
 ├── directory/
 │   ├── __init__.py        DirectoryUnavailable (one class, raised by everything below)
 │   ├── card_oasf.py       Agent Card <-> OASF/ADS record conversion, oasf_skill_tag

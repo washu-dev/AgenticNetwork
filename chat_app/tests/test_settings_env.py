@@ -263,7 +263,7 @@ def test_card_paths(monkeypatch, name) -> None:
 @pytest.mark.parametrize("name", ["CHAT_APP_ALLOW_ANON", "PLANNER_ALLOW_ANON"])
 def test_allow_anon_needs_exactly_1(monkeypatch, name) -> None:
     _clear(monkeypatch)
-    monkeypatch.setenv("REGISTRATION_DB_DSN", "postgres://unused")
+    monkeypatch.setenv("DATABASE_URL", "postgres://unused")
     assert server._anon_identity_allowed() is False
     for value in ("true", "yes", "on", "0", "", " 1", "1 "):
         monkeypatch.setenv(name, value)
@@ -274,7 +274,7 @@ def test_allow_anon_needs_exactly_1(monkeypatch, name) -> None:
 
 def test_new_allow_anon_name_wins(monkeypatch) -> None:
     _clear(monkeypatch)
-    monkeypatch.setenv("REGISTRATION_DB_DSN", "postgres://unused")
+    monkeypatch.setenv("DATABASE_URL", "postgres://unused")
     monkeypatch.setenv("CHAT_APP_ALLOW_ANON", "0")
     monkeypatch.setenv("PLANNER_ALLOW_ANON", "1")
     assert server._anon_identity_allowed() is False

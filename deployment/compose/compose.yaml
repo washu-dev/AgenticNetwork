@@ -16,14 +16,15 @@
 name: agenticnetwork
 
 # Settings the chat app and the registration service share.
-# Spawned agents inherit registration's environment, so they get the same LLM endpoint.
+# Spawned agents inherit registration's environment (all but DATABASE_URL), so they
+# get the same LLM endpoint.
 x-shared-env: &shared-env
   ADS_SERVER_ADDR: localhost:8888
   DIRCTL_BIN: /usr/local/bin/dirctl
   # Routing can lag a push by ~10 s; see deployment/.env.example.
   ADS_ROUTING_PUBLISH_TIMEOUT_SECONDS: "30"
   ADS_ROUTING_PUBLISH_POLL_SECONDS: "0.5"
-  REGISTRATION_DB_DSN: postgresql://postgres@localhost:5432/registration
+  DATABASE_URL: postgresql://postgres@localhost:5432/registration
   OPENAI_BASE_URL: ${OPENAI_BASE_URL:-http://127.0.0.1:8099/v1}
   OPENAI_API_KEY: ${OPENAI_API_KEY:-mock-key}
   ADMIN_EMAILS: ${ADMIN_EMAILS:-dev@example.test}

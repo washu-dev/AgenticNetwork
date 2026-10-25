@@ -31,7 +31,7 @@ FastAPI app. Key routes:
 - `/admin/*` → admin dashboard data (allowlist-gated); `/register/{path}` → passed through to
   the registration service (admin subpaths gated; `internal/*` refused with 404).
 - Auth/credential routers (`auth_router`, `credentials_router`, grants) mount only when
-  `REGISTRATION_DB_DSN` is set.
+  `DATABASE_URL` is set.
 
 A request's identity is resolved once by `_resolve_shib_user_id` (fail-closed — see
 [AUTH.md](AUTH.md) §1). Credentials are fetched + scoped by `_inject_credentials` and passed via

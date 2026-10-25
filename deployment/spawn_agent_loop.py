@@ -26,6 +26,10 @@ import urllib.request
 REG = os.environ.get("REGISTRATION_INTERNAL_URL", "http://localhost:8091")
 POLL = float(os.environ.get("SPAWN_LOOP_POLL_SECONDS", "15"))
 LOGS = os.environ.get("LOGS", "/tmp")
+# Agents get this loop's environment (which holds the whole .env) minus the database
+# address, as SubprocessBackend does. The names match agentnet/settings.py; this
+# script runs on the host without the repo's packages, so it lists them itself.
+_AGENT_ENV_EXCLUDED = ("DATABASE_URL", "REGISTRATION_DB_DSN")
 
 
 def _get(path: str):
@@ -62,6 +66,14 @@ def _reap(launched: set[int]) -> None:
         launched.discard(pid)
 
 
+def _agent_env(env_extra: dict) -> dict:
+    """The environment one agent's srun step starts with (srun --export=ALL passes it on)."""
+    env = {**os.environ, **env_extra}
+    for name in _AGENT_ENV_EXCLUDED:
+        env.pop(name, None)
+    return env
+
+
 def main() -> None:
     print(f"[spawn-loop] starting reg={REG} poll={POLL}s logs={LOGS}", flush=True)
     launched: set[int] = set()  # srun PIDs this loop started and has not reaped
@@ -76,7 +88,7 @@ def main() -> None:
             try:
                 log_f = open(log_path, "a")
                 proc = subprocess.Popen(
-                    argv, env={**os.environ, **env_extra},
+                    argv, env=_agent_env(env_extra),
                     stdout=log_f, stderr=subprocess.STDOUT,
                 )
             except Exception as exc:  # noqa: BLE001

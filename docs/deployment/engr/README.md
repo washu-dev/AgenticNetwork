@@ -92,7 +92,7 @@ Edit `.env` — the values you may actually change (most have working defaults):
 | `GOOGLE_CLIENT_ID` / `GOOGLE_REDIRECT_URI` | OAuth web-client (non-secret half; the secret is in the secrets file, Step 3) |
 | `GITHUB_REPO` | Repo for the custom-agent build pipeline (default `washu-dev/agent-directory`) |
 | `IMAGE_REGISTRY` | Image namespace (default `di2washu`; see [`docs/MULTI_CONTRIBUTOR.md`](../../MULTI_CONTRIBUTOR.md)) |
-| `PGDATABASE` | Registration DB name (default `registration`) |
+| `DATABASE_URL` | Postgres URL both services read (`postgresql://` or `postgres://`); the default points at the node's `registration` database. A test instance overrides it. The old name `REGISTRATION_DB_DSN` still works, but rename it in a live `.env` only once every image in use was built after 2026-10-25: an older chat app image reads only the old name and would start without a database |
 
 > `.env` holds **non-secret config only** — it is shared and world-readable on `/engrfs`.
 >

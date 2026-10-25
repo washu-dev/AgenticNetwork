@@ -15,14 +15,12 @@ context serves the live session.
 """
 from __future__ import annotations
 
-import os
-
-from chat_app.store.db import get_pool
+from chat_app.store.db import configured, get_pool
 
 
 def _enabled() -> bool:
     """Persistence is active only when a shared DB is configured (mirrors server.py)."""
-    return bool(os.getenv("REGISTRATION_DB_DSN"))
+    return configured()
 
 
 def _parse_history(history: list[str]) -> list[tuple[str, str]]:

@@ -6,7 +6,8 @@
 # dedicated container (see entrypoint-postgres.sh). This container is now a pure
 # DB *client*: it no longer initialises or hosts Postgres. It waits for the
 # external Postgres and ADS to be reachable over host-localhost, then starts the
-# FastAPI registration service. Its DSN (REGISTRATION_DB_DSN) is unchanged.
+# FastAPI registration service, which reads its DSN from DATABASE_URL (the old name
+# REGISTRATION_DB_DSN still works).
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 

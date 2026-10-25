@@ -171,14 +171,15 @@ def test_pipeline_files_get_their_own_ports_and_state_dirs(fake, monkeypatch):
 def test_suites_get_a_clean_environment(fake, monkeypatch):
     for name, value in {
         "FAKE_DB": "0", "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1", "PYTHONPATH": "/elsewhere",
-        "REGISTRATION_DB_DSN": "postgresql://db/x", "PIPELINE_STATE_DIR": "/elsewhere",
+        "DATABASE_URL": "postgresql://db/x", "REGISTRATION_DB_DSN": "postgresql://db/x",
+        "PIPELINE_STATE_DIR": "/elsewhere",
         "PLANNER_TEST_DATABASE_DSN": "postgresql://test/planner",
     }.items():
         monkeypatch.setenv(name, value)
     assert stack.main(["test", "devstack"]) == stack.EXIT_OK
     env = fake.calls()[0]["env"]
-    for name in ("FAKE_DB", "PYTEST_DISABLE_PLUGIN_AUTOLOAD", "PYTHONPATH", "REGISTRATION_DB_DSN",
-                 "PIPELINE_STATE_DIR", "PIPELINE_PORT_OFFSET", "REGISTRATION_PYTHON"):
+    for name in ("FAKE_DB", "PYTEST_DISABLE_PLUGIN_AUTOLOAD", "PYTHONPATH", "DATABASE_URL",
+                 "REGISTRATION_DB_DSN", "PIPELINE_STATE_DIR", "PIPELINE_PORT_OFFSET", "REGISTRATION_PYTHON"):
         assert name not in env
     assert env["PLANNER_TEST_DATABASE_DSN"] == "postgresql://test/planner"  # opts in to the Postgres tests
     assert str(stack.DIRCTL_SHIM.parent) not in env["PATH"].split(os.pathsep)

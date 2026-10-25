@@ -144,21 +144,34 @@ async def _post_message(headers: dict[str, str] | None = None):
 
 
 def test_missing_identity_fails_closed_when_db_configured(monkeypatch) -> None:
-    monkeypatch.setenv("REGISTRATION_DB_DSN", "postgres://unused")
+    monkeypatch.setenv("DATABASE_URL", "postgres://unused")
+    _no_anon_opt_in(monkeypatch)
+    resp = asyncio.run(_post_message())
+    assert resp.status_code == 401, resp.text
+
+
+@pytest.mark.parametrize("env", [
+    {"REGISTRATION_DB_DSN": "postgres://unused"},
+    # An empty DATABASE_URL counts as unset; it does not hide the old name.
+    {"DATABASE_URL": "", "REGISTRATION_DB_DSN": "postgres://unused"},
+])
+def test_old_db_name_still_fails_closed(monkeypatch, env) -> None:
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
     _no_anon_opt_in(monkeypatch)
     resp = asyncio.run(_post_message())
     assert resp.status_code == 401, resp.text
 
 
 def test_missing_identity_allowed_without_db(monkeypatch) -> None:
-    monkeypatch.delenv("REGISTRATION_DB_DSN", raising=False)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
     _no_anon_opt_in(monkeypatch)
     resp = asyncio.run(_post_message())
     assert resp.status_code == 200, resp.text
 
 
 def test_allow_anon_flag_overrides_fail_closed(monkeypatch) -> None:
-    monkeypatch.setenv("REGISTRATION_DB_DSN", "postgres://unused")
+    monkeypatch.setenv("DATABASE_URL", "postgres://unused")
     _no_anon_opt_in(monkeypatch)
     monkeypatch.setenv("CHAT_APP_ALLOW_ANON", "1")
     resp = asyncio.run(_post_message())
@@ -166,7 +179,7 @@ def test_allow_anon_flag_overrides_fail_closed(monkeypatch) -> None:
 
 
 def test_old_allow_anon_name_still_overrides_fail_closed(monkeypatch) -> None:
-    monkeypatch.setenv("REGISTRATION_DB_DSN", "postgres://unused")
+    monkeypatch.setenv("DATABASE_URL", "postgres://unused")
     _no_anon_opt_in(monkeypatch)
     monkeypatch.setenv("PLANNER_ALLOW_ANON", "1")
     resp = asyncio.run(_post_message())
@@ -176,7 +189,7 @@ def test_old_allow_anon_name_still_overrides_fail_closed(monkeypatch) -> None:
 @pytest.mark.parametrize("name", ["CHAT_APP_ALLOW_ANON", "PLANNER_ALLOW_ANON"])
 @pytest.mark.parametrize("value", ["true", "yes", "on", "0", "", " 1"])
 def test_allow_anon_needs_exactly_1(monkeypatch, name, value) -> None:
-    monkeypatch.setenv("REGISTRATION_DB_DSN", "postgres://unused")
+    monkeypatch.setenv("DATABASE_URL", "postgres://unused")
     _no_anon_opt_in(monkeypatch)
     monkeypatch.setenv(name, value)
     resp = asyncio.run(_post_message())
@@ -184,7 +197,7 @@ def test_allow_anon_needs_exactly_1(monkeypatch, name, value) -> None:
 
 
 def test_new_allow_anon_name_wins_over_the_old_one(monkeypatch) -> None:
-    monkeypatch.setenv("REGISTRATION_DB_DSN", "postgres://unused")
+    monkeypatch.setenv("DATABASE_URL", "postgres://unused")
     monkeypatch.setenv("CHAT_APP_ALLOW_ANON", "0")
     monkeypatch.setenv("PLANNER_ALLOW_ANON", "1")
     resp = asyncio.run(_post_message())
@@ -193,7 +206,7 @@ def test_new_allow_anon_name_wins_over_the_old_one(monkeypatch) -> None:
 
 def test_shib_header_becomes_user_id(monkeypatch) -> None:
     # No DB configured, so credential injection is skipped; the header still sets identity.
-    monkeypatch.delenv("REGISTRATION_DB_DSN", raising=False)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
     asyncio.run(_shib_header_becomes_user_id())
 
 
@@ -275,7 +288,7 @@ async def _admin_health_reset() -> None:
 
 
 def test_admin_route_401_without_identity_when_db(monkeypatch) -> None:
-    monkeypatch.setenv("REGISTRATION_DB_DSN", "postgres://unused")
+    monkeypatch.setenv("DATABASE_URL", "postgres://unused")
     _no_anon_opt_in(monkeypatch)
     monkeypatch.setenv("ADMIN_EMAILS", "admin@example.com")
     resp = asyncio.run(_get(_final_answer_app(), "/admin/stats"))
@@ -556,7 +569,7 @@ def test_chat_ui_approves_only_the_code_revision_it_showed() -> None:
 
 def test_landing_is_public_and_links_to_app(monkeypatch) -> None:
     # Even with a DB configured (fail-closed identity), / needs no identity.
-    monkeypatch.setenv("REGISTRATION_DB_DSN", "postgres://unused")
+    monkeypatch.setenv("DATABASE_URL", "postgres://unused")
     _no_anon_opt_in(monkeypatch)
     asyncio.run(_landing_is_public())
 
@@ -571,7 +584,7 @@ async def _landing_is_public() -> None:
 
 
 def test_app_hard_gated_when_db_configured(monkeypatch) -> None:
-    monkeypatch.setenv("REGISTRATION_DB_DSN", "postgres://unused")
+    monkeypatch.setenv("DATABASE_URL", "postgres://unused")
     _no_anon_opt_in(monkeypatch)
     asyncio.run(_app_hard_gated())
 
@@ -590,7 +603,7 @@ async def _app_hard_gated() -> None:
 
 
 def test_app_served_in_dev_without_db(monkeypatch) -> None:
-    monkeypatch.delenv("REGISTRATION_DB_DSN", raising=False)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
     _no_anon_opt_in(monkeypatch)
     asyncio.run(_app_served_in_dev())
 
@@ -609,7 +622,7 @@ async def _app_served_in_dev() -> None:
 # ---------------------------------------------------------------------------
 
 def test_conversation_endpoints_enforce_ownership(monkeypatch) -> None:
-    monkeypatch.delenv("REGISTRATION_DB_DSN", raising=False)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
     asyncio.run(_conversation_endpoints_enforce_ownership())
 
 
@@ -709,7 +722,7 @@ async def _persisted_context_rehydrates_and_enforces_owner() -> None:
 # ---------------------------------------------------------------------------
 
 def test_header_identity_wins_over_body_user_id(monkeypatch) -> None:
-    monkeypatch.delenv("REGISTRATION_DB_DSN", raising=False)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
     asyncio.run(_header_identity_wins_over_body_user_id())
 
 
@@ -741,7 +754,7 @@ async def _header_identity_wins_over_body_user_id() -> None:
 
 
 def test_body_user_id_cannot_enter_another_users_context(monkeypatch) -> None:
-    monkeypatch.delenv("REGISTRATION_DB_DSN", raising=False)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
     asyncio.run(_body_user_id_cannot_enter_another_users_context())
 
 
@@ -763,7 +776,7 @@ async def _body_user_id_cannot_enter_another_users_context() -> None:
 
 def test_body_user_id_kept_without_identity_header(monkeypatch) -> None:
     # Anonymous dev/no-DB runs keep the body's user_id, as before.
-    monkeypatch.delenv("REGISTRATION_DB_DSN", raising=False)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
     _no_anon_opt_in(monkeypatch)
     asyncio.run(_body_user_id_kept_without_identity_header())
 
@@ -784,7 +797,7 @@ async def _body_user_id_kept_without_identity_header() -> None:
 
 
 def test_confirmations_fail_closed_without_identity_when_db(monkeypatch) -> None:
-    monkeypatch.setenv("REGISTRATION_DB_DSN", "postgres://unused")
+    monkeypatch.setenv("DATABASE_URL", "postgres://unused")
     _no_anon_opt_in(monkeypatch)
     asyncio.run(_confirmations_fail_closed())
 
@@ -801,7 +814,7 @@ async def _confirmations_fail_closed() -> None:
 
 def test_confirmations_forbid_non_owner(monkeypatch) -> None:
     # Bob cannot confirm or cancel Alice's pending action by naming her context_id.
-    monkeypatch.delenv("REGISTRATION_DB_DSN", raising=False)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
     asyncio.run(_confirmations_forbid_non_owner())
 
 
@@ -876,7 +889,7 @@ class _FakeUsersPool:
 
 
 def test_me_without_db_creates_in_memory_user(monkeypatch) -> None:
-    monkeypatch.delenv("REGISTRATION_DB_DSN", raising=False)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.setenv("ADMIN_EMAILS", "admin@example.com")
     asyncio.run(_me_without_db())
 
@@ -900,7 +913,7 @@ async def _me_without_db() -> None:
 
 
 def test_me_without_db_or_header_is_demo_user(monkeypatch) -> None:
-    monkeypatch.delenv("REGISTRATION_DB_DSN", raising=False)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
     _no_anon_opt_in(monkeypatch)
     resp = asyncio.run(_get(_final_answer_app(), "/me"))
     assert resp.status_code == 200, resp.text
@@ -908,7 +921,7 @@ def test_me_without_db_or_header_is_demo_user(monkeypatch) -> None:
 
 
 def test_me_fails_closed_without_identity_when_db(monkeypatch) -> None:
-    monkeypatch.setenv("REGISTRATION_DB_DSN", "postgres://unused")
+    monkeypatch.setenv("DATABASE_URL", "postgres://unused")
     _no_anon_opt_in(monkeypatch)
     resp = asyncio.run(_get(_final_answer_app(), "/me"))
     assert resp.status_code == 401, resp.text
@@ -918,7 +931,7 @@ def test_me_with_db_returns_users_row(monkeypatch) -> None:
     from chat_app.store import db
 
     pool = _FakeUsersPool()
-    monkeypatch.setenv("REGISTRATION_DB_DSN", "postgres://unused")
+    monkeypatch.setenv("DATABASE_URL", "postgres://unused")
     monkeypatch.setattr(db, "_pool", pool)
     asyncio.run(_me_with_db(pool))
 

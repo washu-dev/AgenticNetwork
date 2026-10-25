@@ -73,8 +73,8 @@ to make the personal ones group-owned, exactly like Slurm already is.**
 
 ### The hard constraint: prod Postgres holds real secrets
 
-The chat app writes to the **`registration`** database (`chat_app/store/db.py:104`,
-`REGISTRATION_DB_DSN`), which is the **persistent** DB on the shared `/engrfs` volume. It
+The chat app writes to the **`registration`** database (`chat_app/store/db.py::_dsn`,
+`DATABASE_URL`), which is the **persistent** DB on the shared `/engrfs` volume. It
 contains **AES-256-GCM-encrypted Google OAuth refresh tokens**, users' OpenAI/Anthropic/Brave/
 Google API keys (`user_credentials`), credential grants, and chat history. Therefore:
 
@@ -141,8 +141,9 @@ can't touch prod. A deployment now runs as one of two **instances**, selected by
   (`submit.sbatch` instance-mode block), Postgres data dir on **node-local `/scratch/$USER`**
   (never `/engrfs`, so it *structurally cannot* reach prod's data), and an ADS config generated
   from `ads_daemon.yaml` with the offset server/routing/PG ports. Wired via `ADS_SERVER_ADDR` /
-  `PGPORT` / `REGISTRATION_DB_DSN` exports that the entrypoints already honor. Also fixed a
-  latent bug: `entrypoint-postgres.sh` now starts the server on `PGPORT` (was always 5432).
+  `PGPORT` / `DATABASE_URL` exports that the entrypoints already honor (plus
+  `REGISTRATION_DB_DSN` with the same value, for images built before the 2026-10-25 rename).
+  Also fixed a latent bug: `entrypoint-postgres.sh` now starts the server on `PGPORT` (was always 5432).
 - ✅ **Per-service image tags** — isolation also covers *which image* runs, so a dev can test a
   candidate build without clobbering the prod-facing `:latest`. Each service's tag resolves as
   `<SERVICE>_IMAGE_TAG` → `IMAGE_TAG` (instance-wide default; the future CI SHA tag) → the

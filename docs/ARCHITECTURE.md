@@ -107,7 +107,7 @@ to storage search, so this failure mode surfaces instead of hiding. The entire
   See [AUTH.md](AUTH.md) and [`SECURITY.md`](../SECURITY.md).
 - **Two credential-sourcing models** coexist (operator env-var vs. per-user) — see
   [AUTH.md](AUTH.md) and [DECISIONS.md](DECISIONS.md) D6.
-- **The chat app's durable state is in Postgres when `REGISTRATION_DB_DSN` is set** (users,
+- **The chat app's durable state is in Postgres when `DATABASE_URL` is set** (users,
   conversation history, pending confirmations), so it can run as multiple processes. Without a DB
   (dev stack, tests) they live only in that process's memory and are lost on restart. See
   [PLANNER.md](PLANNER.md) and [DECISIONS.md](DECISIONS.md) D11.

@@ -195,13 +195,24 @@ Create each secret with `printf %s`, never `echo`: a trailing newline breaks bea
 
 | Secret | Env var the code reads | Read by | Required? |
 |---|---|---|---|
-| `registration-db-dsn` | `REGISTRATION_DB_DSN` | chat app, registration | yes |
+| `registration-db-dsn` | `DATABASE_URL` | chat app, registration | yes |
 | `credentials-encryption-key` | `CREDENTIALS_ENCRYPTION_KEY` | chat app (`chat_app/store/crypto.py`) | yes |
 | `llm-api-key` | `OPENAI_API_KEY` | chat app | for a key-based LLM (step 10) |
 | `github-token` | `GITHUB_TOKEN` | registration (`supervisor.py`, build commits) | to register agents |
 | `github-issues-token` | `GITHUB_ISSUES_TOKEN` | chat app (`chat_app/github_issues.py`) | only for in-app bug reports |
 
 The reference named the LLM secret `vllm-api-key`; any name works if you use it consistently.
+
+The database secret holds a URL asyncpg accepts: `postgresql://` or `postgres://` only. The
+services still read the old variable name `REGISTRATION_DB_DSN` too, which deployments made before
+2026-10-25 map the secret to. To move one of those to `DATABASE_URL`, wait until both services run
+images built after that date (an older chat app image reads only the old name), then run, for each
+service:
+
+```bash
+gcloud run services update <service> --region="$REGION" --update-secrets=DATABASE_URL=registration-db-dsn:latest
+gcloud run services update <service> --region="$REGION" --remove-secrets=REGISTRATION_DB_DSN
+```
 
 ```bash
 printf %s "postgresql://regsvc:${DB_PASSWORD}@/registration?host=/cloudsql/${SQL_CONN}" \
@@ -296,7 +307,7 @@ gcloud run deploy registration \
   --ingress=all --no-allow-unauthenticated \
   --vpc-connector="$CONNECTOR" --add-cloudsql-instances="$SQL_CONN" \
   --set-env-vars="SPAWN_BACKEND=cloudrun,SKIP_STARTUP_WAITS=1,GCP_PROJECT=${PROJECT_ID},GCP_REGION=${REGION},AGENT_RUNTIME_SA=${AGENT_SA},CHAT_APP_INVOKER_SA=${CHAT_APP_SA},ADS_SERVER_ADDR=${ADS_IP}:8888,ADMIN_EMAILS=${ADMIN_EMAIL},IMAGE_REGISTRY=${DOCKERHUB_NAMESPACE},GITHUB_REPO=${GITHUB_REPO}" \
-  --set-secrets="REGISTRATION_DB_DSN=registration-db-dsn:latest,GITHUB_TOKEN=github-token:latest"
+  --set-secrets="DATABASE_URL=registration-db-dsn:latest,GITHUB_TOKEN=github-token:latest"
 ```
 
 What the `CloudRunBackend` reads (`registration_service/backend.py`):
@@ -328,7 +339,7 @@ The planner talks to any OpenAI-compatible Chat Completions endpoint
 adds to `CHAT_APP_SECRETS` for the deploy command below.
 
 ```bash
-export CHAT_APP_SECRETS="REGISTRATION_DB_DSN=registration-db-dsn:latest,CREDENTIALS_ENCRYPTION_KEY=credentials-encryption-key:latest"
+export CHAT_APP_SECRETS="DATABASE_URL=registration-db-dsn:latest,CREDENTIALS_ENCRYPTION_KEY=credentials-encryption-key:latest"
 ```
 
 **A. A hosted OpenAI-compatible API (a key).** `PLANNER_LLM_MODEL` defaults to `gpt-4o-mini`. For

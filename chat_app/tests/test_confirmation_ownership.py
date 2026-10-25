@@ -376,7 +376,7 @@ async def _press(app, user, context_id, confirmed):
 
 
 def test_confirm_button_checks_the_pending_rows_owner(persisted, monkeypatch) -> None:
-    monkeypatch.delenv("REGISTRATION_DB_DSN", raising=False)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
     conversations, pending_rows = persisted
 
     async def go():
@@ -395,7 +395,7 @@ def test_confirm_button_checks_the_pending_rows_owner(persisted, monkeypatch) ->
 
 
 def test_confirm_button_resumes_an_action_raised_on_another_process(persisted, monkeypatch) -> None:
-    monkeypatch.delenv("REGISTRATION_DB_DSN", raising=False)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
     conversations, pending_rows = persisted
 
     async def go():
@@ -431,9 +431,9 @@ def test_pending_store_owner_reads_the_rows_owner(monkeypatch) -> None:
     async def get_pool():
         return Pool()
 
-    monkeypatch.delenv("REGISTRATION_DB_DSN", raising=False)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
     assert asyncio.run(pending_store.owner("c1")) is None  # no DB: nothing is persisted
-    monkeypatch.setenv("REGISTRATION_DB_DSN", "postgres://unused")
+    monkeypatch.setenv("DATABASE_URL", "postgres://unused")
     monkeypatch.setattr(pending_store, "get_pool", get_pool)
     assert asyncio.run(pending_store.owner("c1")) == OWNER
     assert asyncio.run(pending_store.owner("c2")) is None

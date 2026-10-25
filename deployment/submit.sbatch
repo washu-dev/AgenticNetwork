@@ -126,7 +126,11 @@ PG_PORT=$((5432 + PORT_OFFSET))
 if [ "$PORT_OFFSET" -ne 0 ]; then
     export ADS_SERVER_ADDR="localhost:${ADS_PORT}"
     export PGPORT="$PG_PORT"
-    export REGISTRATION_DB_DSN="postgresql://postgres@localhost:${PG_PORT}/registration"
+    export DATABASE_URL="postgresql://postgres@localhost:${PG_PORT}/registration"
+    # Images built before the 2026-10-25 rename read only the old name; set it to the
+    # same value so a test instance on such an image uses its own database, never the
+    # one prod's .env names.
+    export REGISTRATION_DB_DSN="$DATABASE_URL"
     # The chat app's /register/* pass-through goes to this instance's registration service.
     export REGISTRATION_SERVICE_URL="http://localhost:${REGISTRATION_SERVICE_PORT}"
     # Offset the registration service's dynamic custom-agent port pool too, so a test
@@ -230,6 +234,8 @@ for i in $(seq 1 60); do
 done
 
 # ── ADS daemon ────────────────────────────────────────────────────────────────
+# dirctl (v1.2.0) takes its settings from the config file and DIRECTORY_DAEMON_*
+# variables only, so the exported DATABASE_URL does not reach it.
 srun --ntasks=1 --overlap \
      --container-image="$(image_ref ads v4)" \
      --container-mounts="$MOUNTS" \

@@ -9,12 +9,12 @@ from typing import Any
 
 from fastapi import HTTPException, Request, status
 
-from chat_app.store.db import get_pool
+from chat_app.store.db import configured, get_pool
 
 logger = logging.getLogger(__name__)
 
-# Users for runs without a database (REGISTRATION_DB_DSN unset: laptop dev stacks and
-# tests), keyed by lowercased email. The id is a uuid5 of the email, so a user keeps
+# Users for runs without a database (DATABASE_URL unset: laptop dev stacks and tests),
+# keyed by lowercased email. The id is a uuid5 of the email, so a user keeps
 # the same id across chat app restarts even though this store is process-local.
 _memory_users: dict[str, dict[str, Any]] = {}
 
@@ -55,7 +55,7 @@ async def get_or_create_user(email: str) -> dict[str, Any]:
 
     Without a database the user is provisioned in the in-memory store instead.
     """
-    if not os.getenv("REGISTRATION_DB_DSN"):
+    if not configured():
         key = email.strip().lower()
         if key not in _memory_users:
             _memory_users[key] = {"id": uuid.uuid5(uuid.NAMESPACE_URL, f"mailto:{key}"), "email": key}
