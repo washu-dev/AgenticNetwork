@@ -11,13 +11,13 @@ Why this matters for the bigger picture: a generator can emit a *config* (an
 of the engine, the problem the ``agent-directory`` repo's copied A2A/directory code
 already has (this repo now keeps that code in one package, ``agentnet``).
 
-Presets included here:
-  * ``default_demo_spec()`` — reproduces the original skeleton behavior (the demo
-    word_count / reverse_text tools), so anything constructed without a spec keeps
-    working unchanged.
+The runtime has no default agent: every caller builds a spec. Presets included here:
   * ``endpoint_wrapper_spec(...)`` — THE end goal: an LLM loop whose only tool is
     ``call_endpoint``, i.e. an agent that wraps an external API. The model
     translates the task into a call, reads the response, and answers.
+  * ``llm_wrapper_spec``, ``tool_loop_spec``, ``operation_wrapper_spec`` and
+    ``multi_endpoint_wrapper_spec`` — one builder per kind of hosted agent.
+(The demo agent's spec, ``demo.demo_spec()``, lives outside the runtime.)
 """
 from __future__ import annotations
 
@@ -76,26 +76,6 @@ class AgentSpec:
         from .tools import validate_tool_registry
 
         validate_tool_registry(self.tool_schemas, self.tool_registry)
-
-
-def default_demo_spec() -> AgentSpec:
-    """Build the demo agent's spec from the demo module globals.
-
-    Keeps backward compatibility: ``run_agent`` / ``create_app`` with no spec
-    serve the demo agent, as they always have."""
-    from .config import AGENT_NAME
-    from .prompt import SYSTEM_PROMPT, normalize_result
-    from .tool_schemas import TOOL_SCHEMAS
-    from .tools import TOOL_REGISTRY
-
-    return AgentSpec(
-        name=AGENT_NAME,
-        system_prompt=SYSTEM_PROMPT,
-        tool_schemas=list(TOOL_SCHEMAS),
-        tool_registry=dict(TOOL_REGISTRY),
-        normalize=normalize_result,
-        mode="llm",
-    )
 
 
 def llm_wrapper_spec(

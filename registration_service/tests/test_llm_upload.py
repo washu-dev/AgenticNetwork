@@ -13,7 +13,10 @@ shape still work (test_handler_taxonomy.py covers the canonical form).
 from __future__ import annotations
 
 import io
+import subprocess
+import sys
 import zipfile
+from pathlib import Path
 
 import pytest
 from httpx import AsyncClient
@@ -22,6 +25,9 @@ from registration_service.tests.conftest import LLM_PAYLOAD
 
 pytestmark = pytest.mark.asyncio
 
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+# The skeleton's demo agent keeps its tools in one upload-shaped file.
+DEMO_TOOLS = _REPO_ROOT / "agent_skeleton" / "demo" / "tools.py"
 
 TOOL_LOOP_PAYLOAD = {
     "name": "Test Tool Loop Agent",
@@ -121,6 +127,14 @@ async def test_upload_build_tools_factory_form(client: AsyncClient, monkeypatch,
     agent = await _register(client)
     resp = await client.post(f"/agents/{agent['id']}/handler", files=_upload(BUILD_TOOLS_SRC))
     assert resp.status_code == 200, resp.text
+
+
+async def test_upload_demo_agent_tools_unmodified(client: AsyncClient, monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("HANDLER_FILES_DIR", str(tmp_path))
+    agent = await _register(client)
+    resp = await client.post(f"/agents/{agent['id']}/handler", files=_upload(DEMO_TOOLS.read_text()))
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["errors"] == []
 
 
 async def test_upload_no_contract_returns_422(client: AsyncClient, monkeypatch, tmp_path) -> None:
@@ -239,3 +253,21 @@ def build_tools(config):
     # factory that requires config would break every wizard registration.
     _, registry_default = load_tool_module(str(path), {})
     assert registry_default["fetch"](url="http://x")["timeout"] == 5
+
+
+async def test_llm_handlers_never_load_the_demo_agent() -> None:
+    """The llm handlers build their specs from the skeleton's runtime alone; its demo
+    agent isn't installed in built images. Checked in a fresh interpreter, so modules
+    this test process already imported can't hide an import."""
+    probe = (
+        "import sys\n"
+        "from registration_service.handlers import custom_handler, llm_handler, llm_http_handler, llm_upload_handler\n"
+        "from agent_skeleton.spec import llm_wrapper_spec\n"
+        "llm_wrapper_spec(name='a', system_prompt='p', preset_tools=['calculator'])\n"
+        "demo = sorted(m for m in sys.modules if m.startswith('agent_skeleton.demo') or m.endswith('tool_schemas'))\n"
+        "assert not demo, demo\n"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", probe], cwd=_REPO_ROOT, capture_output=True, text=True, timeout=120
+    )
+    assert out.returncode == 0, out.stderr

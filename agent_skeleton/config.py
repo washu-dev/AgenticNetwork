@@ -5,12 +5,11 @@ AgentSpec that doesn't set its own, AGENT_NAME is the name in every
 SkeletonAgentExecutor heartbeat ("... is working..."), and the env_* readers are
 how a deployment sets host, port, model, ADS address and the wrapped endpoint
 without code edits. Change a default only on purpose: it reaches every hosted
-agent. DEFAULT_CARD_PATH points at the demo agent's card.
+agent.
 """
 from __future__ import annotations
 
 import os
-from pathlib import Path
 
 # --- Identity -------------------------------------------------------------
 AGENT_NAME = "Endpoint Wrapper Agent"
@@ -25,10 +24,6 @@ MAX_TOOL_STEPS = 4                # cap on tool-call loop iterations (disaster u
 
 # --- Directory (ADS) ------------------------------------------------------
 DEFAULT_ADS_SERVER_ADDR = "127.0.0.1:8888"
-
-# --- Paths ----------------------------------------------------------------
-PACKAGE_DIR = Path(__file__).resolve().parent
-DEFAULT_CARD_PATH = PACKAGE_DIR / "agent.card.json"
 
 
 # --- Env readers (so deployment can override without code edits) ----------

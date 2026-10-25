@@ -108,3 +108,5 @@ def test_vendored_skeleton_files_complete():
         assert required in files, f"missing vendored file: {required}"
     assert "class AgentHandler" in files["base.py"]
     assert files["pyproject.toml"].strip()
+    # The demo agent isn't installed (pyproject `packages`), so it isn't vendored either.
+    assert not [path for path in files if path.startswith("demo/")]

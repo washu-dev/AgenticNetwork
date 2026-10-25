@@ -6,8 +6,9 @@ spec builder (``spec.llm_wrapper_spec``) resolves those names into the
 ``(schema, fn)`` pairs the frozen engine already knows how to run.
 
 Design rules (so this stays safe and driftless):
-  * Each tool is a ``(schema, fn)`` pair in the SAME shape as ``tool_schemas`` /
-    ``tools`` — the ``validate_tool_registry`` alignment check must pass.
+  * Each tool is a ``(schema, fn)`` pair in the SAME shape as an uploaded tools
+    module's ``TOOL_SCHEMAS`` / ``TOOL_REGISTRY`` (e.g. ``demo/tools.py``) — the
+    ``validate_tool_registry`` alignment check must pass.
   * Tool bodies take keyword args named exactly like their schema properties and
     return a JSON-able dict.
   * The starter set is deliberately PURE and dependency-free (no network, no

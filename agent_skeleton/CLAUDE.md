@@ -18,16 +18,21 @@ tools (`system_tools/`). The registration service installs it into each agent's
 environment and vendors it into each built image; the generator copies it into
 its output as `wrapper_engine/`.
 
-It also holds one small **demo agent** (`agent.card.json`, `tool_schemas.py`, the
-demo tool bodies in `tools.py`, `SYSTEM_PROMPT` in `prompt.py`) and the
-wrapper-repo **generator** (`generator/`). The engine was distilled from the
-reference agent `disaster_response_agent.py` (now in the separate
+It also holds the wrapper-repo **generator** (`generator/`) and one small **demo
+agent** (`demo/`). The engine was distilled from the reference agent
+`disaster_response_agent.py` (now in the separate
 [`agent-directory`](https://github.com/washu-dev/agent-directory) repo, where the
 specialist agents live), split into small labeled files.
 
-Two rules follow:
+Three rules follow:
 
-- **Don't build an agent by editing these files.** A change here reaches every
+- **Anything under `demo/` is safe to change; anything else in `agent_skeleton/`
+  is runtime that reaches every hosted agent.** Nothing in the runtime imports the
+  demo, and it is left out of the install (`pyproject.toml`), the copy vendored
+  into images (`registration_service/supervisor.py`) and the generator's
+  `wrapper_engine/` (`generator/repo_emitter.py`); `tests/test_demo.py` guards
+  that. Keep it that way: never import `agent_skeleton.demo` from runtime code.
+- **Don't build an agent by editing the runtime.** A change there reaches every
   hosted agent. Authors register one of three kinds instead
   ([`README.md`](README.md) "Building an agent";
   [`../docs/BUILDING_AGENTS.md`](../docs/BUILDING_AGENTS.md)): a `custom`
@@ -42,31 +47,38 @@ Two rules follow:
 
 | Contract | Role | Here |
 |---|---|---|
-| **Agent Card** (`agent.card.json`) | identity + skills + endpoint | `a2a-sdk` `AgentCard` model |
+| **Agent Card** (the demo's: `demo/agent.card.json`) | identity + skills + endpoint | `a2a-sdk` `AgentCard` model |
 | **ADS** (directory) | publish/discover by skill | registration supervisor via `agentnet/directory/publisher.py`, or `publish_agents --card` by hand |
 | **A2A** | the actual call (HTTP/JSON-RPC) | `execute()` in `executor.py` |
 
 ## 3. File map — engine, demo, tooling
 
 The package serves **three lanes**; the tables below cover each. Lane A is the
-spec-driven engine plus the demo agent; it is also what the generator vendors as
-`wrapper_engine/`.
+spec-driven engine; it is also what the generator vendors as `wrapper_engine/`.
+The demo agent sits apart in `demo/`.
 
-**Lane A — spec-driven engine + demo agent:**
+**Lane A — spec-driven engine:**
 
 | Zone | File | Part | Notes |
 |---|---|---|---|
-| 1 | `tool_schemas.py` | demo | `TOOL_SCHEMAS`: the demo's tools, Chat Completions shape |
-| 2 | `prompt.py` | demo + engine | demo `SYSTEM_PROMPT`; engine `normalize_result()` (default for every spec without `normalize`, i.e. every hosted LLM agent) + `build_*_prompt()` |
-| 3 | `llm_loop.py` | engine | generic loop; `run_agent()` runs a spec (demo spec if none) |
-| 4 | `tools.py` | demo + engine | demo tool fns + `TOOL_REGISTRY`; engine `validate_tool_registry()` |
+| 2 | `prompt.py` | engine | `normalize_result()` (default for every spec without `normalize`, i.e. every hosted LLM agent) + `build_*_prompt()` |
+| 3 | `llm_loop.py` | engine | generic loop; `run_agent()` runs the spec it is given (required) |
+| 4 | `tools.py` | engine | `validate_tool_registry()` |
 | 5 | `executor.py` | engine | `SkeletonAgentExecutor.execute()` + A2A I/O |
-| 6 | `serve.py` | engine | `create_app`, CLI/uvicorn |
+| 6 | `serve.py` | engine | `create_app` (spec required), `serve-wrapper` CLI/uvicorn |
 | — | `spec.py` | engine | `AgentSpec` seam: prompt+tools as data; `dispatch()`, the spec builders |
 | — | `system_tools/` | engine | `call_endpoint` (endpoint-wrapper mode) + preset tools |
 | — | `config.py` | engine | defaults for every agent (`MAX_TOOL_STEPS`, heartbeat `AGENT_NAME`, host/port, model, ADS addr) + env readers |
 | — | `a2a_runtime.py` | engine | SDK import guard + `data_part`/`text_part`/`task_updater` |
-| — | `agent.card.json` | demo | the demo's skills, url, version |
+
+**Demo agent** (`demo/`, safe to edit; zone 1, the tool schemas, is in `demo/tools.py`):
+
+| File | Notes |
+|---|---|
+| `demo/__init__.py` | `SYSTEM_PROMPT` + `demo_spec()` |
+| `demo/tools.py` | `TOOL_SCHEMAS` + tool fns + `TOOL_REGISTRY` in one file, the uploaded-tools shape (`spec.load_tool_module` loads it unmodified) |
+| `demo/agent.card.json` | the demo's skills, url, version |
+| `demo/__main__.py` | `python -m agent_skeleton.demo check` / `serve` |
 
 **Lane B — uploaded-code / custom-handler path** (what the registration service's
 `custom` handler type runs; its `llm` type, and `container_runner`'s tool-loop
@@ -89,16 +101,15 @@ without a network.
 
 ## 4. How to add a tool (demo agent or an uploaded tools module)
 
-These steps are written for the demo's files; changing the demo changes only the
-demo. An author's uploaded tools module follows the same rules but keeps
-`TOOL_SCHEMAS` and `TOOL_REGISTRY` in one file (`spec.tool_loop_spec` runs the same
-check when the agent starts).
+These steps are written for `demo/tools.py`; changing the demo changes only the
+demo. An author's uploaded tools module has the same one-file shape and follows
+the same rules (`spec.tool_loop_spec` runs the same check when the agent starts).
 
-1. Add a schema to `TOOL_SCHEMAS` in `tool_schemas.py`.
-2. Write the function in `tools.py` with **keyword args named exactly like the
-   schema properties**; optional properties must have a default.
+1. Add a schema to `TOOL_SCHEMAS`.
+2. Write the function with **keyword args named exactly like the schema
+   properties**; optional properties must have a default.
 3. Add it to `TOOL_REGISTRY`.
-4. `python -m agent_skeleton.serve check` — confirms the schema and function
+4. `python -m agent_skeleton.demo check` — confirms the schema and function
    agree before you ever serve.
 
 ## 5. The alignment check (and closing the gap further)
@@ -109,7 +120,8 @@ verification, so a mismatch fails silently at runtime. The check here verifies
 the schema envelope (`"type": "function"`, `parameters.type` `"object"`; a missing
 value only warns), name coverage (both directions), property↔parameter
 correspondence, and that optional properties have defaults. It runs in every spec
-builder (`AgentSpec.validate()`), in `create_app()` and as `serve check`.
+builder (`AgentSpec.validate()`), in `create_app()` and, for the demo, as
+`python -m agent_skeleton.demo check`.
 
 **Stronger option — make drift impossible:** instead of hand-writing
 `TOOL_SCHEMAS` *and* the function and checking they match, generate the schema
@@ -137,10 +149,10 @@ cheaper belt-and-suspenders version; both can coexist.
 ## 7. Testing
 
 ```bash
-python -m agent_skeleton.serve check       # schema/function alignment (no deps beyond stdlib)
+python -m agent_skeleton.demo check        # the demo's schema/function alignment (no deps beyond stdlib)
 python -m py_compile agent_skeleton/*.py   # syntax
 scripts/stack test agent_skeleton          # its tests, in the registration venv
-# engine unit test (no a2a-sdk needed): import agent_skeleton.tools and call the fns
+# engine unit test (no a2a-sdk needed): import agent_skeleton.demo.tools and call the fns
 ```
 
 Because `executor.py`/`serve.py` degrade gracefully when `a2a-sdk` is missing

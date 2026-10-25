@@ -4,9 +4,9 @@ SUPPORT FILE — pure plumbing shared by executor.py and serve.py. You should no
 need to edit it.
 
 Why the guard: if `a2a-sdk` is not installed, the executor base class degrades
-to `object` so this package still *imports* (handy for unit-testing the tool
-bodies or running `serve.py check`), but actually *serving* raises a clear
-error via require_a2a().
+to `object` so this package still *imports* (handy for unit-testing tool
+bodies or running `python -m agent_skeleton.demo check`), but actually *serving*
+raises a clear error via require_a2a().
 """
 from __future__ import annotations
 

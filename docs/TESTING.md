@@ -32,14 +32,16 @@ The request path (user → planner → directory → A2A → agent → answer) a
 |---|---|---|---|---|
 | Chat app | `scripts/stack test chat_app` | 245 (+12) | 76% | The tool loop (scripted LLM, fake directory), the HTTP API (identity, conversation ownership, streaming, confirmations), credential discovery and enforcement, `/ready`, startup, bug reports, setting names and their old-name fallbacks, that every import of the repo's own code resolves and the package's layers import one way |
 | Registration | `scripts/stack test registration_service` | 319 | 80% | The API, upload checks, the image build manifest, the native supervisor and agent processes, the Cloud Run backend (mocked), which handler module the runner starts for each handler type, streaming and uploaded-tools agents, credentials, the fake database, that every import of the repo's own code (here and in `agent_skeleton/`) resolves |
-| Agent skeleton | `scripts/stack test agent_skeleton` | 70 | 73% | The spec-driven engine, the `call_endpoint` tool and its secret redaction, per-operation tools, preset tools, the multi-endpoint manager, the generator, credentials kept out of the LLM prompt, the tool-schema and handler contract |
+| Agent skeleton | `scripts/stack test agent_skeleton` | 98 | 78% | The spec-driven engine, the `call_endpoint` tool and its secret redaction, per-operation tools, preset tools, the multi-endpoint manager, the generator, credentials kept out of the LLM prompt, the tool-schema and handler contract, the demo agent, and that the runtime (from the source tree and from a regular install) never loads the demo |
 | agentnet (directory + A2A) | `scripts/stack test agentnet` (in both venvs) | 38 in each venv | 52% | Card ↔ record conversion, the `dirctl` CLI backend (mocked), the registration service's publisher (id-only skills, no legacy routing, its errors), the fake-directory flag, route summaries and routing wake-up |
 | Dev stack | `scripts/stack test devstack` | 58 | 52% | The mock LLM, the fake `dirctl`, the identity proxy, the stack CLI's checks that need no running services, `scripts/stack test` (with fake interpreters) |
 | Pipeline | `scripts/stack test pipeline` (`full-chain`, then `scenarios`) | 19 | — | The running system, end to end (next section) |
 
 Counts and coverage were measured on 2026-10-15 (chat app 2026-10-16; chat app, agentnet and dev
-stack again 2026-10-20) with the local venvs; both
-move as tests are added. The chat app's other 12 tests (`test_pending_store_postgres.py`) run the
+stack again 2026-10-20; agent skeleton 2026-10-25) with the local venvs; both
+move as tests are added. One agent skeleton test (`test_demo.py`, the regular-install check)
+builds the package offline and skips when the interpreter has no `setuptools` (a Python 3.12
+venv has none unless you install it). The chat app's other 12 tests (`test_pending_store_postgres.py`) run the
 pending-confirmation statements on a real Postgres and are skipped unless
 `PLANNER_TEST_DATABASE_DSN` names a scratch database (each test drops and recreates
 `pending_confirmations` there). One way to get one, from the repo's Postgres image

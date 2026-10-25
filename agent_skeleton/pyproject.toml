@@ -25,6 +25,8 @@ dependencies = [
 # them here instead. Omitting them installs only the top-level .py files, and
 # `agent_skeleton/__init__.py` imports `.system_tools.call_endpoint`
 # unconditionally — a missing subpackage crashes every built agent image on start.
+# agent_skeleton.demo (the demo agent) is deliberately NOT listed: the runtime must
+# never import it, and leaving it out of the install keeps it that way in images.
 [tool.setuptools]
 packages = [
     "agent_skeleton",

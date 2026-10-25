@@ -1,6 +1,10 @@
-"""ZONE 1 — Tool schemas.  DEMO AGENT
+"""The demo agent's tools: schemas, bodies and registry in one file.  DEMO AGENT
 
-The demo agent's tools, in OpenAI **Chat Completions** shape:
+This is exactly the shape of an uploaded tools module (an ``llm`` agent with
+``tools.source = "upload"``): module-level TOOL_SCHEMAS + TOOL_REGISTRY, no imports
+from the runtime, so ``spec.load_tool_module`` loads this file unmodified.
+
+TOOL_SCHEMAS is in OpenAI **Chat Completions** shape:
 
     {"type": "function",
      "function": {"name": ..., "description": ..., "parameters": <JSON Schema>}}
@@ -9,10 +13,10 @@ This is exactly the shape used by the specialist agents (e.g. disaster's
 DISASTER_TOOL_SCHEMAS).
 
 Three rules the startup check enforces (tools.validate_tool_registry):
-  1. Every `name` here has a matching function in tools.py's TOOL_REGISTRY.
-  2. The `parameters` here match that function's signature — each schema
-     property is a keyword arg of the function; required properties may or may
-     not have a default; OPTIONAL properties must have a default.
+  1. Every `name` in TOOL_SCHEMAS has a matching function in TOOL_REGISTRY.
+  2. The `parameters` match that function's signature — each schema property is a
+     keyword arg of the function; required properties may or may not have a
+     default; OPTIONAL properties must have a default.
   3. The envelope: `"type": "function"`, and `parameters` with `"type": "object"`
      (a no-argument tool may omit `parameters`; a missing `type` only warns).
 
@@ -20,14 +24,17 @@ So the schema and the Python signature are two views of one thing. (If you ever
 want this to be impossible to get wrong, generate these schemas FROM the typed
 functions instead — see CLAUDE.md "Closing the gap further".)
 
-This file is the demo, not engine code: only the demo spec (spec.default_demo_spec)
-and the no-argument alignment check use it, so editing it changes the demo alone.
-An `llm` agent with uploaded tools brings its own TOOL_SCHEMAS in the same shape
-(see README.md "Building an agent").
+Adding a tool = add one schema + write the function (keyword args named exactly
+like its schema `properties`, returning a JSON-able dict) + add one registry entry.
+Then run ``python -m agent_skeleton.demo check``. A registry REPLACES the
+hand-written if/elif chain in disaster's _run_tool; the LLM loop dispatches over a
+spec's registry via ``AgentSpec.dispatch`` (see spec.py).
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
+
+# --- Schemas (what the model sees) ----------------------------------------
 
 TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
@@ -68,3 +75,24 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
     },
 ]
+
+
+# --- Tool bodies -----------------------------------------------------------
+
+def word_count(*, text: str) -> dict[str, Any]:
+    return {"ok": True, "word_count": len(text.split()), "char_count": len(text)}
+
+
+def reverse_text(*, text: str, uppercase: bool = False) -> dict[str, Any]:
+    reversed_text = text[::-1]
+    if uppercase:
+        reversed_text = reversed_text.upper()
+    return {"ok": True, "reversed": reversed_text}
+
+
+# --- Registry (one entry per tool) -----------------------------------------
+
+TOOL_REGISTRY: dict[str, Callable[..., dict[str, Any]]] = {
+    "word_count": word_count,
+    "reverse_text": reverse_text,
+}

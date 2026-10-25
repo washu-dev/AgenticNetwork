@@ -99,9 +99,10 @@ def test_emit_agent_writes_a_complete_folder():
                     "requirements.txt", "README.md", "wrapper_engine/spec.py",
                     "wrapper_engine/system_tools/call_endpoint.py"):
             assert (dest / rel).exists(), f"missing {rel}"
-        # vendored engine must NOT drag generator/ or tests/ along
+        # vendored engine must NOT drag generator/, tests/ or the demo agent along
         assert not (dest / "wrapper_engine" / "generator").exists()
         assert not (dest / "wrapper_engine" / "tests").exists()
+        assert not (dest / "wrapper_engine" / "demo").exists()
         # emitted server compiles
         py_compile.compile(str(dest / f"{slug}.py"), doraise=True)
         # card parses and is routable

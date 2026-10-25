@@ -10,7 +10,7 @@ ads_utils.publisher (that repo's package, not this repo's agentnet).
     agent-directory/<slug>/
       ├── <slug>.card.json     # résumé (routable: carries an oasf:<name>:<id> tag)
       ├── <slug>.py            # A2A server: endpoint_wrapper_spec + self-publish
-      ├── wrapper_engine/      # vendored agent_skeleton engine (no generator/tests)
+      ├── wrapper_engine/      # vendored agent_skeleton engine (no generator/tests/demo)
       ├── Dockerfile           # build from the agent-directory repo ROOT
       ├── entrypoint.sh        # wait for ADS, then serve
       ├── requirements.txt
@@ -32,7 +32,7 @@ from .prompt_builder import build_system_prompt
 # The engine package to vendor (this file lives in agent_skeleton/generator/).
 ENGINE_SRC = Path(__file__).resolve().parent.parent
 ENGINE_IGNORE = shutil.ignore_patterns(
-    "generator", "tests", "__pycache__", "*.pyc",
+    "generator", "tests", "demo", "__pycache__", "*.pyc",
     # Full-skeleton-only files (uploaded-code path + packaging); a vendored wrapper
     # engine doesn't need them, and __init__ imports base/handler_executor defensively.
     "base.py", "container_runner.py", "handler_executor.py", "pyproject.toml",

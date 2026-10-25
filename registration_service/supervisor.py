@@ -1065,10 +1065,10 @@ def _vendored_skeleton_files() -> dict[str, str]:
 
     Must recurse: `agent_skeleton/__init__.py` imports `.system_tools.call_endpoint`
     at import time, so the subpackages have to be in the build context or every
-    built image crashes on start. Skip test/build trees — they aren't installed
-    (see pyproject `packages`) and only bloat the committed context.
+    built image crashes on start. Skip test/build trees and the demo agent — they
+    aren't installed (see pyproject `packages`) and only bloat the committed context.
     """
-    _SKIP_DIRS = {"tests", "build", "dist", "__pycache__"}
+    _SKIP_DIRS = {"tests", "demo", "build", "dist", "__pycache__"}
     out: dict[str, str] = {}
     for path in sorted(_AGENT_SKELETON_DIR.rglob("*.py")):
         rel = path.relative_to(_AGENT_SKELETON_DIR)

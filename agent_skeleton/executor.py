@@ -188,11 +188,11 @@ async def _stop_heartbeat(task: "asyncio.Task[None] | None") -> None:
 class SkeletonAgentExecutor(AgentExecutorBase):
     """A2A AgentExecutor: input via `context`, output via TaskUpdater."""
 
-    def __init__(self, model: str | None = None, spec: "AgentSpec | None" = None):
+    def __init__(self, model: str | None = None, *, spec: "AgentSpec"):
         require_a2a()
         self.model = model
-        # The AgentSpec selects this agent's prompt + tools. None => the demo
-        # default (see llm_loop.run_agent), preserving the stock behavior.
+        # The AgentSpec selects this agent's prompt + tools (required: the runtime
+        # has no default agent).
         self.spec = spec
 
     async def execute(self, context: "RequestContext", event_queue: "EventQueue") -> None:

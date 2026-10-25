@@ -144,7 +144,7 @@ def run_tool_loop(
 def run_agent(
     user_payload: dict[str, Any],
     *,
-    spec: "AgentSpec | None" = None,
+    spec: "AgentSpec",
     model: str | None = None,
 ) -> dict[str, Any]:
     """The agent's 'brain': run the loop with an AgentSpec's prompt + tools, then
@@ -153,13 +153,8 @@ def run_agent(
 
     The ``spec`` is the seam that lets ONE engine serve many agents/levels without
     editing this file: it carries the system prompt, tool schemas, tool dispatch,
-    and normalize. When ``spec`` is omitted, ``default_demo_spec()`` reproduces the
-    original skeleton behavior (the demo word_count/reverse_text tools), so callers
-    that predate the spec keep working unchanged. ``run_tool_loop`` above stays
-    frozen and generic — every level flows through it."""
-    from .spec import default_demo_spec
-
-    spec = spec or default_demo_spec()
+    and normalize. It is required: the runtime has no default agent. ``run_tool_loop``
+    above stays frozen and generic — every level flows through it."""
     final_text, tool_log = run_tool_loop(
         model=model or spec.model or env_model(),
         system_prompt=spec.system_prompt,

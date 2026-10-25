@@ -36,7 +36,7 @@ of agent — this split is the same split as the two credential-sourcing models 
 
 They are independent classes wired by different paths — the uploaded lane via
 `registration_service/handlers/custom_handler.py` + `container_runner.py`; the wrapper lane via
-`serve.py::create_app` (the `serve-a2a` / `serve-wrapper` CLI).
+`serve.py::create_app` (the `serve-wrapper` CLI).
 
 ## Lane 1 — uploaded custom handler (per-user credentials)
 
@@ -128,6 +128,7 @@ python -m agentnet.scripts.validate_agent_endpoint \
 | `agent_skeleton/executor.py` / `spec.py` | `SkeletonAgentExecutor` + `AgentSpec` — endpoint-wrapper lane |
 | `agent_skeleton/system_tools/call_endpoint.py` | external-endpoint tool (operator env-var auth) |
 | `agent_skeleton/system_tools/preset_tools.py` | built-in preset-tool catalog for registration `llm` agents with `tools.source = "presets"` |
-| `agent_skeleton/serve.py` | `create_app`, `serve-a2a` / `serve-wrapper` CLI |
+| `agent_skeleton/serve.py` | `create_app`, `serve-wrapper` CLI |
 | `agent_skeleton/generator/` | `answers.json` → deployable wrapper-agent folder |
+| `agent_skeleton/demo/` | the demo agent (safe to edit; not installed or vendored); its `tools.py` has the uploaded-tools shape |
 | `registration_service/handlers/custom_handler.py` | wires an uploaded handler into `HandlerExecutor` |

@@ -16,19 +16,20 @@ each built agent image. It holds:
 - the **system tools** agents can be given ([`system_tools/`](system_tools/):
   `call_endpoint` and the presets `calculator` and `current_time`).
 
-It also holds two smaller things: one **demo agent** (`agent.card.json`,
-[`tool_schemas.py`](tool_schemas.py), the demo tool bodies in [`tools.py`](tools.py),
-`SYSTEM_PROMPT` in [`prompt.py`](prompt.py)) and the **wrapper-repo generator**
-([`generator/`](generator/)).
+It also holds two smaller things: the **wrapper-repo generator**
+([`generator/`](generator/)) and one **demo agent** ([`demo/`](demo/)): a card, a
+system prompt and two text tools.
 
 The engine was distilled from the reference agent `disaster_response_agent.py`
 (now in the separate [`agent-directory`](https://github.com/washu-dev/agent-directory)
 repo, with the other specialist agents) and split into small, labeled files.
 
-> **Don't build an agent by editing these files.** They are shared: a change here
-> changes every hosted agent. For example, `normalize_result()` in `prompt.py` shapes
-> the result of every hosted LLM agent that does not bring its own. To add an agent,
-> write one of the three things below.
+> **Anything under [`demo/`](demo/) is safe to change; anything else in
+> `agent_skeleton/` is runtime that reaches every hosted agent.** Nothing in the
+> runtime imports the demo, and the demo is not installed, vendored into images or
+> copied by the generator. For example, `normalize_result()` in `prompt.py` shapes
+> the result of every hosted LLM agent that does not bring its own. Don't build an
+> agent by editing the runtime: write one of the three things below.
 
 ---
 
@@ -45,9 +46,8 @@ for the exact settings.
 | An LLM that calls your own Python tools | `llm` with `tools.source = "upload"` | One tools module with `TOOL_SCHEMAS` and `TOOL_REGISTRY` (or a `build_tools(config)` function that returns both). You upload it; an admin approves it. |
 | No code at all | `proxy`, or `llm` with `tools.source = "http"`, `"presets"` or `"none"` | A form in the registration UI. A `proxy` forwards each request to your service with no LLM; an `http` agent gives the LLM one tool per operation of your API. |
 
-A tools module uses the same shape as the demo's `tool_schemas.py` and `tools.py`,
-but keep both names in the file you upload. The demo splits them across two files
-joined by a relative import, so the demo's `tools.py` can't be uploaded as is.
+A tools module has the same shape as the demo's [`demo/tools.py`](demo/tools.py),
+which can be uploaded as is.
 
 A custom handler looks like this:
 
@@ -112,25 +112,27 @@ Agents don't call other agents through the directory today; only the planner doe
 | [`llm_loop.py`](llm_loop.py) | engine | The generic LLM tool-calling loop (`run_tool_loop`, `run_agent`) |
 | [`spec.py`](spec.py) | engine | `AgentSpec` (prompt + tools as data) and the spec builders for each agent kind |
 | [`executor.py`](executor.py) | engine | `SkeletonAgentExecutor`: `execute()` + A2A I/O helpers |
-| [`serve.py`](serve.py) | engine | `create_app` (any spec → A2A web app) + the `check` / `serve-a2a` / `serve-wrapper` CLI |
+| [`serve.py`](serve.py) | engine | `create_app` (a spec → A2A web app) + the `serve-wrapper` CLI |
 | `a2a_runtime.py` | engine | `a2a-sdk` import guard + Part/TaskUpdater wrappers |
 | [`base.py`](base.py), [`handler_executor.py`](handler_executor.py) | engine | `AgentHandler` + `FileInput`; `HandlerExecutor` (heartbeat, runtime cap, credential context) |
 | `container_runner.py` | engine | Entry point of every built agent image: a custom handler, or an LLM loop over uploaded tools |
 | [`system_tools/`](system_tools/) | engine | `call_endpoint` and the preset tools |
 | `config.py` | engine | Defaults for every agent (step limit, heartbeat name, host/port) + env-var readers |
-| [`prompt.py`](prompt.py) | demo + engine | Demo: `SYSTEM_PROMPT`. Engine: `normalize_result()` and the wrapper prompt builders |
-| [`tools.py`](tools.py) | demo + engine | Demo: tool bodies + `TOOL_REGISTRY`. Engine: `validate_tool_registry()` |
-| [`tool_schemas.py`](tool_schemas.py) | demo | The demo's tool schemas (Chat Completions shape) |
-| [`agent.card.json`](agent.card.json) | demo | The demo's card ("Skeleton Agent") |
+| [`prompt.py`](prompt.py) | engine | `normalize_result()` and the wrapper prompt builders |
+| [`tools.py`](tools.py) | engine | `validate_tool_registry()`, the schema ↔ function check |
 | [`generator/`](generator/) | tooling | `answers.json` → a deployable wrapper-agent folder |
-| `pyproject.toml` | packaging | Installs the package as `agent-skeleton` |
+| `pyproject.toml` | packaging | Installs the package as `agent-skeleton` (without `demo/`) |
+| [`demo/`](demo/) | **demo (safe to edit)** | `SYSTEM_PROMPT` + `demo_spec()` (`__init__.py`), the tools (`tools.py`), the card (`agent.card.json`, "Skeleton Agent"), the `check` / `serve` commands (`__main__.py`) |
 
-The engine still imports the demo files: `spec.default_demo_spec()` builds the demo
-from them, and `create_app` falls back to it when given no spec.
+The runtime has no default agent: `run_agent`, `SkeletonAgentExecutor` and
+`create_app` all require a spec.
 
 ---
 
 ## Run the demo agent
+
+The demo is not part of a regular install, so run it from the repo root (or with
+the editable install below).
 
 ```bash
 # 1. Install deps into a venv/conda env (NOT another component's env)
@@ -142,11 +144,11 @@ export OPENAI_API_KEY=sk-...            # any non-empty placeholder works for vL
 export AGENT_MODEL=gpt-4o-mini          # or your --served-model-name
 
 # 3. Sanity-check that the demo's schemas and functions agree (no LLM needed)
-python -m agent_skeleton.serve check
+python -m agent_skeleton.demo check
 # -> OK: tool schemas and functions are aligned.
 
 # 4. Serve it (from the repo root)
-python -m agent_skeleton.serve serve-a2a
+python -m agent_skeleton.demo serve
 # -> Serving Skeleton Agent on 0.0.0.0:9110 (url=http://127.0.0.1:9110/)
 ```
 
@@ -155,7 +157,7 @@ To make it **discoverable** by the planner, publish the card to the directory
 the registration service are published by its supervisor instead.
 
 ```bash
-python -m agentnet.scripts.publish_agents --card agent_skeleton/agent.card.json
+python -m agentnet.scripts.publish_agents --card agent_skeleton/demo/agent.card.json
 ```
 
 ---
@@ -273,10 +275,10 @@ The specialist agents have **no** check that a tool's JSON schema matches its Py
 function — a mismatch just fails silently at runtime. The runtime adds
 `validate_tool_registry()` in [`tools.py`](tools.py). The spec builders in `spec.py`
 run it before they return (`AgentSpec.validate()`), `create_app` runs it at startup,
-and `serve.py check` runs it on the demo. It verifies the envelope (`"type": "function"`,
-`parameters.type` `"object"`), that every schema has a function, every property is a
-parameter, optional properties have defaults, and there are no undeclared required
-parameters. See *CLAUDE.md → "Closing the gap further"*
+and `python -m agent_skeleton.demo check` runs it on the demo. It verifies the
+envelope (`"type": "function"`, `parameters.type` `"object"`), that every schema has
+a function, every property is a parameter, optional properties have defaults, and
+there are no undeclared required parameters. See *CLAUDE.md → "Closing the gap further"*
 for the even-stronger option (generate schemas *from* typed functions).
 
 ---

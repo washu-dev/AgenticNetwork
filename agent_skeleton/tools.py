@@ -1,18 +1,15 @@
-"""ZONE 4 — Tool dispatch + tool bodies.  DEMO AGENT + ENGINE
+"""ZONE 4 — The tool alignment check.  ENGINE
 
-- DEMO: the tool BODIES (word_count, reverse_text). Each takes keyword args named
-  exactly like its schema `properties` and returns a JSON-able dict; an uploaded
-  tools module's functions follow the same rule.
-- DEMO: TOOL_REGISTRY, the {name: function} map for the demo's tools. A registry
-  REPLACES the hand-written if/elif chain in disaster's _run_tool. Adding a tool =
-  write a function + add one registry entry + add one schema in tool_schemas.py.
-  The LLM loop dispatches over a spec's registry via ``AgentSpec.dispatch`` (see
-  spec.py).
-- ENGINE: validate_tool_registry(), the alignment check the disaster agent never
-  had. Every spec builder (AgentSpec.validate) and serve.create_app run it, so it
-  guards every hosted LLM agent's tools. It fails fast if a schema and its
-  function disagree, instead of failing silently at runtime as
-  `{"ok": False, "error": ...}`.
+validate_tool_registry(), the alignment check the disaster agent never had. Every
+spec builder (AgentSpec.validate) and serve.create_app run it, so it guards every
+hosted LLM agent's tools. It fails fast if a schema and its function disagree,
+instead of failing silently at runtime as `{"ok": False, "error": ...}`.
+
+The tools themselves are not here: an uploaded tools module brings its own
+TOOL_SCHEMAS + TOOL_REGISTRY, and the demo agent's live in demo/tools.py. Tool
+bodies take keyword args named exactly like their schema `properties` and return a
+JSON-able dict; the LLM loop dispatches over a spec's registry via
+``AgentSpec.dispatch`` (see spec.py).
 """
 from __future__ import annotations
 
@@ -20,39 +17,16 @@ import inspect
 import logging
 from typing import Any, Callable
 
-from .tool_schemas import TOOL_SCHEMAS
-
 _log = logging.getLogger(__name__)
-
-
-# --- Demo tool bodies ----------------------------------------------------
-
-def word_count(*, text: str) -> dict[str, Any]:
-    return {"ok": True, "word_count": len(text.split()), "char_count": len(text)}
-
-
-def reverse_text(*, text: str, uppercase: bool = False) -> dict[str, Any]:
-    reversed_text = text[::-1]
-    if uppercase:
-        reversed_text = reversed_text.upper()
-    return {"ok": True, "reversed": reversed_text}
-
-
-# --- Demo registry (one entry per tool) ----------------------------------
-
-TOOL_REGISTRY: dict[str, Callable[..., dict[str, Any]]] = {
-    "word_count": word_count,
-    "reverse_text": reverse_text,
-}
 
 
 # --- ENGINE: the alignment check (the gap disaster never closed) ---------
 
 def validate_tool_registry(
-    schemas: list[dict[str, Any]] | None = None,
-    registry: dict[str, Callable[..., dict[str, Any]]] | None = None,
+    schemas: list[dict[str, Any]],
+    registry: dict[str, Callable[..., dict[str, Any]]],
 ) -> None:
-    """Fail fast if schemas and functions disagree. Called by serve.create_app.
+    """Fail fast if schemas and functions disagree. Called by AgentSpec.validate.
 
     For every tool it checks that:
       * the envelope is right: top-level `type` is "function" and, when given,
@@ -66,9 +40,6 @@ def validate_tool_registry(
 
     Raises ValueError listing ALL problems; returns None when everything aligns.
     """
-    schemas = TOOL_SCHEMAS if schemas is None else schemas
-    registry = TOOL_REGISTRY if registry is None else registry
-
     problems: list[str] = []
     schema_names: list[str] = []
 

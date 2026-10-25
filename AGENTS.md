@@ -24,8 +24,10 @@ Within this repo:
 - `chat_app/` is the web service people sign in to and chat in. The planner
   (`chat_app/planner/`) is the LLM loop inside it that chooses agents and calls them.
 - `agent_skeleton/` is the agent runtime that every hosted agent imports, plus
-  a small demo agent and the wrapper generator. Build new agents as
-  [`docs/BUILDING_AGENTS.md`](docs/BUILDING_AGENTS.md) describes, not by copying
+  the wrapper generator and a small demo agent in `agent_skeleton/demo/`.
+  Anything under `demo/` is safe to change; anything else there is runtime that
+  reaches every hosted agent, so never import the demo from it. Build new agents
+  as [`docs/BUILDING_AGENTS.md`](docs/BUILDING_AGENTS.md) describes, not by copying
   or editing it; its import name is a public interface.
 
 Do not reintroduce the old prototype, milestone demo agents, or PI runtime under

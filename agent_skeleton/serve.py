@@ -1,9 +1,10 @@
 """ZONE 6 — Serve.  ENGINE
 
-Wires the executor into an HTTP server. create_app builds the A2A web app for any
-AgentSpec; container_runner uses it to serve built images of ``llm`` agents with
-uploaded tools, and generated wrapper agents use it too. The CLI below runs the
-demo agent (serve-a2a) or wraps one endpoint (serve-wrapper).
+Wires the executor into an HTTP server. create_app builds the A2A web app for an
+AgentSpec (there is no default agent); container_runner uses it to serve built
+images of ``llm`` agents with uploaded tools, generated wrapper agents use it too,
+and so does the demo agent (``python -m agent_skeleton.demo serve``). The CLI below
+wraps one endpoint (serve-wrapper).
 
 Directory (ADS) publishing is not done here: the registration service's
 supervisor publishes registered agents, and a hand-run agent can be published with
@@ -15,10 +16,7 @@ The runtime layering:
         -> DefaultRequestHandler(executor, InMemoryTaskStore())  (A2A protocol)
           -> SkeletonAgentExecutor.execute(context, event_queue)  (runs the spec)
 
-Run:
-    python -m agent_skeleton.serve check          # validate the demo's schemas <-> functions
-    python -m agent_skeleton.serve serve-a2a      # the demo agent
-    # the headline path — wrap an external endpoint in an LLM loop:
+Run (the headline path — wrap an external endpoint in an LLM loop):
     python -m agent_skeleton.serve serve-wrapper --card my.card.json \
         --endpoint-url https://api.example.com/run
 """
@@ -27,7 +25,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .a2a_runtime import (
     A2AStarletteApplication,
@@ -38,7 +36,6 @@ from .a2a_runtime import (
 )
 from .config import (
     AGENT_NAME,
-    DEFAULT_CARD_PATH,
     env_advertise_url,
     env_endpoint_auth_env,
     env_endpoint_method,
@@ -49,23 +46,21 @@ from .config import (
     env_port,
 )
 from .executor import SkeletonAgentExecutor
-from .tools import validate_tool_registry
+
+if TYPE_CHECKING:
+    from .spec import AgentSpec
 
 
-def load_agent_card(card_path: Path | str = DEFAULT_CARD_PATH) -> Any:
+def load_agent_card(card_path: Path | str) -> Any:
     require_a2a()
     with Path(card_path).open("r", encoding="utf-8") as fh:
         return AgentCard.model_validate(json.load(fh))
 
 
-def create_app(agent_card: Any, model: str | None = None, spec: Any = None) -> Any:
+def create_app(agent_card: Any, model: str | None = None, *, spec: "AgentSpec") -> Any:
     require_a2a()
-    # Fail fast if the schemas and functions disagree (the check disaster lacks).
-    # With a spec, validate ITS tools; without one, validate the demo defaults.
-    if spec is not None:
-        spec.validate()
-    else:
-        validate_tool_registry()
+    # Fail fast if the spec's schemas and functions disagree (the check disaster lacks).
+    spec.validate()
     handler = DefaultRequestHandler(
         agent_executor=SkeletonAgentExecutor(model=model, spec=spec),
         task_store=InMemoryTaskStore(),
@@ -79,18 +74,12 @@ def _add_serve_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--model", default=env_model())
     p.add_argument("--host", default=env_host())
     p.add_argument("--port", type=int, default=env_port())
-    p.add_argument("--card", type=Path, default=DEFAULT_CARD_PATH)
     p.add_argument("--advertise-url", default=env_advertise_url())
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Skeleton A2A agent")
+    parser = argparse.ArgumentParser(description="Serve an A2A agent that wraps an external endpoint")
     sub = parser.add_subparsers(dest="command", required=True)
-
-    sub.add_parser("check", help="Validate tool schema/function alignment and exit.")
-
-    serve = sub.add_parser("serve-a2a", help="Run the A2A HTTP server (demo tools).")
-    _add_serve_args(serve)
 
     # The end-goal entry point: serve an LLM loop that wraps an external endpoint.
     wrap = sub.add_parser(
@@ -98,6 +87,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run the A2A server as an LLM wrapper over an external endpoint.",
     )
     _add_serve_args(wrap)
+    wrap.add_argument("--card", type=Path, required=True, help="This agent's card (JSON).")
     wrap.add_argument("--endpoint-url", default=env_endpoint_url(), help="URL of the external service to wrap.")
     wrap.add_argument("--endpoint-protocol", default=env_endpoint_protocol(), choices=["http", "a2a"])
     wrap.add_argument("--endpoint-method", default=env_endpoint_method())
@@ -110,7 +100,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _serve(args: argparse.Namespace, spec: Any = None) -> None:
+def _serve(args: argparse.Namespace, spec: "AgentSpec") -> None:
     require_a2a()
     try:
         import uvicorn
@@ -130,15 +120,6 @@ def _serve(args: argparse.Namespace, spec: Any = None) -> None:
 
 def main() -> None:
     args = build_parser().parse_args()
-
-    if args.command == "check":
-        validate_tool_registry()
-        print("OK: tool schemas and functions are aligned.")
-        return
-
-    if args.command == "serve-a2a":
-        _serve(args, spec=None)
-        return
 
     if args.command == "serve-wrapper":
         if not args.endpoint_url:

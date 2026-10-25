@@ -9,15 +9,15 @@ Every hosted agent imports this package at run time. It holds:
   * container_runner, the entry point of every built agent image;
   * system_tools/, ready-made tools (call_endpoint, the presets).
 
-It also holds a small demo agent (agent.card.json, tool_schemas.py, the demo tool
-bodies in tools.py, SYSTEM_PROMPT in prompt.py) and the wrapper-repo generator
-(generator/), which emits a complete, deployable wrapper-agent folder from an
-answers.json.
+It also holds the wrapper-repo generator (generator/), which emits a complete,
+deployable wrapper-agent folder from an answers.json, and a small demo agent
+(demo/). The demo is safe to edit: nothing here imports it and it is not
+installed; everything else in this package is runtime.
 
 The import name ``agent_skeleton`` is a public interface: uploaded handlers import
 it and built images run ``python -m agent_skeleton.container_runner``, so uploads
 may not claim the name (registration_service/archive.py). Don't build an agent by
-editing these files; a change here reaches every hosted agent. Register one of
+editing the runtime; a change there reaches every hosted agent. Register one of
 three kinds instead (README.md, "Building an agent"; docs/BUILDING_AGENTS.md): a
 custom AgentHandler, an ``llm`` agent with an uploaded tools module, or a no-code
 proxy/http agent.
@@ -25,19 +25,18 @@ proxy/http agent.
 See README.md for the walkthrough and CLAUDE.md for working notes.
 
 Exposed API:
-    AgentSpec, default_demo_spec, endpoint_wrapper_spec  — the spec-driven engine
-    EndpointConfig, make_call_endpoint                   — call an external endpoint
-    AgentHandler, FileInput, HandlerExecutor             — uploaded-code agents
+    AgentSpec, endpoint_wrapper_spec          — the spec-driven engine
+    EndpointConfig, make_call_endpoint        — call an external endpoint
+    AgentHandler, FileInput, HandlerExecutor  — uploaded-code agents
         (custom-handler path via the registration service)
 """
 from __future__ import annotations
 
-from .spec import AgentSpec, default_demo_spec, endpoint_wrapper_spec
+from .spec import AgentSpec, endpoint_wrapper_spec
 from .system_tools.call_endpoint import EndpointConfig, make_call_endpoint
 
 __all__ = [
     "AgentSpec",
-    "default_demo_spec",
     "endpoint_wrapper_spec",
     "EndpointConfig",
     "make_call_endpoint",

@@ -1,13 +1,13 @@
-"""ZONE 2 — System prompt + result normalization.  DEMO AGENT + ENGINE
+"""ZONE 2 — Result normalization + wrapper prompts.  ENGINE
 
-- DEMO: SYSTEM_PROMPT, the demo agent's instructions and the exact output
-  contract it asks of the model.
 - ENGINE: normalize_result() turns the model's final text into the STABLE
   structured dict an agent returns (mirrors disaster's _normalize_plan). It is
   the default for every AgentSpec without its own ``normalize``, which today is
   every hosted LLM agent, so a change here changes all of their results.
 - ENGINE: build_wrapper_prompt / build_operations_prompt / build_manager_prompt,
   the system prompts for the endpoint-wrapper specs (spec.py) and the generator.
+
+The demo agent's own SYSTEM_PROMPT lives in demo/__init__.py.
 
 Why a stable shape matters: the planner reads the structured DataPart artifact
 an agent emits, so downstream callers depend on these keys always existing.
@@ -16,14 +16,6 @@ from __future__ import annotations
 
 import json
 from typing import Any
-
-SYSTEM_PROMPT = (
-    "You are a helpful assistant agent. Use the available tools when they help "
-    "answer the user's request, then produce a final answer. "
-    "Return ONLY valid JSON with these keys: "
-    'answer (string), tools_used (array of strings). '
-    "Do not include any prose outside the JSON object."
-)
 
 
 def normalize_result(raw_text: str, tool_log: list[dict[str, Any]]) -> dict[str, Any]:

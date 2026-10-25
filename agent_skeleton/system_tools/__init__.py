@@ -1,9 +1,9 @@
 """System tools — reusable tool bones the platform provides to generated agents.
 
-Unlike the zone-4 tool BODIES in ``tools.py`` (which are the agent author's own
-capabilities), these are pre-built tools that every wrapper/loop agent can be
-given by selecting them in an ``AgentSpec``. They are the "tools to talk to the
-network and the endpoint" the system owns.
+Unlike an author's own tool BODIES (an uploaded tools module, shaped like the
+demo's ``demo/tools.py``), these are pre-built tools that every wrapper/loop agent
+can be given by selecting them in an ``AgentSpec``. They are the "tools to talk
+to the network and the endpoint" the system owns.
 
 Today this package ships ``call_endpoint`` (reach the external service an agent
 wraps). Network-discovery tools (list_agents / describe_agent / call_agent,

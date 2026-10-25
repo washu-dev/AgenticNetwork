@@ -15,11 +15,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from agent_skeleton import llm_loop
-from agent_skeleton.spec import (
-    AgentSpec,
-    default_demo_spec,
-    endpoint_wrapper_spec,
-)
+from agent_skeleton.spec import AgentSpec, endpoint_wrapper_spec
 from agent_skeleton.system_tools.call_endpoint import EndpointConfig, make_call_endpoint
 
 _CAPTURED: dict = {}
@@ -160,12 +156,6 @@ def test_wrapper_spec_validates_and_dispatches():
     assert "call_endpoint" in spec.system_prompt and "Weather" in spec.system_prompt
     assert "answer" in spec.system_prompt and "tools_used" in spec.system_prompt
     assert spec.dispatch("nope", {})["ok"] is False  # unknown tool is graceful
-
-
-def test_default_demo_spec_backward_compatible():
-    demo = default_demo_spec()
-    demo.validate()
-    assert demo.dispatch("word_count", {"text": "a b c"})["word_count"] == 3
 
 
 def test_run_agent_threads_spec_through_frozen_loop():
