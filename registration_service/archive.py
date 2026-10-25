@@ -24,8 +24,10 @@ from pathlib import Path
 # Top-level names reserved for platform-injected build-context files. A user
 # archive that carries these at its root would collide with what the builder /
 # supervisor write alongside the project tree (see builder.generate_dockerfile
-# and supervisor._commit_to_github).
-RESERVED_ROOT_NAMES = {"agent_skeleton", "Dockerfile"}
+# and supervisor._commit_to_github). ``agentnet`` is the platform's shared package:
+# a local subprocess agent has its project folder first on PYTHONPATH (see
+# backend.SubprocessBackend), so a top-level agentnet/ there would replace it.
+RESERVED_ROOT_NAMES = {"agent_skeleton", "agentnet", "Dockerfile"}
 
 # The import package the platform vendors and installs on every custom image; the
 # container ENTRYPOINT is ``python -m agent_skeleton.container_runner``. An uploaded

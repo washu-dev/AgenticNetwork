@@ -58,7 +58,6 @@ chat_app/
 ├── auth.py                 # Shibboleth SSO identity + get_current_user dependency
 ├── auth_router.py          # /auth/* — logout + Google OAuth connect flow
 ├── credentials_router.py   # /me/credentials/* — per-user API-key store/list/delete
-├── credential_catalog.py   # canonical credential-type catalog
 ├── github_issues.py        # files bug reports as GitHub issues (POST /issues)
 ├── env.py                  # setting names, with the old names as fallbacks
 ├── web/                    # index.html (chat UI) + landing.html (pre-login page)
@@ -240,7 +239,7 @@ different values, the new name wins, and that is logged too. The full list is in
 | `CHAT_APP_UPLOAD_DIR`          | `/tmp/chat_app_uploads` | Where chat uploads are saved. The planner only sends agents files from inside this folder |
 | `CHAT_APP_MAX_UPLOAD_BYTES`    | `52428800` (50 MiB) | Largest upload accepted (bigger ones get 413)           |
 | `CHAT_APP_CARD_PATHS`          | —             | Comma-separated Agent Card files to pre-load (fake-ADS mode only; same as `--card`) |
-| `CHAT_APP_ALLOW_ANON`          | off           | Exactly `1` lets requests without an identity header in as `demo-user` even with a database configured. For local dev and test instances only |
+| `CHAT_APP_ALLOW_ANON`          | off           | Exactly `1` lets requests without an identity header in as `demo-user` (never an admin) even with a database configured. For local dev and test instances only |
 | `CHAT_APP_HEALTH_PROBE_SKIP_AGENTS` | —        | Comma-separated agent ids the background health check never calls (keeps scaled-to-zero agents asleep) |
 | `REGISTRATION_SERVICE_URL`     | `http://localhost:8091` | Where the `/register/*` pages are forwarded          |
 | `AGENT_NETWORK_FAKE_ADS`       | `false`       | Use in-process fake ADS                                       |

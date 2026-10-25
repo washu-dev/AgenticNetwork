@@ -38,7 +38,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from registration_service.credential_catalog import is_known_type
+from agentnet.credential_catalog import is_known_type
 
 
 class OASFSkill(BaseModel):
@@ -51,7 +51,7 @@ class CredentialRequirement(BaseModel):
     """A user-owned credential a custom agent consumes (P4a).
 
     ``type`` is a canonical catalog key (e.g. ``openai_api_key``) or a
-    ``custom:<slug>`` escape — see ``registration_service/credential_catalog.py``.
+    ``custom:<slug>`` escape — see ``agentnet/credential_catalog.py``.
     ``required`` drives P4c enforcement (required→block if missing; optional→proceed);
     ``env_var`` names the variable the agent reads the value under in its context.
     """

@@ -22,8 +22,9 @@ from pydantic import BaseModel, Field
 from agentnet.a2a.client import A2AClient
 from agentnet.directory.card_oasf import load_agent_card
 from agentnet.directory.client import DirectoryClient
+from agentnet.identity import identity_from_headers, is_admin, without_identity_headers
 from chat_app import github_issues
-from chat_app.auth import get_current_user, get_or_create_user, get_shib_email, is_admin
+from chat_app.auth import get_current_user, get_or_create_user, get_shib_email
 from chat_app.auth_router import router as auth_router
 from chat_app.credentials_router import (
     grants_router,
@@ -203,9 +204,10 @@ def create_app(
     def _require_admin(request: Request) -> None:
         # P4f: admin is the SSO identity ∈ ADMIN_EMAILS — no shared token, fail closed.
         # _resolve_shib_user_id raises 401 when identity is missing (DB configured);
-        # a non-allowlisted authenticated user gets 403.
-        email = _resolve_shib_user_id(request)
-        if not is_admin(email):
+        # a non-allowlisted authenticated user gets 403. Only a header identity can be
+        # admin: the anonymous stand-in (demo-user) never is, whatever ADMIN_EMAILS lists.
+        _resolve_shib_user_id(request)
+        if not is_admin(identity_from_headers(request.headers)):
             raise HTTPException(status_code=403, detail="Admin access required")
 
     db_configured = db.configured()
@@ -258,8 +260,10 @@ def create_app(
         # P4f: the UI shows/hides admin surfaces based on is_admin. Identity resolves as
         # on every other route (demo-user when anonymous is allowed), and the first call
         # creates the user: a users row with a DB, the in-memory store without one.
+        # is_admin is _require_admin's answer: only a header identity can be admin.
         user = await get_or_create_user(_resolve_shib_user_id(request))
-        return {"id": str(user["id"]), "email": user["email"], "is_admin": is_admin(user["email"])}
+        admin = is_admin(identity_from_headers(request.headers))
+        return {"id": str(user["id"]), "email": user["email"], "is_admin": admin}
 
     @app.get("/health")
     async def health() -> dict[str, str]:
@@ -309,8 +313,15 @@ def create_app(
             _require_admin(request)
         body = await request.body()
         # Drop the browser's Accept-Encoding so httpx asks only for encodings it decodes.
-        headers = {k: v for k, v in request.headers.items()
-                   if k.lower() not in ("host", "content-length", "accept-encoding")}
+        headers = [(k, v) for k, v in without_identity_headers(request.headers.items())
+                   if k.lower() not in ("host", "content-length", "accept-encoding")]
+        # Forward exactly the identity this app reads, as one mail header, so the
+        # registration service sees the same caller whatever identity headers came in
+        # (duplicates, other spellings). None without a header identity: never the
+        # anonymous stand-in.
+        identity = identity_from_headers(request.headers)
+        if identity is not None:
+            headers.append(("mail", identity))
         try:
             resp = await _reg_client.request(
                 request.method, quote(url, safe="/"),

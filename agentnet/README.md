@@ -5,9 +5,10 @@ The chat app and the registration service both use it. In the chat app, the plan
 (`chat_app/planner/`) searches the directory and calls agents with it, and the web
 server (`chat_app/server.py`) lists agents, checks their health and removes them
 (admin) with it. The registration service publishes and unpublishes the agents it
-runs with it. Both read the database address through `settings.py`. agentnet is a
-library, not a service: it runs inside those two. It also holds the operator scripts
-for inspecting and repairing a live directory.
+runs with it. Both read the database address through `settings.py`, the signed-in
+user and the admin list through `identity.py`, and the credential types through
+`credential_catalog.py`. agentnet is a library, not a service: it runs inside those
+two. It also holds the operator scripts for inspecting and repairing a live directory.
 
 ## The directory (ADS)
 
@@ -42,6 +43,10 @@ agentnet/
 │                          and the required-credentials extension URI
 ├── settings.py            the database address both services read: DATABASE_URL, falling back
 │                          to the old REGISTRATION_DB_DSN (standard library only)
+├── identity.py            the SSO identity headers (mail, then eppn, then remote-user) and the
+│                          ADMIN_EMAILS allowlist (standard library only)
+├── credential_catalog.py  the credential types agents declare and users store: the catalog
+│                          and custom:<slug> (standard library only)
 ├── directory/
 │   ├── __init__.py        DirectoryUnavailable (one class, raised by everything below)
 │   ├── card_oasf.py       Agent Card <-> OASF/ADS record conversion, oasf_skill_tag
@@ -73,7 +78,11 @@ agentnet has no required dependencies file of its own (requirements-sdk.txt is o
 optional SDK backend): it runs in either service venv (the
 registration service pins a2a-sdk 0.3.2, the chat app 0.3.26), and CI runs its
 tests in both. Both Docker images copy it to `/app/agentnet` and set
-`PYTHONPATH=/app`.
+`PYTHONPATH=/app`. Agents the registration service starts as local subprocesses
+import `credential_catalog.py` too (through `registration_service/models.py`), with
+the uploaded project first on their path, so an upload may not carry a top-level
+`agentnet/` folder (`registration_service/archive.py`). The agent images built for
+the cluster and Cloud Run do not include agentnet, and `agent_skeleton` never imports it.
 
 > **Note:** `ads_diagnostics.py`'s record-state classification reads the local
 > **sqlite** daemon DB, so its queued/stale detail only applies to a local

@@ -83,7 +83,7 @@ registration submitted under a legacy name is *persisted* under the canonical on
 | `handlers/llm_http_handler.py` | A2A server for an `llm` agent with one typed tool per API operation (`tools.source = "http"`; legacy name `endpoint_ops`) |
 | `handlers/proxy_handler.py` | Minimal A2A server that forwards tasks to an upstream URL (the `proxy` type; legacy name `api_proxy`) |
 | `handlers/custom_handler.py` | Loads and runs an uploaded `AgentHandler` subclass (local subprocess path) |
-| `credential_catalog.py` / `card_credentials.py` | Canonical credential-type catalog + the card credentials extension for declared per-user creds (P4) |
+| `card_credentials.py` | The card credentials extension for declared per-user creds (P4); declared types are checked against the shared catalog, `agentnet/credential_catalog.py` |
 | `validator.py` | Validates uploaded custom-agent handler code/archives before spawn |
 | `archive.py` | Safe extraction + inspection of uploaded handler archives |
 | `lifespan.py` | FastAPI lifespan: `init_db` → recover live agents → start health/build loops |

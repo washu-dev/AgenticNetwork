@@ -573,8 +573,9 @@ chat app :8090     ← trusts those headers as the user id       ← ephemeral S
   tunnel bridged to it). There is **no stable gateway↔node wiring yet**
   (`DOWNSTREAM_CONSIDERATIONS.md` #3).
 - **Local dev without Shibboleth:** set `CHAT_APP_ALLOW_ANON=1` so a request with no
-  identity header falls back to `demo-user` instead of a 401 (`auth.py`); put your dev
-  identity (e.g. `demo-user`) in `ADMIN_EMAILS` to get admin locally. The old
+  identity header falls back to `demo-user` instead of a 401 (`chat_app/server.py`). That
+  stand-in is never admin: to get admin locally, send an identity header and list it in
+  `ADMIN_EMAILS` (the dev stack's identity proxy sends `mail: dev@example.test`). The old
   `ADMIN_PASSWORD`/`POST /admin/login` bypass is retired (see [`docs/AUTH.md`](../../AUTH.md)).
 - **Configuring the SP for the public landing:** the "Apache / Shibboleth SP" section above has
   the exact vhost carve-out that makes `/` anonymous while protecting `/app` and the APIs (P4e).

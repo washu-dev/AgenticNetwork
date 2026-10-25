@@ -79,6 +79,10 @@ entry point would disappear, and the agent would not start.
 `registration_service/archive.py` rejects these uploads. Name your project after
 your agent and package only your own code.
 
+A top-level `agentnet/` folder is refused too. `agentnet` is the platform's shared
+package, and an agent run locally by the registration service has the uploaded
+project first on its import path, so the upload's folder would replace it.
+
 ---
 
 ## The 10-second mental model

@@ -484,7 +484,7 @@ lines removed or rewritten.
 | Simplification | ~Lines | Waits on |
 |---|---|---|
 | **Protocol and directory** | | |
-| One shared directory/A2A package: done 2026-10-20 (`agentnet/` replaced the chat app's copy, `agent_directory_service/` and `ads_utils/`). Still open: dedupe the admin check and the credential catalog | — | — |
+| One shared directory/A2A package: done 2026-10-20 (`agentnet/` replaced the chat app's copy, `agent_directory_service/` and `ads_utils/`). The admin check and the credential catalog followed on 2026-10-25 (`agentnet/identity.py`, `agentnet/credential_catalog.py`) | — | — |
 | agentnet's `ADS_BACKEND=sdk` path and the ADS `agntcy-dir`/buf.build deps (unused today) | 100 | how the GCP directory client gets built |
 | Collapse the ADS address aliases into `ADS_SERVER_ADDR` | 20 | a coordinated `agent-directory` change and cluster `.env` update |
 | **Skeleton subtree and runner merge** | | |

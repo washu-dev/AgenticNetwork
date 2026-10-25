@@ -97,7 +97,7 @@ whole `agentnet/scripts/` suite exists to detect and repair this.
 | Component | Role | Default port | Environment | LLM API surface |
 |---|---|---|---|---|
 | `chat_app` | Chat app: sign-in, chat UI, and the planner (orchestrator) inside it | **8090** | pip venv (`requirements.txt`) | OpenAI **Chat Completions** (vLLM-ready; migrated 2026-06) |
-| `agentnet` | Shared directory (ADS) + A2A library; ADS operator tooling (`scripts/ads`) | dir at **8888** (routing 8999) | runs in the chat app and registration venvs | n/a (`dirctl`) |
+| `agentnet` | Shared directory (ADS) + A2A library, plus the settings, identity and credential-catalog code both services use; ADS operator tooling (`scripts/ads`) | dir at **8888** (routing 8999) | runs in the chat app and registration venvs | n/a (`dirctl`) |
 | `registration_service` | Registration service: sign-up wizard + API for agent authors; builds, runs and monitors their agents and publishes their cards | **8091** | pip venv (`requirements.txt`) | n/a |
 
 **[`agent-directory`](https://github.com/washu-dev/agent-directory) repo (specialist agents):**
@@ -346,8 +346,8 @@ and email are already done; use them as the reference):** the same shape of chan
 ## 8. Authentication & per-user credentials
 
 The chat app (`:8090`) is protected by **WashU Shibboleth SSO**. Identity arrives
-via Apache-injected headers (`eppn` / `mail` / `remote-user`); the chat app never
-handles passwords directly.
+via Apache-injected headers (`mail`, then `eppn`, then `remote-user`, read by
+`agentnet/identity.py`); the chat app never handles passwords directly.
 
 ```
 Browser → https://agenticweb.engr.wustl.edu   (public DNS — WashU ENGR)
@@ -371,7 +371,8 @@ gateway: it strips client identity headers and injects `mail: dev@example.test`.
 **Key files:**
 | File | Role |
 |---|---|
-| `chat_app/auth.py` | `get_shib_email()` — reads Shibboleth headers; `get_current_user()` — FastAPI dependency |
+| `agentnet/identity.py` | Reads the identity headers and the `ADMIN_EMAILS` allowlist (both services) |
+| `chat_app/auth.py` | `get_shib_email()` — the Shibboleth identity or 401; `get_current_user()` — FastAPI dependency |
 | `chat_app/auth_router.py` | `/auth/*` endpoints: logout, Google OAuth connect flow |
 | `chat_app/credentials_router.py` | `/me/credentials/*` — store/list/delete per-user API keys |
 | `chat_app/store/crypto.py` | AES-256-GCM encrypt/decrypt (`CREDENTIALS_ENCRYPTION_KEY` env var) |
@@ -384,11 +385,13 @@ gateway: it strips client identity headers and injects `mail: dev@example.test`.
 
 **Admin access (P4f)** — admin is derived from the SSO identity: a user whose email
 is in the `ADMIN_EMAILS` allowlist (comma-separated). `/admin/*` and the approver
-endpoints use `require_admin` (401 if no identity, 403 if not allowlisted); fail
-closed (empty list → no admins). The old shared `X-Admin-Token`/`MAIN_AGENT_ADMIN_TOKEN`
-and `POST /admin/login` are retired. `/me` returns `is_admin` so the UI hides admin
-surfaces for non-admins. Both the chat app and `registration_service` read `ADMIN_EMAILS`
-(dev/test: `registration_service` leaves it open under `FAKE_DB=1`).
+endpoints use `require_admin` (the chat app: 401 if no identity, 403 if not
+allowlisted, and its anonymous `demo-user` stand-in is never admin; the registration
+service: 403); fail closed (empty list → no admins). The old shared
+`X-Admin-Token`/`MAIN_AGENT_ADMIN_TOKEN` and `POST /admin/login` are retired. `/me`
+returns `is_admin` so the UI hides admin surfaces for non-admins. Both the chat app and
+`registration_service` read `ADMIN_EMAILS` through `agentnet/identity.py` (dev/test:
+`registration_service` leaves it open under `FAKE_DB=1`).
 
 **Credential injection** — at the start of each `/messages` request the chat app
 fetches + decrypts the requesting user's credentials, and the planner injects the ones

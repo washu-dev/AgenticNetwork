@@ -104,7 +104,9 @@ def test_symlink_in_a_virtualenv_says_to_leave_it_out(tmp_path: Path) -> None:
         )
 
 
-@pytest.mark.parametrize("reserved", ["Dockerfile", "agent_skeleton/__init__.py", "foo.card.json"])
+@pytest.mark.parametrize(
+    "reserved", ["Dockerfile", "agent_skeleton/__init__.py", "agentnet/__init__.py", "foo.card.json"]
+)
 def test_reject_reserved_root_names(tmp_path: Path, reserved: str) -> None:
     with pytest.raises(ArchiveError, match="Reserved name"):
         unpack_archive(_zip({"handler.py": HANDLER, reserved: "x"}), tmp_path / "a", "handler.py")

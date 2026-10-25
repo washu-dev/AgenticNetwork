@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import logging
-import os
 import uuid
 from typing import Any
 
 from fastapi import HTTPException, Request, status
 
+from agentnet.identity import identity_from_headers
 from chat_app.store.db import configured, get_pool
 
 logger = logging.getLogger(__name__)
@@ -19,31 +19,15 @@ logger = logging.getLogger(__name__)
 _memory_users: dict[str, dict[str, Any]] = {}
 
 
-def admin_emails() -> set[str]:
-    """The set of admin emails from ADMIN_EMAILS (comma-separated, lowercased).
-
-    P4f: admin is derived from the SSO identity, not a shared token. Fail closed —
-    an empty/unset ADMIN_EMAILS means there are no admins.
-    """
-    raw = os.getenv("ADMIN_EMAILS", "")
-    return {e.strip().lower() for e in raw.split(",") if e.strip()}
-
-
-def is_admin(email: str | None) -> bool:
-    """Whether an authenticated email is an allowlisted admin."""
-    return bool(email) and email.strip().lower() in admin_emails()
-
-# Shibboleth injects these via ShibUseHeaders On. Try in priority order.
-# With WashU's attribute release, "eppn" is eduPersonPrincipalName (wustlkey@wustl.edu).
-_SHIB_HEADER_PRIORITY = ("mail", "eppn", "remote-user")
-
-
 def get_shib_email(request: Request) -> str:
-    """Extract the authenticated user's email from Shibboleth-injected headers."""
-    for header in _SHIB_HEADER_PRIORITY:
-        value = request.headers.get(header, "").strip()
-        if value:
-            return value.lower()
+    """The authenticated user's email from the Shibboleth-injected headers, or 401.
+
+    Shibboleth injects them via ShibUseHeaders On; ``agentnet.identity`` reads them
+    (``mail``, then ``eppn``, then ``remote-user``; stripped and lowercased).
+    """
+    email = identity_from_headers(request.headers)
+    if email is not None:
+        return email
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="No Shibboleth identity header present — is the request coming through Apache?",

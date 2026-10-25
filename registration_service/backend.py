@@ -247,8 +247,8 @@ class SubprocessBackend(ContainerBackend):
         env["AGENT_PARENT_PID"] = str(os.getpid())
 
         python = sys.executable
-        # The runner imports registration_service and agent_skeleton, which must
-        # resolve whatever the service's cwd is.
+        # The runner imports registration_service, agent_skeleton and agentnet, which
+        # must resolve whatever the service's cwd is.
         pythonpath = [str(_REPO_ROOT)]
 
         spec = upload_spec(config)

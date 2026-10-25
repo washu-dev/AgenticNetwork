@@ -94,6 +94,11 @@ the same SSO identity removes a second secret to manage and can't be left accide
 it fails closed (empty allowlist → no admins). Enforced in both the planner and the
 registration service (dev-open under `FAKE_DB=1`). **Code.** `auth.py::is_admin`/`admin_emails`,
 `server.py::_require_admin` + the `/register/*` proxy gate, `registration_service/server.py::_require_admin`.
+*2026-10-25:* both services read the identity headers and `ADMIN_EMAILS` through one module,
+`agentnet/identity.py`. The chat app checks admin on the header identity only, so its anonymous
+stand-in (`demo-user`) is never admin, and its `/register/*` pass-through forwards the identity it
+read as one `mail` header (none without one). The registration service answers 403, not 401,
+without an identity.
 
 ## D7 — Public landing page; the chat UI is hard-gated at `/app`
 **Decision.** `/` serves a public landing page (no identity); the chat UI moves to `/app`,
@@ -136,6 +141,8 @@ strings, with an idempotent migration rewriting legacy values (`openai`→`opena
 **Rationale.** One canonical namespace makes injection deterministic and the declared `env_var`
 names what the agent reads it under. **Code.** `credential_catalog.py` (both services),
 `credentials_router.py` (accepted set), `db.py` (legacy-value migration).
+*2026-10-25:* the two copies are now one, `agentnet/credential_catalog.py`, which both services
+import; a `custom:<slug>` type must match in full (a trailing newline no longer passes).
 
 ## D3 — Custom agents have two upload lanes
 **Decision.** A custom agent is either **uploaded code** (a handler file/zip run by

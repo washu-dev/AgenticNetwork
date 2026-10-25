@@ -70,7 +70,9 @@ old config JSON and are normalized **on read** — never rewritten — so
 
 Admin auth (`_require_admin`) is the SSO-identity `ADMIN_EMAILS` allowlist; the owner check
 (`_require_owner_or_admin`) compares the same forwarded identity with the row's `owner_email`.
-Both are dev-open under `FAKE_DB=1` — see [AUTH.md](AUTH.md) §2.
+Both read the identity and the allowlist through `agentnet/identity.py` (the first of the `mail`,
+`eppn` and `remote-user` headers; the chat app's pass-through forwards it as one `mail` header) and
+answer 403 without one. Both are dev-open under `FAKE_DB=1` — see [AUTH.md](AUTH.md) §2.
 
 ## Data model (`db.py`)
 
@@ -247,8 +249,8 @@ the `AgentCard` from `oasf_skills` + port, sets `capabilities.streaming=True`, a
 declares `credentials` — appends the credential extension via
 `card_credentials.py::build_credentials_extension` under
 `agenticnetwork.dev/ext/required-credentials`. The planner reads that back (see [AUTH.md](AUTH.md)
-§4). The credential catalog (`credential_catalog.py`) is the source of valid `type` values, mirrored
-in the chat app (`chat_app/credential_catalog.py`).
+§4). The credential catalog (`agentnet/credential_catalog.py`) is the source of valid `type` values,
+shared with the chat app's per-user credential store.
 
 ## Key files
 | Path | Role |
@@ -262,7 +264,7 @@ in the chat app (`chat_app/credential_catalog.py`).
 | `validator.py` | AST-only upload check (advisory) |
 | `port_pool.py` | port allocation |
 | `models.py` | `RegisterRequest`, `CustomConfig`, `CredentialRequirement`, `AgentResponse` |
-| `card_credentials.py` / `credential_catalog.py` | credential declaration on the card |
+| `card_credentials.py` | credential declaration on the card (types from `agentnet/credential_catalog.py`) |
 | `static/index.html` | registration web UI |
 
 See [BUILDING_AGENTS.md](BUILDING_AGENTS.md) for the agent author's perspective.

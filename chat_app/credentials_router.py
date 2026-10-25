@@ -7,8 +7,8 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
+from agentnet.credential_catalog import is_known_type
 from chat_app.auth import get_current_user
-from chat_app.credential_catalog import is_known_type
 from chat_app.store.crypto import encrypt
 from chat_app.store.db import get_pool, list_all_grants, revoke_grant
 

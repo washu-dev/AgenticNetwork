@@ -18,7 +18,9 @@ Browser → nginx (TLS) → Apache + mod_shib (Shibboleth SP) → reverse-proxy 
                           └─ injects mail / eppn / remote-user headers
 ```
 
-- `chat_app/auth.py::get_shib_email` reads headers in priority `mail → eppn → remote-user` (lowercased).
+- `agentnet/identity.py::identity_from_headers` reads the headers in priority `mail → eppn →
+  remote-user` (the first non-blank one, stripped and lowercased; `remote_user` does not count).
+  Both services use it. `chat_app/auth.py::get_shib_email` answers 401 when it finds none.
 - `auth.py::get_or_create_user` auto-provisions a `users` row on first login.
 - `auth.py::get_current_user` is the FastAPI dependency (raises 401 if no identity).
 - The gateway (nginx/Apache/Shibboleth) is **persistent infra outside this repo**; it proxies
@@ -55,14 +57,21 @@ silently collapsing anonymous callers to a shared `demo-user` would misattribute
 
 Admin is **not** a separate password. It's derived from the same SSO identity:
 
-- `auth.py::admin_emails()` parses `ADMIN_EMAILS` (comma-separated, lowercased). Empty ⇒ **no
-  admins** (fail closed).
-- `auth.py::is_admin(email)` = membership test.
-- `server.py::_require_admin` = `_resolve_shib_user_id` (401 if no identity) → `is_admin` else
-  **403**. It gates all `/admin/*` routes **and** the admin `/register/*` pass-through subpaths
+- `agentnet/identity.py::admin_emails()` parses `ADMIN_EMAILS` (comma-separated, lowercased).
+  Empty ⇒ **no admins** (fail closed). Both services use it.
+- `agentnet/identity.py::is_admin(email)` = membership test.
+- `server.py::_require_admin` = `_resolve_shib_user_id` (401 if no identity and a login is
+  required) → `is_admin` on the header identity, else **403**. The anonymous stand-in
+  (`demo-user`) is never admin, even if `ADMIN_EMAILS` lists it; `/me` reports `is_admin` the
+  same way. It gates all `/admin/*` routes **and** the admin `/register/*` pass-through subpaths
   (`approve`, `reject`, `handler`, `handler/download`).
+- The `/register/*` pass-through drops every identity header the request carried (`mail`,
+  `eppn`, `remote-user`, any case, underscore spellings too) and forwards the identity the chat
+  app read as one `mail` header, or none when the request has no header identity (never
+  `demo-user`).
 - `registration_service/server.py::_require_admin` re-checks the forwarded identity as
-  defense-in-depth (dev-open under `FAKE_DB=1`). It alone gates `DELETE /agents/{id}?force=true`
+  defense-in-depth (**403** without an identity or if not listed; dev-open under `FAKE_DB=1`).
+  It alone gates `DELETE /agents/{id}?force=true`
   (delete although the directory did not confirm the card's removal), which the chat app forwards
   without its own check (on the service itself:
   `curl -X DELETE 'http://localhost:8091/agents/<id>?force=true' -H "mail: <admin>"`).
@@ -104,7 +113,9 @@ ever seeing a secret. Gated on `DATABASE_URL` — inert without a DB.
 The credential catalog `type` values (`openai_api_key`, `brave_api_key`, …, plus `custom:<slug>`)
 are the **canonical** namespace. The `user_credentials.provider` column stores those strings; an
 idempotent migration in `db.py` rewrites legacy values (`openai`→`openai_api_key`, …).
-`credential_catalog.py` is mirrored in both the registration service and the chat app.
+Both services import the one catalog, `agentnet/credential_catalog.py`. The check is exact; the
+chat app lowercases and strips a stored key's type first, the registration service only strips a
+declared one.
 
 ### The flow: declare → grant → scope → inject → read (D5)
 1. **Declare.** A custom agent declares required credentials; the registration service writes

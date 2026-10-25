@@ -231,19 +231,9 @@ async def _shib_header_becomes_user_id() -> None:
 
 
 # ---------------------------------------------------------------------------
-# P4f — admin via ADMIN_EMAILS allowlist (SSO identity, no shared token)
+# P4f — admin via ADMIN_EMAILS allowlist (SSO identity, no shared token).
+# The allowlist helpers are tested in agentnet/tests/test_identity.py.
 # ---------------------------------------------------------------------------
-
-def test_is_admin_helper(monkeypatch) -> None:
-    from chat_app import auth
-    monkeypatch.setenv("ADMIN_EMAILS", "Admin@EXAMPLE.com, boss@example.com")
-    assert auth.is_admin("admin@example.com")            # case-insensitive
-    assert auth.is_admin("boss@example.com")
-    assert not auth.is_admin("nobody@example.com")
-    assert not auth.is_admin(None)
-    monkeypatch.delenv("ADMIN_EMAILS", raising=False)
-    assert not auth.is_admin("admin@example.com")        # empty allowlist → no admins
-
 
 async def _get(app, path, headers=None):
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client:
@@ -285,6 +275,32 @@ async def _admin_health_reset() -> None:
         assert other.status_code == 403, other.text
         old = await client.post("/admin/ads/reset", headers={"mail": "admin@example.com"})
         assert old.status_code == 404, old.text
+
+
+@pytest.mark.parametrize("db_url", [None, "postgres://unused"], ids=["no-db", "db-with-anon-opt-in"])
+def test_the_anonymous_stand_in_is_never_admin(monkeypatch, db_url) -> None:
+    # A request without an identity header runs as demo-user when anonymous access is
+    # allowed. Listing that name in ADMIN_EMAILS must not make such callers admins.
+    _no_anon_opt_in(monkeypatch)
+    if db_url is None:
+        monkeypatch.delenv("DATABASE_URL", raising=False)
+    else:
+        monkeypatch.setenv("DATABASE_URL", db_url)
+        monkeypatch.setenv("CHAT_APP_ALLOW_ANON", "1")
+    monkeypatch.setenv("ADMIN_EMAILS", "demo-user")
+    asyncio.run(_the_anonymous_stand_in_is_never_admin(check_me=db_url is None))
+
+
+async def _the_anonymous_stand_in_is_never_admin(check_me: bool) -> None:
+    app = _final_answer_app()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client:
+        stats = await client.get("/admin/stats")
+        assert stats.status_code == 403, stats.text
+        approve = await client.post("/register/agents/a1/approve")
+        assert approve.status_code == 403, approve.text
+        if check_me:  # /me needs the database when one is configured
+            me = (await client.get("/me")).json()
+            assert me["email"] == "demo-user" and me["is_admin"] is False
 
 
 def test_admin_route_401_without_identity_when_db(monkeypatch) -> None:
@@ -402,12 +418,17 @@ class _GzipRegistration(http.server.BaseHTTPRequestHandler):
 
 class _RecordingRegistration(http.server.BaseHTTPRequestHandler):
     """A registration service stand-in that records each request's method, path
-    and forwarded identity."""
+    and forwarded identity, and every identity header it received."""
 
     seen: list[tuple[str, str, str | None]] = []
+    identity_headers: list[list[tuple[str, str]]] = []
 
     def _reply(self) -> None:
         type(self).seen.append((self.command, self.path, self.headers.get("mail")))
+        type(self).identity_headers.append([
+            (name.lower(), value) for name, value in self.headers.items()
+            if name.lower().replace("_", "-") in ("mail", "eppn", "remote-user")
+        ])
         self.rfile.read(int(self.headers.get("Content-Length") or 0))
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -457,6 +478,45 @@ async def _register_proxy_forwards_the_callers_identity() -> None:
                 content=b"{}" if method == "POST" else None,
             )
             assert resp.status_code == 200, (path, resp.text)
+
+
+def test_register_proxy_forwards_only_the_identity_it_read(monkeypatch) -> None:
+    # The caller's own identity headers are dropped and the identity the chat app read
+    # is forwarded as one mail header, so the registration service cannot see a
+    # different caller (two mail headers, eppn, another spelling). A request without a
+    # header identity forwards none: never the anonymous stand-in.
+    monkeypatch.delenv("DATABASE_URL", raising=False)  # anonymous allowed
+    _RecordingRegistration.seen = []
+    _RecordingRegistration.identity_headers = []
+    upstream = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _RecordingRegistration)
+    threading.Thread(target=upstream.serve_forever, daemon=True).start()
+    try:
+        monkeypatch.setenv("REGISTRATION_SERVICE_URL", f"http://127.0.0.1:{upstream.server_port}")
+        asyncio.run(_register_proxy_forwards_only_the_identity_it_read())
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+    assert _RecordingRegistration.identity_headers == [
+        [("mail", "first@example.com")],
+        [("mail", "bob@example.com")],
+        [("mail", "carol")],
+        [],
+        [],
+    ]
+
+
+async def _register_proxy_forwards_only_the_identity_it_read() -> None:
+    app = _final_answer_app()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client:
+        for headers in (
+            [("mail", "First@Example.com"), ("mail", "second@example.com"), ("eppn", "x@example.com")],
+            [("mail", ""), ("eppn", "Bob@Example.com"), ("remote_user", "mallory@example.com")],
+            [("Remote-User", "Carol"), ("REMOTE_USER", "mallory@example.com")],
+            [("remote_user", "mallory@example.com"), ("mail", "")],
+            [],
+        ):
+            resp = await client.post("/register/agents", headers=headers, content=b"{}")
+            assert resp.status_code == 200, (headers, resp.text)
 
 
 def test_register_proxy_returns_headers_that_match_the_body_it_sends(monkeypatch) -> None:

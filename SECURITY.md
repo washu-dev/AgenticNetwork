@@ -36,13 +36,17 @@ and [`docs/deployment/DOWNSTREAM_CONSIDERATIONS.md`](docs/deployment/DOWNSTREAM_
 #2–#3 (the at-scale hardening plan). Update this file when the posture changes.
 
 - **Identity at the front door.** Users sign in at one authenticated gateway, which injects
-  identity headers (`eppn`/`mail`/`remote-user`) that the chat app trusts (`chat_app/auth.py`).
+  identity headers (`mail`/`eppn`/`remote-user`) that the chat app trusts (`chat_app/auth.py`,
+  read by `agentnet/identity.py`).
   The chat app has no authentication of its own, so it must be reachable only through the gateway.
   It fails closed (401) without an identity when a DB is configured, and a login identity always
   wins over a request-body `user_id`.
 - **Admin allowlist.** Admin rights come from the signed-in identity: emails in `ADMIN_EMAILS`
-  (`require_admin`: 401 without an identity, 403 if not listed; an empty list means no admins).
-  The chat app and the registration service both enforce it.
+  (an empty list means no admins). The chat app and the registration service both enforce it
+  (`require_admin`). The chat app answers 401 without an identity when it requires a login, and
+  403 if the identity is not listed; its anonymous stand-in identity is never admin. The
+  registration service answers 403 in both cases. The chat app's `/register/*` pass-through
+  forwards only the identity it read itself, as one `mail` header.
 - **Credentials: encrypted at rest, scoped per agent.** Per-user API keys and OAuth tokens are
   AES-256-GCM encrypted (`chat_app/store/crypto.py`, `CREDENTIALS_ENCRYPTION_KEY`). At request time
   the chat app decrypts them and the planner passes the target agent only the types it declared
@@ -57,7 +61,7 @@ and [`docs/deployment/DOWNSTREAM_CONSIDERATIONS.md`](docs/deployment/DOWNSTREAM_
 | Surface | Auth today | Notes |
 |---|---|---|
 | Public URL `agenticweb.engr.wustl.edu` | **WashU Shibboleth SSO** (Apache `mod_shib`) | The one authenticated front door. TLS at nginx. |
-| Chat app `:8090` | **None of its own** — trusts Apache-injected `eppn`/`mail`/`remote-user` headers (`chat_app/auth.py`), fail-closed (401) when a DB is configured | Safe **only** behind the Shib proxy. Reached raw (or via an SSH tunnel) with a spoofed identity header, auth is bypassed. |
+| Chat app `:8090` | **None of its own** — trusts Apache-injected `mail`/`eppn`/`remote-user` headers (`chat_app/auth.py`, `agentnet/identity.py`), fail-closed (401) when a DB is configured | Safe **only** behind the Shib proxy. Reached raw (or via an SSH tunnel) with a spoofed identity header, auth is bypassed. |
 | Chat app admin (`/admin/*`) | **SSO identity ∈ `ADMIN_EMAILS`** (`require_admin`); fail-closed (empty list → no admins) | The shared `X-Admin-Token`/`MAIN_AGENT_ADMIN_TOKEN` + `POST /admin/login` are retired. See [`docs/AUTH.md`](docs/AUTH.md) §2. |
 | Specialist ports (9103, 9104, 19105–19108) | **None** — empty `securitySchemes`, bind `0.0.0.0` | Any process on the node's localhost can drive Gmail send, calendar/file writes, code execution, geolocation **directly**, skipping the planner's policy. |
 | Registration service `:8091` | Admin endpoints fail-closed on `ADMIN_EMAILS` (dev-open under `FAKE_DB=1`); `/internal/*` has **no access check in code** | Approval is the trust boundary for uploaded code. `/internal/*` relies on `:8091` not being reachable from outside; the chat app's `/register` pass-through refuses it (see §2). Agent responses show configs with secret values redacted (`server.py::_public_config`). |

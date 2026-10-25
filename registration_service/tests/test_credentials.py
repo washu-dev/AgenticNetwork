@@ -1,4 +1,7 @@
-"""P4a — credential declaration, catalog, and card carrier."""
+"""P4a — credential declaration, the catalog endpoint, and card carrier.
+
+The catalog itself is tested in agentnet/tests/test_credential_catalog.py.
+"""
 
 from __future__ import annotations
 
@@ -12,27 +15,12 @@ from registration_service.card_credentials import (
     CREDENTIALS_EXTENSION_URI,
     build_credentials_extension,
 )
+from agentnet.identity import IDENTITY_HEADERS
 from agentnet.models import REQUIRED_CREDENTIALS_EXTENSION_URI
-from registration_service.credential_catalog import (
-    catalog_entry,
-    is_known_type,
-)
+from agent_skeleton.executor import _IDENTITY_METADATA_KEYS
 from registration_service.models import CustomConfig, LLMConfig
 from registration_service.supervisor import _build_agent_card, _declared_credentials
 from registration_service.tests.conftest import CUSTOM_PAYLOAD
-
-
-# ── Catalog ──────────────────────────────────────────────────────────────────
-
-def test_catalog_known_and_custom_types():
-    assert is_known_type("openai_api_key")
-    assert is_known_type("custom:my-thing")
-    assert is_known_type("custom:a_b")
-    assert not is_known_type("bogus")
-    assert not is_known_type("custom:")          # slug required
-    assert not is_known_type("custom:Bad Slug")  # no spaces/uppercase
-    assert catalog_entry("openai_api_key").kind == "api_key"
-    assert catalog_entry("custom:x") is None     # not a first-class catalog entry
 
 
 # ── Model ────────────────────────────────────────────────────────────────────
@@ -141,3 +129,11 @@ def test_credentials_extension_uri_matches_agentnet() -> None:
     # card_credentials writes the URI out (it runs inside agent processes); the chat
     # app reads it through agentnet. The two copies must stay equal.
     assert CREDENTIALS_EXTENSION_URI == REQUIRED_CREDENTIALS_EXTENSION_URI
+
+
+def test_agent_metadata_strips_every_identity_header() -> None:
+    # agent_skeleton's executor runs in agent images without agentnet, so it keeps
+    # its own list of identity keys to strip from model-visible metadata. It must
+    # cover every header the services read the identity from, in both spellings.
+    for name in IDENTITY_HEADERS:
+        assert {name, name.replace("-", "_")} <= _IDENTITY_METADATA_KEYS

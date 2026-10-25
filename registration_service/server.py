@@ -17,7 +17,9 @@ import asyncpg
 from fastapi import FastAPI, File, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 
+from agentnet.credential_catalog import CATALOG as CREDENTIAL_CATALOG
 from agentnet.directory.publisher import DirectoryPublisher
+from agentnet.identity import identity_from_headers, is_admin, normalize_identity
 from registration_service import db
 from registration_service.archive import (
     ArchiveError,
@@ -40,7 +42,6 @@ from registration_service.models import (
     carries_upload,
     upload_spec,
 )
-from registration_service.credential_catalog import CATALOG as CREDENTIAL_CATALOG
 from registration_service.flags import fake_db_enabled, fake_supervisor_enabled
 from registration_service.oasf_skills import OASF_SKILLS, has_routable_skill
 from registration_service.port_pool import assign_port
@@ -120,24 +121,13 @@ def _is_zip_upload(filename: str | None, raw: bytes) -> bool:
     return raw[:4] in _ZIP_MAGIC
 
 
-_SHIB_HEADER_PRIORITY = ("mail", "eppn", "remote-user")
-
-
-def _admin_emails() -> set[str]:
-    raw = os.getenv("ADMIN_EMAILS", "")
-    return {e.strip().lower() for e in raw.split(",") if e.strip()}
-
-
 def _caller_email(request: Request) -> str | None:
     """The forwarded SSO identity, lowercased, or None when the request has none.
 
-    The chat app passes requests through with the Apache-injected Shibboleth headers.
+    The chat app's pass-through forwards the identity it read from the front door's
+    headers as one ``mail`` header; ``agentnet.identity`` reads it, as the chat app does.
     """
-    return next(
-        (request.headers.get(h, "").strip().lower() for h in _SHIB_HEADER_PRIORITY
-         if request.headers.get(h, "").strip()),
-        None,
-    )
+    return identity_from_headers(request.headers)
 
 
 def _require_admin(request: Request) -> None:
@@ -148,8 +138,7 @@ def _require_admin(request: Request) -> None:
     """
     if fake_db_enabled():
         return
-    email = _caller_email(request)
-    if email is None or email not in _admin_emails():
+    if not is_admin(_caller_email(request)):
         raise HTTPException(status_code=403, detail="Admin access required")
 
 
@@ -164,8 +153,8 @@ def _require_owner_or_admin(request: Request, agent: dict[str, Any]) -> None:
         return
     email = _caller_email(request)
     # Compared as stored by registration (lowercased); a hand-set value may not be.
-    owner = (agent.get("owner_email") or "").strip().lower() or None
-    if email is not None and (email == owner or email in _admin_emails()):
+    owner = normalize_identity(agent.get("owner_email"))
+    if email is not None and (email == owner or is_admin(email)):
         return
     raise HTTPException(
         status_code=403,

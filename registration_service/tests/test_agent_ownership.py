@@ -72,6 +72,17 @@ async def test_registration_records_the_callers_identity_as_owner(
     assert (await db.get_agent(aid))["owner_email"] == OWNER
 
 
+async def test_an_owner_recorded_from_eppn_can_change_the_agent(client: AsyncClient, enforced) -> None:
+    """Without a mail header the identity comes from eppn, at registration and at
+    each check alike."""
+    resp = await client.post("/agents", json=LLM_PAYLOAD, headers={"mail": " ", "eppn": "Owner@Example.com"})
+    assert resp.status_code == 201, resp.text
+    aid = resp.json()["id"]
+    assert (await db.get_agent(aid))["owner_email"] == OWNER
+    resp = await client.delete(f"/agents/{aid}", headers={"eppn": OWNER})
+    assert resp.status_code == 204, resp.text
+
+
 async def test_registration_without_an_identity_leaves_no_owner(client: AsyncClient, enforced) -> None:
     aid = await _register(client, LLM_PAYLOAD, None)
     assert (await db.get_agent(aid))["owner_email"] is None

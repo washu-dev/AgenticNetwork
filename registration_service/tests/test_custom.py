@@ -308,8 +308,14 @@ async def test_require_admin_allowlist(monkeypatch) -> None:
     monkeypatch.delenv("FAKE_DB", raising=False)
     monkeypatch.setenv("ADMIN_EMAILS", "admin@example.com")
     _require_admin(_FakeReq({"mail": "admin@example.com"}))          # allowlisted → ok
+    _require_admin(_FakeReq({"mail": " ", "eppn": "Admin@Example.com"}))  # blank mail → eppn
 
-    for headers in ({"mail": "bob@example.com"}, {}):                # non-admin / no identity
+    for headers in (
+        {"mail": "bob@example.com"},                                 # non-admin
+        {},                                                          # no identity
+        {"mail": "bob@example.com", "eppn": "admin@example.com"},    # mail comes first
+        {"remote_user": "admin@example.com"},                        # not an identity header
+    ):
         with pytest.raises(HTTPException) as ei:
             _require_admin(_FakeReq(headers))
         assert ei.value.status_code == 403

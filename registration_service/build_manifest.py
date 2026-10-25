@@ -52,7 +52,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from registration_service.credential_catalog import catalog_entry
+from agentnet.credential_catalog import catalog_entry
 from registration_service.models import upload_spec
 
 MANIFEST_FILENAME = "agent.json"
@@ -234,9 +234,9 @@ def _credential_type_label(value: Any) -> str:
 
     ``type`` is an unvalidated ``str`` at this layer, so the only values safe to
     publish verbatim are the ones drawn from a fixed enumeration: the catalog in
-    ``credential_catalog``. The documented ``custom:<slug>`` escape is open-ended —
-    a charset check cannot tell a slug from an API key, since most keys are
-    alphanumeric — so a custom type is recorded as present but redacted. A reviewer
+    ``agentnet.credential_catalog``. The documented ``custom:<slug>`` escape is
+    open-ended — a charset check cannot tell a slug from an API key, since most keys
+    are alphanumeric — so a custom type is recorded as present but redacted. A reviewer
     still sees that the agent asks for a custom credential; which one is in the
     database and the UI.
     """
