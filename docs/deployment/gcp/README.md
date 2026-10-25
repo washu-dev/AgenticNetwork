@@ -18,7 +18,7 @@ maps onto each platform.
 
 ## Architecture
 
-A message hits the chat app (Cloud Run service `planner`), whose planner **discovers** agents from ADS, **routes** to the chosen agent's Cloud Run
+A message hits the chat app (Cloud Run service `chat-app`), whose planner **discovers** agents from ADS, **routes** to the chosen agent's Cloud Run
 URL (authenticated with a Google ID token), reasons via **vLLM-primary / Vertex-fallback**, and persists
 to **Cloud SQL**. Separately, registering a custom agent triggers a CI build and the **`CloudRunBackend`**
 auto-deploys + auto-publishes it — no operator step. The request-path diagram is kept in one place —
@@ -28,14 +28,14 @@ auto-deploys + auto-publishes it — no operator step. The request-path diagram 
 
 At a glance (exact names, env, and control commands are in [DEPLOYED_COMPONENTS.md](DEPLOYED_COMPONENTS.md)):
 
-- **Cloud Run** — `planner` (the chat app, min=1), `registration` (singleton min=max=1,
-  `SPAWN_BACKEND=cloudrun`), and on-demand agents (`disaster`, custom agents; min=0). The chat app's
-  service, image and connector keep its older name, `planner`, so the running deployment keeps working.
+- **Cloud Run** — `chat-app` (the chat app, min=1; named `planner` until 2026-10-25), `registration`
+  (singleton min=max=1, `SPAWN_BACKEND=cloudrun`), and on-demand agents (`disaster`, custom agents; min=0).
 - **Cloud SQL** — `agenticnetwork-db` (Postgres 15). One `registration` database **shared** by the chat app
   and the registration service (disjoint tables).
 - **GCE VMs** — `ads` (the `dirctl` directory, COS VM at `10.128.0.3`) and `vllm-relay` (autossh tunnel to
   the ENGR vLLM).
-- **Serverless VPC connector** — `planner-connector`, so Cloud Run can reach the private ADS VM.
+- **Serverless VPC connector** — `chat-app-connector` (`planner-connector` in the 2026-08 deployment), so
+  Cloud Run can reach the private ADS VM.
 - **Secret Manager** — LLM key, DB DSN, GitHub token, credential-encryption key, agent cards.
 - **Service accounts** — `agent-runtime` (agents run as this), `registration-service` (the deployer);
   see [`deployment/scripts/gcp_iam_step7.sh`](../../../deployment/scripts/gcp_iam_step7.sh).
@@ -48,7 +48,7 @@ At a glance (exact names, env, and control commands are in [DEPLOYED_COMPONENTS.
 | Custom-agent spawn | host loop `srun`s image-ready agents (`ClusterBackend`) | **`CloudRunBackend`** calls the Cloud Run Admin API directly (no host loop) |
 | Scaling | every container up for the whole job | Cloud Run autoscale; on-demand agents `min=0` (scale to zero, ~$0 idle) |
 | Postgres | one container on `localhost:5432` (`Dockerfile.postgres`) | **Cloud SQL**, reached via `--add-cloudsql-instances` unix socket |
-| Networking | host networking on one node | VPC + the `planner-connector` to reach the private ADS VM |
+| Networking | host networking on one node | VPC + the `chat-app-connector` to reach the private ADS VM |
 | ADS | `dirctl daemon` container | `dirctl daemon` on a COS **GCE VM** |
 | LLM | vLLM on a GPU node in the same allocation | vLLM via the `vllm-relay` VM (primary) → **Vertex fallback** |
 | Config / secrets | env from `.env`/`secrets.env` via `--export=ALL` | Cloud Run env + **Secret Manager** |
@@ -62,9 +62,9 @@ At a glance (exact names, env, and control commands are in [DEPLOYED_COMPONENTS.
 The GCP services are **IAM-private** (no public URL yet) — reached through Google's authenticated proxy,
 not the internet. You need `gcloud` authed as a user with `run.invoker` on the service (`run.admin` covers it).
 
-**Chat app (service `planner`):**
+**Chat app (service `chat-app`; `planner` until the migration above):**
 ```bash
-gcloud run services proxy planner --project=di2-agenticweb --region=us-central1 --port=8080
+gcloud run services proxy chat-app --project=di2-agenticweb --region=us-central1 --port=8080
 ```
 Then open http://localhost:8080/app (anon is allowed for now — `PLANNER_ALLOW_ANON=1`, the old name
 of `CHAT_APP_ALLOW_ANON`).
@@ -81,7 +81,7 @@ it. An agent registered through the UI here has no owner, so its upload is refus
 ([DEPLOY_YOUR_OWN.md step 13](DEPLOY_YOUR_OWN.md#13-add-agents)).
 
 The **agents** aren't accessed directly — the chat app's planner reaches them internally over the VPC. To grant a
-teammate access: `gcloud run services add-iam-policy-binding planner --region=us-central1
+teammate access: `gcloud run services add-iam-policy-binding chat-app --region=us-central1
 --member="user:them@wustl.edu" --role="roles/run.invoker"`, and they run the same proxy.
 
 ## Dev workflow
@@ -91,20 +91,23 @@ teammate access: `gcloud run services add-iam-policy-binding planner --region=us
   The `CloudRunBackend` is unit-tested against a fake Cloud Run client — no `google-cloud-run` install, no GCP.
 - **Build + push an infra image:** `bash deployment/build_and_push.sh registration` (same script/images as the
   cluster). Redeploy with `gcloud run services update <svc> --image=di2washu/agenticnetwork-<svc>:latest`.
-- **`planner` also needs a new start command.** It runs with a start-command override that starts
-  `planner_agent.scripts.run_server`, and images built after the 2026-10-20 rename no longer contain
-  that module, so a new revision on such an image cannot start. Every new revision looks up
-  `:latest` again, including config-only updates such as a pause/resume (`--min-instances`) or an
-  env change, and ENGR pushes the same shared `:latest`. So as soon as a `:latest` built from
-  `chat_app/` is pushed (from ENGR or here), check the override with
-  `gcloud run services describe planner --region=us-central1` and switch it in one update:
-  `gcloud run services update planner --region=us-central1 --image=di2washu/agenticnetwork-planner:latest --command=python --args=-m,chat_app`
-  (append `,--fake-ads` only if the current override still has it). Details:
-  [DEPLOY_YOUR_OWN.md](DEPLOY_YOUR_OWN.md) step 10.
-- **Update `registration` before `planner`.** The chat app's approval view needs the code revision
+- **Old `planner` service.** Until 2026-10-25 the chat app ran as Cloud Run service `planner`, image
+  `agenticnetwork-planner`, connector `planner-connector`, with a start command
+  (`planner_agent.scripts.run_server`) that newer images no longer contain; the commands and names on
+  this page are the renamed ones. If the old service still exists in `di2-agenticweb`:
+  1. Push the renamed image (`bash deployment/build_and_push.sh chat-app registration`).
+  2. On `registration`, replace `PLANNER_INVOKER_SA` with `CHAT_APP_INVOKER_SA` (same value) in the same
+     update that rolls out the new image. It reads only the new name, and without it agents deployed
+     afterwards don't let the chat app call them (it logs `cloudrun_no_invoker_sa`).
+  3. Deploy `chat-app` ([DEPLOY_YOUR_OWN.md](DEPLOY_YOUR_OWN.md) step 10, which starts
+     `python -m chat_app`). A connector can't be renamed: pass `--vpc-connector=planner-connector`, or
+     create `chat-app-connector` (step 4) and delete the old one afterwards.
+  4. Grant `run.invoker` on `chat-app` to whoever had it on `planner`, then
+     `gcloud run services delete planner --region=us-central1`.
+- **Update `registration` before `chat-app`.** The chat app's approval view needs the code revision
   that the registration service reports since the 2026-10-21 approval fixes; in front of an older
-  `registration` revision it says so and cannot approve. A config-only `planner` update also pulls
-  the shared `:latest` (above), so push and roll out `registration` first.
+  `registration` revision it says so and cannot approve. A config-only `chat-app` update also pulls
+  the shared `:latest` again, so push and roll out `registration` first.
 - **The register→deploy loop:** register a `custom` agent → approve (fires a commit to `agent-directory`) →
   the `build-custom-agent.yml` GitHub Action builds the image → the reg service's build poll deploys it via
   the `CloudRunBackend`. Full trace + acceptance test: [IMPLEMENTATION_CLOUDRUN_BACKEND.md](IMPLEMENTATION_CLOUDRUN_BACKEND.md).
@@ -126,13 +129,13 @@ teammate access: `gcloud run services add-iam-policy-binding planner --region=us
 
 ## Operate / cost / pause
 
-Always-on billers: `planner` + `registration` (min=1), Cloud SQL, the `ads` + `vllm-relay` VMs, the connector.
+Always-on billers: `chat-app` + `registration` (min=1), Cloud SQL, the `ads` + `vllm-relay` VMs, the connector.
 Pause commands are in [DEPLOYED_COMPONENTS.md](DEPLOYED_COMPONENTS.md#cost--pause).
 
 ## Status & deferred work (handoff)
 
 **Where this landed (end of summer 2026).** The GCP migration reached a stable, self-contained milestone:
-the chat app (`planner`) + registration service ran on Cloud Run against Cloud SQL, and the full
+the chat app (then `planner`) + registration service ran on Cloud Run against Cloud SQL, and the full
 register→build→deploy→publish automation (`CloudRunBackend`) was **live and proven end-to-end**
 (2026-08-03), reachable by operators via the proxy (see [How to access](#how-to-access)). The **ENGR
 cluster remains the live public deployment** (`agenticweb.engr.wustl.edu`) — the GCP front-door cutover
@@ -146,7 +149,7 @@ directly — none of this blocks using or developing the GCP stack as-is):
    chat app (and drops anon at cutover). The build outline is in the CloudRunBackend
    implementation doc's [Step 10](IMPLEMENTATION_CLOUDRUN_BACKEND.md); the decision + rejected
    alternatives (LB+Cloud Armor / IAP+WIF) are in [DOWNSTREAM_CONSIDERATIONS.md](../DOWNSTREAM_CONSIDERATIONS.md) #4.
-   First switch the `planner` service's start command to `-m,chat_app`, if that is not done yet
+   First replace the old `planner` service with `chat-app`, if that is not done yet
    ([Dev workflow](#dev-workflow)).
 2. **Option-1 cutover** — repoint `agenticweb.engr.wustl.edu` at the GCP chat app (a reversible config
    change on the out-of-repo WashU gateway). Only after (1).

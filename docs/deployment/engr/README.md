@@ -19,7 +19,7 @@ the vLLM inference server on a GPU node.
   srun step: di2washu/agenticnetwork-postgres:latest     :5432
   srun step: di2washu/agenticnetwork-ads:v4              :8888
   srun step: di2washu/agenticnetwork-registration:latest :8091
-  srun step: di2washu/agenticnetwork-planner:latest      :8090
+  srun step: di2washu/agenticnetwork-chat-app:latest      :8090
   srun step: di2washu/agenticnetwork-scout:latest        :9104
   srun step: di2washu/agenticnetwork-email:latest        :9103
   srun step: di2washu/agenticnetwork-coding:latest       :19106
@@ -33,9 +33,10 @@ the vLLM inference server on a GPU node.
 ```
 
 All containers communicate over `localhost` on the same compute node.
-The `planner` container is the chat app (the web service people sign in to, with the planner
-inside it). Its image, entrypoint (`entrypoint-planner.sh`), Slurm step and log files keep the
-chat app's older name, `planner`, so the running deployment keeps working.
+The `chat-app` container is the chat app (the web service people sign in to, with the planner
+inside it); its log is `chat-app.log`. (Before 2026-10-25 it was named `planner`: run
+`bash deployment/build_and_push.sh chat-app` once before the first deploy from a newer tree, since
+`submit.sbatch` now pulls `agenticnetwork-chat-app`.)
 The chat app's planner reaches vLLM via `OPENAI_BASE_URL=http://<gpu-node>:8100/v1`.
 
 Postgres starts first (ADS and the registration service both depend on it),
@@ -55,11 +56,11 @@ registration and ADS containers are pure DB clients.
 
 | File | Purpose |
 |---|---|
-| `submit.sbatch` | Main Slurm job — launches all service containers (postgres, ADS, registration, planner (the chat app) + 6 specialists) in parallel |
+| `submit.sbatch` | Main Slurm job — launches all service containers (postgres, ADS, registration, chat-app + 6 specialists) in parallel |
 | `start_vllm.sbatch` | GPU Slurm job — starts the vLLM inference server |
-| `build_and_push.sh` | Builds/pushes the **4 infra images** (planner, ads, postgres, registration); the 6 specialist images build in the `agent-directory` repo |
+| `build_and_push.sh` | Builds/pushes the **4 infra images** (chat-app, ads, postgres, registration); the 6 specialist images build in the `agent-directory` repo |
 | `dockerfiles/` | One `Dockerfile.<agent>` per infra service (ADS runs `dirctl` directly, no Dockerfile-side entrypoint script) |
-| `entrypoints/` | `entrypoint-{postgres,registration,planner}.sh` (postgres init / DB + ADS wait / exec); ADS has none — it runs `dirctl daemon start` directly from `submit.sbatch` |
+| `entrypoints/` | `entrypoint-{postgres,registration,chat-app}.sh` (postgres init / DB + ADS wait / exec); ADS has none — it runs `dirctl daemon start` directly from `submit.sbatch` |
 | `ads_daemon.yaml` | dirctl daemon config (listen address, Postgres backend, data paths) |
 
 The full artifact list is in [`deployment/README.md`](../../../deployment/README.md). Related docs:
@@ -148,13 +149,13 @@ if you run under a different PI account (find yours with `sacctmgr show user $US
 Run from the repo root on your local machine:
 
 ```bash
-# Build and push the 4 infra images (planner, ads, postgres, registration).
+# Build and push the 4 infra images (chat-app, ads, postgres, registration).
 # NOTE: the 6 specialist agent images are built in the agent-directory repo,
 # not here (agent-directory/build_and_push.sh).
 bash deployment/build_and_push.sh
 
-# Build a single image (e.g. after changing only the chat app, whose image is "planner")
-bash deployment/build_and_push.sh planner
+# Build a single image (e.g. after changing only the chat app)
+bash deployment/build_and_push.sh chat-app
 ```
 
 Images are published to `<IMAGE_REGISTRY>/agenticnetwork-<agent>:latest`, where
@@ -334,7 +335,7 @@ The one piece of `POST /issues` not yet recorded as tested is the real token plu
      -d '{"kind":"bug","summary":"smoke test","description":"ignore me"}'
    # Expected: {"ok":true,"issue_url":"https://github.com/..."}
    ```
-   A 502 is a failure. If the chat app's log (`planner.log`) says `could not reach GitHub`, the node has no egress:
+   A 502 is a failure. If the chat app's log (`chat-app.log`) says `could not reach GitHub`, the node has no egress:
    stop, because the GitHub-issues approach depends on it.
 4. Check the issue in `GITHUB_ISSUES_REPO`: labels `user-submitted` + `bug-report`, and a readable
    "Auto-captured context" block. Submit the creation-feedback form at `/register/` and check for an
@@ -356,7 +357,7 @@ after the job exits. The main job log is `agenticnetwork-<jobid>.log`.
 | `postgres.log` | Dedicated PostgreSQL container (registration + dir DBs) |
 | `ads.log` / `ads.err` | ADS (dirctl) daemon |
 | `registration.log` / `registration.err` | Registration service |
-| `planner.log` / `planner.err` | Chat app (with its planner) |
+| `chat-app.log` / `chat-app.err` | Chat app (with its planner) |
 | `scout.log` / `scout.err` | Scout agent |
 | `email.log` / `email.err` | Email agent |
 | `coding.log` / `coding.err` | Coding agent |
@@ -373,7 +374,7 @@ after the job exits. The main job log is `agenticnetwork-<jobid>.log`.
 |---|---|---|
 | ADS daemon | 8888 | `ADS_SERVER_ADDR` |
 | Registration service | 8091 | `REGISTRATION_SERVICE_PORT` |
-| Chat app (`planner`) | 8090 | `CHAT_APP_PORT` (also exported as its old name, `MAIN_AGENT_PORT`) |
+| Chat app (`chat-app`) | 8090 | `CHAT_APP_PORT` (also exported as its old name, `MAIN_AGENT_PORT`) |
 | Scout | 9104 | `SCOUT_HTTP_PORT` |
 | Email | 9103 | `EMAIL_AGENT_A2A_PORT` |
 | GeoSpatial | 19105 | `GEOSPATIAL_AGENT_A2A_PORT` |

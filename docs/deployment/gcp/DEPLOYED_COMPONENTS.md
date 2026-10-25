@@ -1,5 +1,10 @@
 # Deployed components — what was live on GCP (updated 2026-08-03)
 
+> **Names (2026-10-25):** the chat app's deployment pieces this record calls `planner` (Cloud Run
+> service, image `agenticnetwork-planner`, `PLANNER_SA`/`PLANNER_INVOKER_SA`, `planner-connector`,
+> Slurm step and `planner.log`) are now named `chat-app` (`CHAT_APP_SA`, `CHAT_APP_INVOKER_SA`,
+> `chat-app-connector`). This record keeps the names as they were deployed.
+
 Operator reference for what runs on GCP. As of 2026-08-03 (not re-verified since; check with
 `gcloud run services list` and `gcloud compute instances list` before relying on it) this is **Phases 0-3 + the
 CloudRunBackend (Phase 4) live**: planner + real ADS + on-demand agent, **plus the registration service on

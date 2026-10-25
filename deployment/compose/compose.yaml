@@ -15,7 +15,7 @@
 
 name: agenticnetwork
 
-# Settings the chat app (the planner service) and the registration service share.
+# Settings the chat app and the registration service share.
 # Spawned agents inherit registration's environment, so they get the same LLM endpoint.
 x-shared-env: &shared-env
   ADS_SERVER_ADDR: localhost:8888
@@ -120,10 +120,10 @@ services:
     init: true
     restart: unless-stopped
 
-  planner:
+  chat-app:
     build:
       context: ../..
-      dockerfile: deployment/dockerfiles/Dockerfile.planner
+      dockerfile: deployment/dockerfiles/Dockerfile.chat-app
     network_mode: service:net
     depends_on:
       postgres:
@@ -153,7 +153,7 @@ services:
     # it with an authenticating proxy for a real deployment (COMPOSE.md).
     <<: *devstack
     depends_on:
-      - planner
+      - chat-app
     command:
       - python
       - -m
@@ -176,7 +176,7 @@ services:
     profiles: ["seed"]
     restart: "no"
     depends_on:
-      planner:
+      chat-app:
         condition: service_healthy
       registration:
         condition: service_healthy

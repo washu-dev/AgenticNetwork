@@ -110,8 +110,19 @@ def _cloud_env(monkeypatch):
     monkeypatch.setenv("GCP_PROJECT", "example-project")
     monkeypatch.setenv("GCP_REGION", "us-central1")
     monkeypatch.setenv("AGENT_RUNTIME_SA", "agent-runtime@example-project.iam.gserviceaccount.com")
-    monkeypatch.setenv("PLANNER_INVOKER_SA", "planner@example-project.iam.gserviceaccount.com")
-    monkeypatch.setenv("VPC_CONNECTOR", "planner-connector")
+    monkeypatch.setenv("CHAT_APP_INVOKER_SA", "chat-app@example-project.iam.gserviceaccount.com")
+    monkeypatch.setenv("VPC_CONNECTOR", "chat-app-connector")
+
+
+@pytest.mark.parametrize("invoker, warns", [("chat-app@example-project.iam.gserviceaccount.com", False), (None, True)])
+def test_a_missing_invoker_account_is_logged(monkeypatch, caplog, invoker, warns):
+    """Without CHAT_APP_INVOKER_SA the chat app cannot call deployed agents; say so at startup."""
+    _cloud_env(monkeypatch)
+    if invoker is None:
+        monkeypatch.delenv("CHAT_APP_INVOKER_SA")
+    with caplog.at_level("WARNING", logger="registration_service.backend"):
+        CloudRunBackend(client=object())
+    assert any("cloudrun_no_invoker_sa" in r.getMessage() for r in caplog.records) is warns
 
 
 # ── _deploy_spec (pure) ─────────────────────────────────────────────────────────────
@@ -127,8 +138,8 @@ def test_deploy_spec_uses_digest(monkeypatch):
         config=_custom_config(),
         image_ref="sha256:deadbeef",
         service_account="agent-runtime@x.iam.gserviceaccount.com",
-        invoker_member="serviceAccount:planner@x.iam.gserviceaccount.com",
-        vpc_connector="planner-connector",
+        invoker_member="serviceAccount:chat-app@x.iam.gserviceaccount.com",
+        vpc_connector="chat-app-connector",
     )
     assert spec["service_id"] == "agent-paper-reviewer"
     assert spec["image"].endswith("/agenticnetwork-custom-paper-reviewer@sha256:deadbeef")
@@ -138,8 +149,8 @@ def test_deploy_spec_uses_digest(monkeypatch):
     assert spec["ingress"] == "internal-only"
     assert spec["allow_unauthenticated"] is False
     assert spec["service_account"] == "agent-runtime@x.iam.gserviceaccount.com"
-    assert spec["invoker_member"] == "serviceAccount:planner@x.iam.gserviceaccount.com"
-    assert spec["vpc_connector"] == "planner-connector"
+    assert spec["invoker_member"] == "serviceAccount:chat-app@x.iam.gserviceaccount.com"
+    assert spec["vpc_connector"] == "chat-app-connector"
     # The container binds the pinned Cloud Run port, not the DB-allocated one.
     assert '"port": 8080' in spec["env"]["AGENT_CONFIG_JSON"]
     assert spec["env"]["AGENT_PORT"] == "8080"
@@ -219,7 +230,7 @@ async def test_spawn_deploys_by_digest_and_grants_invoker(monkeypatch):
     assert fake.created[0]["service_account"].startswith("agent-runtime@")
     # Planner SA granted run.invoker on the service.
     assert fake.invokers == [
-        ("agent-paper-reviewer", "serviceAccount:planner@example-project.iam.gserviceaccount.com")
+        ("agent-paper-reviewer", "serviceAccount:chat-app@example-project.iam.gserviceaccount.com")
     ]
     await db.close_db()
 

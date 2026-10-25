@@ -194,7 +194,7 @@ the component you are working on.
 | `AGENT_INSTALL_TIMEOUT_SECONDS` | `600` | Limit for each install step (venv, `pip install`) of a subprocess agent's spawn; past it the step is killed and the spawn fails |
 | `MAX_ARCHIVE_FILES` / `MAX_ARCHIVE_UNCOMPRESSED` | `2000` / 25 MB | Limits for uploaded handler archives |
 | `FAKE_DB` / `FAKE_SUPERVISOR` | off / = `FAKE_DB` | In-memory DB; no-op supervisor (see Local development) |
-| GCP (`cloudrun`) | — | `GCP_PROJECT`, `GCP_REGION`, `AGENT_RUNTIME_SA`, `PLANNER_INVOKER_SA`, `VPC_CONNECTOR`, `CLOUDRUN_FORWARD_ENV`, `CLOUDRUN_OPERATION_TIMEOUT_SECONDS` (default `900`: how long a deploy or delete may take); see docs/deployment/gcp/ |
+| GCP (`cloudrun`) | — | `GCP_PROJECT`, `GCP_REGION`, `AGENT_RUNTIME_SA`, `CHAT_APP_INVOKER_SA`, `VPC_CONNECTOR`, `CLOUDRUN_FORWARD_ENV`, `CLOUDRUN_OPERATION_TIMEOUT_SECONDS` (default `900`: how long a deploy or delete may take); see docs/deployment/gcp/ |
 
 ## Deployment (ENGR cluster)
 

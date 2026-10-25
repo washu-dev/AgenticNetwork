@@ -13,7 +13,7 @@
 #                              IAM) and serviceAccountUser on agent-runtime (to deploy
 #                              agents AS that SA).
 #
-# The planner SA is granted run.invoker per-service by CloudRunBackend at spawn time
+# The chat app's SA is granted run.invoker per-service by CloudRunBackend at spawn time
 # (which is why the reg-service SA needs run.admin), so no standing grant here.
 #
 # Idempotent: re-running is safe (existing SAs are skipped; re-adding an existing
@@ -59,6 +59,6 @@ gcloud projects add-iam-policy-binding "$PROJECT" \
 #     service's secrets (GITHUB_TOKEN, DB creds) actually exist.
 
 echo
-echo "Step 7 IAM applied. Set PLANNER_INVOKER_SA to the planner's runtime SA:"
-gcloud run services describe planner --region="$REGION" --project="$PROJECT" \
+echo "Step 7 IAM applied. Set CHAT_APP_INVOKER_SA to the chat app's runtime SA:"
+gcloud run services describe chat-app --region="$REGION" --project="$PROJECT" \
   --format="value(spec.template.spec.serviceAccountName)"

@@ -208,7 +208,7 @@ ads_cid="$(value ads_cid)"
 
 # 7. The seed agent's record is routed in the real dirctl daemon.
 [ -n "$ads_cid" ] || fail "directory" "registration has no ads_cid for the seed agent"
-routed="$(docker compose exec -T planner dirctl --server-addr localhost:8888 routing list --output json 2>&1)" \
+routed="$(docker compose exec -T chat-app dirctl --server-addr localhost:8888 routing list --output json 2>&1)" \
     || fail "directory" "dirctl routing list failed: $routed"
 printf '%s' "$routed" | grep -q "$ads_cid" || fail "directory" "record $ads_cid is not routed: $routed"
 

@@ -178,7 +178,7 @@ An identity header (`mail`, `eppn`, `remote-user`) always wins over a body `user
 
 ### 4. Real ADS (cluster or tunnel)
 
-In the cluster the chat app's container (the `planner` service) connects to ADS
+In the cluster the chat app's container (the `chat-app` service) connects to ADS
 automatically via `ADS_SERVER_ADDR`. For local testing against a tunneled cluster ADS
 (see `agentnet/README.md`), point the chat app at it directly — agents
 will already be publishing their own cards:

@@ -1,8 +1,7 @@
-# Chat app (web server, chat UI and the planner) — port 8090. The file, image,
-# service and conda env keep the name "planner".
+# Chat app (web server, chat UI and the planner) — port 8090.
 # Build from repo root:
-#   docker build --platform linux/amd64 -f deployment/dockerfiles/Dockerfile.planner \
-#       -t di2washu/agenticnetwork-planner:latest .
+#   docker build --platform linux/amd64 -f deployment/dockerfiles/Dockerfile.chat-app \
+#       -t di2washu/agenticnetwork-chat-app:latest .
 FROM ghcr.io/agntcy/dir-ctl:v1.2.0 AS dirctl-src
 
 FROM continuumio/miniconda3:24.9.2-0
@@ -19,16 +18,16 @@ WORKDIR /app
 RUN conda install -n base -c conda-forge mamba -y --quiet
 
 COPY chat_app/requirements.txt chat_app/requirements.txt
-RUN mamba create -n planner-agent python=3.13 pip -y --quiet \
-    && /opt/conda/envs/planner-agent/bin/pip install --quiet \
+RUN mamba create -n chat-app python=3.13 pip -y --quiet \
+    && /opt/conda/envs/chat-app/bin/pip install --quiet \
         -r /app/chat_app/requirements.txt
 
 COPY chat_app/ chat_app/
 COPY agentnet/ agentnet/
-COPY deployment/entrypoints/entrypoint-planner.sh /entrypoint.sh
+COPY deployment/entrypoints/entrypoint-chat-app.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-ENV PATH=/opt/conda/envs/planner-agent/bin:$PATH
+ENV PATH=/opt/conda/envs/chat-app/bin:$PATH
 ENV PYTHONPATH=/app
 
 EXPOSE 8090

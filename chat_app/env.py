@@ -22,8 +22,8 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 # New name -> the old names it replaces, checked in order. Only these exact names
-# are read; never scan a prefix (other PLANNER_* variables exist that are not
-# settings of this service, e.g. PLANNER_IMAGE_TAG and PLANNER_INVOKER_SA).
+# are read; never scan a prefix (other CHAT_APP_* variables exist that are not
+# settings of this service, e.g. CHAT_APP_IMAGE_TAG and CHAT_APP_INVOKER_SA).
 RENAMED: dict[str, tuple[str, ...]] = {
     # Planner loop
     "PLANNER_LLM_ENABLED": ("MAIN_AGENT_LLM_ENABLED",),

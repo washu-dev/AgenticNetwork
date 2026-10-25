@@ -11,7 +11,7 @@ no database server, no SSO, no keys. The services, in start order:
     directory     a file-backed fake ``dirctl`` (devstack/bin/dirctl) shared by all
     mock-llm      deterministic OpenAI-compatible LLM (skipped with --llm openai)
     registration  registration_service, in-memory DB, real supervisor and spawner
-    planner       the chat app (chat_app/, with its planner), real dirctl backend, no DB
+    chat-app      the chat app (chat_app/, with its planner), real dirctl backend, no DB
     proxy         dev identity proxy: the browser's front door, signed in as the dev user
 
 then the seed agents (devstack/seeds/*.json) and any agents added with
@@ -68,10 +68,10 @@ EXIT_PREFLIGHT = 3
 EXIT_SERVICE = 5
 EXIT_SMOKE = 6
 
-BASE_PORTS = {"proxy": 8080, "planner": 8090, "registration": 8091, "mock-llm": 8099, "directory": 8888}
+BASE_PORTS = {"proxy": 8080, "chat-app": 8090, "registration": 8091, "mock-llm": 8099, "directory": 8888}
 AGENT_PORT_START = 19200
 AGENT_PORT_END = 19299
-PROCESS_SERVICES = ("mock-llm", "registration", "planner", "proxy")
+PROCESS_SERVICES = ("mock-llm", "registration", "chat-app", "proxy")
 LLM_MODES = ("mock", "openai")
 DEFAULT_DEV_USER = "dev@example.test"
 DEFAULT_TIMEOUT = 120.0
@@ -414,7 +414,7 @@ class ServiceSpec:
     stop_grace: float = 5.0
 
 
-def planner_python() -> str:
+def chat_app_python() -> str:
     """The chat app's interpreter: CHAT_APP_PYTHON, else the older PLANNER_PYTHON, else its venv."""
     return (
         os.environ.get("CHAT_APP_PYTHON")
@@ -492,11 +492,11 @@ def _service_specs(cfg: StackConfig) -> dict[str, ServiceSpec]:
             # Registration terminates its spawned agents on shutdown; give it time.
             stop_grace=15.0,
         ),
-        "planner": ServiceSpec(
-            name="planner",
+        "chat-app": ServiceSpec(
+            name="chat-app",
             command=[
-                planner_python(), "-m", "chat_app",
-                "--host", "127.0.0.1", "--port", str(cfg.port("planner")),
+                chat_app_python(), "-m", "chat_app",
+                "--host", "127.0.0.1", "--port", str(cfg.port("chat-app")),
             ],
             env={
                 **base_env(),
@@ -509,14 +509,14 @@ def _service_specs(cfg: StackConfig) -> dict[str, ServiceSpec]:
                 "ADMIN_EMAILS": cfg.dev_user,
             },
             marker="-m chat_app",
-            url=cfg.url("planner"),
-            probe=lambda: probe_ready(cfg.url("planner")),
+            url=cfg.url("chat-app"),
+            probe=lambda: probe_ready(cfg.url("chat-app")),
         ),
         "proxy": ServiceSpec(
             name="proxy",
             command=[
                 sys.executable, "-m", "devstack.dev_identity_proxy", "--host", "127.0.0.1",
-                "--port", str(cfg.port("proxy")), "--upstream", cfg.url("planner"), "--user", cfg.dev_user,
+                "--port", str(cfg.port("proxy")), "--upstream", cfg.url("chat-app"), "--user", cfg.dev_user,
             ],
             env=base_env(),
             marker="devstack.dev_identity_proxy",
@@ -754,7 +754,7 @@ def registered_agents(cfg: StackConfig) -> list[dict[str, Any]]:
 
 
 def planner_agents(cfg: StackConfig) -> list[dict[str, Any]] | None:
-    status, body = http_request("GET", f"{cfg.url('planner')}/agents", timeout=15.0)
+    status, body = http_request("GET", f"{cfg.url('chat-app')}/agents", timeout=15.0)
     payload = json_or_none(body)
     if status != 200 or not isinstance(payload, dict):
         return None
@@ -832,7 +832,7 @@ def wait_until_listed(cfg: StackConfig, names: list[str], deadline: float) -> li
             raise StackError(
                 f"the planner does not list {missing} (it lists {last or 'nothing'})" if missing
                 else f"the planner lists {silent} but they do not answer at their endpoints",
-                EXIT_SERVICE, service="agents", log=cfg.log_file("planner" if missing else "registration"),
+                EXIT_SERVICE, service="agents", log=cfg.log_file("chat-app" if missing else "registration"),
             )
         time.sleep(0.5)
 
@@ -896,7 +896,7 @@ def collect_status(cfg: StackConfig) -> dict[str, Any]:
             "log": str(cfg.log_file(name)),
             "detail": detail,
         }
-    listed = planner_agents(cfg) if services.get("planner", {}).get("ready") else None
+    listed = planner_agents(cfg) if services.get("chat-app", {}).get("ready") else None
     agents = [str(a.get("name", "")) for a in listed or []]
     expected = []
     for path in expected_agent_files(cfg):
@@ -964,7 +964,7 @@ def preflight(cfg: StackConfig, running: dict[str, int | None]) -> list[str]:
     if sys.version_info < (3, 11):
         problems.append(f"devstack needs Python >= 3.11; this is {sys.version.split()[0]} ({sys.executable})")
     for label, path, variable in (
-        ("planner", planner_python(), "CHAT_APP_PYTHON"),
+        ("chat-app", chat_app_python(), "CHAT_APP_PYTHON"),
         ("registration", registration_python(), "REGISTRATION_PYTHON"),
     ):
         if not os.access(path, os.X_OK):
@@ -1274,7 +1274,7 @@ def cmd_add_agent(args: argparse.Namespace) -> int:
     cfg = config_for_existing(state_dir_from(args.state_dir))
     path = Path(args.definition).expanduser()
     body = load_agent_body(path, cfg)
-    for name in ("registration", "planner"):
+    for name in ("registration", "chat-app"):
         ready, detail = _service_specs(cfg)[name].probe()
         if not ready:
             raise StackError(f"{name} is not ready ({detail}); run `up` first", EXIT_PREFLIGHT)
@@ -1338,7 +1338,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 
     check("python3", sys.version_info >= (3, 11), f"{sys.version.split()[0]} at {sys.executable} (needs >= 3.11)")
     for label, python, requirements in (
-        ("planner venv", planner_python(), REPO / "chat_app" / "requirements.txt"),
+        ("chat app venv", chat_app_python(), REPO / "chat_app" / "requirements.txt"),
         ("registration venv", registration_python(), REPO / "registration_service" / "requirements.txt"),
     ):
         if not os.access(python, os.X_OK):
@@ -1432,7 +1432,7 @@ def build_parser() -> argparse.ArgumentParser:
     status.set_defaults(func=cmd_status)
 
     logs = sub.add_parser("logs", parents=[common], help="Show a service's or an agent's log.")
-    logs.add_argument("service", help="mock-llm, registration, planner, proxy, directory, mock-llm-requests, or an agent name/id")
+    logs.add_argument("service", help="mock-llm, registration, chat-app, proxy, directory, mock-llm-requests, or an agent name/id")
     logs.add_argument("-n", "--lines", type=int, default=100)
     logs.add_argument("-f", "--follow", action="store_true")
     logs.set_defaults(func=cmd_logs)

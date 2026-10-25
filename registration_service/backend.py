@@ -14,7 +14,7 @@ Three backends share one interface (ContainerBackend):
 
   * CloudRunBackend — GCP. Each custom agent is deployed as a scale-to-zero Cloud
     Run service off the CI-built image (Cloud Run Admin API), run as a shared
-    low-privilege SA, with the planner SA granted run.invoker. Shares Cluster's
+    low-privilege SA, with the chat app's SA granted run.invoker. Shares Cluster's
     out-of-band build; only the launch mechanism differs (API call, no host loop).
 
 make_backend() selects ClusterBackend when SPAWN_BACKEND == "cluster",
@@ -796,7 +796,12 @@ class CloudRunBackend(ContainerBackend):
         self._project = os.getenv("GCP_PROJECT", "")
         self._region = os.getenv("GCP_REGION", "us-central1")
         self._service_account = os.getenv("AGENT_RUNTIME_SA") or None
-        self._invoker_member = _sa_member(os.getenv("PLANNER_INVOKER_SA"))
+        self._invoker_member = _sa_member(os.getenv("CHAT_APP_INVOKER_SA"))
+        if self._invoker_member is None:
+            # Not an error (a deploy may grant access some other way), but without it the
+            # chat app gets 403 from every agent this backend deploys.
+            logger.warning("cloudrun_no_invoker_sa: CHAT_APP_INVOKER_SA is unset; deployed agents grant "
+                           "no run.invoker, so the chat app cannot call them")
         self._vpc_connector = os.getenv("VPC_CONNECTOR") or None
         # Lazily built on first use so make_backend()/import work without the
         # google-cloud-run package (and so unit tests can inject a fake).

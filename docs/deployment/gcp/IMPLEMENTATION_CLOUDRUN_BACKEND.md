@@ -1,5 +1,10 @@
 # Implementation plan — `CloudRunBackend`
 
+> **Names (2026-10-25):** the chat app's deployment pieces this record calls `planner` (Cloud Run
+> service, image `agenticnetwork-planner`, `PLANNER_SA`/`PLANNER_INVOKER_SA`, `planner-connector`,
+> Slurm step and `planner.log`) are now named `chat-app` (`CHAT_APP_SA`, `CHAT_APP_INVOKER_SA`,
+> `chat-app-connector`). This record keeps the names as they were deployed.
+
 **2026-07-29**, progress updated **2026-07-30**. Concrete, ordered steps to build the `CloudRunBackend`
 and its supporting changes. Design + rationale: [`DESIGN_CLOUDRUN_BACKEND.md`](DESIGN_CLOUDRUN_BACKEND.md)
 (see its **Corrections (2026-07-30)** note before trusting the converter-divergence claim in "Current-state

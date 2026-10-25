@@ -96,11 +96,9 @@ agents, logs and troubleshooting: [`docs/DEVSTACK.md`](docs/DEVSTACK.md).
 The images, entrypoints and launch scripts are in [`deployment/`](deployment/); an overview of the
 targets is in [`docs/deployment/README.md`](docs/deployment/README.md).
 
-The chat app is still deployed under its older name, `planner`: the image
-`agenticnetwork-planner` (built from `deployment/dockerfiles/Dockerfile.planner`, started by
-`deployment/entrypoints/entrypoint-planner.sh`), the Compose service `planner`, the `planner`
-service in the cluster's Slurm script and the Cloud Run service `planner`. Those names are kept
-so existing deployments keep working.
+The chat app deploys as `chat-app` everywhere: the image `agenticnetwork-chat-app` (built from
+`deployment/dockerfiles/Dockerfile.chat-app`), the Compose service, the cluster's Slurm step and
+the Cloud Run service. Before 2026-10-25 these were all named `planner`.
 
 ## Testing
 

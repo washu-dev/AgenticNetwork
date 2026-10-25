@@ -26,7 +26,7 @@ Browser → nginx (TLS) → Apache + mod_shib (Shibboleth SP) → reverse-proxy 
 - Locally, the dev stack's identity proxy (`devstack/dev_identity_proxy.py`) plays the gateway:
   it drops client identity headers and injects `mail: dev@example.test` ([DEVSTACK.md](DEVSTACK.md)).
 
-> **On GCP (front door not built yet).** The GCP chat app (Cloud Run service `planner`) has **no SSO gateway in front of it**
+> **On GCP (front door not built yet).** The GCP chat app on Cloud Run has **no SSO gateway in front of it**
 > today — it runs `PLANNER_ALLOW_ANON=1` (the old name of `CHAT_APP_ALLOW_ANON`) and is reached
 > IAM-privately via `gcloud run services proxy` (operators only). It *is* now on Cloud SQL, so the
 > credential/history persistence and the fail-closed machinery below are live; they just aren't

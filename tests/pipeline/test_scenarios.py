@@ -464,7 +464,7 @@ def test_7_write_skill_runs_only_after_its_owner_confirms(stack, directory, reco
     cid = asked["context_id"]
     for confirmed in (True, False):
         body = {"context_id": cid, "confirmed": confirmed}
-        assert call("POST", f"{stack['planner']}/confirmations", body, headers={"mail": OTHER_USER})[0] == 403
+        assert call("POST", f"{stack['chat_app']}/confirmations", body, headers={"mail": OTHER_USER})[0] == 403
     assert recorder.received == []
 
     # The owner confirms, the way the chat UI's confirm button does: naming the prompt it
@@ -497,7 +497,7 @@ def test_8_another_users_yes_or_no_does_not_touch_a_pending_action(stack, direct
     cid = ask_to_publish(stack, directory, recorder)["context_id"]
     for reply in ("yes", "no"):
         body = {"user_id": OTHER_USER, "channel": "api", "text": reply, "context_id": cid}
-        status, answer = call("POST", f"{stack['planner']}/messages", body, headers={"mail": OTHER_USER})
+        status, answer = call("POST", f"{stack['chat_app']}/messages", body, headers={"mail": OTHER_USER})
         assert status == 403 and recorder.received == [], (reply, status, answer)
     confirm = {"context_id": cid, "confirmed": True}
     status, done = call("POST", f"{stack['proxy']}/confirmations", confirm)

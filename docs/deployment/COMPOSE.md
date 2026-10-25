@@ -32,9 +32,9 @@ Open **http://127.0.0.1:18080/app**: the chat UI, signed in as `dev@example.test
 built. Stacks built before 2026-10-15 tagged them `agenticnetwork-<service>:local`; remove those
 leftovers with `docker rmi`.
 
-The first build took about 2.5 minutes on a 10-core arm64 Mac with an empty cache (`planner`
+The first build took about 2.5 minutes on a 10-core arm64 Mac with an empty cache (`chat-app`
 77 s, registration 52 s, Postgres 18 s, ADS 10 s, base images included). Docker Desktop
-reported the images at 3.8 GB (`planner`), 640 MB (registration), 600 MB (Postgres) and
+reported the images at 3.8 GB (`chat-app`), 640 MB (registration), 600 MB (Postgres) and
 320 MB (ADS). A start with built images takes about 20 seconds.
 
 ## What runs
@@ -45,7 +45,7 @@ reported the images at 3.8 GB (`planner`), 640 MB (registration), 600 MB (Postgr
 | `postgres` | `Dockerfile.postgres` | Postgres 15. Database `registration` (registered agents, users, conversation history, credentials) persists in the `pgdata` volume; database `dir` (the directory's metadata) is recreated on every start. |
 | `ads` | `Dockerfile.ads` | The AGNTCY directory daemon (`dirctl daemon`, `deployment/ads_daemon.yaml`) on `localhost:8888`. |
 | `registration` | `Dockerfile.registration` | The registration service on `localhost:8091`. Spawns each registered agent as a subprocess in this container (ports 19200-19299) and publishes its card to the directory. Uploaded code and agent logs live in the `registration-data` volume. |
-| `planner` | `Dockerfile.planner` | The chat app (chat UI, sign-in, the planner) on `localhost:8090`, with history in Postgres. The service, its Dockerfile and image keep the chat app's older name, `planner`, so existing deployments keep working. |
+| `chat-app` | `Dockerfile.chat-app` | The chat app (chat UI, sign-in, the planner) on `localhost:8090`, with history in Postgres. |
 | `mock-llm` | `python:3.11-slim-bookworm` | The offline mock LLM (`devstack/mock_llm.py`) on `localhost:8099`. Used unless you configure a real model. |
 | `proxy` | `python:3.11-slim-bookworm` | The front door for local use (`devstack/dev_identity_proxy.py`), port 8080 in the namespace. It drops identity headers sent by the client and signs every request in as `DEV_USER_EMAIL`. |
 | `seed` | `python:3.11-slim-bookworm` | One-shot: registers `devstack/seeds/*.json` through the registration API if they are not registered yet, then exits 0 once the planner lists them. |
@@ -153,12 +153,12 @@ The defaults are for one person on their own machine. Before other people use it
    ```
    To restore, replace the database while the services that use it are stopped:
    ```bash
-   docker compose stop seed planner registration
+   docker compose stop seed chat-app registration
    docker compose exec -T postgres dropdb -h /tmp/postgresql -U postgres registration
    docker compose exec -T postgres createdb -h /tmp/postgresql -U postgres registration
    docker compose exec -T postgres psql -h /tmp/postgresql -U postgres -d registration -q -v ON_ERROR_STOP=1 < ~/agenticnetwork-backup/registration.sql
    docker compose cp ~/agenticnetwork-backup/registration-data/. registration:/var/lib/agenticnetwork
-   docker compose start registration planner
+   docker compose start registration chat-app
    ```
    The `dir` database needs no backup: it is rebuilt on every start.
 6. **Review uploaded code before approving it.** Approved custom agents run inside the
@@ -239,7 +239,7 @@ runs each service as a managed Cloud Run service with Cloud SQL.
   was not tested.
 - **Images are built for the host's architecture.** Tested on arm64 (Apple silicon) and on
   GitHub's amd64 runner (`compose.yml`, 2026-10-15). Under Docker Desktop's amd64 emulation on
-  Apple silicon, the `planner` image's `mamba create` step hangs (Rosetta), so build amd64 images on an
+  Apple silicon, the `chat-app` image's `mamba create` step hangs (Rosetta), so build amd64 images on an
   amd64 host or in CI.
   `deployment/build_and_push.sh` builds `linux/amd64` for ENGR.
 
@@ -248,14 +248,15 @@ runs each service as a managed Cloud Run service with Cloud SQL.
 | Symptom | What to do |
 |---|---|
 | `docker compose up` says a dependency failed to start | `docker compose ps` shows which service is unhealthy; `docker compose logs SERVICE` shows why. |
-| The chat app (`planner`) is unhealthy | `docker compose exec planner curl -s http://127.0.0.1:8090/ready` names the failing check: `directory`, `db` or `llm`. |
+| After the 2026-10-25 rename, `chat-app` cannot bind port 8090 | An old `planner` container from before the rename still holds it: `docker compose down --remove-orphans`, then `up` again. |
+| The chat app (`chat-app`) is unhealthy | `docker compose exec chat-app curl -s http://127.0.0.1:8090/ready` names the failing check: `directory`, `db` or `llm`. |
 | `docker compose run --rm seed` exits non-zero | `docker compose logs seed registration`. With a real LLM, the chat app must be ready, so check its `llm` check first. |
 | An agent misbehaves | Its log: `docker compose exec registration ls /var/lib/agenticnetwork/logs/agents` (one file per agent id). |
 | The chat finds no agents on a fresh stack | `up` does not seed (the `seed` service has its own profile): run `docker compose run --rm seed`. |
 | Port 18080 is in use | Set `FRONT_DOOR_PORT` in `.env`. |
 | Many `Failed to parse enhanced label key` warnings from `ads` | Harmless; they appear in passing runs too. |
 | Start over from nothing | `docker compose down -v` deletes the database and uploads. |
-| An amd64 build on Apple silicon stops at the `planner` image's `mamba create` | A known hang under Rosetta emulation; build on an amd64 host or in CI (`compose.yml`). |
+| An amd64 build on Apple silicon stops at the `chat-app` image's `mamba create` | A known hang under Rosetta emulation; build on an amd64 host or in CI (`compose.yml`). |
 
 ## The tier-2 smoke test
 

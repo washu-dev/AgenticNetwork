@@ -12,20 +12,19 @@ targets run the same code and differ in how services are started, wired and conf
 | **HPC / Slurm cluster** | [engr/README.md](engr/README.md) (worked example: the WashU ENGR cluster) | A Slurm cluster with Pyxis/enroot containers and a GPU node for a self-hosted vLLM. |
 
 **Service names.** The chat app (`chat_app/`: the web service people sign in to, with the planner
-inside it) is still deployed under its older name, `planner`, on every target: the Dockerfile
-`deployment/dockerfiles/Dockerfile.planner`, the entrypoint
-`deployment/entrypoints/entrypoint-planner.sh`, the image `agenticnetwork-planner`, the Compose
-service `planner`, the ENGR Slurm step and its `planner.log`, and the Cloud Run service `planner`
-(with `planner-connector`, `PLANNER_SA` and `PLANNER_INVOKER_SA`). Those names are kept so existing
-deployments keep working. In these guides, "the chat app" and the `planner` service are the same
-thing.
+inside it) deploys as `chat-app` on every target: the Dockerfile
+`deployment/dockerfiles/Dockerfile.chat-app`, the entrypoint
+`deployment/entrypoints/entrypoint-chat-app.sh`, the image `agenticnetwork-chat-app`, the Compose
+service, the ENGR Slurm step and its `chat-app.log`, and the Cloud Run service (with
+`chat-app-connector`, `CHAT_APP_SA` and `CHAT_APP_INVOKER_SA`). Until 2026-10-25 all of these were
+named `planner`; dated records below keep that name.
 
 The two WashU instances:
 
 - **ENGR cluster** ([engr/README.md](engr/README.md)) — WashU Engineering HPC cluster: Slurm +
   Pyxis/enroot, one container per service as parallel `srun --overlap` steps, vLLM on a GPU node.
   The original deployment and still the **live public** one (`agenticweb.engr.wustl.edu`).
-- **GCP** ([gcp/README.md](gcp/README.md)) — Cloud Run (the chat app as `planner`, registration, on-demand agents) +
+- **GCP** ([gcp/README.md](gcp/README.md)) — Cloud Run (the chat app as `chat-app`, registration, on-demand agents) +
   Cloud SQL + a GCE ADS VM, with the `CloudRunBackend` auto-deploying registered agents. Built to a
   working milestone in 2026-08 and paused since the end of summer 2026; running on cloud is a
   critical leg of the project going forward, so resuming it is a priority (2026-10-13).

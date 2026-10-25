@@ -1,5 +1,10 @@
 # GCP Migration — AgenticNetwork
 
+> **Names (2026-10-25):** the chat app's deployment pieces this record calls `planner` (Cloud Run
+> service, image `agenticnetwork-planner`, `PLANNER_SA`/`PLANNER_INVOKER_SA`, `planner-connector`,
+> Slurm step and `planner.log`) are now named `chat-app` (`CHAT_APP_SA`, `CHAT_APP_INVOKER_SA`,
+> `chat-app-connector`). This record keeps the names as they were deployed.
+
 > **Status (2026-10-13): paused at a stable milestone since the end of summer 2026.** Running on cloud is
 > a critical leg of the project going forward, so resuming this work is a priority. As of 2026-08-03,
 > Phases 0-3 and the **Phase-4 `CloudRunBackend` automation were live and proven** (planner + registration

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build and push Docker images for infrastructure components (planner, ADS, registration).
+# Build and push Docker images for infrastructure components (chat app, ADS, registration).
 # Specialist agents (email, coding, intelligence, disaster, geospatial, scout) have
 # moved to the agent-directory repo — build those from there.
 #
@@ -7,11 +7,11 @@
 #   bash deployment/build_and_push.sh
 #
 # To build a single image:
-#   bash deployment/build_and_push.sh planner
+#   bash deployment/build_and_push.sh chat-app
 #
 # To build a candidate under a personal tag WITHOUT clobbering :latest (for testing a
 # change against a `deploy.sh test` instance — set the matching <SERVICE>_IMAGE_TAG there):
-#   IMAGE_TAG=dev-alice bash deployment/build_and_push.sh planner
+#   IMAGE_TAG=dev-alice bash deployment/build_and_push.sh chat-app
 #
 # To build specialist agents, run from the agent-directory repo root:
 #   bash build_and_push.sh
@@ -26,7 +26,7 @@ REGISTRY="${IMAGE_REGISTRY:-di2washu}"
 TAG="${IMAGE_TAG:-latest}"
 PLATFORM=linux/amd64
 
-AGENTS=(postgres ads planner registration)
+AGENTS=(postgres ads chat-app registration)
 
 # If an agent name is passed as an argument, build only that one.
 if [ $# -gt 0 ]; then

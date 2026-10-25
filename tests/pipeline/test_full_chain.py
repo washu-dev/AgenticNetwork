@@ -235,7 +235,7 @@ def fresh_stack(env: dict[str, str] | None = None) -> Iterator[dict[str, Any]]:
         yield {
             "up": status,
             "proxy": status["services"]["proxy"]["url"],
-            "planner": status["services"]["planner"]["url"],
+            "chat_app": status["services"]["chat-app"]["url"],
             "user": status["dev_user"],
         }
     finally:
@@ -281,9 +281,9 @@ def test_2_first_signed_in_request_creates_the_user(stack):
     forged = {"mail": "intruder@example.test", "eppn": "intruder@example.test", "remote-user": "intruder"}
     assert call("GET", f"{stack['proxy']}/me", headers=forged) == (200, me)
     # The planner maps the identity header the proxy sends to that same account ...
-    assert call("GET", f"{stack['planner']}/me", headers={"mail": stack["user"]}) == (200, me)
+    assert call("GET", f"{stack['chat_app']}/me", headers={"mail": stack["user"]}) == (200, me)
     # ... and a new identity gets a new, non-admin account on its first request.
-    status, other = call("GET", f"{stack['planner']}/me", headers={"mail": OTHER_USER})
+    status, other = call("GET", f"{stack['chat_app']}/me", headers={"mail": OTHER_USER})
     assert status == 200 and other["email"] == OTHER_USER and other["id"] != me["id"] and not other["is_admin"]
 
 
@@ -304,14 +304,14 @@ def test_4_conversation_is_saved_for_that_user_only(stack, first_turn):
     messages = [(m["role"], m["text"]) for m in history["messages"]]
     assert messages[0] == ("user", PROMPT) and messages[-1] == ("assistant", final["text"]), messages
     # The same account, reached directly with the header the proxy sends, sees it too.
-    assert call("GET", f"{stack['planner']}/conversations/{cid}", headers={"mail": stack["user"]})[0] == 200
+    assert call("GET", f"{stack['chat_app']}/conversations/{cid}", headers={"mail": stack["user"]})[0] == 200
     # Another signed-in user can neither list, read, write to nor delete it.
     other = {"mail": OTHER_USER}
-    status, theirs = call("GET", f"{stack['planner']}/sessions", headers=other)
+    status, theirs = call("GET", f"{stack['chat_app']}/sessions", headers=other)
     assert status == 200 and cid not in [s["context_id"] for s in theirs["sessions"]]
-    assert call("GET", f"{stack['planner']}/conversations/{cid}", headers=other)[0] == 403
-    assert call("POST", f"{stack['planner']}/messages", browser_body("hi", cid), headers=other)[0] == 403
-    assert call("DELETE", f"{stack['planner']}/conversations/{cid}", headers=other)[0] == 403
+    assert call("GET", f"{stack['chat_app']}/conversations/{cid}", headers=other)[0] == 403
+    assert call("POST", f"{stack['chat_app']}/messages", browser_body("hi", cid), headers=other)[0] == 403
+    assert call("DELETE", f"{stack['chat_app']}/conversations/{cid}", headers=other)[0] == 403
     assert call("GET", f"{stack['proxy']}/conversations/{cid}") == (200, history)
 
 
@@ -354,12 +354,12 @@ def test_7_body_user_id_is_ignored_when_a_login_identity_is_present(stack, first
     assert status == 200 and reply["state"] == "completed", reply
     cid = reply["context_id"]
     assert call("GET", f"{stack['proxy']}/conversations/{cid}")[0] == 200
-    assert call("GET", f"{stack['planner']}/conversations/{cid}", headers={"mail": victim})[0] == 403
+    assert call("GET", f"{stack['chat_app']}/conversations/{cid}", headers={"mail": victim})[0] == 403
     # Naming the owner in the body does not let another user write into their conversation.
     owner_cid = first_turn[0]["context_id"]
     spoof = {"user_id": stack["user"], "channel": "api", "text": "hi", "context_id": owner_cid}
-    assert call("POST", f"{stack['planner']}/messages", spoof, headers={"mail": OTHER_USER})[0] == 403
-    status, _, events = stream(f"{stack['planner']}/messages/stream", spoof, headers={"mail": OTHER_USER})
+    assert call("POST", f"{stack['chat_app']}/messages", spoof, headers={"mail": OTHER_USER})[0] == 403
+    status, _, events = stream(f"{stack['chat_app']}/messages/stream", spoof, headers={"mail": OTHER_USER})
     assert status == 200 and [name for name, _ in events] == ["error"], events
 
 

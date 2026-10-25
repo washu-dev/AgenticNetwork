@@ -26,13 +26,11 @@ same images, same services, your names.
 
 ## What you get
 
-- **Cloud Run `planner`**: the chat app, the web service people sign in to and chat in (chat UI,
+- **Cloud Run `chat-app`**: the chat app, the web service people sign in to and chat in (chat UI,
   saved conversations, each user's keys, admin pages), with the planner inside it. The planner
   finds agents in the directory and calls them over A2A, attaching a Google ID token for
-  `*.run.app` agents (`agentnet/a2a/transport.py`, `CloudRunIdTokenAuth`). The service keeps the
-  chat app's older name, `planner`, as do its image (`agenticnetwork-planner`), the `PLANNER_SA`
-  and `PLANNER_INVOKER_SA` settings and the `planner-connector` connector, so existing
-  deployments keep working.
+  `*.run.app` agents (`agentnet/a2a/transport.py`, `CloudRunIdTokenAuth`). (Until 2026-10-25
+  this service, its image, settings and connector were named `planner`.)
 - **Cloud Run `registration`**: the registration service, run as a singleton with
   `SPAWN_BACKEND=cloudrun`. When a registered agent's image is ready, its `CloudRunBackend` deploys
   the agent as its own Cloud Run service and publishes the agent's card to the directory
@@ -49,7 +47,7 @@ service through `gcloud run services proxy`.
 
 ```mermaid
 flowchart LR
-    OP["Operator laptop<br/>gcloud run services proxy"] -->|"IAM"| P["Cloud Run: planner<br/>(the chat app)"]
+    OP["Operator laptop<br/>gcloud run services proxy"] -->|"IAM"| P["Cloud Run: chat-app<br/>(the chat app)"]
     OP -->|"IAM"| R["Cloud Run: registration"]
     P -->|"VPC connector"| D[("GCE VM: ads<br/>dirctl daemon")]
     R -->|"VPC connector"| D
@@ -101,14 +99,14 @@ export PROJECT_NUMBER=$(gcloud projects describe "$PROJECT_ID" --format='value(p
 export IMAGE_PREFIX="${REGION}-docker.pkg.dev/${PROJECT_ID}/agenticnetwork"   # infra images
 export SQL_INSTANCE=agenticnetwork-db
 export SQL_CONN="${PROJECT_ID}:${REGION}:${SQL_INSTANCE}"
-export CONNECTOR=planner-connector
+export CONNECTOR=chat-app-connector
 export CONNECTOR_RANGE=10.8.0.0/28              # must be outside 10.128.0.0/9 (see step 7)
 
 export AGENT_SA="agent-runtime@${PROJECT_ID}.iam.gserviceaccount.com"
 export REG_SA="registration-service@${PROJECT_ID}.iam.gserviceaccount.com"
 # The chat app's runtime identity. The reference used the default Compute Engine SA; a dedicated
 # least-privilege SA is the recommended hardening (untested here; create it and set it instead).
-export PLANNER_SA="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
+export CHAT_APP_SA="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
 
 # Only for registering agents (step 13):
 export DOCKERHUB_NAMESPACE=my-dockerhub-user    # becomes IMAGE_REGISTRY on the registration service
@@ -127,7 +125,7 @@ gcloud services enable aiplatform.googleapis.com
 ## 3. Build and push the images
 
 The same Dockerfiles serve the cluster and Cloud Run (`deployment/dockerfiles/`). You need three
-images: `ads`, `planner` (the chat app) and `registration`. The `postgres` image is not needed;
+images: `ads`, `chat-app` and `registration`. The `postgres` image is not needed;
 Cloud SQL replaces it.
 
 ```bash
@@ -135,7 +133,7 @@ gcloud artifacts repositories create agenticnetwork --repository-format=docker -
 gcloud auth configure-docker "${REGION}-docker.pkg.dev"
 
 # From the repo root. Pushes ${IMAGE_PREFIX}/agenticnetwork-<name>:latest
-IMAGE_REGISTRY="$IMAGE_PREFIX" bash deployment/build_and_push.sh ads planner registration
+IMAGE_REGISTRY="$IMAGE_PREFIX" bash deployment/build_and_push.sh ads chat-app registration
 ```
 
 `build_and_push.sh` also reads `IMAGE_TAG` (default `latest`) if you want versioned tags. To use
@@ -158,22 +156,22 @@ namespace and skip the first two commands.
 GCP_PROJECT="$PROJECT_ID" GCP_REGION="$REGION" bash deployment/scripts/gcp_iam_step7.sh
 ```
 
-The script ends by describing the `planner` service to print its identity. Before step 10 that
-last command fails because the `planner` service doesn't exist yet; the grants above it are
+The script ends by describing the `chat-app` service to print its identity. Before step 10 that
+last command fails because the `chat-app` service doesn't exist yet; the grants above it are
 already applied.
-You don't need its output: `PLANNER_SA` is set in step 1.
+You don't need its output: `CHAT_APP_SA` is set in step 1.
 
 Both services connect to Cloud SQL:
 
 ```bash
-for sa in "$REG_SA" "$PLANNER_SA"; do
+for sa in "$REG_SA" "$CHAT_APP_SA"; do
   gcloud projects add-iam-policy-binding "$PROJECT_ID" \
     --member="serviceAccount:${sa}" --role=roles/cloudsql.client --condition=None
 done
 ```
 
 Secret access is granted per secret in step 6. The chat app gets `run.invoker` on each agent
-automatically: the `CloudRunBackend` grants it to `PLANNER_INVOKER_SA` when it deploys the agent.
+automatically: the `CloudRunBackend` grants it to `CHAT_APP_INVOKER_SA` when it deploys the agent.
 
 ## 5. Cloud SQL Postgres
 
@@ -221,8 +219,8 @@ grant () {  # $1 = secret, $2 = service account
 }
 grant registration-db-dsn "$REG_SA"
 grant github-token "$REG_SA"
-grant registration-db-dsn "$PLANNER_SA"
-grant credentials-encryption-key "$PLANNER_SA"
+grant registration-db-dsn "$CHAT_APP_SA"
+grant credentials-encryption-key "$CHAT_APP_SA"
 ```
 
 The LLM secret is created in step 10. For bug reports, also create `github-issues-token`, grant it
@@ -297,7 +295,7 @@ gcloud run deploy registration \
   --min-instances=1 --max-instances=1 --no-cpu-throttling \
   --ingress=all --no-allow-unauthenticated \
   --vpc-connector="$CONNECTOR" --add-cloudsql-instances="$SQL_CONN" \
-  --set-env-vars="SPAWN_BACKEND=cloudrun,SKIP_STARTUP_WAITS=1,GCP_PROJECT=${PROJECT_ID},GCP_REGION=${REGION},AGENT_RUNTIME_SA=${AGENT_SA},PLANNER_INVOKER_SA=${PLANNER_SA},ADS_SERVER_ADDR=${ADS_IP}:8888,ADMIN_EMAILS=${ADMIN_EMAIL},IMAGE_REGISTRY=${DOCKERHUB_NAMESPACE},GITHUB_REPO=${GITHUB_REPO}" \
+  --set-env-vars="SPAWN_BACKEND=cloudrun,SKIP_STARTUP_WAITS=1,GCP_PROJECT=${PROJECT_ID},GCP_REGION=${REGION},AGENT_RUNTIME_SA=${AGENT_SA},CHAT_APP_INVOKER_SA=${CHAT_APP_SA},ADS_SERVER_ADDR=${ADS_IP}:8888,ADMIN_EMAILS=${ADMIN_EMAIL},IMAGE_REGISTRY=${DOCKERHUB_NAMESPACE},GITHUB_REPO=${GITHUB_REPO}" \
   --set-secrets="REGISTRATION_DB_DSN=registration-db-dsn:latest,GITHUB_TOKEN=github-token:latest"
 ```
 
@@ -308,7 +306,7 @@ What the `CloudRunBackend` reads (`registration_service/backend.py`):
 | `SPAWN_BACKEND=cloudrun` | selects `CloudRunBackend` (`make_backend`) |
 | `GCP_PROJECT`, `GCP_REGION` | where agents are deployed (`GCP_PROJECT` is required; region defaults to `us-central1`) |
 | `AGENT_RUNTIME_SA` | identity each agent runs as |
-| `PLANNER_INVOKER_SA` | granted `run.invoker` on each agent so the planner can call it |
+| `CHAT_APP_INVOKER_SA` | granted `run.invoker` on each agent so the planner can call it |
 | `IMAGE_REGISTRY` | Docker Hub namespace of the custom-agent images (default `di2washu`, so set it) |
 | `VPC_CONNECTOR` | optional; attaches a connector to agents for private egress. The reference left it unset. If you set it, grant `roles/vpcaccess.user` to `REG_SA` (see the script's comments) |
 | `CLOUDRUN_FORWARD_ENV` | optional, comma-separated extra env vars to copy into agents |
@@ -327,10 +325,10 @@ delimiter, for example `--set-env-vars='^|^ADMIN_EMAILS=a@example.com,b@example.
 
 The planner talks to any OpenAI-compatible Chat Completions endpoint
 (`chat_app/planner/config.py`, `llm_client.py`). Pick one option; each sets `LLM_ENV` and
-adds to `PLANNER_SECRETS` for the deploy command below.
+adds to `CHAT_APP_SECRETS` for the deploy command below.
 
 ```bash
-export PLANNER_SECRETS="REGISTRATION_DB_DSN=registration-db-dsn:latest,CREDENTIALS_ENCRYPTION_KEY=credentials-encryption-key:latest"
+export CHAT_APP_SECRETS="REGISTRATION_DB_DSN=registration-db-dsn:latest,CREDENTIALS_ENCRYPTION_KEY=credentials-encryption-key:latest"
 ```
 
 **A. A hosted OpenAI-compatible API (a key).** `PLANNER_LLM_MODEL` defaults to `gpt-4o-mini`. For
@@ -338,9 +336,9 @@ a provider other than OpenAI, add `OPENAI_BASE_URL=<its /v1 URL>` to `LLM_ENV`.
 
 ```bash
 printf %s 'REPLACE_ME' | gcloud secrets create llm-api-key --data-file=-
-grant llm-api-key "$PLANNER_SA"
+grant llm-api-key "$CHAT_APP_SA"
 export LLM_ENV="PLANNER_LLM_MODEL=gpt-4o-mini"
-export PLANNER_SECRETS="${PLANNER_SECRETS},OPENAI_API_KEY=llm-api-key:latest"
+export CHAT_APP_SECRETS="${CHAT_APP_SECRETS},OPENAI_API_KEY=llm-api-key:latest"
 ```
 
 **B. Vertex AI (no key).** With `PLANNER_LLM_PROVIDER=vertex` the planner mints a short-lived
@@ -349,7 +347,7 @@ one the reference validated (`MIGRATION.md`, "LLM hosting").
 
 ```bash
 gcloud projects add-iam-policy-binding "$PROJECT_ID" \
-  --member="serviceAccount:${PLANNER_SA}" --role=roles/aiplatform.user --condition=None
+  --member="serviceAccount:${CHAT_APP_SA}" --role=roles/aiplatform.user --condition=None
 export VERTEX_URL="https://${REGION}-aiplatform.googleapis.com/v1/projects/${PROJECT_ID}/locations/${REGION}/endpoints/openapi"
 export LLM_ENV="PLANNER_LLM_PROVIDER=vertex,OPENAI_BASE_URL=${VERTEX_URL},PLANNER_LLM_MODEL=google/gemini-2.5-flash"
 ```
@@ -365,9 +363,9 @@ gcloud compute firewall-rules create allow-vllm-from-connector --network=default
   --direction=INGRESS --action=ALLOW --rules=tcp:8100 \
   --source-ranges="$CONNECTOR_RANGE" --target-tags=vllm
 printf %s 'REPLACE_ME' | gcloud secrets create llm-api-key --data-file=-   # the same value as vLLM's --api-key
-grant llm-api-key "$PLANNER_SA"
+grant llm-api-key "$CHAT_APP_SA"
 export LLM_ENV="OPENAI_BASE_URL=http://VLLM_INTERNAL_IP:8100/v1,PLANNER_LLM_MODEL=openai/gpt-oss-120b"
-export PLANNER_SECRETS="${PLANNER_SECRETS},OPENAI_API_KEY=llm-api-key:latest"
+export CHAT_APP_SECRETS="${CHAT_APP_SECRETS},OPENAI_API_KEY=llm-api-key:latest"
 ```
 
 **Optional failover**, as in the reference (vLLM primary, Vertex fallback): add
@@ -377,25 +375,24 @@ planner switches on connection errors, timeouts and 5xx answers.
 
 **Deploy.** The command override starts the server directly, as the reference did: the stock
 entrypoint waits for ADS before starting and doesn't read `$PORT`
-(`deployment/entrypoints/entrypoint-planner.sh`). `CHAT_APP_PORT=8080` makes the server listen
+(`deployment/entrypoints/entrypoint-chat-app.sh`). `CHAT_APP_PORT=8080` makes the server listen
 where Cloud Run sends traffic. (The chat app's settings were renamed; the old `MAIN_AGENT_*`
 names and `PLANNER_ALLOW_ANON` still work. See `chat_app/README.md`.) The start command is
-`python -m chat_app`: if you run an existing `planner` service deployed with the old
-`--args=-m,planner_agent.scripts.run_server`, change it to `--args=-m,chat_app` in the same deploy
-that rolls out a newer image (re-run the command below), because newer images no longer contain
-that module.
+`python -m chat_app`. (An older setup ran this as service `planner` with
+`--args=-m,planner_agent.scripts.run_server`, which newer images no longer contain: deploy
+`chat-app` with the command below and delete `planner`.)
 
 ```bash
-gcloud run deploy planner \
-  --image="${IMAGE_PREFIX}/agenticnetwork-planner:latest" \
-  --region="$REGION" --service-account="$PLANNER_SA" \
+gcloud run deploy chat-app \
+  --image="${IMAGE_PREFIX}/agenticnetwork-chat-app:latest" \
+  --region="$REGION" --service-account="$CHAT_APP_SA" \
   --command=python --args=-m,chat_app \
   --port=8080 --memory=1Gi --timeout=3600 \
   --min-instances=1 --max-instances=1 --no-cpu-throttling \
   --ingress=all --no-allow-unauthenticated \
   --vpc-connector="$CONNECTOR" --add-cloudsql-instances="$SQL_CONN" \
   --set-env-vars="CHAT_APP_PORT=8080,ADS_SERVER_ADDR=${ADS_IP}:8888,CHAT_APP_ALLOW_ANON=1,A2A_HTTP_TIMEOUT_SECONDS=120,${LLM_ENV}" \
-  --set-secrets="$PLANNER_SECRETS"
+  --set-secrets="$CHAT_APP_SECRETS"
 ```
 
 - `--timeout=3600` keeps the chat's server-sent-events stream (`/messages/stream`) open.
@@ -416,7 +413,7 @@ Both services accept only callers with `roles/run.invoker` on them (`roles/run.a
 include it). `gcloud run services proxy` signs your requests and serves the service on localhost.
 
 ```bash
-gcloud run services proxy planner --region="$REGION" --port=8080
+gcloud run services proxy chat-app --region="$REGION" --port=8080
 # open http://localhost:8080/app
 
 gcloud run services proxy registration --region="$REGION" --port=8091
@@ -441,7 +438,7 @@ Behind the proxy that header is self-asserted, so give `run.invoker` only to peo
 as admins. To add a teammate:
 
 ```bash
-gcloud run services add-iam-policy-binding planner --region="$REGION" \
+gcloud run services add-iam-policy-binding chat-app --region="$REGION" \
   --member="user:teammate@example.com" --role="roles/run.invoker"
 ```
 
@@ -457,11 +454,11 @@ alternatives (load balancer with Cloud Armor, IAP with Workforce Identity Federa
 ## 12. Verify
 
 ```bash
-gcloud run services list --region="$REGION"        # planner and registration Ready
+gcloud run services list --region="$REGION"        # chat-app and registration Ready
 gcloud compute instances list                      # ads RUNNING
 ```
 
-With the `planner` proxy running:
+With the `chat-app` proxy running:
 
 ```bash
 curl -s -o /dev/null -w '%{http_code}\n' http://localhost:8080/health   # 200
@@ -476,7 +473,7 @@ With the registration proxy running: `curl -s http://localhost:8091/health`.
 Logs:
 
 ```bash
-gcloud logging read 'resource.type="cloud_run_revision" AND resource.labels.service_name="planner"' \
+gcloud logging read 'resource.type="cloud_run_revision" AND resource.labels.service_name="chat-app"' \
   --limit=50 --freshness=1h
 ```
 
@@ -524,7 +521,7 @@ rows approved before the service recorded build commits) are in [README.md](READ
 
 **Deploy an existing agent by hand (unverified).** Deploy its image as a Cloud Run service with
 `--ingress=internal --no-allow-unauthenticated --min-instances=0 --service-account="$AGENT_SA"`,
-grant `PLANNER_SA` `roles/run.invoker` on it, set the card's URL to the service's `run.app` URL,
+grant `CHAT_APP_SA` `roles/run.invoker` on it, set the card's URL to the service's `run.app` URL,
 and publish the card from your laptop through an SSH tunnel to the directory (`scripts/ads` needs
 `dirctl` and the registration venv; see [docs/AGENT_DIRECTORY.md](../../AGENT_DIRECTORY.md)):
 
@@ -538,13 +535,13 @@ cold-starts a min-0 agent and keeps it warm. List on-demand agents (ids as `GET 
 in `CHAT_APP_HEALTH_PROBE_SKIP_AGENTS`:
 
 ```bash
-gcloud run services update planner --region="$REGION" \
+gcloud run services update chat-app --region="$REGION" \
   --update-env-vars='^|^CHAT_APP_HEALTH_PROBE_SKIP_AGENTS=agent-one,agent-two'
 ```
 
 ## Cost
 
-- **Always on:** the `planner` (chat app) and `registration` services (one instance each, CPU
+- **Always on:** the `chat-app` and `registration` services (one instance each, CPU
   always allocated), the Cloud SQL instance, the `ads` VM and the VPC connector, plus any vLLM
   host. The reference
   estimated about $220–320 a month for this control plane ([MIGRATION.md](MIGRATION.md#cost--runway));
@@ -555,7 +552,7 @@ gcloud run services update planner --region="$REGION" \
 - **Pause** without deleting:
 
   ```bash
-  gcloud run services update planner --region="$REGION" --min-instances=0
+  gcloud run services update chat-app --region="$REGION" --min-instances=0
   gcloud run services update registration --region="$REGION" --min-instances=0   # stops its loops too
   gcloud compute instances stop ads --zone="$ZONE"
   gcloud sql instances patch "$SQL_INSTANCE" --activation-policy=NEVER
@@ -573,7 +570,7 @@ Otherwise, delete the pieces:
 ```bash
 gcloud run services list --region="$REGION"     # note any agent-* services
 gcloud run services delete agent-<name> --region="$REGION"       # once per agent
-gcloud run services delete planner --region="$REGION"
+gcloud run services delete chat-app --region="$REGION"
 gcloud run services delete registration --region="$REGION"
 gcloud compute instances delete ads --zone="$ZONE"
 gcloud compute firewall-rules delete allow-ads-from-connector     # and allow-vllm-from-connector, if created
@@ -603,7 +600,7 @@ From the reference deployment ([MIGRATION.md](MIGRATION.md#operational-gotchas-l
 | The first call to an agent times out | Cold start; raise `A2A_HTTP_TIMEOUT_SECONDS`. |
 | An agent is deployed but the planner can't find it | Its card has no routable OASF skill. |
 | An approved agent stays `building` | The build workflow in `GITHUB_REPO` doesn't push the `:<commit SHA>` tag the build poll waits for, or its build failed (see its Actions log). Fix it, then restart the agent. |
-| Planner-to-agent calls get 403 or 404 (unverified) | Internal ingress may require the planner's traffic to `*.run.app` to go through the VPC. Try `gcloud run services update planner --region="$REGION" --vpc-egress=all-traffic`; with that setting, a hosted LLM API also needs a Cloud NAT route to the internet. |
+| Planner-to-agent calls get 403 or 404 (unverified) | Internal ingress may require the planner's traffic to `*.run.app` to go through the VPC. Try `gcloud run services update chat-app --region="$REGION" --vpc-egress=all-traffic`; with that setting, a hosted LLM API also needs a Cloud NAT route to the internet. |
 
 ## Not covered
 

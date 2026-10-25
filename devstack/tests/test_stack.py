@@ -35,7 +35,7 @@ def test_status_json_shape_when_nothing_runs(tmp_path):
     status = json.loads(result.stdout)
     assert status["ready"] is False and status["mode"] == "native" and status["llm"] == "mock"
     assert status["state_dir"] == str(tmp_path.resolve())
-    assert list(status["services"]) == ["directory", "mock-llm", "registration", "planner", "proxy"]
+    assert list(status["services"]) == ["directory", "mock-llm", "registration", "chat-app", "proxy"]
     for service in status["services"].values():
         assert {"pid", "running", "ready", "url", "log"} <= set(service)
         assert service["running"] is False
@@ -79,7 +79,7 @@ def test_planner_model_reads_the_new_name_then_the_old_one(monkeypatch):
 def test_the_chat_app_gets_the_new_setting_names(tmp_path, monkeypatch):
     monkeypatch.delenv("DEVSTACK_PASSTHROUGH_ENV", raising=False)
     cfg = stack.StackConfig(state_dir=tmp_path, planner_model="some-model")
-    env = stack._service_specs(cfg)["planner"].env
+    env = stack._service_specs(cfg)["chat-app"].env
     assert env["PLANNER_LLM_MODEL"] == "some-model"
     assert env["CHAT_APP_UPLOAD_DIR"] == str(tmp_path / "uploads")
     assert not any(name.startswith("MAIN_AGENT_") for name in env)
@@ -88,12 +88,12 @@ def test_the_chat_app_gets_the_new_setting_names(tmp_path, monkeypatch):
 def test_the_chat_app_runs_from_its_package_and_venv(tmp_path, monkeypatch):
     for name in ("CHAT_APP_PYTHON", "PLANNER_PYTHON"):
         monkeypatch.delenv(name, raising=False)
-    assert stack.planner_python() == str(stack.REPO / "chat_app" / ".venv" / "bin" / "python")
+    assert stack.chat_app_python() == str(stack.REPO / "chat_app" / ".venv" / "bin" / "python")
     monkeypatch.setenv("PLANNER_PYTHON", "/old/python")
-    assert stack.planner_python() == "/old/python"  # the older name still works
+    assert stack.chat_app_python() == "/old/python"  # the older name still works
     monkeypatch.setenv("CHAT_APP_PYTHON", "/new/python")
-    assert stack.planner_python() == "/new/python"  # and the new name wins
-    spec = stack._service_specs(stack.StackConfig(state_dir=tmp_path))["planner"]
+    assert stack.chat_app_python() == "/new/python"  # and the new name wins
+    spec = stack._service_specs(stack.StackConfig(state_dir=tmp_path))["chat-app"]
     assert spec.command[:3] == ["/new/python", "-m", "chat_app"]
     assert spec.marker in shlex.join(spec.command)
 

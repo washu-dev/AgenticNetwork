@@ -19,8 +19,8 @@
 #
 # To test a candidate image without clobbering prod's :latest, build it under a tag
 # and pass a matching per-service override (propagated via --export=ALL):
-#   IMAGE_TAG=dev-me bash deployment/build_and_push.sh planner
-#   PLANNER_IMAGE_TAG=dev-me deployment/deploy.sh test
+#   IMAGE_TAG=dev-me bash deployment/build_and_push.sh chat-app
+#   CHAT_APP_IMAGE_TAG=dev-me deployment/deploy.sh test
 # See docs/MULTI_CONTRIBUTOR.md.
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail

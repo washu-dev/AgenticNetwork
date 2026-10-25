@@ -71,18 +71,16 @@ repository goes public.
   container). Rebuild with a personal `IMAGE_TAG`, then check `GET /health` on an ENGR test
   instance (`deployment/deploy.sh test`) and on a non-traffic Cloud Run revision before
   pushing `:latest`.
-- **Chat app image** (`Dockerfile.planner`, image `agenticnetwork-planner`): six unused pins
+- **Chat app image** (`Dockerfile.chat-app`, image `agenticnetwork-chat-app`): six unused pins
   left `requirements.txt`; the first clean install should pass `pip check`.
 - **Chat app start command:** images built after the `planner_agent/` → `chat_app/` rename
-  hold `chat_app/` and `agentnet/` and start with `python -m chat_app` (`entrypoint-planner.sh`
-  does this on ENGR and Compose). A Cloud Run `planner` service started with
-  `--args=-m,planner_agent.scripts.run_server` must switch to `--args=-m,chat_app` in the same
-  deploy ([DEPLOY_YOUR_OWN.md](deployment/gcp/DEPLOY_YOUR_OWN.md) step 10). Pushing a new
-  `:latest` from ENGR is enough to make this urgent: Cloud Run and ENGR share the image, and the
-  next Cloud Run revision (even a config-only change such as `--min-instances`) pulls it. Switch
-  the WashU `planner` service right after the first such push
-  ([gcp/README.md](deployment/gcp/README.md#dev-workflow)). The old `MAIN_AGENT_*` setting
-  names still work.
+  hold `chat_app/` and `agentnet/` and start with `python -m chat_app` (`entrypoint-chat-app.sh`
+  does this on ENGR and Compose). The old Cloud Run `planner` service, started with
+  `--args=-m,planner_agent.scripts.run_server`, is replaced by a `chat-app` service started with
+  `--args=-m,chat_app` ([gcp/README.md](deployment/gcp/README.md#dev-workflow), "Old `planner`
+  service"; [DEPLOY_YOUR_OWN.md](deployment/gcp/DEPLOY_YOUR_OWN.md) step 10). Since 2026-10-25 the
+  image is `agenticnetwork-chat-app`, so nothing pushes a newer `agenticnetwork-planner:latest`
+  for the old service to pull. The old `MAIN_AGENT_*` setting names still work.
 - **Approve → commit:** run one live approval on a test instance. `build_manifest` changed,
   and the unit tests do not exercise the live GitHub commit. Each approval's commit now replaces
   the whole `registered_agents/<slug>/` directory (files the new upload no longer has are
@@ -124,7 +122,7 @@ repository goes public.
   - Registration refuses a name whose Cloud Run service id (`agent-<slug>`, sanitized, cut at 63
     characters) matches an existing agent's, such as `weather_bot` next to `Weather Bot`. Check
     that no two production rows already share one.
-  - Deploy order on Cloud Run: update `registration` before `planner`. The chat app's approval
+  - Deploy order on Cloud Run: update `registration` before `chat-app`. The chat app's approval
     view needs the code revision that the new registration service reports; in front of an older
     one it says so and cannot approve. On ENGR one job deploys both from one tree.
 - **Tool-loop agents** (`llm` + uploaded tools) now advertise streaming, but only in images
@@ -161,7 +159,7 @@ repository goes public.
   `deployment/.env` must add `PLANNER_UNSCOPED_CREDENTIAL_AGENTS=email-agent,geospatial-agent`
   (as in `.env.example`; ids as listed by `GET /agents`), or the email agent stops getting
   each user's Google token and falls back to its on-disk token file, if any. Check the
-  chat app's log (`planner.log` on ENGR) for `credentials_unscoped_legacy_agent`. The geo agent
+  chat app's log (`chat-app.log` on ENGR) for `credentials_unscoped_legacy_agent`. The geo agent
   is listed only to keep today's behaviour: it reads the pre-catalog names
   `google_api`/`google_maps`, which the chat app's DB migration renamed. Cloud Run runs no email or geo agent, so it needs no list.
 - **Bug-report repo:** `GITHUB_ISSUES_REPO` no longer defaults to `washu-dev/AgenticNetwork`.
@@ -511,7 +509,7 @@ lines removed or rewritten.
 | Test-only deps into `requirements-dev.txt`; the chat app's pip freeze becomes direct deps plus a lock file | 50 | a locking tool, with CI and docs updated together |
 | Pin `registration_service/requirements.txt` (only minimums today, so a fresh clone gets e.g. openai 3.x where the tested venv has 2.x; all suites passed with both on 2026-10-15), or add a constraints file | 40 | the same locking tool; a registration image rebuild |
 | **Images, deploy config and hygiene** | | |
-| Chat app image (`Dockerfile.planner`) on `python:3.x-slim` instead of miniconda; one Python version across images | 45 | an ENGR test deploy and a Cloud Run staging deploy |
+| Chat app image (`Dockerfile.chat-app`) on `python:3.x-slim` instead of miniconda; one Python version across images | 45 | an ENGR test deploy and a Cloud Run staging deploy |
 | One ADS image tag (`submit.sbatch` pulls `:v4`, `build_and_push.sh` pushes `:latest`) | 2 | confirming they match |
 | Generate `ads_daemon.gcp.yaml` from `ads_daemon.yaml` | 70 | the GCP runbook and VM startup |
 | Prune cluster- and person-specific `.gitignore` rules; dedupe the secrets rules | 16 | checking the ENGR checkout |

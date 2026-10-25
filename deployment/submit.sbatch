@@ -52,14 +52,14 @@ set +a
 IMAGE_REGISTRY="${IMAGE_REGISTRY:-di2washu}"
 
 # Image tag resolution. Each service's tag is chosen in order:
-#   1. <SERVICE>_IMAGE_TAG  (per-service override, e.g. PLANNER_IMAGE_TAG=dev-alice)
+#   1. <SERVICE>_IMAGE_TAG  (per-service override, e.g. CHAT_APP_IMAGE_TAG=dev-alice)
 #   2. IMAGE_TAG            (instance-wide default; unset for prod, a SHA under CI later)
 #   3. the service's own default (latest; v4 for ads)
 # So a dev rebuilds ONLY the service(s) they changed under a personal tag (see
 # build_and_push.sh) and everything else stays on :latest. See docs/MULTI_CONTRIBUTOR.md.
 image_ref() {
     local svc="$1" default_tag="$2" var tag
-    var="$(printf '%s' "$svc" | tr '[:lower:]' '[:upper:]')_IMAGE_TAG"
+    var="$(printf '%s' "$svc" | tr '[:lower:]-' '[:upper:]_')_IMAGE_TAG"   # chat-app -> CHAT_APP_IMAGE_TAG
     tag="${!var:-${IMAGE_TAG:-$default_tag}}"
     printf '%s/agenticnetwork-%s:%s' "$IMAGE_REGISTRY" "$svc" "$tag"
 }
@@ -109,37 +109,7 @@ fi
 
 # Ports — offset by PORT_OFFSET so a test instance can run beside prod on one node.
 # Single source of truth: each agent entrypoint reads its own *_PORT env var.
-# The chat app (planner service) reads CHAT_APP_PORT; MAIN_AGENT_PORT is its old name,
-# exported too because an older planner image reads only that one.
 export CHAT_APP_PORT=$((8090 + PORT_OFFSET))
-export MAIN_AGENT_PORT="$CHAT_APP_PORT"
-# The same for the chat app's other renamed settings: copy each new name that .env
-# sets onto its old name, so an older planner image (prod's :latest before a rebuild,
-# or a pinned PLANNER_IMAGE_TAG) still reads them. Both names then hold one value, so
-# a newer image sees no conflict. The anon opt-in is left out on purpose: only the
-# test-instance block below sets it, so prod stays behind the SSO gate.
-for pair in \
-    PLANNER_LLM_ENABLED:MAIN_AGENT_LLM_ENABLED \
-    PLANNER_LLM_PROVIDER:MAIN_AGENT_LLM_PROVIDER \
-    PLANNER_LLM_MODEL:MAIN_AGENT_LLM_MODEL \
-    PLANNER_LLM_MAX_OUTPUT_TOKENS:MAIN_AGENT_MAX_OUTPUT_TOKENS \
-    PLANNER_LLM_TIMEOUT_SECONDS:MAIN_AGENT_TIMEOUT_SECONDS \
-    PLANNER_LLM_PRIMARY_TIMEOUT_SECONDS:MAIN_AGENT_LLM_PRIMARY_TIMEOUT_SECONDS \
-    PLANNER_LLM_FALLBACK_PROVIDER:MAIN_AGENT_LLM_FALLBACK_PROVIDER \
-    PLANNER_LLM_FALLBACK_BASE_URL:MAIN_AGENT_LLM_FALLBACK_BASE_URL \
-    PLANNER_LLM_FALLBACK_MODEL:MAIN_AGENT_LLM_FALLBACK_MODEL \
-    PLANNER_MAX_STEPS:MAIN_AGENT_MAX_STEPS \
-    PLANNER_HISTORY_LIMIT:MAIN_AGENT_HISTORY_LIMIT \
-    PLANNER_POLICY_MODE:MAIN_AGENT_POLICY_MODE \
-    CHAT_APP_HOST:MAIN_AGENT_HOST \
-    CHAT_APP_LOG_LEVEL:MAIN_AGENT_LOG_LEVEL \
-    CHAT_APP_UPLOAD_DIR:MAIN_AGENT_UPLOAD_DIR \
-    CHAT_APP_MAX_UPLOAD_BYTES:MAIN_AGENT_MAX_UPLOAD_BYTES \
-    CHAT_APP_CARD_PATHS:MAIN_AGENT_CARD_PATHS \
-    CHAT_APP_HEALTH_PROBE_SKIP_AGENTS:HEALTH_PROBE_SKIP_AGENTS; do
-    new="${pair%%:*}"; old="${pair#*:}"
-    if [ -n "${!new+x}" ]; then export "$old=${!new}"; fi
-done
 export REGISTRATION_SERVICE_PORT=$((8091 + PORT_OFFSET))
 export EMAIL_AGENT_A2A_PORT=$((9103 + PORT_OFFSET))
 export SCOUT_HTTP_PORT=$((9104 + PORT_OFFSET))
@@ -166,14 +136,12 @@ if [ "$PORT_OFFSET" -ne 0 ]; then
 fi
 
 # A test instance sits behind NO Shibboleth SP — it's reached by SSH tunnel to its
-# planner port, not the public agenticweb URL — so relax the planner's auth gate, or
+# chat app port, not the public agenticweb URL — so relax the chat app's auth gate, or
 # every /app and /messages request 401s (no identity headers). Scoped strictly to test;
 # prod ALWAYS keeps the SSO gate. Override with CHAT_APP_ALLOW_ANON=0 to keep it on in test
-# (the old name PLANNER_ALLOW_ANON still works). Both names are exported with the same
-# value, because an older planner image reads only PLANNER_ALLOW_ANON.
+# (the old name PLANNER_ALLOW_ANON still works).
 if [ "$DEPLOY_ENV" = "test" ]; then
     export CHAT_APP_ALLOW_ANON="${CHAT_APP_ALLOW_ANON:-${PLANNER_ALLOW_ANON:-1}}"
-    export PLANNER_ALLOW_ANON="$CHAT_APP_ALLOW_ANON"
 fi
 
 # Postgres data dir: prod uses the persistent /engrfs volume (real, credential-bearing
@@ -226,9 +194,9 @@ echo " ADS      : :${ADS_PORT} (routing :${ADS_ROUTING_PORT})"
 echo " vLLM node: ${OPENAI_BASE_URL}"
 echo " Registry : ${IMAGE_REGISTRY}  (default tag: ${IMAGE_TAG:-latest})"
 _TAG_OVERRIDES=""
-for _svc in POSTGRES ADS REGISTRATION PLANNER SCOUT EMAIL CODING INTELLIGENCE DISASTER GEOSPATIAL; do
+for _svc in POSTGRES ADS REGISTRATION CHAT_APP SCOUT EMAIL CODING INTELLIGENCE DISASTER GEOSPATIAL; do
     _var="${_svc}_IMAGE_TAG"
-    [ -n "${!_var:-}" ] && _TAG_OVERRIDES="${_TAG_OVERRIDES} $(printf '%s' "$_svc" | tr '[:upper:]' '[:lower:]')=${!_var}"
+    [ -n "${!_var:-}" ] && _TAG_OVERRIDES="${_TAG_OVERRIDES} $(printf '%s' "$_svc" | tr '[:upper:]_' '[:lower:]-')=${!_var}"
 done
 [ -n "$_TAG_OVERRIDES" ] && echo " Img tags :${_TAG_OVERRIDES}"
 echo "======================================================"
@@ -322,11 +290,11 @@ srun --ntasks=1 --overlap \
 sleep "$STAGGER"
 
 srun --ntasks=1 --overlap \
-     --container-image="$(image_ref planner latest)" \
+     --container-image="$(image_ref chat-app latest)" \
      --container-mounts="$MOUNTS" \
      --container-writable \
      /entrypoint.sh \
-     >> "$LOGS/planner.log" 2>> "$LOGS/planner.err" &
+     >> "$LOGS/chat-app.log" 2>> "$LOGS/chat-app.err" &
 sleep "$STAGGER"
 
 srun --ntasks=1 --overlap \

@@ -167,8 +167,7 @@ per service (`deployment/dockerfiles/Dockerfile.<agent>`, built/pushed by
 as parallel `srun --overlap` steps in `submit.sbatch` on one CPU node, plus a separate GPU
 job (`start_vllm.sbatch`) serving `gpt-oss-120b` via vLLM. ADS starts first; each agent's
 own `entrypoint.sh` (in its directory in the `agent-directory` repo; this repo's
-`deployment/entrypoints/` only holds the planner/postgres/registration ones; "planner" is the
-chat app's deployment name) waits up to 60 s for it, then `exec`s the agent with an absolute
+`deployment/entrypoints/` only holds the chat-app/postgres/registration ones) waits up to 60 s for it, then `exec`s the agent with an absolute
 conda path (`/opt/conda/envs/<env>/bin/python`). The chat app's planner reaches vLLM through
 `OPENAI_BASE_URL`. Full runbook: `docs/deployment/engr/README.md`.
 
@@ -176,7 +175,7 @@ conda path (`/opt/conda/envs/<env>/bin/python`). The chat app's planner reaches 
 Cloud is a critical leg of the project going forward (decided 2026-10-13); the ENGR cluster
 (Tier D) stays the live public deployment. The WashU GCP build
 (`us-central1`) is **additive**; nothing on ENGR was deleted. **Live as of 2026-08-03
-(re-verify):** the **chat app (Cloud Run service `planner`) and registration service on Cloud
+(re-verify):** the **chat app (Cloud Run service `planner`, renamed `chat-app` in code 2026-10-25) and registration service on Cloud
 Run** wired to **Cloud SQL**, a **real ADS on a GCE VM**, authenticated cross-network A2A, LLM =
 vLLM-primary with automatic **Vertex AI fallback**, and the **`CloudRunBackend`**
 auto-deploying + auto-publishing registered agents end-to-end (register→build→deploy→publish). **Not built yet:** the public front door (the
