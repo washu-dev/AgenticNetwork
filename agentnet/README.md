@@ -172,7 +172,9 @@ registration_service/.venv/bin/python -m agentnet.scripts.validate_agent_endpoin
 ## Tests
 
 ```bash
-# dirctl is mocked; run with both service venvs (a2a-sdk 0.3.2 and 0.3.26)
-registration_service/.venv/bin/python -m pytest agentnet/tests -q -p no:cacheprovider
-chat_app/.venv/bin/python -m pytest agentnet/tests -q -p no:cacheprovider
+# dirctl is mocked; from the repo root, runs in both service venvs (a2a-sdk 0.3.2 and 0.3.26)
+scripts/stack test agentnet
+# the same as:
+#   registration_service/.venv/bin/python -m pytest agentnet/tests -q -p no:cacheprovider
+#   chat_app/.venv/bin/python -m pytest agentnet/tests -q -p no:cacheprovider
 ```

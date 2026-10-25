@@ -149,7 +149,8 @@ on real HTTP responses. No postgres, no ADS, no API keys required.
 
 ```bash
 # From the repo root (conftest sets FAKE_DB=1)
-registration_service/.venv/bin/python -m pytest registration_service/tests -q -p no:cacheprovider
+scripts/stack test registration_service
+# the same as: registration_service/.venv/bin/python -m pytest registration_service/tests -q -p no:cacheprovider
 ```
 
 Tests cover: register (every type + tool source, canonical and legacy names — see

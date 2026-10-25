@@ -23,23 +23,27 @@ checks your setup.
 
 ## Running tests
 
-Every suite runs offline: no Docker, Postgres, `dirctl`, external services or API keys. Do not set
-`PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`; the registration suite needs the `pytest-asyncio` plugin.
+Every suite runs offline: no Docker, Postgres, `dirctl`, external services or API keys. One command
+runs them, each suite in its own pytest process with the venv it needs:
 
 ```bash
-chat_app/.venv/bin/python -m pytest chat_app/tests -q
-registration_service/.venv/bin/python -m pytest registration_service/tests -q   # its conftest sets FAKE_DB=1
-registration_service/.venv/bin/python -m pytest agent_skeleton/tests -q
-registration_service/.venv/bin/python -m pytest agentnet/tests -q   # agentnet runs in both service venvs,
-chat_app/.venv/bin/python -m pytest agentnet/tests -q          # so test it with both
-registration_service/.venv/bin/python -m pytest devstack/tests -q
-
-# Full chain: starts the dev stack on ports offset by PIPELINE_PORT_OFFSET (default 20000),
-# drives it over HTTP, then stops it. Needs both service venvs.
-registration_service/.venv/bin/python -m pytest tests/pipeline -q
+scripts/stack test                     # everything: the unit suites, then the pipeline
+scripts/stack test unit --parallel     # the unit suites at once
+scripts/stack test registration_service agentnet   # some suites (agentnet runs in both service venvs)
+scripts/stack test devstack -- -k sweep -x         # after --: pytest's own arguments
+scripts/stack test --list              # what would run, with which interpreter
 ```
 
-The full-chain test uses its own state dir (`PIPELINE_STATE_DIR`, default `.devstack-pipeline/`),
+It exits 0 when every suite passed, 7 when one failed, and 3, naming the fix, when a venv or a
+test plugin is missing (the registration suite needs `pytest-asyncio`; `--cov` needs `pytest-cov`).
+Each suite gets a clean environment, so a stray `FAKE_DB=0` or `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`
+in your shell cannot change the result. Underneath, each suite is one pytest call from the repo
+root, such as `registration_service/.venv/bin/python -m pytest registration_service/tests -q -p no:cacheprovider`
+(its conftest sets `FAKE_DB=1`); `--list` shows them all.
+
+The pipeline (`scripts/stack test pipeline`, needs both service venvs) starts the dev stack once
+per file, one after the other, on ports offset by `PIPELINE_PORT_OFFSET` (default 20000; the
+scenarios add 100) and in state dirs of its own (`.devstack-pipeline/`, `.devstack-scenarios/`),
 so it can run while your own dev stack is up. To try a change by hand, use the dev stack:
 `scripts/stack up`, `scripts/stack smoke`, `scripts/stack down` ([`docs/DEVSTACK.md`](docs/DEVSTACK.md)).
 What each suite covers, and how to write tests: [`docs/TESTING.md`](docs/TESTING.md).
@@ -50,14 +54,15 @@ What each suite covers, and how to write tests: [`docs/TESTING.md`](docs/TESTING
 to `main`, and on demand:
 
 - **unit**: the suites above (chat app, registration, skeleton, agentnet in both service
-  environments, dev stack), each in a fresh environment, with `-p no:cacheprovider`.
+  environments, dev stack), one job each, in a fresh environment: each job runs
+  `scripts/stack test <suite> --python <its interpreter> --cov`.
 - **repo hygiene**: no tracked file that `.gitignore` excludes; no tracked secrets, keys,
   credential or token files, model weights, slide decks, local databases, logs or wheels
   (`*.example` templates are allowed); no tracked file over 1 MB.
 - **unit coverage**: each unit job also prints a line-coverage summary (report only, no threshold).
 - **pipeline**: after the unit jobs pass, builds both service venvs, runs `scripts/stack doctor`,
-  the full-chain test and the scenario tests (`tests/pipeline/test_scenarios.py`), and uploads the
-  dev stack logs if either fails.
+  then `scripts/stack test pipeline` (the full-chain test and the scenario tests,
+  `tests/pipeline/test_scenarios.py`), and uploads the dev stack logs if either fails.
 
 A separate workflow, `.github/workflows/compose.yml`, builds the Docker images and runs the
 Compose smoke test (`deployment/compose/smoke.sh`) when a pull request or a push to `main` changes

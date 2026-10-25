@@ -87,7 +87,7 @@ teammate access: `gcloud run services add-iam-policy-binding chat-app --region=u
 ## Dev workflow
 
 - **Local tests, no cloud:** the registration service runs fully in-memory with `FAKE_DB=1`
-  (`registration_service/.venv/bin/python -m pytest registration_service/tests -q`; conftest sets `FAKE_DB=1`).
+  (`scripts/stack test registration_service`; conftest sets `FAKE_DB=1`).
   The `CloudRunBackend` is unit-tested against a fake Cloud Run client — no `google-cloud-run` install, no GCP.
 - **Build + push an infra image:** `bash deployment/build_and_push.sh registration` (same script/images as the
   cluster). Redeploy with `gcloud run services update <svc> --image=di2washu/agenticnetwork-<svc>:latest`.

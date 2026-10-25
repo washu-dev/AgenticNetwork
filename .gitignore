@@ -67,6 +67,7 @@ docs/dev/
 # Dev stack state (python3 -m devstack): pids, logs, fake directory, env overrides
 /.devstack/
 /.devstack-pipeline/
+/.devstack-scenarios/
 /.devstack.env
 
 # Packaging output

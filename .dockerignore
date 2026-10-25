@@ -20,6 +20,7 @@ Local
 **/*.log
 .devstack
 .devstack-pipeline
+.devstack-scenarios
 .devstack.env
 .deck_build
 .enroot

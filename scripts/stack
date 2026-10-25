@@ -1,5 +1,6 @@
 #!/bin/sh
-# One-command native dev stack: scripts/stack up | status | smoke | logs | down | reset.
+# One-command native dev stack: scripts/stack up | status | smoke | logs | add-agent |
+# down | reset | doctor, and every test suite: scripts/stack test.
 # Runs `python3 -m devstack` from the repo root; set DEVSTACK_PYTHON to use another
 # interpreter (Python >= 3.11). See docs/DEVSTACK.md.
 set -e

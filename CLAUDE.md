@@ -441,38 +441,49 @@ auth-unaware.
 
 ## 10. Testing & validation
 
-Unit suites run from the repo root, offline (no Docker, Postgres, `dirctl` or API
-key); CI runs the same per component in `.github/workflows/tests.yml` (with coverage
-summaries), plus a repo-hygiene job and the full-chain and scenario pipeline;
+All suites run from the repo root, offline (no Docker, Postgres, `dirctl` or API key).
+`scripts/stack test` runs them, each in its own pytest process with the venv it needs
+(`devstack/suites.py`); CI runs the same command per component in `.github/workflows/tests.yml`
+(with `--python` and coverage summaries), plus a repo-hygiene job and the full-chain and scenario pipeline;
 `.github/workflows/compose.yml` runs tier 2 (the Docker Compose smoke test) on PRs and pushes to
-`main` touching deployment or service code, weekly and on demand. Do not set `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`: registration
-needs the `pytest-asyncio` plugin, and most of its suite fails without it.
+`main` touching deployment or service code, weekly and on demand. Each suite gets a clean
+environment, so a stray `FAKE_DB=0` or `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1` cannot leak in. When you
+call pytest yourself, do not set `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`: registration needs the
+`pytest-asyncio` plugin, and most of its suite fails without it.
 
 ```bash
+# Every suite: the unit suites, then the pipeline. Exits 0 when all pass, 7 when one fails,
+# 3 when a venv or test plugin is missing (it names the fix).
+scripts/stack test
+scripts/stack test unit --parallel        # the unit suites at once
+scripts/stack test --list                 # each suite with its path and interpreter
+scripts/stack test registration_service -- -k approval -x   # after --: pytest's own args
+# Coverage: add --cov (pytest-cov in the venvs); docs/TESTING.md.
+
 # Chat app and its planner (no network, no ADS, no OpenAI key — uses ScriptedLLMClient + fake ADS)
-chat_app/.venv/bin/python -m pytest chat_app/tests -q
+scripts/stack test chat_app               # chat_app/.venv/bin/python -m pytest chat_app/tests -q -p no:cacheprovider
 
-# Registration (registration_service/tests/conftest.py sets FAKE_DB=1)
-registration_service/.venv/bin/python -m pytest registration_service/tests -q
+# Registration (registration_service/tests/conftest.py sets FAKE_DB=1), in the registration venv
+scripts/stack test registration_service
 
-# Agent skeleton (in-repo copy)
-registration_service/.venv/bin/python -m pytest agent_skeleton/tests -q
+# Agent skeleton (in-repo copy), in the registration venv
+scripts/stack test agent_skeleton
 
 # agentnet, the shared directory/A2A package (dirctl mocked). It runs in both service
-# venvs (a2a-sdk 0.3.2 and 0.3.26), so test it with both.
+# venvs (a2a-sdk 0.3.2 and 0.3.26), so this tests it with both.
 # print_versions lists the deps of the venv running it.
-registration_service/.venv/bin/python -m pytest agentnet/tests -q
-chat_app/.venv/bin/python -m pytest agentnet/tests -q
+scripts/stack test agentnet
 registration_service/.venv/bin/python -m agentnet.scripts.print_versions
 
-# Dev stack: mock LLM, fake dirctl, identity proxy, stack CLI safety checks
-registration_service/.venv/bin/python -m pytest devstack/tests -q
+# Dev stack: mock LLM, fake dirctl, identity proxy, stack CLI safety checks, scripts/stack test
+scripts/stack test devstack
 
 # Full chain + scenarios (credential scoping, unreachable agent, proxy and preset-tool agents, step limit,
-# ask_user, confirmation, restart): start the dev stack
-# on offset ports (PIPELINE_PORT_OFFSET, default 20000), drive it over HTTP only, then stop it.
-# Needs both service venvs. Coverage: add --cov=<component> (pytest-cov); docs/TESTING.md.
-registration_service/.venv/bin/python -m pytest tests/pipeline -q
+# ask_user, confirmation, restart): each file starts the dev stack on offset ports
+# (PIPELINE_PORT_OFFSET, default 20000; the scenarios add 100) in its own state dir
+# (.devstack-pipeline/, .devstack-scenarios/), drives it over HTTP only, then stops it.
+# Needs both service venvs and lsof. One file: scripts/stack test full-chain (or scenarios).
+scripts/stack test pipeline
 
 # Tier 2 (Docker): the service images + real Postgres + real dirctl, via Docker Compose
 # Its own project name and port, so `down -v` never touches a long-running Compose instance;
@@ -491,8 +502,8 @@ registration_service/.venv/bin/python -m agentnet.scripts.validate_agent_endpoin
 ```
 
 `scripts/stack` (`up`, `status --json`, `smoke`, `logs`, `add-agent`, `down`, `reset`,
-`doctor`) is the one start command shared by people, agents and the full-chain test
-([`docs/DEVSTACK.md`](docs/DEVSTACK.md)). `tests/pipeline/test_full_chain.py` runs a first-time
+`doctor`, `test`) is the one start and test command shared by people, agents, CI and the
+full-chain test ([`docs/DEVSTACK.md`](docs/DEVSTACK.md)). `tests/pipeline/test_full_chain.py` runs a first-time
 user's session against it: start from nothing → sign in → prompt → specialist answer via the
 planner → saved history → register an agent → shut down with nothing left running.
 
@@ -538,8 +549,8 @@ planner → saved history → register an agent → shut down with nothing left 
 | `registration_service/supervisor.py` | Subprocess lifecycle, ADS publish/unpublish, health loop; `FAKE_SUPERVISOR` (defaults to `FAKE_DB`) swaps in `fake_supervisor.py` |
 | `registration_service/fake_db.py` | In-memory drop-in for the asyncpg pool — used by `FAKE_DB=1` dev mode and tests |
 | `registration_service/fake_supervisor.py` | No-op supervisor used by `FAKE_DB=1` dev mode and tests |
-| `registration_service/tests/` | pytest suite; run from the repo root with `registration_service/.venv/bin/python -m pytest registration_service/tests -q` (its conftest sets `FAKE_DB=1`) |
-| `devstack/` + `scripts/stack` | Native one-command dev stack (mock LLM, fake `dirctl`, identity proxy, seed agents); see `docs/DEVSTACK.md` |
+| `registration_service/tests/` | pytest suite; run from the repo root with `scripts/stack test registration_service` (its conftest sets `FAKE_DB=1`) |
+| `devstack/` + `scripts/stack` | Native one-command dev stack (mock LLM, fake `dirctl`, identity proxy, seed agents); see `docs/DEVSTACK.md`. `scripts/stack test` runs every test suite (`devstack/suites.py`) |
 | `tests/pipeline/` | Full-chain test driving the dev stack over HTTP (Goal 1 in `docs/OPEN_SOURCE_RELEASE.md`) |
 | `.github/workflows/tests.yml` | CI: unit suites (with coverage), repo hygiene, full-chain + scenario pipeline |
 | `.github/workflows/compose.yml`, `deployment/compose/` | Tier 2: Docker Compose stack and its smoke test ([`docs/deployment/COMPOSE.md`](docs/deployment/COMPOSE.md)) |

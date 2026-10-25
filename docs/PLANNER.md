@@ -188,7 +188,7 @@ name. Full matrix in [`CLAUDE.md`](../CLAUDE.md) §7.
 
 `chat_app/tests` run with no network/DB/OpenAI key (ScriptedLLMClient + fake ADS):
 ```bash
-chat_app/.venv/bin/python -m pytest chat_app/tests -q -p no:cacheprovider
+scripts/stack test chat_app   # chat_app/.venv/bin/python -m pytest chat_app/tests -q -p no:cacheprovider
 ```
 
 ## Key files

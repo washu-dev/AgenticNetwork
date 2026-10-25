@@ -139,7 +139,7 @@ cheaper belt-and-suspenders version; both can coexist.
 ```bash
 python -m agent_skeleton.serve check       # schema/function alignment (no deps beyond stdlib)
 python -m py_compile agent_skeleton/*.py   # syntax
-registration_service/.venv/bin/python -m pytest agent_skeleton/tests -q -p no:cacheprovider
+scripts/stack test agent_skeleton          # its tests, in the registration venv
 # engine unit test (no a2a-sdk needed): import agent_skeleton.tools and call the fns
 ```
 

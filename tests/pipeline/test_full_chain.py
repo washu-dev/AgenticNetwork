@@ -4,7 +4,8 @@ Black box: the suite drives the system only through `scripts/stack` and HTTP, so
 tests can judge a component rebuilt from scratch. It needs Python >= 3.11 with pytest and
 the two service venvs from docs/DEVSTACK.md; no other packages, network or keys.
 
-    python -m pytest tests/pipeline -q -p no:cacheprovider
+    scripts/stack test pipeline   # this file, then test_scenarios.py, each with its own ports and state dir
+    python -m pytest tests/pipeline -q -p no:cacheprovider   # the same in one state dir
 
 The tests share one stack and run in file order, like one session: start from nothing,
 sign in, send a prompt, find it saved, watch it stream, register an agent and reach it,

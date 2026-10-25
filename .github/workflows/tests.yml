@@ -1,6 +1,7 @@
 # Offline test gates: per-component unit suites, repo hygiene, and the native
 # full-chain pipeline test. Nothing here needs Docker, Postgres, a real dirctl,
-# network services or API keys.
+# network services or API keys. Both test jobs run `scripts/stack test`
+# (devstack/suites.py), the same command as locally.
 name: tests
 
 on:
@@ -75,14 +76,13 @@ jobs:
           python -m pip install --upgrade pip
           ${{ matrix.install }}
           python -m pip install pytest-cov==7.1.0
-      # No PYTEST_DISABLE_PLUGIN_AUTOLOAD: registration needs the pytest-asyncio plugin,
-      # and coverage comes from the pytest-cov plugin.
+      # --python: this job's interpreter instead of the repo venvs (so agentnet runs once
+      # per job). --cov then prints line coverage of the component's own code (its tests
+      # left out); report only, no threshold. The suite gets a clean environment, with
+      # plugin autoload on (registration needs pytest-asyncio; coverage needs pytest-cov);
       # registration_service/tests/conftest.py sets FAKE_DB=1 itself.
       - name: Test
-        run: python -m pytest "${{ matrix.component }}/tests" -q -p no:cacheprovider --cov="${{ matrix.component }}" --cov-report=
-      # Line coverage of the component's own code (its tests left out). Report only: no threshold.
-      - name: Coverage
-        run: python -m coverage report --omit='*/tests/*'
+        run: scripts/stack test "${{ matrix.component }}" --python "$(command -v python)" --cov
 
   hygiene:
     name: repo hygiene
@@ -130,14 +130,14 @@ jobs:
   # (tests/pipeline, Goal 1 in docs/OPEN_SOURCE_RELEASE.md). Each starts the dev
   # stack with `scripts/stack up` and drives it over HTTP only. Services run as
   # local processes from the two venvs below (chat app on a2a-sdk 0.3.26;
-  # registration and the agents it spawns on 0.3.2); the test runner itself
-  # needs only pytest.
+  # registration and the agents it spawns on 0.3.2); `scripts/stack test` runs
+  # the tests themselves from the registration venv.
   # ---------------------------------------------------------------------------
   pipeline:
     name: pipeline (full chain, native)
     needs: unit
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -156,36 +156,25 @@ jobs:
           registration_service/.venv/bin/python -m pip install --upgrade pip
           # From the repo root: the file's "-e ./agent_skeleton" is CWD-relative.
           registration_service/.venv/bin/python -m pip install -r registration_service/requirements.txt
-      - name: Install test runner
-        run: |
-          python -m pip install pytest==9.0.3
-          # `scripts/stack down` uses lsof to find leftover agents.
-          command -v lsof >/dev/null || { sudo apt-get update -q && sudo apt-get install -y -q lsof; }
+      - name: Install lsof
+        # `scripts/stack down` uses lsof to find leftover agents.
+        run: command -v lsof >/dev/null || { sudo apt-get update -q && sudo apt-get install -y -q lsof; }
       - name: Doctor
         run: scripts/stack doctor
-      - name: Full-chain test
-        id: full_chain
-        # A hang fails this step (not the whole job), so the logs below still upload.
-        timeout-minutes: 10
-        env:
-          PIPELINE_PORT_OFFSET: "20000"
-          PIPELINE_STATE_DIR: ${{ github.workspace }}/.devstack-pipeline
-        run: python -m pytest tests/pipeline/test_full_chain.py -q -p no:cacheprovider
-      - name: Scenario tests
-        # Its own step and state dir (a fresh stack resets its dir), so a full-chain
-        # failure keeps its logs and the scenarios still run.
-        if: success() || steps.full_chain.outcome == 'failure'
-        timeout-minutes: 10
-        env:
-          PIPELINE_PORT_OFFSET: "20100"
-          PIPELINE_STATE_DIR: ${{ github.workspace }}/.devstack-scenarios
-        run: python -m pytest tests/pipeline/test_scenarios.py -q -p no:cacheprovider
+      - name: Pipeline tests
+        # The full chain (ports +20000, state dir .devstack-pipeline), then the scenarios
+        # (+20100, .devstack-scenarios), each on a fresh stack of its own, so a full-chain
+        # failure keeps its logs and the scenarios still run. Each file is stopped after
+        # 600 s; this step timeout is a backstop, below the job's, so the logs below still
+        # upload after a hang.
+        timeout-minutes: 25
+        run: scripts/stack test pipeline
       - name: Upload dev stack logs
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: pipeline-logs
-          # Service, agent and mock-LLM request logs from the PIPELINE_STATE_DIRs above.
+          # Service, agent and mock-LLM request logs from the two state dirs above.
           path: |
             .devstack-pipeline/logs/
             .devstack-scenarios/logs/

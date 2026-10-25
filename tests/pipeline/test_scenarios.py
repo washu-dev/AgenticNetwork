@@ -9,6 +9,7 @@ instead of 10, and runs the `strict` policy mode, in which a call that names a w
 waits for the user's confirmation. The mock planner passes a skill only when the prompt
 names one, so the other scenarios are unaffected.
 
+    scripts/stack test scenarios   # ports PIPELINE_PORT_OFFSET + 100, state dir .devstack-scenarios
     python -m pytest tests/pipeline/test_scenarios.py -q -p no:cacheprovider
 
 Agents that the tests run themselves are published straight into the stack's directory

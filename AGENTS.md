@@ -53,12 +53,11 @@ Do not reintroduce the old prototype, milestone demo agents, or PI runtime under
 For ADS changes:
 
 ```bash
-registration_service/.venv/bin/python -m pytest -q -p no:cacheprovider agentnet/tests
-chat_app/.venv/bin/python -m pytest -q -p no:cacheprovider agentnet/tests
+scripts/stack test agentnet
 registration_service/.venv/bin/python -m agentnet.scripts.print_versions
 ```
 
 agentnet runs in both service venvs (registration on `a2a-sdk` 0.3.2, the chat app
-on 0.3.26), so run its tests with both; `scripts/ads` uses the registration venv
-(`ADS_PYTHON` overrides it). All suites and the dev stack:
-`CLAUDE.md` §10; CI runs them (`.github/workflows/tests.yml`).
+on 0.3.26), so `scripts/stack test agentnet` runs its tests with both; `scripts/ads`
+uses the registration venv (`ADS_PYTHON` overrides it). All suites: `scripts/stack test`
+(`CLAUDE.md` §10); CI runs the same command (`.github/workflows/tests.yml`).

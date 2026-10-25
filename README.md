@@ -78,6 +78,8 @@ scripts/stack up                    # returns when everything is ready
 open http://localhost:8080/app      # chat UI, signed in as dev@example.test (macOS; elsewhere open the URL in a browser)
 scripts/stack smoke                 # optional: one prompt through the front door
 scripts/stack down
+
+scripts/stack test                  # every test suite, each with its venv (docs/TESTING.md)
 ```
 
 Try "Echo this back: hello": the planner finds the seed agent and returns its answer. No Docker,

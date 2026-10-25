@@ -4,6 +4,7 @@
     python3 -m devstack status --json
     python3 -m devstack smoke
     python3 -m devstack down
+    python3 -m devstack test      # every test suite, each with its interpreter (devstack/suites.py)
 
 Everything runs as local processes from the repository's own venvs; no Docker,
 no database server, no SSO, no keys. The services, in start order:
@@ -22,7 +23,8 @@ through their HTTP APIs and the ``dirctl`` CLI, so the same commands can judge a
 rebuilt component. Service start commands live in ``_service_specs``.
 
 Exit codes: 0 ok; 1 not ready (status) or something left running (down, reset);
-2 usage; 3 preflight failed; 5 a service failed to become ready; 6 smoke failed.
+2 usage; 3 preflight failed; 5 a service failed to become ready; 6 smoke failed;
+7 a test suite failed (test).
 
 Standard library only (Python >= 3.11).
 """
@@ -67,6 +69,7 @@ EXIT_USAGE = 2
 EXIT_PREFLIGHT = 3
 EXIT_SERVICE = 5
 EXIT_SMOKE = 6
+EXIT_TESTS = 7
 
 BASE_PORTS = {"proxy": 8080, "chat-app": 8090, "registration": 8091, "mock-llm": 8099, "directory": 8888}
 AGENT_PORT_START = 19200
@@ -1317,7 +1320,8 @@ def venv_report(python: str) -> dict[str, Any]:
         "    try: return m.version(p)\n"
         "    except m.PackageNotFoundError: return None\n"
         "print(json.dumps({'python': sys.version.split()[0], "
-        "'packages': {p: v(p) for p in ('a2a-sdk', 'fastapi', 'uvicorn', 'httpx', 'openai', 'pytest')}}))"
+        "'packages': {p: v(p) for p in ('a2a-sdk', 'fastapi', 'uvicorn', 'httpx', 'openai', 'pytest', "
+        "'pytest-asyncio', 'pytest-cov')}}))"
     )
     try:
         result = subprocess.run([python, "-I", "-c", code], capture_output=True, text=True, timeout=30, check=False)
@@ -1460,26 +1464,37 @@ def build_parser() -> argparse.ArgumentParser:
     add.add_argument("--json", action="store_true")
     add.set_defaults(func=cmd_add_agent)
 
+    from . import suites  # here, not at the top: suites imports this module
+
+    suites.add_parser(sub)
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    pytest_args: list[str] = []
+    if argv[:1] == ["test"] and "--" in argv:  # the rest goes to pytest, not into SUITE
+        split = argv.index("--")
+        argv, pytest_args = argv[:split], argv[split + 1:]
     args = build_parser().parse_args(argv)
+    if args.command == "test":
+        args.pytest_args = pytest_args
     try:
         return args.func(args)
     except StackError as exc:
-        report_error(exc, as_json=getattr(args, "json", False) and args.command == "up")
+        report_error(exc, as_json=getattr(args, "json", False) and args.command in ("up", "test"),
+                     verdict="ok" if args.command == "test" else "ready")
         return exc.code
     except KeyboardInterrupt:
         print("devstack: interrupted", file=sys.stderr)
         return 130
 
 
-def report_error(exc: StackError, *, as_json: bool) -> None:
+def report_error(exc: StackError, *, as_json: bool, verdict: str = "ready") -> None:
     lines = tail_lines(exc.log, LOG_TAIL_LINES) if exc.log else []
     if as_json:
         print(json.dumps({
-            "ready": False,
+            verdict: False,
             "error": {"message": str(exc), "service": exc.service, "log": str(exc.log) if exc.log else None,
                       "exit_code": exc.code, "log_tail": lines},
         }, indent=2))

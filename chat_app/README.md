@@ -113,7 +113,8 @@ different interpreter, set `PYTHON_BIN=/path/to/python`.
 
 ```bash
 cd /path/to/AgenticNetwork
-chat_app/.venv/bin/python -m pytest -q chat_app/tests
+scripts/stack test chat_app
+# the same as: chat_app/.venv/bin/python -m pytest chat_app/tests -q -p no:cacheprovider
 ```
 
 The tests use a scripted LLM and the in-process fake ADS. They cover:

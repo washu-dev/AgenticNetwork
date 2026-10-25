@@ -1,8 +1,9 @@
 # Testing
 
 The unit and pipeline suites run offline: no Docker, Postgres, real `dirctl`, external
-services or API keys. Run them from the repo root. CI
-([`.github/workflows/tests.yml`](../.github/workflows/tests.yml)) runs the same suites on every
+services or API keys. `scripts/stack test` runs them all from the repo root, each with the venv it
+needs ([Running the suites](#running-the-suites)). CI
+([`.github/workflows/tests.yml`](../.github/workflows/tests.yml)) runs the same command on every
 pull request, on pushes to `main` and on demand. A second workflow
 ([`.github/workflows/compose.yml`](../.github/workflows/compose.yml)) runs the tier-2 Docker check.
 
@@ -29,12 +30,12 @@ The request path (user → planner → directory → A2A → agent → answer) a
 
 | Suite | Command | Tests | Line coverage | What it covers |
 |---|---|---|---|---|
-| Chat app | `chat_app/.venv/bin/python -m pytest chat_app/tests -q` | 245 (+12) | 76% | The tool loop (scripted LLM, fake directory), the HTTP API (identity, conversation ownership, streaming, confirmations), credential discovery and enforcement, `/ready`, startup, bug reports, setting names and their old-name fallbacks, that every import of the repo's own code resolves and the package's layers import one way |
-| Registration | `registration_service/.venv/bin/python -m pytest registration_service/tests -q` | 319 | 80% | The API, upload checks, the image build manifest, the native supervisor and agent processes, the Cloud Run backend (mocked), which handler module the runner starts for each handler type, streaming and uploaded-tools agents, credentials, the fake database, that every import of the repo's own code (here and in `agent_skeleton/`) resolves |
-| Agent skeleton | `registration_service/.venv/bin/python -m pytest agent_skeleton/tests -q` | 70 | 73% | The spec-driven engine, the `call_endpoint` tool and its secret redaction, per-operation tools, preset tools, the multi-endpoint manager, the generator, credentials kept out of the LLM prompt, the tool-schema and handler contract |
-| agentnet (directory + A2A) | `registration_service/.venv/bin/python -m pytest agentnet/tests -q`, and the same with `chat_app/.venv/bin/python` | 38 in each venv | 52% | Card ↔ record conversion, the `dirctl` CLI backend (mocked), the registration service's publisher (id-only skills, no legacy routing, its errors), the fake-directory flag, route summaries and routing wake-up |
-| Dev stack | `registration_service/.venv/bin/python -m pytest devstack/tests -q` | 58 | 52% | The mock LLM, the fake `dirctl`, the identity proxy, the stack CLI's checks that need no running services |
-| Pipeline | `registration_service/.venv/bin/python -m pytest tests/pipeline -q` | 19 | — | The running system, end to end (next section) |
+| Chat app | `scripts/stack test chat_app` | 245 (+12) | 76% | The tool loop (scripted LLM, fake directory), the HTTP API (identity, conversation ownership, streaming, confirmations), credential discovery and enforcement, `/ready`, startup, bug reports, setting names and their old-name fallbacks, that every import of the repo's own code resolves and the package's layers import one way |
+| Registration | `scripts/stack test registration_service` | 319 | 80% | The API, upload checks, the image build manifest, the native supervisor and agent processes, the Cloud Run backend (mocked), which handler module the runner starts for each handler type, streaming and uploaded-tools agents, credentials, the fake database, that every import of the repo's own code (here and in `agent_skeleton/`) resolves |
+| Agent skeleton | `scripts/stack test agent_skeleton` | 70 | 73% | The spec-driven engine, the `call_endpoint` tool and its secret redaction, per-operation tools, preset tools, the multi-endpoint manager, the generator, credentials kept out of the LLM prompt, the tool-schema and handler contract |
+| agentnet (directory + A2A) | `scripts/stack test agentnet` (in both venvs) | 38 in each venv | 52% | Card ↔ record conversion, the `dirctl` CLI backend (mocked), the registration service's publisher (id-only skills, no legacy routing, its errors), the fake-directory flag, route summaries and routing wake-up |
+| Dev stack | `scripts/stack test devstack` | 58 | 52% | The mock LLM, the fake `dirctl`, the identity proxy, the stack CLI's checks that need no running services, `scripts/stack test` (with fake interpreters) |
+| Pipeline | `scripts/stack test pipeline` (`full-chain`, then `scenarios`) | 19 | — | The running system, end to end (next section) |
 
 Counts and coverage were measured on 2026-10-15 (chat app 2026-10-16; chat app, agentnet and dev
 stack again 2026-10-20) with the local venvs; both
@@ -61,39 +62,68 @@ suite exercises much of that code without measuring it.
 
 The registration venv runs four suites because it installs `agent_skeleton`. agentnet's suite
 also runs in the chat app venv, because agentnet runs inside both services (`a2a-sdk` 0.3.2 and
-0.3.26). Do not set `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`: the registration
-suite needs the `pytest-asyncio` plugin, and coverage comes from the `pytest-cov` plugin.
+0.3.26). The registration suite needs the `pytest-asyncio` plugin, and coverage comes from the
+`pytest-cov` plugin; when you call pytest yourself, do not set `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`.
+
+### Running the suites
+
+```bash
+scripts/stack test                     # everything: the unit suites, then the pipeline
+scripts/stack test unit --parallel     # the unit suites at once
+scripts/stack test agentnet devstack   # suites by name, or a group: unit, pipeline, all
+scripts/stack test registration_service -- -k approval -x   # after --: pytest's own arguments
+scripts/stack test --list              # what would run, with which interpreter
+scripts/stack test --json              # pytest's output on stderr, a JSON summary on stdout
+```
+
+Each suite is its own `python -m pytest <path> -q -p no:cacheprovider` from the repo root
+(`devstack/suites.py`), because the suites differ in venv, rootdir and asyncio mode
+(`registration_service/pytest.ini` applies only when the registration suite runs alone). Each
+gets a clean environment: the dev stack's pass-through list (`devstack/stack.py`) plus
+`PLANNER_TEST_DATABASE_DSN`, so a stray `FAKE_DB=0` or `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1` in your
+shell cannot change a result. Selected suites run in table order and the command carries on
+after a failure; `--parallel` runs the unit suites at once, but the pipeline files always run one
+after the other. A suite still running after `--timeout` seconds (default 900, 600 per pipeline
+file) is stopped. `--python PATH` runs every suite with that interpreter instead of the venvs, as
+CI does (agentnet then runs once).
+
+The command exits 0 when every selected suite passed, 7 when any failed or was stopped, 3 when a
+venv, a test plugin or (for the pipeline) `lsof` is missing, naming the fix, and 2 for an unknown
+suite.
 
 ### Coverage
 
 CI prints a coverage table for each unit suite (report only, no threshold). Locally, with
-`pytest-cov` installed in the venv:
+`pytest-cov` installed in the venvs:
 
 ```bash
 chat_app/.venv/bin/python -m pip install pytest-cov
-chat_app/.venv/bin/python -m pytest chat_app/tests -q --cov=chat_app --cov-report=
-chat_app/.venv/bin/python -m coverage report --omit='*/tests/*'
+registration_service/.venv/bin/python -m pip install pytest-cov
+scripts/stack test unit --cov
 ```
 
-Swap in the other component and venv for the other suites. The data file `.coverage` is ignored
-by git.
+Each suite's data stays in `.coverage.<suite>` (for example `.coverage.agentnet[chat-app]`),
+ignored by git; the table is `coverage report --omit='*/tests/*'` on that file.
 
 ## The pipeline suite
 
 `tests/pipeline` starts the dev stack with `scripts/stack up --llm mock` and drives it only through
 `scripts/stack`, HTTP and the dev stack's fake `dirctl`. Being black box, it can also judge a
-component rebuilt from scratch. It needs both service venvs ([DEVSTACK.md](DEVSTACK.md)) and a
-Python 3.11 or newer with pytest; it takes about 30 seconds.
+component rebuilt from scratch. `scripts/stack test pipeline` runs it from the registration venv;
+it needs both service venvs ([DEVSTACK.md](DEVSTACK.md)) and `lsof`, and takes about 30 seconds.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `PIPELINE_PORT_OFFSET` | `20000` | Added to every stack port, so the suite can run next to your own dev stack |
-| `PIPELINE_STATE_DIR` | `.devstack-pipeline/` | The stack's state dir. Reset at the start of each file; its `logs/` are kept afterwards |
+| `PIPELINE_PORT_OFFSET` | `20000` | Added to every stack port, so the suite can run next to your own dev stack. `scripts/stack test` adds 100 more for the scenarios |
+| `PIPELINE_STATE_DIR` | `.devstack-pipeline/` | The stack's state dir. Reset at the start of each file; its `logs/` are kept afterwards. `scripts/stack test` sets it per file: `.devstack-pipeline/` for the full chain, `.devstack-scenarios/` for the scenarios |
 
-Each file starts a stack of its own in the same state dir, so a run of the whole folder keeps
-only the second file's logs. To debug a failure, run that file alone, then read
-`<state dir>/logs/` or `scripts/stack logs SERVICE --state-dir <state dir>`. CI runs the two files
-as separate steps with separate state dirs and uploads both `logs/` folders when a step fails.
+Each file starts a stack of its own. `scripts/stack test pipeline` gives each its own ports and
+state dir, so both keep their logs, and its summary names the `logs/` folder of a file that
+failed; a plain `pytest tests/pipeline` run uses one state dir and keeps only the second file's
+logs. To debug a failure, run that file alone (`scripts/stack test full-chain` or `scenarios`),
+then read `<state dir>/logs/` or `scripts/stack logs SERVICE --state-dir <state dir>`. A file
+that is stopped after its timeout gets SIGTERM first, so its stack still goes `down`. CI runs
+`scripts/stack test pipeline` and uploads both `logs/` folders when it fails.
 
 **`test_full_chain.py`** (8 tests) is one first-time user's session, in order: start from nothing
 (`up` is ready and idempotent); the first signed-in request creates the user, and identity
@@ -159,7 +189,8 @@ fake `dirctl` (`push`, then `routing publish`) and unpublished afterwards.
 
 ## Adding a test
 
-- **Unit test:** put it in the component's `tests/` folder and run it with that component's venv.
+- **Unit test:** put it in the component's `tests/` folder and run it with
+  `scripts/stack test <component>`, which picks that component's venv.
   Keep it offline and use the fakes already there: the planner's `ScriptedLLMClient`
   (`chat_app/planner/llm_client.py`), `DirectoryClient(fake_ads=True)` and the cards in
   `chat_app/tests/fixtures/agent_cards/`; registration's `FAKE_DB=1`
@@ -183,7 +214,7 @@ fake `dirctl` (`push`, then `routing publish`) and unpublished afterwards.
   machine, for example five:
 
   ```bash
-  for i in 1 2 3 4 5; do registration_service/.venv/bin/python -m pytest tests/pipeline -q -p no:cacheprovider || break; done
+  for i in 1 2 3 4 5; do scripts/stack test pipeline || break; done
   ```
 
   The full-chain test passed 20 runs in a row on 2026-10-13; the suite with all eleven scenario

@@ -475,7 +475,7 @@ health — all externally. The six existing specialist agents do not use this pa
 | `registration_service/db.py` | asyncpg pool + schema (`agents`, `port_pool` tables); `FAKE_DB=1` swaps in `fake_db.py` |
 | `registration_service/backend.py` | `SubprocessBackend` / `ClusterBackend` (srun) / `CloudRunBackend` (Cloud Run): the process management layer under `Supervisor` |
 | `registration_service/models.py` | `RegisterRequest`, `LLMConfig`, `ProxyConfig`, `CustomConfig`, `AgentResponse` |
-| `registration_service/tests/` | pytest suite; run `registration_service/.venv/bin/python -m pytest registration_service/tests -q` (conftest sets `FAKE_DB=1`) |
+| `registration_service/tests/` | pytest suite; run `scripts/stack test registration_service` (conftest sets `FAKE_DB=1`) |
 
 ---
 

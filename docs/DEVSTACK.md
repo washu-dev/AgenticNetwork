@@ -18,6 +18,7 @@ below). From the repo root:
 scripts/stack up                    # start everything; returns when it is all ready
 open http://localhost:8080/app      # chat UI, already signed in as dev@example.test
 scripts/stack down                  # stop everything
+scripts/stack test                  # run every test suite, each with its venv (TESTING.md)
 ```
 
 `scripts/stack` is a thin wrapper for `python3 -m devstack`; both work the same. Set `DEVSTACK_PYTHON` to run it with another interpreter (3.11 or newer).
@@ -78,14 +79,15 @@ again.
 | `down [--json]` | Stops this stack's services and spawned agents, and reports anything still listening on its ports. A service of this stack whose pid file was lost is found by its log path and stopped too. It never stops another stack's services or agents: if a stack started from another state dir holds these ports, `down` names it (pid, port, state dir), prints the command that stops it and exits 1. `--json` prints the same report on stdout. |
 | `reset` | `down`, then deletes what the stack created in `.devstack/` for a clean start. It removes the dir itself only if nothing else is in it. If `down` leaves anything running, `reset` exits 1 and deletes nothing, so the pid files and logs stay for the next try. |
 | `doctor [--json]` | Checks the setup without starting anything. |
+| `test [SUITE ...] [--parallel] [--cov] [--python PATH] [--timeout S] [--list] [--json] [-- PYTEST_ARGS]` | Runs the test suites (all by default, `unit`, `pipeline`, or suites by name), each in its own pytest process with the venv it needs ([TESTING.md](TESTING.md#running-the-suites)). The pipeline starts stacks of its own, on offset ports and state dirs, so it leaves yours alone. |
 
-Every command accepts `--state-dir DIR` (default `.devstack/`, or `$DEVSTACK_STATE_DIR`).
+Every command except `test` accepts `--state-dir DIR` (default `.devstack/`, or `$DEVSTACK_STATE_DIR`).
 `up` refuses a dir that is not empty and was not created by the stack. `down` in a dir
 with no `stack.json` (a stack that never started) stops only what its pid files name.
 
 **Exit codes:** 0 ok; 1 not ready (`status`) or something left running (`down`, `reset`);
 2 usage error; 3 preflight failed (a missing venv, a busy port or a missing setting);
-5 a service did not become ready; 6 smoke test failed. When `up` fails it names the
+5 a service did not become ready; 6 smoke test failed; 7 a test suite failed (`test`). When `up` fails it names the
 service and prints the last 40 lines of its log. `up --json` and `status --json` print
 machine-readable JSON, so a script or an agent can check the stack without reading logs.
 
@@ -172,9 +174,11 @@ Services run straight from your checkout. After editing code, restart with
 
 ## How it fits with the tests
 
-- `devstack/tests/` covers the mock LLM, the fake `dirctl`, the identity proxy and the
-  stack CLI's safety checks; CI runs it with the unit suites:
-  `registration_service/.venv/bin/python -m pytest devstack/tests -q -p no:cacheprovider`.
+- `scripts/stack test` runs every suite, unit and pipeline, the same way CI does
+  ([TESTING.md](TESTING.md#running-the-suites)); `devstack/suites.py` holds the list.
+- `devstack/tests/` covers the mock LLM, the fake `dirctl`, the identity proxy, the
+  stack CLI's safety checks and `scripts/stack test` itself; CI runs it with the unit suites:
+  `scripts/stack test devstack`.
 - `scripts/stack smoke` is a one-prompt version of the full-chain test (Goal 1). The
   full-chain test drives the same commands (`up`, `status --json`, `down`) and treats
   the system as a black box, through its HTTP APIs and the stack CLI only. So it can also
