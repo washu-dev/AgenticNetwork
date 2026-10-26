@@ -31,7 +31,7 @@ Each component (`chat_app/`, `registration_service/`, `agentnet/`,
 
 | Doc | Read it to… |
 |---|---|
-| [CONTRIBUTING.md](../CONTRIBUTING.md) | set up the venvs, run the tests, see what CI checks, open a pull request. |
+| [CONTRIBUTING.md](../CONTRIBUTING.md) | set up the dev venv, run the tests, see what CI checks, open a pull request. |
 | [TESTING.md](TESTING.md) | find each test suite, what it covers and how to run it. |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | understand how the pieces fit: the three contracts (Agent Card, directory, A2A), the request lifecycle, the "stored vs. routed" directory subtlety. |
 | [chat_app/README.md](../chat_app/README.md) | work on the chat app, the web service people sign in to: its layout, routes, settings and how to run it alone. |

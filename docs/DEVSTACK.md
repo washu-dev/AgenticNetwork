@@ -11,14 +11,14 @@ command") use the same start command.
 ## Quick start
 
 You need Python 3.11 or newer as `python3`, `lsof` (preinstalled on macOS; `down` and `reset`
-use it to find leftover processes), and the two service venvs (one-time setup
-below). From the repo root:
+use it to find leftover processes), and the dev venv (one-time setup below). From the
+repo root:
 
 ```bash
 scripts/stack up                    # start everything; returns when it is all ready
 open http://localhost:8080/app      # chat UI, already signed in as dev@example.test
 scripts/stack down                  # stop everything
-scripts/stack test                  # run every test suite, each with its venv (TESTING.md)
+scripts/stack test                  # run every test suite (TESTING.md)
 ```
 
 `scripts/stack` is a thin wrapper for `python3 -m devstack`; both work the same. Set `DEVSTACK_PYTHON` to run it with another interpreter (3.11 or newer).
@@ -27,19 +27,21 @@ Try a prompt like "Echo this back: hello". The planner finds the seed agent *Ech
 Assistant*, sends it your request over A2A, and shows its answer. With the mock LLM the
 answer starts with `[mock-llm] Echo:`, which proves the agent's own LLM call ran.
 
-### One-time setup: the venvs
+### One-time setup: the dev venv
 
-The chat app and the registration service pin different `a2a-sdk` versions, so each has
-its own venv. Create them from the repo root (the registration install must run from
-the root because it installs `./agent_skeleton`):
+Both services, the built-in agents the registration service spawns, and every test suite
+run from one venv, `.venv` at the repo root, on one `a2a-sdk` version (0.3.2). Create it
+from the repo root (the install must run there because it installs `./agent_skeleton`):
 
 ```bash
-python3 -m venv chat_app/.venv
-chat_app/.venv/bin/pip install -r chat_app/requirements.txt
-python3 -m venv registration_service/.venv
-registration_service/.venv/bin/pip install -r registration_service/requirements.txt
-scripts/stack doctor                # checks Python, both venvs, the fake dirctl and ports
+python3 -m venv .venv
+.venv/bin/pip install -r requirements-dev.txt
+scripts/stack doctor                # checks Python, the dev venv, the fake dirctl and ports
 ```
+
+To run a service with another interpreter, set `CHAT_APP_PYTHON` or `REGISTRATION_PYTHON`;
+`doctor` then checks each one. The older per-service venvs (`chat_app/.venv`,
+`registration_service/.venv`) are no longer used.
 
 ## What runs
 
@@ -79,14 +81,14 @@ again.
 | `down [--json]` | Stops this stack's services and spawned agents, and reports anything still listening on its ports. A service of this stack whose pid file was lost is found by its log path and stopped too. It never stops another stack's services or agents: if a stack started from another state dir holds these ports, `down` names it (pid, port, state dir), prints the command that stops it and exits 1. `--json` prints the same report on stdout. |
 | `reset` | `down`, then deletes what the stack created in `.devstack/` for a clean start. It removes the dir itself only if nothing else is in it. If `down` leaves anything running, `reset` exits 1 and deletes nothing, so the pid files and logs stay for the next try. |
 | `doctor [--json]` | Checks the setup without starting anything. |
-| `test [SUITE ...] [--parallel] [--cov] [--python PATH] [--timeout S] [--list] [--json] [-- PYTEST_ARGS]` | Runs the test suites (all by default, `unit`, `pipeline`, or suites by name), each in its own pytest process with the venv it needs ([TESTING.md](TESTING.md#running-the-suites)). The pipeline starts stacks of its own, on offset ports and state dirs, so it leaves yours alone. |
+| `test [SUITE ...] [--parallel] [--cov] [--python PATH] [--timeout S] [--list] [--json] [-- PYTEST_ARGS]` | Runs the test suites (all by default, `unit`, `pipeline`, or suites by name), each in its own pytest process with the dev venv's interpreter ([TESTING.md](TESTING.md#running-the-suites)). The pipeline starts stacks of its own, on offset ports and state dirs, so it leaves yours alone. |
 
 Every command except `test` accepts `--state-dir DIR` (default `.devstack/`, or `$DEVSTACK_STATE_DIR`).
 `up` refuses a dir that is not empty and was not created by the stack. `down` in a dir
 with no `stack.json` (a stack that never started) stops only what its pid files name.
 
 **Exit codes:** 0 ok; 1 not ready (`status`) or something left running (`down`, `reset`);
-2 usage error; 3 preflight failed (a missing venv, a busy port or a missing setting);
+2 usage error; 3 preflight failed (a missing dev venv, a busy port or a missing setting);
 5 a service did not become ready; 6 smoke test failed; 7 a test suite failed (`test`). When `up` fails it names the
 service and prints the last 40 lines of its log. `up --json` and `status --json` print
 machine-readable JSON, so a script or an agent can check the stack without reading logs.

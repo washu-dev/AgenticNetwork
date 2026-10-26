@@ -121,12 +121,13 @@ standing up any external services.
 ```bash
 cd /path/to/AgenticNetwork
 
-# One-time venv setup
-python3 -m venv registration_service/.venv
-registration_service/.venv/bin/pip install -r registration_service/requirements.txt
+# One-time setup: the repo's one dev venv (shared with the chat app and every test suite;
+# the service's image installs only registration_service/requirements.txt)
+python3 -m venv .venv
+.venv/bin/pip install -r requirements-dev.txt
 
 # Start with fake DB (no postgres, no ADS, no subprocesses)
-FAKE_DB=1 registration_service/.venv/bin/python -m registration_service.server
+FAKE_DB=1 .venv/bin/python -m registration_service.server
 ```
 
 Open **http://localhost:8091/** for the registration wizard.
@@ -150,7 +151,7 @@ on real HTTP responses. No postgres, no ADS, no API keys required.
 ```bash
 # From the repo root (conftest sets FAKE_DB=1)
 scripts/stack test registration_service
-# the same as: registration_service/.venv/bin/python -m pytest registration_service/tests -q -p no:cacheprovider
+# the same as: .venv/bin/python -m pytest registration_service/tests -q -p no:cacheprovider
 ```
 
 Tests cover: register (every type + tool source, canonical and legacy names — see

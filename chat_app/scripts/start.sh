@@ -33,9 +33,7 @@ if [[ "${OPENAI_API_KEY:-sk-REPLACE_ME}" == sk-REPLACE_ME* ]]; then
 fi
 
 if [[ -z "${PYTHON_BIN:-}" ]]; then
-  if [[ -x "$APP_DIR/.venv/bin/python" ]]; then
-    PYTHON_BIN="$APP_DIR/.venv/bin/python"
-  elif [[ -x "$REPO_ROOT/.venv/bin/python" ]]; then
+  if [[ -x "$REPO_ROOT/.venv/bin/python" ]]; then
     PYTHON_BIN="$REPO_ROOT/.venv/bin/python"
   elif command -v python3 >/dev/null 2>&1; then
     PYTHON_BIN="$(command -v python3)"
@@ -43,7 +41,7 @@ if [[ -z "${PYTHON_BIN:-}" ]]; then
     PYTHON_BIN="$(command -v python)"
   else
     echo "Python interpreter not found." >&2
-    echo "Create chat_app/.venv, repo .venv, install python3, or run with:" >&2
+    echo "Create the dev venv (.venv, see CONTRIBUTING.md), install python3, or run with:" >&2
     echo "  PYTHON_BIN=/path/to/python chat_app/scripts/start.sh" >&2
     exit 1
   fi

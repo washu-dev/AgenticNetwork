@@ -56,10 +56,10 @@ For ADS changes:
 
 ```bash
 scripts/stack test agentnet
-registration_service/.venv/bin/python -m agentnet.scripts.print_versions
+.venv/bin/python -m agentnet.scripts.print_versions
 ```
 
-agentnet runs in both service venvs (registration on `a2a-sdk` 0.3.2, the chat app
-on 0.3.26), so `scripts/stack test agentnet` runs its tests with both; `scripts/ads`
-uses the registration venv (`ADS_PYTHON` overrides it). All suites: `scripts/stack test`
+agentnet runs in both services, which share one dev venv and one `a2a-sdk` version
+(0.3.2), so `scripts/stack test agentnet` runs its tests once; `scripts/ads` uses the
+dev venv too (`ADS_PYTHON` overrides it). All suites: `scripts/stack test`
 (`CLAUDE.md` §10); CI runs the same command (`.github/workflows/tests.yml`).

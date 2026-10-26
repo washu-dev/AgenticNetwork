@@ -36,10 +36,10 @@ Everything interoperates through three contracts, and nothing else — see [`CLA
 §1 for the table (Agent Card / ADS / A2A). This is what lets agents be written in any
 language/framework and still cooperate: because agents share only these wire contracts — never
 Python imports at runtime — each can have any dependencies, any Python version, and run on any
-machine or container. That's why the components deliberately use *different* environments and
-even disagree on library versions (the registration service pins `a2a-sdk==0.3.2`; the chat app
-uses `0.3.26`). The two services in this repo do share one library, `agentnet/`, which runs on
-both. See [`CLAUDE.md`](../CLAUDE.md) §5.
+machine or container. That's why agents deliberately use *different* environments and may even
+disagree on library versions; a built agent image keeps the `a2a-sdk` it was built with. The two
+services in this repo share code in-process (`agentnet/`), so they are developed in one venv on
+one `a2a-sdk` version (0.3.2). See [`CLAUDE.md`](../CLAUDE.md) §5.
 
 ## Request lifecycle (end to end)
 

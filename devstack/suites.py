@@ -1,14 +1,16 @@
-"""`scripts/stack test`: every test suite, each in its own pytest process with the interpreter it needs.
+"""`scripts/stack test`: every test suite, each in its own pytest process.
 
     scripts/stack test                     # all: the unit suites, then the pipeline
     scripts/stack test unit --parallel     # the unit suites at once
-    scripts/stack test agentnet            # in both service venvs
+    scripts/stack test agentnet            # one suite
     scripts/stack test registration_service -- -k approval -x   # after --: pytest's own args
     scripts/stack test --list              # what would run, with which interpreter
 
-One process per suite, because the suites differ in venv, rootdir and asyncio mode
-(registration_service/pytest.ini applies only when it is pytest's only path). CI runs the
-same command with ``--python`` (its job's interpreter) and ``--cov``.
+Every suite runs with the dev venv's interpreter (the repo-root .venv, from
+requirements-dev.txt), or with ``--python``'s. One process per suite, because the suites
+differ in rootdir and asyncio mode (registration_service/pytest.ini applies only when it is
+pytest's only path). CI runs the same command with ``--python`` (its job's interpreter) and
+``--cov``.
 
 Standard library only. Not named test_*.py, so pytest never collects it.
 """
@@ -43,14 +45,12 @@ TAIL_LINES = 40
 TEST_PASSTHROUGH_ENV = ("PLANNER_TEST_DATABASE_DSN",)
 # The pipeline's `up` starts the services with the interpreters preflight checked.
 PIPELINE_PASSTHROUGH_ENV = ("CHAT_APP_PYTHON", "PLANNER_PYTHON", "REGISTRATION_PYTHON")
-VENV_VARIABLES = {"chat-app": "CHAT_APP_PYTHON", "registration": "REGISTRATION_PYTHON"}
 
 
 @dataclass(frozen=True)
 class Suite:
     name: str
     path: str  # what pytest collects, relative to the repo root
-    venv: str  # "chat-app" or "registration"
     cov: str | None = None  # the --cov target; None for the pipeline (its code runs in subprocesses)
     needs: tuple[str, ...] = ()  # packages it needs besides pytest
     # Pipeline suites start a stack on ports PIPELINE_PORT_OFFSET + port_step, in state_dir.
@@ -63,18 +63,15 @@ class Suite:
 
 
 SUITES = (
-    Suite("chat_app", "chat_app/tests", "chat-app", cov="chat_app"),
-    Suite("registration_service", "registration_service/tests", "registration", cov="registration_service",
+    Suite("chat_app", "chat_app/tests", cov="chat_app"),
+    Suite("registration_service", "registration_service/tests", cov="registration_service",
           needs=("pytest-asyncio",)),
-    Suite("agent_skeleton", "agent_skeleton/tests", "registration", cov="agent_skeleton"),
-    # agentnet runs inside both services, so it is tested in both venvs (a2a-sdk 0.3.2 and 0.3.26).
-    Suite("agentnet", "agentnet/tests", "registration", cov="agentnet"),
-    Suite("agentnet", "agentnet/tests", "chat-app", cov="agentnet"),
-    Suite("devstack", "devstack/tests", "registration", cov="devstack"),
+    Suite("agent_skeleton", "agent_skeleton/tests", cov="agent_skeleton"),
+    Suite("agentnet", "agentnet/tests", cov="agentnet"),
+    Suite("devstack", "devstack/tests", cov="devstack"),
     # A stack, ports and state dir per file, run one after the other, so both keep their logs.
-    Suite("full-chain", "tests/pipeline/test_full_chain.py", "registration", state_dir=".devstack-pipeline"),
-    Suite("scenarios", "tests/pipeline/test_scenarios.py", "registration", port_step=100,
-          state_dir=".devstack-scenarios"),
+    Suite("full-chain", "tests/pipeline/test_full_chain.py", state_dir=".devstack-pipeline"),
+    Suite("scenarios", "tests/pipeline/test_scenarios.py", port_step=100, state_dir=".devstack-scenarios"),
 )
 GROUPS = {
     "unit": tuple(s for s in SUITES if not s.pipeline),
@@ -83,38 +80,16 @@ GROUPS = {
 }
 
 
-@dataclass(frozen=True)
-class Run:
-    suite: Suite
-    python: str
-    label: str  # the suite's name, plus its venv when the name runs twice: agentnet[chat-app]
-
-
-def venv_python(venv: str) -> str:
-    return stack.chat_app_python() if venv == "chat-app" else stack.registration_python()
-
-
 def select(names: list[str]) -> list[Suite]:
-    """The suites ``names`` pick (groups, suite names, or agentnet[chat-app]), in table order."""
+    """The suites ``names`` pick (groups or suite names), in table order."""
     chosen: list[Suite] = []
     for name in names or ["all"]:
-        found = GROUPS.get(name) or [s for s in SUITES if name in (s.name, f"{s.name}[{s.venv}]")]
+        found = GROUPS.get(name) or [s for s in SUITES if s.name == name]
         if not found:
-            known = ", ".join([*GROUPS, *dict.fromkeys(s.name for s in SUITES)])
+            known = ", ".join([*GROUPS, *(s.name for s in SUITES)])
             raise stack.StackError(f"unknown suite {name!r}; use one of {known}", stack.EXIT_USAGE)
         chosen += [s for s in found if s not in chosen]
     return sorted(chosen, key=SUITES.index)
-
-
-def plan(suites: list[Suite], python: str | None) -> list[Run]:
-    """One run per suite and interpreter: with --python, agentnet's two runs are one."""
-    pairs: list[tuple[Suite, str]] = []
-    for suite in suites:
-        py = python or venv_python(suite.venv)
-        if not any(s.path == suite.path and p == py for s, p in pairs):
-            pairs.append((suite, py))
-    count = collections.Counter(s.name for s, _ in pairs)
-    return [Run(s, py, f"{s.name}[{s.venv}]" if count[s.name] > 1 else s.name) for s, py in pairs]
 
 
 def port_offset() -> int:
@@ -129,18 +104,17 @@ def port_offset() -> int:
     return offset
 
 
-def preflight(runs: list[Run], *, cov: bool, python: str | None) -> tuple[list[str], list[str]]:
-    """(problems, warnings): interpreters, the packages each run needs, lsof."""
+def preflight(suites: list[Suite], python: str, *, cov: bool, explicit: bool) -> tuple[list[str], list[str]]:
+    """(problems, warnings): the interpreters, the packages each suite needs, lsof.
+    ``explicit``: ``python`` came from --python rather than being the dev venv."""
     problems: list[str] = []
     warnings: list[str] = []
-    hints: dict[str, str] = {}  # interpreter -> how to fix it if it is missing
-    for run in runs:
-        hints.setdefault(run.python, "Check the --python path." if python else (
-            f"Create the venv (see docs/DEVSTACK.md), set {VENV_VARIABLES[run.suite.venv]}, or pass --python."))
-    if any(run.suite.pipeline for run in runs):
-        for venv, variable in VENV_VARIABLES.items():  # the pipeline's stack runs its services from both
-            hints.setdefault(venv_python(venv), f"The pipeline's services need it: create the venv "
-                             f"(see docs/DEVSTACK.md) or set {variable}.")
+    # interpreter -> how to fix it if it is missing
+    hints = {python: "Check the --python path." if explicit else (
+        f"Create the dev venv from the repo root ({stack.DEV_VENV_SETUP}; see docs/DEVSTACK.md) or pass --python.")}
+    if any(suite.pipeline for suite in suites):
+        for _, py, variable in stack.service_pythons():  # the pipeline's stack runs its services with these
+            hints.setdefault(py, f"The pipeline's services need it. {stack.missing_python_hint(variable)}")
         if not shutil.which("lsof"):
             problems.append("lsof not found: the pipeline's `down` needs it to find leftover agents")
     packages: dict[str, dict[str, Any]] = {}
@@ -153,17 +127,14 @@ def preflight(runs: list[Run], *, cov: bool, python: str | None) -> tuple[list[s
             problems.append(f"{py} does not run: {report.get('error')}")
             continue
         packages[py] = report["packages"]
-    for run in runs:
-        if run.python not in packages:
-            continue
-        wanted = ["pytest", *run.suite.needs, *(["pytest-cov"] if cov and run.suite.cov else [])]
-        missing = [p for p in wanted if not packages[run.python].get(p)]
-        if missing:
-            problems.append(
-                f"{run.label}: {run.python} lacks {', '.join(missing)} "
-                f"({run.python} -m pip install {' '.join(missing)})"
-            )
-        if run.suite.name == "devstack" and not shutil.which("lsof"):
+    for suite in suites:
+        if python in packages:
+            wanted = ["pytest", *suite.needs, *(["pytest-cov"] if cov and suite.cov else [])]
+            missing = [p for p in wanted if not packages[python].get(p)]
+            if missing:
+                problems.append(f"{suite.name}: {python} lacks {', '.join(missing)} "
+                                f"({python} -m pip install {' '.join(missing)})")
+        if suite.name == "devstack" and not shutil.which("lsof"):
             warnings.append("lsof not found: devstack's process tests will be skipped")
     return problems, warnings
 
@@ -228,24 +199,23 @@ def summary_line(lines: list[str]) -> str:
     return next((line.strip().strip("=").strip() for line in reversed(lines) if pattern.search(line)), "")
 
 
-def run_suite(run: Run, args: argparse.Namespace, offset: int, out: TextIO) -> dict[str, Any]:
-    suite = run.suite
+def run_suite(suite: Suite, python: str, args: argparse.Namespace, offset: int, out: TextIO) -> dict[str, Any]:
     env = test_env(suite, offset)
-    command = [run.python, "-m", "pytest", suite.path, "-q", "-p", "no:cacheprovider"]
+    command = [python, "-m", "pytest", suite.path, "-q", "-p", "no:cacheprovider"]
     covered = args.cov and suite.cov is not None
     if covered:
-        env["COVERAGE_FILE"] = str(stack.REPO / f".coverage.{run.label}")  # .gitignore: .coverage.*
+        env["COVERAGE_FILE"] = str(stack.REPO / f".coverage.{suite.name}")  # .gitignore: .coverage.*
         command += [f"--cov={suite.cov}", "--cov-report="]
     command += args.pytest_args
-    out.write(f"devstack test: {run.label} ({run.python})\n")
+    out.write(f"devstack test: {suite.name} ({python})\n")
     out.flush()
     started = time.monotonic()
     timeout = args.timeout or (PIPELINE_TIMEOUT if suite.pipeline else UNIT_TIMEOUT)
     code, tail, timed_out = execute(command, env, out, timeout)
     result: dict[str, Any] = {
-        "suite": run.label,
+        "suite": suite.name,
         "path": suite.path,
-        "python": run.python,
+        "python": python,
         "exit_code": code,
         "ok": code == 0 and not timed_out,
         "seconds": round(time.monotonic() - started, 1),
@@ -260,7 +230,7 @@ def run_suite(run: Run, args: argparse.Namespace, offset: int, out: TextIO) -> d
     if covered and not timed_out and code in (0, 1):
         # Line coverage of the component's own code (its tests left out), as CI prints it.
         report = subprocess.run(
-            [run.python, "-m", "coverage", "report", "--omit=*/tests/*"],
+            [python, "-m", "coverage", "report", "--omit=*/tests/*"],
             cwd=stack.REPO, env=env, capture_output=True, text=True, check=False,
         )
         out.write(report.stdout + report.stderr)
@@ -269,18 +239,19 @@ def run_suite(run: Run, args: argparse.Namespace, offset: int, out: TextIO) -> d
     return result
 
 
-def run_all(runs: list[Run], args: argparse.Namespace, offset: int, out: TextIO) -> list[dict[str, Any]]:
-    """The unit runs (at once with --parallel), then the pipeline runs, one at a time."""
-    unit = [run for run in runs if not run.suite.pipeline]
-    sequential = runs
+def run_all(suites: list[Suite], python: str, args: argparse.Namespace, offset: int,
+            out: TextIO) -> list[dict[str, Any]]:
+    """The unit suites (at once with --parallel), then the pipeline files, one at a time."""
+    unit = [suite for suite in suites if not suite.pipeline]
+    sequential = suites
     results: list[dict[str, Any]] = []
     if args.parallel and len(unit) > 1:
-        print(f"devstack test: running {', '.join(r.label for r in unit)} at once", file=sys.stderr)
+        print(f"devstack test: running {', '.join(s.name for s in unit)} at once", file=sys.stderr)
         lock = threading.Lock()
 
-        def buffered(run: Run) -> dict[str, Any]:
+        def buffered(suite: Suite) -> dict[str, Any]:
             buffer = io.StringIO()
-            result = run_suite(run, args, offset, buffer)
+            result = run_suite(suite, python, args, offset, buffer)
             with lock:  # each suite's output in one piece, as it finishes
                 out.write(buffer.getvalue())
                 out.flush()
@@ -288,9 +259,9 @@ def run_all(runs: list[Run], args: argparse.Namespace, offset: int, out: TextIO)
 
         with ThreadPoolExecutor(len(unit)) as pool:
             results += pool.map(buffered, unit)
-        sequential = [run for run in runs if run.suite.pipeline]
-    for run in sequential:
-        results.append(run_suite(run, args, offset, out))
+        sequential = [suite for suite in suites if suite.pipeline]
+    for suite in sequential:
+        results.append(run_suite(suite, python, args, offset, out))
     return results
 
 
@@ -313,40 +284,40 @@ def print_summary(results: list[dict[str, Any]], *, as_json: bool) -> None:
 def cmd_test(args: argparse.Namespace) -> int:
     if args.timeout is not None and args.timeout <= 0:
         raise stack.StackError("--timeout must be more than 0 seconds", stack.EXIT_USAGE)
-    runs = plan(select(args.suites), args.python)
-    offset = port_offset() if any(run.suite.pipeline for run in runs) else DEFAULT_PORT_OFFSET
+    chosen = select(args.suites)
+    python = args.python or str(stack.DEV_VENV_PYTHON)
+    offset = port_offset() if any(suite.pipeline for suite in chosen) else DEFAULT_PORT_OFFSET
     if args.list:
-        rows = [{"suite": r.label, "path": r.suite.path, "python": r.python, "pipeline": r.suite.pipeline}
-                for r in runs]
+        rows = [{"suite": s.name, "path": s.path, "python": python, "pipeline": s.pipeline} for s in chosen]
         if args.json:
             print(json.dumps(rows, indent=2))
         else:
             for row in rows:
                 print(f"{row['suite']:<24} {row['path']:<36} {row['python']}")
         return stack.EXIT_OK
-    problems, warnings = preflight(runs, cov=args.cov, python=args.python)
+    problems, warnings = preflight(chosen, python, cov=args.cov, explicit=args.python is not None)
     for warning in dict.fromkeys(warnings):
         print(f"devstack test: warning: {warning}", file=sys.stderr)
     if problems:
         raise stack.StackError("preflight failed:\n  - " + "\n  - ".join(problems), stack.EXIT_PREFLIGHT)
-    results = run_all(runs, args, offset, sys.stderr if args.json else sys.stdout)
+    results = run_all(chosen, python, args, offset, sys.stderr if args.json else sys.stdout)
     print_summary(results, as_json=args.json)
     return stack.EXIT_OK if all(r["ok"] for r in results) else stack.EXIT_TESTS
 
 
 def add_parser(sub: Any) -> None:
     """The `test` subcommand; main() hands it everything after `--` as pytest_args."""
-    names = " ".join(dict.fromkeys(s.name for s in SUITES))
+    names = " ".join(s.name for s in SUITES)
     test = sub.add_parser(
-        "test", help="Run the test suites, each with the interpreter it needs.",
+        "test", help="Run the test suites with the dev venv, each in its own pytest process.",
         epilog="Everything after -- goes to pytest: scripts/stack test registration_service -- -k approval -x",
     )
     test.add_argument("suites", nargs="*", metavar="SUITE",
-                      help=f"all (default), unit, pipeline, or suites: {names} (agentnet runs in both venvs)")
+                      help=f"all (default), unit, pipeline, or suites: {names}")
     test.add_argument("--parallel", action="store_true",
                       help="Run the unit suites at once; the pipeline still runs after them, one file at a time.")
     test.add_argument("--cov", action="store_true", help="Line coverage per unit suite, as CI prints it (needs pytest-cov).")
-    test.add_argument("--python", metavar="PATH", help="Run pytest with this interpreter instead of the venvs (CI does).")
+    test.add_argument("--python", metavar="PATH", help="Run pytest with this interpreter instead of the dev venv's (CI does).")
     test.add_argument("--timeout", type=float, metavar="SECONDS",
                       help=f"Seconds per suite (default {UNIT_TIMEOUT:g} unit, {PIPELINE_TIMEOUT:g} pipeline).")
     test.add_argument("--list", action="store_true", help="Show what would run, with which interpreter.")

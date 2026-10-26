@@ -6,42 +6,44 @@ the system is, start with [`README.md`](README.md); for how changes reach a runn
 
 ## Development setup
 
-Each component has its own venv, and their dependencies disagree (the chat app pins `a2a-sdk`
-0.3.26, the registration service 0.3.2; the shared `agentnet/` package runs on both). Never
-install one component's requirements into another's venv. Run everything from the repo root.
+Both services, the agent runtime (`agent_skeleton/`), the shared `agentnet/` package, the dev
+stack and every test suite run from one dev venv, `.venv` at the repo root, on one `a2a-sdk`
+version (0.3.2). Run everything from the repo root.
 
 | Venv | For | Create it |
 |---|---|---|
-| `chat_app/.venv` | the chat app | `python3 -m venv chat_app/.venv && chat_app/.venv/bin/pip install -r chat_app/requirements.txt` |
-| `registration_service/.venv` | the registration service; also runs the skeleton, directory, dev stack and full-chain tests | `python3 -m venv registration_service/.venv && registration_service/.venv/bin/pip install -r registration_service/requirements.txt` (from the repo root: it installs `./agent_skeleton` in editable mode) |
-| `agentnet/.venv` | optional: only `scripts/ads` with `ADS_BACKEND=sdk` (the default `cli` backend runs in the registration venv) | `python3 -m venv agentnet/.venv && agentnet/.venv/bin/pip install -r agentnet/requirements-sdk.txt` (uses the `buf.build` extra index named in that file), then set `ADS_PYTHON=agentnet/.venv/bin/python` |
+| `.venv` | everything: both services, the dev stack, every test suite, `scripts/ads` | `python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt` (from the repo root: it installs both services' requirements, `./agent_skeleton` in editable mode, and `pytest-cov`) |
+| `agentnet/.venv` | optional: only `scripts/ads` with `ADS_BACKEND=sdk` (the default `cli` backend runs in the dev venv) | `python3 -m venv agentnet/.venv && agentnet/.venv/bin/pip install -r agentnet/requirements-sdk.txt` (uses the `buf.build` extra index named in that file), then set `ADS_PYTHON=agentnet/.venv/bin/python` |
 
-The dev stack needs Python 3.11 or newer as `python3`. CI uses Python 3.13 for the chat app, 3.12
-for the full-chain test, and 3.11 for the rest; agentnet's tests run twice, on 3.11 with the
-registration requirements and on 3.13 with the chat app's. `scripts/stack doctor`
+Each service image still installs only its own requirements file (`chat_app/requirements.txt`,
+`registration_service/requirements.txt`). The older per-service venvs (`chat_app/.venv`,
+`registration_service/.venv`) are no longer used and can be deleted.
+
+The dev stack needs Python 3.11 or newer as `python3`. CI runs every unit suite on Python 3.11
+and 3.13 (the images' two versions) and the full-chain test on 3.12. `scripts/stack doctor`
 checks your setup.
 
 ## Running tests
 
 Every suite runs offline: no Docker, Postgres, `dirctl`, external services or API keys. One command
-runs them, each suite in its own pytest process with the venv it needs:
+runs them, each suite in its own pytest process with the dev venv's interpreter:
 
 ```bash
 scripts/stack test                     # everything: the unit suites, then the pipeline
 scripts/stack test unit --parallel     # the unit suites at once
-scripts/stack test registration_service agentnet   # some suites (agentnet runs in both service venvs)
+scripts/stack test registration_service agentnet   # some suites
 scripts/stack test devstack -- -k sweep -x         # after --: pytest's own arguments
 scripts/stack test --list              # what would run, with which interpreter
 ```
 
-It exits 0 when every suite passed, 7 when one failed, and 3, naming the fix, when a venv or a
+It exits 0 when every suite passed, 7 when one failed, and 3, naming the fix, when the venv or a
 test plugin is missing (the registration suite needs `pytest-asyncio`; `--cov` needs `pytest-cov`).
 Each suite gets a clean environment, so a stray `FAKE_DB=0` or `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`
 in your shell cannot change the result. Underneath, each suite is one pytest call from the repo
-root, such as `registration_service/.venv/bin/python -m pytest registration_service/tests -q -p no:cacheprovider`
+root, such as `.venv/bin/python -m pytest registration_service/tests -q -p no:cacheprovider`
 (its conftest sets `FAKE_DB=1`); `--list` shows them all.
 
-The pipeline (`scripts/stack test pipeline`, needs both service venvs) starts the dev stack once
+The pipeline (`scripts/stack test pipeline`, needs the dev venv and `lsof`) starts the dev stack once
 per file, one after the other, on ports offset by `PIPELINE_PORT_OFFSET` (default 20000; the
 scenarios add 100) and in state dirs of its own (`.devstack-pipeline/`, `.devstack-scenarios/`),
 so it can run while your own dev stack is up. To try a change by hand, use the dev stack:
@@ -53,14 +55,14 @@ What each suite covers, and how to write tests: [`docs/TESTING.md`](docs/TESTING
 [`.github/workflows/tests.yml`](.github/workflows/tests.yml) runs on every pull request, on pushes
 to `main`, and on demand:
 
-- **unit**: the suites above (chat app, registration, skeleton, agentnet in both service
-  environments, dev stack), one job each, in a fresh environment: each job runs
-  `scripts/stack test <suite> --python <its interpreter> --cov`.
+- **unit**: the unit suites above (chat app, registration, skeleton, agentnet, dev stack), one
+  job per Python version (3.11 and 3.13), each in a fresh environment from
+  `requirements-dev.txt`: each job runs `scripts/stack test unit --python <its interpreter> --cov`.
 - **repo hygiene**: no tracked file that `.gitignore` excludes; no tracked secrets, keys,
   credential or token files, model weights, slide decks, local databases, logs or wheels
   (`*.example` templates are allowed); no tracked file over 1 MB.
 - **unit coverage**: each unit job also prints a line-coverage summary (report only, no threshold).
-- **pipeline**: after the unit jobs pass, builds both service venvs, runs `scripts/stack doctor`,
+- **pipeline**: after the unit jobs pass, builds the dev venv, runs `scripts/stack doctor`,
   then `scripts/stack test pipeline` (the full-chain test and the scenario tests,
   `tests/pipeline/test_scenarios.py`), and uploads the dev stack logs if either fails.
 

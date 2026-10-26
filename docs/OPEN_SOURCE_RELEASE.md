@@ -505,8 +505,9 @@ lines removed or rewritten.
 | Drop `build_manifest`'s dict-config support | 25 | typed test fixtures |
 | **Dependency and version upgrades** | | |
 | `dir`/`dirctl` v1.2 → v1.7, then delete the stored-but-not-routed workarounds (agentnet's backend, ADS repair/watch tooling) | 1,550 | re-validating publish and discovery on ENGR and GCP |
-| One `a2a-sdk` line (0.3.26 everywhere, then 1.x), replacing the deprecated `A2AClient` and the skeleton's import guard | 270 | the full-chain test on the new pins; rebuilt agent images |
-| Test-only deps into `requirements-dev.txt`; the chat app's pip freeze becomes direct deps plus a lock file | 50 | a locking tool, with CI and docs updated together |
+| One `a2a-sdk` line: done 2026-10-25, 0.3.2 everywhere (the chat app moved from 0.3.26; both services share one dev venv, `requirements-dev.txt`, and CI runs every unit suite on Python 3.11 and 3.13). Agent images are unchanged | — | — |
+| `a2a-sdk` 1.x, replacing the deprecated `A2AClient` and the skeleton's import guard ([plan below](#a2a-sdk-1x-plan-2026-10-25)) | 270 | the compatibility test in that plan; rebuilt agent images |
+| Test-only deps into `requirements-dev.txt` (the file exists since 2026-10-25, for the one dev venv; the test deps are still in the service files); the chat app's pip freeze becomes direct deps plus a lock file | 50 | a locking tool, with CI and docs updated together |
 | Pin `registration_service/requirements.txt` (only minimums today, so a fresh clone gets e.g. openai 3.x where the tested venv has 2.x; all suites passed with both on 2026-10-15), or add a constraints file | 40 | the same locking tool; a registration image rebuild |
 | **Images, deploy config and hygiene** | | |
 | Chat app image (`Dockerfile.chat-app`) on `python:3.x-slim` instead of miniconda; one Python version across images | 45 | an ENGR test deploy and a Cloud Run staging deploy |
@@ -525,3 +526,42 @@ lines removed or rewritten.
 | **Ops docs scope** | | |
 | Ship or move the WashU ops docs (`docs/deployment/engr`, `gcp/*`, `DOWNSTREAM`, `MULTI_CONTRIBUTOR`, `TESTING_CHANGES`) | 3,300 | Ronak and the PIs/DI2; then scrub or move, and filter history |
 | Merge the three ENGR test-instance docs; consolidate the GCP design and progress logs | 850 | the decision above; resuming GCP work |
+
+### a2a-sdk 1.x plan (2026-10-25)
+
+This repo runs `a2a-sdk` 0.3.2 everywhere today: both services, and the agent runtime, whose exact
+pin in `agent_skeleton/pyproject.toml` is what every built agent image installs. A built image
+keeps the SDK it was built with, so a community agent changes only when it is rebuilt.
+
+**What 1.x changes** (A2A spec 1.0; `a2a-sdk` 1.0.0 shipped 2026-04-20):
+
+- JSON-RPC method names: `message/send`, `message/stream`, `tasks/get` and the rest become
+  `SendMessage`, `SendStreamingMessage`, `GetTask` and so on. Clients send an `A2A-Version` header;
+  an empty one means 0.3.
+- The Agent Card: endpoints move from the top-level `url`, `preferredTransport` and
+  `protocolVersion` into `supportedInterfaces`, a list of `{url, protocolBinding, protocolVersion}`.
+- The SDK's types are protobuf classes, not pydantic models: enums are renamed
+  (`TASK_STATE_WORKING`), and the `kind` field is gone.
+- `A2AStarletteApplication` and the FastAPI app classes are removed; a server composes
+  `create_agent_card_routes`, `create_jsonrpc_routes` and `create_rest_routes`. Clients are made
+  with `create_client`.
+
+**How the versions interoperate.** A 1.x client reads a 0.3 card (it turns `url`,
+`preferredTransport` and `protocolVersion`, default 0.3.0, into an interface) and talks to a 0.3
+server over a 0.3 transport. A 0.3 client reaches a 1.x server only when that server turns on its
+v0.3 compatibility (`enable_v0_3_compat=True` on its routes) and lists a 0.3 interface on its
+card. The hand-written `message/send` requests in `registration_service/handlers/proxy_handler.py`
+and `agent_skeleton/system_tools/call_endpoint.py` are 0.3 clients too.
+
+**The gate: a compatibility test, written and passing before the move.**
+
+1. The 1.x chat app and registration service call an agent built on the 0.3.2 runtime (as every
+   existing community image is) and get its answer.
+2. If the runtime moves to 1.x as well, an old 0.3.2 client still reaches an agent on the new
+   runtime. If it cannot, the change is called out as breaking for old callers before it lands.
+
+The services can move first (step 1 alone). The runtime pin then moves for new approvals only.
+
+Outside this repo: in `agent-directory`, scout and geoSpatial accept any newer `a2a-sdk`, and
+`agntcy-app-sdk` 0.6.0 (2026-10-21) requires `a2a-sdk` 1.1.0, so rebuilding either could move it
+to 1.x. Whether to cap those pins is that repo's call.

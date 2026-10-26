@@ -8,8 +8,8 @@ keeps the ones that name this repo's packages (or are relative), and checks that
 each one imports and that each name in ``from X import a`` exists. Third-party
 imports are ignored. registration_service/tests/test_internal_imports.py does the
 same for registration_service/, agent_skeleton/ and agentnet/, so agentnet is
-checked in both services' venvs. A second test checks that chat_app's layers import
-one way.
+checked from both services' imports. A second test checks that chat_app's layers
+import one way.
 """
 
 from __future__ import annotations

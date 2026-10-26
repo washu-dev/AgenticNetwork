@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Directory (ADS) operator commands: scripts/ads -list | -diag | -watch | -repair | -publish ...
 # Runs the agentnet.scripts tools from the repo root. Set ADS_PYTHON to use another
-# interpreter; the default is the registration service's venv (any venv with a2a-sdk
-# and pydantic works). See agentnet/README.md.
+# interpreter; the default is the dev venv, .venv (any venv with a2a-sdk and pydantic
+# works). See agentnet/README.md.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-PYTHON_BIN="${ADS_PYTHON:-${REPO_ROOT}/registration_service/.venv/bin/python}"
+PYTHON_BIN="${ADS_PYTHON:-${REPO_ROOT}/.venv/bin/python}"
 DIRCTL_BIN="${DIRCTL_BIN:-dirctl}"
 
 SERVER_ADDR="${ADS_SERVER_ADDR:-localhost:8888}"
@@ -44,7 +44,7 @@ EOF
 require_python() {
   if [[ ! -x "${PYTHON_BIN}" ]]; then
     echo "Missing Python venv at ${PYTHON_BIN}" >&2
-    echo "Create the registration venv (see CONTRIBUTING.md), or set ADS_PYTHON to a Python with a2a-sdk and pydantic." >&2
+    echo "Create the dev venv (see CONTRIBUTING.md), or set ADS_PYTHON to a Python with a2a-sdk and pydantic." >&2
     exit 2
   fi
 }

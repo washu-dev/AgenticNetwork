@@ -95,25 +95,28 @@ a mock LLM) with one command, use the dev stack instead: `scripts/stack up`
 
 ### 1. Install
 
-Run from the repository root:
+The chat app runs from the repo's one dev venv, `.venv` at the repository root,
+which the registration service and every test suite share. Run from the
+repository root:
 
 ```bash
 cd /path/to/AgenticNetwork
-python3 -m venv chat_app/.venv
-chat_app/.venv/bin/python -m pip install --upgrade pip
-chat_app/.venv/bin/python -m pip install -r chat_app/requirements.txt
-chat_app/.venv/bin/python -m pip check
+python3 -m venv .venv
+.venv/bin/python -m pip install --upgrade pip
+.venv/bin/python -m pip install -r requirements-dev.txt
+.venv/bin/python -m pip check
 ```
 
-The wrapper scripts auto-detect `chat_app/.venv/bin/python`. To use a
-different interpreter, set `PYTHON_BIN=/path/to/python`.
+The chat app's image installs only `chat_app/requirements.txt`. The wrapper
+scripts auto-detect `.venv/bin/python`. To use a different interpreter, set
+`PYTHON_BIN=/path/to/python`.
 
 ### 2. Tests (no network, no ADS, no OpenAI key)
 
 ```bash
 cd /path/to/AgenticNetwork
 scripts/stack test chat_app
-# the same as: chat_app/.venv/bin/python -m pytest chat_app/tests -q -p no:cacheprovider
+# the same as: .venv/bin/python -m pytest chat_app/tests -q -p no:cacheprovider
 ```
 
 The tests use a scripted LLM and the in-process fake ADS. They cover:
@@ -154,7 +157,7 @@ Skip the wrapper and export by hand:
 ```bash
 export OPENAI_API_KEY=sk-...
 export AGENT_NETWORK_FAKE_ADS=true
-chat_app/.venv/bin/python -m chat_app \
+.venv/bin/python -m chat_app \
   --fake-ads \
   --card ../agent-directory/email_agent/email_agent.card.json
 ```
@@ -188,7 +191,7 @@ export OPENAI_API_KEY=sk-...
 export AGENT_NETWORK_FAKE_ADS=false
 export ADS_BACKEND=cli
 export ADS_SERVER_ADDR=localhost:8888
-chat_app/.venv/bin/python -m chat_app
+.venv/bin/python -m chat_app
 ```
 
 To manually publish a card (e.g. an agent crashed before publishing):

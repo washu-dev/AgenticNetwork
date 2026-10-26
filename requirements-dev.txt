@@ -1,0 +1,11 @@
+# The one development environment: both services, the agent runtime (agent_skeleton,
+# editable), agentnet, the dev stack and every test suite run from it. Each service
+# image still installs only its own requirements file. Create it from the repo root,
+# because registration_service/requirements.txt's "-e ./agent_skeleton" is relative
+# to the directory pip runs in:
+#   python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
+-r chat_app/requirements.txt
+-r registration_service/requirements.txt
+
+# Line coverage for `scripts/stack test --cov` (the version CI uses).
+pytest-cov==7.1.0

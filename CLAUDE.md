@@ -96,9 +96,9 @@ whole `agentnet/scripts/` suite exists to detect and repair this.
 
 | Component | Role | Default port | Environment | LLM API surface |
 |---|---|---|---|---|
-| `chat_app` | Chat app: sign-in, chat UI, and the planner (orchestrator) inside it | **8090** | pip venv (`requirements.txt`) | OpenAI **Chat Completions** (vLLM-ready; migrated 2026-06) |
-| `agentnet` | Shared directory (ADS) + A2A library, plus the settings, identity and credential-catalog code both services use; ADS operator tooling (`scripts/ads`) | dir at **8888** (routing 8999) | runs in the chat app and registration venvs | n/a (`dirctl`) |
-| `registration_service` | Registration service: sign-up wizard + API for agent authors; builds, runs and monitors their agents and publishes their cards | **8091** | pip venv (`requirements.txt`) | n/a |
+| `chat_app` | Chat app: sign-in, chat UI, and the planner (orchestrator) inside it | **8090** | the dev venv (its image: `requirements.txt`) | OpenAI **Chat Completions** (vLLM-ready; migrated 2026-06) |
+| `agentnet` | Shared directory (ADS) + A2A library, plus the settings, identity and credential-catalog code both services use; ADS operator tooling (`scripts/ads`) | dir at **8888** (routing 8999) | runs in the dev venv (and both service images) | n/a (`dirctl`) |
+| `registration_service` | Registration service: sign-up wizard + API for agent authors; builds, runs and monitors their agents and publishes their cards | **8091** | the dev venv (its image: `requirements.txt`) | n/a |
 
 **[`agent-directory`](https://github.com/washu-dev/agent-directory) repo (specialist agents):**
 
@@ -140,8 +140,8 @@ it. No Docker, database, SSO or API key. Setup, a real LLM and adding agents:
 The chat app has an in-process fake directory, so you need only Python + an API key.
 ```bash
 cd /path/to/AgenticNetwork
-python3 -m venv chat_app/.venv
-chat_app/.venv/bin/python -m pip install -r chat_app/requirements.txt
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements-dev.txt
 cp chat_app/.env.example chat_app/.env.local   # set OPENAI_API_KEY=sk-...
 chat_app/scripts/start.sh --fake-ads \
   --card ../agent-directory/email_agent/email_agent.card.json \
@@ -202,22 +202,24 @@ status, gotchas), `.../DEPLOYED_COMPONENTS.md` (inventory + control commands), a
 
 ---
 
-## 5. Environments (each component is isolated)
+## 5. Environments (each agent is isolated)
 
-**Different agents require different environments — by design.** Each component
-has its own conda env or venv, and `README.md` states: *do not install one
-component's requirements file into another component's virtual environment.* The environments even
-disagree on library versions (registration pins `a2a-sdk==0.3.2`, the chat app uses
-`0.3.26`). This is fine because **agents only ever communicate over A2A (HTTP)** —
-agents share no Python imports at runtime, so each can have any dependencies, any
-Python version, even run on a different machine or container. The two services in this
-repo do share code in-process: both import `agentnet/` (so its tests run in both venvs), and
-the registration service also imports `agent_skeleton` to run agents.
+**Different agents require different environments — by design.** Each specialist agent
+has its own conda env or venv, and agents may disagree on library versions. This is fine
+because **agents only ever communicate over A2A (HTTP)** — agents share no Python imports
+at runtime, so each can have any dependencies, any Python version, even run on a different
+machine or container. A built agent image keeps the `a2a-sdk` it was built with (the
+runtime's exact pin in `agent_skeleton/pyproject.toml`), so it changes only when rebuilt.
+
+The two services in this repo are different: they share code in-process (both import
+`agentnet/`, and the registration service also imports `agent_skeleton` to run agents), so
+for development they share **one venv**, `.venv` at the repo root, on one `a2a-sdk`
+version (0.3.2). Each service image still installs only its own requirements file. The
+plan for `a2a-sdk` 1.x is in [`docs/OPEN_SOURCE_RELEASE.md`](docs/OPEN_SOURCE_RELEASE.md).
 
 | Env | Components | How to create |
 |---|---|---|
-| pip venv | `chat_app` | `python3 -m venv chat_app/.venv && .../pip install -r chat_app/requirements.txt` |
-| pip venv | `registration_service` | `python3 -m venv registration_service/.venv && .../pip install -r registration_service/requirements.txt` |
+| pip venv (dev) | `chat_app`, `registration_service`, `agent_skeleton`, `agentnet`, the dev stack, every test suite | `python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt` (from the repo root) |
 | pip venv (editable) | `scout_agent` | `python3 -m venv .venv && .venv/bin/pip install -e .` (needs Python ≥3.11) |
 | pip venv (optional) | `agentnet` with `ADS_BACKEND=sdk` | `python3 -m venv agentnet/.venv && .../pip install -r agentnet/requirements-sdk.txt` (point `scripts/ads` at it with `ADS_PYTHON`) |
 | conda `email-agent-a2a` (shared) | `email_agent`, `disaster_response_agent`, `geoSpatial_agent` | `conda env create -f email_agent/environment.yml` (the superset) |
@@ -417,7 +419,8 @@ auth-unaware.
   (identical to each other except the package `__init__.py` docstring; their
   import paths, error strings, and log path diverge from `agentnet/`),
   scout's own independent implementation, and the others listed in
-  [`SECURITY.md`](SECURITY.md) §3. Library pins drift (`a2a-sdk` 0.3.2 vs 0.3.26). When
+  [`SECURITY.md`](SECURITY.md) §3. Library pins drift (this repo pins `a2a-sdk` 0.3.2; some
+  agents there accept any newer version). When
   fixing protocol bugs, check whether the fix needs replicating across copies.
 - **Scout uses a different directory.** Every other agent uses `dirctl` at
   `ADS_SERVER_ADDR` (`localhost:8888` in the ENGR deploy; the ADS VM on GCP); scout uses
@@ -445,8 +448,8 @@ auth-unaware.
 ## 10. Testing & validation
 
 All suites run from the repo root, offline (no Docker, Postgres, `dirctl` or API key).
-`scripts/stack test` runs them, each in its own pytest process with the venv it needs
-(`devstack/suites.py`); CI runs the same command per component in `.github/workflows/tests.yml`
+`scripts/stack test` runs them, each in its own pytest process with the dev venv's interpreter
+(`devstack/suites.py`); CI runs the same command on Python 3.11 and 3.13 in `.github/workflows/tests.yml`
 (with `--python` and coverage summaries), plus a repo-hygiene job and the full-chain and scenario pipeline;
 `.github/workflows/compose.yml` runs tier 2 (the Docker Compose smoke test) on PRs and pushes to
 `main` touching deployment or service code, weekly and on demand. Each suite gets a clean
@@ -456,27 +459,27 @@ call pytest yourself, do not set `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`: registratio
 
 ```bash
 # Every suite: the unit suites, then the pipeline. Exits 0 when all pass, 7 when one fails,
-# 3 when a venv or test plugin is missing (it names the fix).
+# 3 when the dev venv or a test plugin is missing (it names the fix).
 scripts/stack test
 scripts/stack test unit --parallel        # the unit suites at once
 scripts/stack test --list                 # each suite with its path and interpreter
 scripts/stack test registration_service -- -k approval -x   # after --: pytest's own args
-# Coverage: add --cov (pytest-cov in the venvs); docs/TESTING.md.
+# Coverage: add --cov (requirements-dev.txt installs pytest-cov); docs/TESTING.md.
 
 # Chat app and its planner (no network, no ADS, no OpenAI key — uses ScriptedLLMClient + fake ADS)
-scripts/stack test chat_app               # chat_app/.venv/bin/python -m pytest chat_app/tests -q -p no:cacheprovider
+scripts/stack test chat_app               # .venv/bin/python -m pytest chat_app/tests -q -p no:cacheprovider
 
-# Registration (registration_service/tests/conftest.py sets FAKE_DB=1), in the registration venv
+# Registration (registration_service/tests/conftest.py sets FAKE_DB=1)
 scripts/stack test registration_service
 
-# Agent skeleton (in-repo copy), in the registration venv
+# Agent skeleton (in-repo copy)
 scripts/stack test agent_skeleton
 
-# agentnet, the shared directory/A2A package (dirctl mocked). It runs in both service
-# venvs (a2a-sdk 0.3.2 and 0.3.26), so this tests it with both.
+# agentnet, the shared directory/A2A package (dirctl mocked). Both services run it on
+# the one a2a-sdk version, so one run covers both.
 # print_versions lists the deps of the venv running it.
 scripts/stack test agentnet
-registration_service/.venv/bin/python -m agentnet.scripts.print_versions
+.venv/bin/python -m agentnet.scripts.print_versions
 
 # Dev stack: mock LLM, fake dirctl, identity proxy, stack CLI safety checks, scripts/stack test
 scripts/stack test devstack
@@ -485,7 +488,7 @@ scripts/stack test devstack
 # ask_user, confirmation, restart): each file starts the dev stack on offset ports
 # (PIPELINE_PORT_OFFSET, default 20000; the scenarios add 100) in its own state dir
 # (.devstack-pipeline/, .devstack-scenarios/), drives it over HTTP only, then stops it.
-# Needs both service venvs and lsof. One file: scripts/stack test full-chain (or scenarios).
+# Needs the dev venv and lsof. One file: scripts/stack test full-chain (or scenarios).
 scripts/stack test pipeline
 
 # Tier 2 (Docker): the service images + real Postgres + real dirctl, via Docker Compose
@@ -500,7 +503,7 @@ chat_app/scripts/doctor.sh
 scripts/ads -list | -raw-list | -diag | -watch | -repair | -repair-delete | -publish <card> | -remove <cid> | -delete <cid>
 
 # Validate an A2A endpoint without publishing
-registration_service/.venv/bin/python -m agentnet.scripts.validate_agent_endpoint \
+.venv/bin/python -m agentnet.scripts.validate_agent_endpoint \
   --card <card.json> --skill <skill> --prompt "..." --endpoint http://host:port/
 ```
 

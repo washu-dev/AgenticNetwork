@@ -12,9 +12,7 @@ ENV_FILE="${ENV_FILE:-$APP_DIR/.env.local}"
 DIRCTL="${DIRCTL_BIN:-$HOME/.local/bin/dirctl}"
 
 if [[ -z "${PYTHON_BIN:-}" ]]; then
-  if [[ -x "$APP_DIR/.venv/bin/python" ]]; then
-    PYTHON_BIN="$APP_DIR/.venv/bin/python"
-  elif [[ -x "$REPO_ROOT/.venv/bin/python" ]]; then
+  if [[ -x "$REPO_ROOT/.venv/bin/python" ]]; then
     PYTHON_BIN="$REPO_ROOT/.venv/bin/python"
   elif command -v python3 >/dev/null 2>&1; then
     PYTHON_BIN="$(command -v python3)"
@@ -60,7 +58,7 @@ section "2) python"
 if [[ -n "$PYTHON_BIN" ]] && { command -v "$PYTHON_BIN" >/dev/null 2>&1 || [[ -x "$PYTHON_BIN" ]]; }; then
   ok "python: $PYTHON_BIN ($("$PYTHON_BIN" --version 2>&1))"
 else
-  fail "python not found. Create chat_app/.venv, repo .venv, install python3, or set PYTHON_BIN=/path/to/python."
+  fail "python not found. Create the dev venv (.venv, see CONTRIBUTING.md), install python3, or set PYTHON_BIN=/path/to/python."
 fi
 
 # ---- 2. dirctl ----

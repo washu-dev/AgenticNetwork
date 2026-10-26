@@ -1,7 +1,7 @@
-# Offline test gates: per-component unit suites, repo hygiene, and the native
+# Offline test gates: every component's unit suite, repo hygiene, and the native
 # full-chain pipeline test. Nothing here needs Docker, Postgres, a real dirctl,
-# network services or API keys. Both test jobs run `scripts/stack test`
-# (devstack/suites.py), the same command as locally.
+# network services or API keys. Both test jobs install requirements-dev.txt (the one
+# dev environment) and run `scripts/stack test` (devstack/suites.py), as locally.
 name: tests
 
 on:
@@ -23,66 +23,39 @@ defaults:
 
 jobs:
   unit:
-    name: unit (${{ matrix.label || matrix.component }})
+    name: unit (Python ${{ matrix.python }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        include:
-          # Python versions follow each component's Docker image / packaging.
-          - component: chat_app
-            python: "3.13"
-            deps: chat_app/requirements.txt
-            install: pip install -r chat_app/requirements.txt
-          - component: registration_service
-            python: "3.11"
-            deps: registration_service/requirements.txt
-            # Run from the repo root: the file's "-e ./agent_skeleton" is CWD-relative.
-            install: pip install -r registration_service/requirements.txt
-          - component: agent_skeleton
-            python: "3.11"
-            deps: agent_skeleton/pyproject.toml
-            install: pip install -e ./agent_skeleton pytest
-          # agentnet runs inside both services, so its tests run in each service's
-          # environment: registration's (a2a-sdk 0.3.2) and the chat app's (0.3.26).
-          # dirctl is mocked.
-          - component: agentnet
-            label: agentnet, a2a-sdk 0.3.2
-            python: "3.11"
-            deps: registration_service/requirements.txt
-            install: pip install -r registration_service/requirements.txt
-          - component: agentnet
-            label: agentnet, a2a-sdk 0.3.26
-            python: "3.13"
-            deps: chat_app/requirements.txt
-            install: pip install -r chat_app/requirements.txt
-          - component: devstack
-            python: "3.11"
-            deps: registration_service/requirements.txt
-            # Standard library plus the openai SDK (mock LLM test) and lsof (stack tests).
-            install: |
-              pip install -r registration_service/requirements.txt
-              command -v lsof >/dev/null || { sudo apt-get update -q && sudo apt-get install -y -q lsof; }
+        # The images' two Pythons: 3.13 for the chat app, 3.11 for the registration
+        # service and the agent images. Every suite runs on both.
+        python: ["3.11", "3.13"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
           cache: pip
-          cache-dependency-path: ${{ matrix.deps }}
+          cache-dependency-path: |
+            requirements-dev.txt
+            chat_app/requirements.txt
+            registration_service/requirements.txt
       - name: Install
+        # From the repo root: registration's "-e ./agent_skeleton" is CWD-relative.
+        # lsof: devstack's process tests.
         run: |
           python -m pip install --upgrade pip
-          ${{ matrix.install }}
-          python -m pip install pytest-cov==7.1.0
-      # --python: this job's interpreter instead of the repo venvs (so agentnet runs once
-      # per job). --cov then prints line coverage of the component's own code (its tests
-      # left out); report only, no threshold. The suite gets a clean environment, with
-      # plugin autoload on (registration needs pytest-asyncio; coverage needs pytest-cov);
+          python -m pip install -r requirements-dev.txt
+          command -v lsof >/dev/null || { sudo apt-get update -q && sudo apt-get install -y -q lsof; }
+      # --python: this job's interpreter instead of the dev venv. --cov then prints line
+      # coverage of each component's own code (its tests left out); report only, no
+      # threshold. Each suite gets a clean environment, with plugin autoload on
+      # (registration needs pytest-asyncio; coverage needs pytest-cov);
       # registration_service/tests/conftest.py sets FAKE_DB=1 itself.
       - name: Test
-        run: scripts/stack test "${{ matrix.component }}" --python "$(command -v python)" --cov
+        run: scripts/stack test unit --python "$(command -v python)" --cov
 
   hygiene:
     name: repo hygiene
@@ -128,10 +101,9 @@ jobs:
   # ---------------------------------------------------------------------------
   # PIPELINE (tier 1, native): the full-chain test and the scenario tests
   # (tests/pipeline, Goal 1 in docs/OPEN_SOURCE_RELEASE.md). Each starts the dev
-  # stack with `scripts/stack up` and drives it over HTTP only. Services run as
-  # local processes from the two venvs below (chat app on a2a-sdk 0.3.26;
-  # registration and the agents it spawns on 0.3.2); `scripts/stack test` runs
-  # the tests themselves from the registration venv.
+  # stack with `scripts/stack up` and drives it over HTTP only. The services (and
+  # the agents registration spawns with its own interpreter) and the tests themselves
+  # all run from the dev venv below (a2a-sdk 0.3.2).
   # ---------------------------------------------------------------------------
   pipeline:
     name: pipeline (full chain, native)
@@ -145,17 +117,15 @@ jobs:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: |
+            requirements-dev.txt
             chat_app/requirements.txt
             registration_service/requirements.txt
-      - name: Create service venvs
+      - name: Create the dev venv
         run: |
-          python -m venv chat_app/.venv
-          chat_app/.venv/bin/python -m pip install --upgrade pip
-          chat_app/.venv/bin/python -m pip install -r chat_app/requirements.txt
-          python -m venv registration_service/.venv
-          registration_service/.venv/bin/python -m pip install --upgrade pip
-          # From the repo root: the file's "-e ./agent_skeleton" is CWD-relative.
-          registration_service/.venv/bin/python -m pip install -r registration_service/requirements.txt
+          python -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip
+          # From the repo root: registration's "-e ./agent_skeleton" is CWD-relative.
+          .venv/bin/python -m pip install -r requirements-dev.txt
       - name: Install lsof
         # `scripts/stack down` uses lsof to find leftover agents.
         run: command -v lsof >/dev/null || { sudo apt-get update -q && sudo apt-get install -y -q lsof; }

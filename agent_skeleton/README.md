@@ -135,7 +135,7 @@ The demo is not part of a regular install, so run it from the repo root (or with
 the editable install below).
 
 ```bash
-# 1. Install deps into a venv/conda env (NOT another component's env)
+# 1. Install deps (the repo's dev venv, .venv from requirements-dev.txt, already has them), or:
 pip install -e ./agent_skeleton      # from the repo root: a2a-sdk[http-server]==0.3.2, openai, uvicorn
 
 # 2. Point at an LLM (hosted OpenAI, or a self-hosted vLLM endpoint)

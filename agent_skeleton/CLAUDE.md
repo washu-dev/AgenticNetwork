@@ -151,7 +151,7 @@ cheaper belt-and-suspenders version; both can coexist.
 ```bash
 python -m agent_skeleton.demo check        # the demo's schema/function alignment (no deps beyond stdlib)
 python -m py_compile agent_skeleton/*.py   # syntax
-scripts/stack test agent_skeleton          # its tests, in the registration venv
+scripts/stack test agent_skeleton          # its tests, in the dev venv
 # engine unit test (no a2a-sdk needed): import agent_skeleton.demo.tools and call the fns
 ```
 

@@ -9,7 +9,7 @@ it the same way, here. Admin rights come from that identity: ``ADMIN_EMAILS``
 What a request without an identity gets (a 401, the chat app's anonymous stand-in,
 a 403) is each service's own decision and stays there.
 
-Standard library only: both service venvs import it, and so do their images. The
+Standard library only: both services import it, and so do their images. The
 dev identity proxy (``devstack/dev_identity_proxy.py``) and agent_skeleton's
 executor run where agentnet is not installed, so they keep their own copies of the
 header names; tests check that the copies match.

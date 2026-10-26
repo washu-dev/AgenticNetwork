@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shlex
 import shutil
 import socket
@@ -85,10 +86,11 @@ def test_the_chat_app_gets_the_new_setting_names(tmp_path, monkeypatch):
     assert not any(name.startswith("MAIN_AGENT_") for name in env)
 
 
-def test_the_chat_app_runs_from_its_package_and_venv(tmp_path, monkeypatch):
-    for name in ("CHAT_APP_PYTHON", "PLANNER_PYTHON"):
+def test_the_chat_app_runs_from_its_package_and_the_dev_venv(tmp_path, monkeypatch):
+    for name in ("CHAT_APP_PYTHON", "PLANNER_PYTHON", "REGISTRATION_PYTHON"):
         monkeypatch.delenv(name, raising=False)
-    assert stack.chat_app_python() == str(stack.REPO / "chat_app" / ".venv" / "bin" / "python")
+    dev_venv = str(stack.REPO / ".venv" / "bin" / "python")
+    assert stack.chat_app_python() == stack.registration_python() == dev_venv  # one venv for both
     monkeypatch.setenv("PLANNER_PYTHON", "/old/python")
     assert stack.chat_app_python() == "/old/python"  # the older name still works
     monkeypatch.setenv("CHAT_APP_PYTHON", "/new/python")
@@ -96,6 +98,79 @@ def test_the_chat_app_runs_from_its_package_and_venv(tmp_path, monkeypatch):
     spec = stack._service_specs(stack.StackConfig(state_dir=tmp_path))["chat-app"]
     assert spec.command[:3] == ["/new/python", "-m", "chat_app"]
     assert spec.marker in shlex.join(spec.command)
+
+
+@pytest.mark.parametrize("script, args, expected", [
+    ("scripts/ads", ["-list"], "-m agentnet.scripts.show_ads_routes"),
+    ("chat_app/scripts/start.sh", [], "-m chat_app"),
+])
+def test_the_other_dev_scripts_default_to_the_dev_venv(tmp_path, script, args, expected):
+    # A copy of the script in a scratch repo, with a dev venv and a leftover chat_app/.venv.
+    copy = tmp_path / script
+    copy.parent.mkdir(parents=True)
+    shutil.copy2(stack.REPO / script, copy)
+    for venv, name in ((".venv", "dev"), ("chat_app/.venv", "leftover")):
+        python = tmp_path / venv / "bin" / "python"
+        python.parent.mkdir(parents=True)
+        python.write_text(f'#!/bin/sh\necho "{name} venv: $*"\n', encoding="utf-8")
+        python.chmod(0o755)
+    (tmp_path / "chat_app" / ".env.local").write_text("OPENAI_API_KEY=sk-test-placeholder\n", encoding="utf-8")
+    env = {"PATH": os.environ["PATH"], "HOME": str(tmp_path)}  # no ADS_PYTHON or PYTHON_BIN
+    result = subprocess.run(["bash", str(copy), *args], env=env, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert f"dev venv: {expected}" in result.stdout and "leftover" not in result.stdout
+
+
+def test_preflight_checks_the_dev_venv_once_and_says_how_to_create_it(tmp_path, monkeypatch):
+    for name in ("CHAT_APP_PYTHON", "PLANNER_PYTHON", "REGISTRATION_PYTHON"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(stack, "DEV_VENV_PYTHON", tmp_path / "absent" / "python")
+    cfg = stack.StackConfig(state_dir=tmp_path)
+    running = {name: 1 for name in cfg.services}  # so no port is checked
+    [problem] = stack.preflight(cfg, running)
+    assert problem.startswith(f"dev venv not found: {tmp_path / 'absent' / 'python'}.")
+    assert stack.DEV_VENV_SETUP in problem and "CHAT_APP_PYTHON and REGISTRATION_PYTHON" in problem
+    # An override splits the check per service, each naming its own variable.
+    monkeypatch.setenv("CHAT_APP_PYTHON", str(tmp_path / "chat-python"))
+    chat, registration = stack.preflight(cfg, running)
+    assert chat.startswith("chat-app interpreter not found:") and chat.endswith("or set CHAT_APP_PYTHON.")
+    assert registration.startswith("registration interpreter not found:") and registration.endswith("REGISTRATION_PYTHON.")
+
+
+def test_both_services_pin_one_a2a_sdk():
+    # The dev venv installs both requirement files, so a second version cannot resolve.
+    pins = stack.a2a_pins()
+    assert set(pins) == {"chat_app/requirements.txt", "registration_service/requirements.txt"}
+    assert len(set(pins.values())) == 1 and None not in pins.values(), pins
+
+
+def test_doctor_checks_the_dev_venv_against_the_one_a2a_pin(tmp_path, monkeypatch, capsys):
+    for name in ("CHAT_APP_PYTHON", "PLANNER_PYTHON", "REGISTRATION_PYTHON"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(stack, "ENV_FILE", tmp_path / "absent.env")
+    python = tmp_path / "python"  # answers stack.venv_report
+    monkeypatch.setattr(stack, "DEV_VENV_PYTHON", python)
+    [pin] = set(stack.a2a_pins().values())
+
+    def doctor(a2a: str | None) -> dict[str, dict]:
+        if a2a is None:
+            python.unlink(missing_ok=True)
+        else:
+            packages = {"a2a-sdk": a2a, "fastapi": "1", "uvicorn": "1", "httpx": "1", "openai": "1"}
+            python.write_text(f"#!/bin/sh\necho '{json.dumps({'python': '3.12.4', 'packages': packages})}'\n")
+            python.chmod(0o755)
+        stack.main(["doctor", "--json", "--state-dir", str(tmp_path / "state")])
+        return {c["check"]: c for c in json.loads(capsys.readouterr().out)["checks"]}
+
+    checks = doctor(pin)
+    assert [name for name in checks if "venv" in name or "interpreter" in name] == ["dev venv"]
+    assert checks["dev venv"]["level"] == "ok" and f"a2a-sdk {pin}," in checks["dev venv"]["detail"]
+    assert "a2a-sdk pin" not in checks
+    checks = doctor("0.3.26")
+    assert checks["dev venv a2a-sdk"]["level"] == "warn"
+    assert checks["dev venv a2a-sdk"]["detail"].startswith(f"has 0.3.26, the services pin {pin}")
+    checks = doctor(None)
+    assert checks["dev venv"]["level"] == "fail" and stack.DEV_VENV_SETUP in checks["dev venv"]["detail"]
 
 
 def test_env_file_parsing(tmp_path):

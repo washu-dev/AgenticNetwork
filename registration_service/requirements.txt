@@ -17,6 +17,7 @@ google-cloud-run>=0.10.0
 # e.g.  pip install -r registration_service/requirements.txt  (run at repo root).
 -e ./agent_skeleton
 
-# Test dependencies (registration_service/tests and devstack/tests run in this venv)
+# Test dependencies. Every suite runs in the one dev venv (requirements-dev.txt at
+# the repo root), which installs this file and chat_app/requirements.txt.
 pytest>=8.0.0
 pytest-asyncio>=0.24.0

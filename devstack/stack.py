@@ -6,7 +6,7 @@
     python3 -m devstack down
     python3 -m devstack test      # every test suite, each with its interpreter (devstack/suites.py)
 
-Everything runs as local processes from the repository's own venvs; no Docker,
+Everything runs as local processes from the repository's dev venv; no Docker,
 no database server, no SSO, no keys. The services, in start order:
 
     directory     a file-backed fake ``dirctl`` (devstack/bin/dirctl) shared by all
@@ -58,6 +58,12 @@ SEEDS_DIR = PACKAGE_DIR / "seeds"
 DIRCTL_SHIM = PACKAGE_DIR / "bin" / "dirctl"
 DEFAULT_STATE_DIR = REPO / ".devstack"
 ENV_FILE = REPO / ".devstack.env"
+# The one dev venv both services run from, unless CHAT_APP_PYTHON / REGISTRATION_PYTHON say
+# otherwise. It is created from the repo root, where registration's "-e ./agent_skeleton" resolves.
+DEV_VENV_PYTHON = REPO / ".venv" / "bin" / "python"
+DEV_VENV_SETUP = "python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt"
+# The dev venv installs both, so they pin one a2a-sdk version.
+SERVICE_REQUIREMENTS = (REPO / "chat_app" / "requirements.txt", REPO / "registration_service" / "requirements.txt")
 STATE_MARKER = ".devstack-state"
 # What `up` and the services create in a state dir; `reset` deletes only these.
 STATE_DIRS = ("logs", "pids", "agents", "uploads", "uploaded_handlers")
@@ -418,16 +424,26 @@ class ServiceSpec:
 
 
 def chat_app_python() -> str:
-    """The chat app's interpreter: CHAT_APP_PYTHON, else the older PLANNER_PYTHON, else its venv."""
-    return (
-        os.environ.get("CHAT_APP_PYTHON")
-        or os.environ.get("PLANNER_PYTHON")
-        or str(REPO / "chat_app" / ".venv" / "bin" / "python")
-    )
+    """The chat app's interpreter: CHAT_APP_PYTHON, else the older PLANNER_PYTHON, else the dev venv."""
+    return os.environ.get("CHAT_APP_PYTHON") or os.environ.get("PLANNER_PYTHON") or str(DEV_VENV_PYTHON)
 
 
 def registration_python() -> str:
-    return os.environ.get("REGISTRATION_PYTHON") or str(REPO / "registration_service" / ".venv" / "bin" / "python")
+    """The registration service's interpreter: REGISTRATION_PYTHON, else the dev venv."""
+    return os.environ.get("REGISTRATION_PYTHON") or str(DEV_VENV_PYTHON)
+
+
+def service_pythons() -> list[tuple[str, str, str]]:
+    """(label, interpreter, the variable that overrides it): one entry, the dev venv, unless
+    CHAT_APP_PYTHON or REGISTRATION_PYTHON points the two services at different interpreters."""
+    chat, registration = chat_app_python(), registration_python()
+    if chat == registration:
+        return [("dev venv", chat, "CHAT_APP_PYTHON and REGISTRATION_PYTHON")]
+    return [("chat-app interpreter", chat, "CHAT_APP_PYTHON"), ("registration interpreter", registration, "REGISTRATION_PYTHON")]
+
+
+def missing_python_hint(variable: str) -> str:
+    return f"Create the dev venv from the repo root ({DEV_VENV_SETUP}; see docs/DEVSTACK.md) or set {variable}."
 
 
 def base_env() -> dict[str, str]:
@@ -966,15 +982,9 @@ def preflight(cfg: StackConfig, running: dict[str, int | None]) -> list[str]:
     problems = []
     if sys.version_info < (3, 11):
         problems.append(f"devstack needs Python >= 3.11; this is {sys.version.split()[0]} ({sys.executable})")
-    for label, path, variable in (
-        ("chat-app", chat_app_python(), "CHAT_APP_PYTHON"),
-        ("registration", registration_python(), "REGISTRATION_PYTHON"),
-    ):
+    for label, path, variable in service_pythons():
         if not os.access(path, os.X_OK):
-            problems.append(
-                f"{label} interpreter not found: {path}. Create the venv (see docs/DEVSTACK.md) "
-                f"or set {variable}."
-            )
+            problems.append(f"{label} not found: {path}. {missing_python_hint(variable)}")
     if not os.access(DIRCTL_SHIM, os.X_OK):
         problems.append(f"fake dirctl is not executable: {DIRCTL_SHIM} (chmod +x it)")
     for name in cfg.services:
@@ -1313,6 +1323,15 @@ def _read_text(path: Path) -> str:
         return ""
 
 
+def a2a_pins() -> dict[str, str | None]:
+    """The a2a-sdk version each service requirement file pins, by its repo path."""
+    pins: dict[str, str | None] = {}
+    for path in SERVICE_REQUIREMENTS:
+        pin = re.search(r"^a2a-sdk(?:\[[^\]]*\])?==(\S+)", _read_text(path), re.MULTILINE)
+        pins[path.relative_to(REPO).as_posix()] = pin.group(1) if pin else None
+    return pins
+
+
 def venv_report(python: str) -> dict[str, Any]:
     code = (
         "import json, sys, importlib.metadata as m\n"
@@ -1341,12 +1360,14 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         checks.append({"check": name, "ok": ok, "level": "ok" if ok else ("warn" if warn else "fail"), "detail": detail})
 
     check("python3", sys.version_info >= (3, 11), f"{sys.version.split()[0]} at {sys.executable} (needs >= 3.11)")
-    for label, python, requirements in (
-        ("chat app venv", chat_app_python(), REPO / "chat_app" / "requirements.txt"),
-        ("registration venv", registration_python(), REPO / "registration_service" / "requirements.txt"),
-    ):
+    pins = a2a_pins()
+    pin = next(iter(pins.values())) if len(set(pins.values())) == 1 else None
+    if pin is None:
+        check("a2a-sdk pin", False, "the dev venv installs both services, so they must pin one version: "
+              + ", ".join(f"{path} pins {version}" for path, version in pins.items()), warn=True)
+    for label, python, variable in service_pythons():
         if not os.access(python, os.X_OK):
-            check(label, False, f"missing: {python}")
+            check(label, False, f"missing: {python}. {missing_python_hint(variable)}")
             continue
         report = venv_report(python)
         if not report.get("ok"):
@@ -1358,9 +1379,9 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             f"{p} {packages.get(p)}" for p in ("fastapi", "uvicorn", "openai")
         )
         check(label, not missing, detail + (f"; missing {missing}" if missing else ""))
-        pin = re.search(r"^a2a-sdk(?:\[[^\]]*\])?==(\S+)", _read_text(requirements), re.MULTILINE)
-        if pin and packages.get("a2a-sdk") and packages["a2a-sdk"] != pin.group(1):
-            check(f"{label} a2a-sdk pin", False, f"has {packages['a2a-sdk']}, {requirements.name} pins {pin.group(1)}", warn=True)
+        if pin and packages.get("a2a-sdk") and packages["a2a-sdk"] != pin:
+            check(f"{label} a2a-sdk", False, f"has {packages['a2a-sdk']}, the services pin {pin} "
+                  f"(from the repo root: {python} -m pip install -r requirements-dev.txt)", warn=True)
     try:
         result = subprocess.run(
             [str(DIRCTL_SHIM), "version"], env=base_env(), capture_output=True, text=True, timeout=10, check=False
@@ -1454,7 +1475,7 @@ def build_parser() -> argparse.ArgumentParser:
     smoke.add_argument("--json", action="store_true")
     smoke.set_defaults(func=cmd_smoke)
 
-    doctor = sub.add_parser("doctor", parents=[common], help="Check venvs, versions and ports.")
+    doctor = sub.add_parser("doctor", parents=[common], help="Check the dev venv, versions and ports.")
     doctor.add_argument("--json", action="store_true")
     doctor.set_defaults(func=cmd_doctor)
 

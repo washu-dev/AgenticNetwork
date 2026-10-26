@@ -6,7 +6,7 @@ the cluster and Cloud Run), publishes their card to ADS, and monitors health. Pe
 `/register/` on the chat app's address, which passes those requests through. It is the on-ramp for
 **user-uploaded custom agents** and the home of the approval trust boundary.
 
-Tests: `scripts/stack test registration_service`, pytest in the registration venv
+Tests: `scripts/stack test registration_service`, pytest in the dev venv
 (conftest sets `FAKE_DB=1`). Whole system locally: `scripts/stack up` ([DEVSTACK.md](DEVSTACK.md)).
 
 ## Handler types

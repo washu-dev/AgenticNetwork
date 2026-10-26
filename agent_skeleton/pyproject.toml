@@ -10,8 +10,9 @@ dependencies = [
     # Pin exactly + include the [http-server] extra: A2AStarletteApplication needs
     # starlette + sse-starlette (+ fastapi), which live in a2a-sdk's optional
     # `http-server` extra — the base install omits them, so a freshly-built custom
-    # image raises ImportError at serve time without it. Newer a2a-sdk releases also
-    # moved a2a.server.apps, so pin exactly to the version validated locally / used by ADS.
+    # image raises ImportError at serve time without it. Pinned exactly: this is the
+    # a2a-sdk every newly built agent image gets, and a2a-sdk 1.x removed a2a.server.apps,
+    # so moving it is its own change (the 1.x plan is in docs/OPEN_SOURCE_RELEASE.md).
     "a2a-sdk[http-server]==0.3.2",
     "openai>=1.40",
     "uvicorn>=0.30",

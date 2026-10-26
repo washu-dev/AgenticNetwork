@@ -65,21 +65,20 @@ One command runs the whole system on a laptop: the chat app (with its planner), 
 registration service, a seed agent, a mock LLM and a local sign-in proxy. It runs on macOS and Linux. You need Python 3.11 or
 newer as `python3` (check with `python3 --version`; macOS's built-in `/usr/bin/python3` is 3.9 and
 fails with "No matching distribution found for a2a-sdk"). If your 3.11+ interpreter has another
-name, such as `python3.12`, use it for the two `-m venv` commands and set `DEVSTACK_PYTHON` to it.
+name, such as `python3.12`, use it for the `-m venv` command and set `DEVSTACK_PYTHON` to it.
 From the repo root:
 
 ```bash
-# One-time setup: one venv per service
-python3 -m venv chat_app/.venv && chat_app/.venv/bin/pip install -r chat_app/requirements.txt
-python3 -m venv registration_service/.venv && registration_service/.venv/bin/pip install -r registration_service/requirements.txt
-scripts/stack doctor                # checks Python, both venvs, the fake dirctl and ports
+# One-time setup: one dev venv for both services and every test suite
+python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
+scripts/stack doctor                # checks Python, the dev venv, the fake dirctl and ports
 
 scripts/stack up                    # returns when everything is ready
 open http://localhost:8080/app      # chat UI, signed in as dev@example.test (macOS; elsewhere open the URL in a browser)
 scripts/stack smoke                 # optional: one prompt through the front door
 scripts/stack down
 
-scripts/stack test                  # every test suite, each with its venv (docs/TESTING.md)
+scripts/stack test                  # every test suite (docs/TESTING.md)
 ```
 
 Try "Echo this back: hello": the planner finds the seed agent and returns its answer. No Docker,
@@ -116,6 +115,7 @@ What to run before a pull request, and what CI checks, is in [`CONTRIBUTING.md`]
 | [`agent_skeleton/`](agent_skeleton/README.md) | The agent runtime that registered agents run on, plus a small demo agent in `agent_skeleton/demo/` (the one part that is safe to edit). |
 | [`agentnet/`](agentnet/README.md) | Shared library for the directory (ADS) and A2A calls, used by the chat app and the registration service; plus operator tooling to publish, inspect, diagnose and repair directory records (`scripts/ads`). |
 | [`devstack/`](docs/DEVSTACK.md), [`scripts/stack`](scripts/stack) | The dev stack (mock LLM, fake `dirctl`, dev identity proxy, seed agents) and its CLI. |
+| [`requirements-dev.txt`](requirements-dev.txt) | The one development environment (`.venv`): both services' requirements, the agent runtime and the test tools. |
 | [`tests/pipeline/`](tests/pipeline/) | Full-chain test that drives the dev stack over HTTP. |
 | [`deployment/`](deployment/README.md) | Dockerfiles, entrypoints, Slurm and Google Cloud scripts, config templates. |
 | [`docs/`](docs/README.md) | Documentation. |

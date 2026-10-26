@@ -5,6 +5,10 @@
 > Slurm step and `planner.log`) are now named `chat-app` (`CHAT_APP_SA`, `CHAT_APP_INVOKER_SA`,
 > `chat-app-connector`). This record keeps the names as they were deployed.
 
+> **Dev venv (2026-10-25):** the per-service venvs this record runs tests in
+> (`registration_service/.venv`, "the dev venv" below) were replaced by one repo-root `.venv`
+> from `requirements-dev.txt`, which also installs `google-cloud-run`.
+
 **2026-07-29**, progress updated **2026-07-30**. Concrete, ordered steps to build the `CloudRunBackend`
 and its supporting changes. Design + rationale: [`DESIGN_CLOUDRUN_BACKEND.md`](DESIGN_CLOUDRUN_BACKEND.md)
 (see its **Corrections (2026-07-30)** note before trusting the converter-divergence claim in "Current-state

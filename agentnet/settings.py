@@ -9,7 +9,7 @@ The value is a URL asyncpg accepts: ``postgresql://`` or ``postgres://`` only
 (``postgresql+asyncpg://`` and other SQLAlchemy forms are rejected). It holds the
 password, so it is never logged.
 
-Standard library only: both service venvs import it, and so do their images.
+Standard library only: both services import it, and so do their images.
 """
 
 from __future__ import annotations

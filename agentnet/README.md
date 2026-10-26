@@ -75,9 +75,9 @@ fast routing intervals; `-watch --restart-daemon-if-stuck` restarts the daemon w
 it). A daemon restarted by a repair writes its output to `logs/ads_daemon_repair.log`.
 
 agentnet has no required dependencies file of its own (requirements-sdk.txt is only for the
-optional SDK backend): it runs in either service venv (the
-registration service pins a2a-sdk 0.3.2, the chat app 0.3.26), and CI runs its
-tests in both. Both Docker images copy it to `/app/agentnet` and set
+optional SDK backend): it runs in the repo's one dev venv (`requirements-dev.txt`;
+both services pin a2a-sdk 0.3.2), and CI runs its tests on Python 3.11 and 3.13.
+Both Docker images copy it to `/app/agentnet` and set
 `PYTHONPATH=/app`. Agents the registration service starts as local subprocesses
 import `credential_catalog.py` too (through `registration_service/models.py`), with
 the uploaded project first on their path, so an upload may not carry a top-level
@@ -139,8 +139,8 @@ ssh -L 8888:<node>:8888 <user>@<login-node>
 
 Then point `dirctl` or `scripts/ads` at `localhost:8888` (the default).
 
-`scripts/ads` runs the Python tools with the registration service's venv
-(`registration_service/.venv`). Set `ADS_PYTHON` to use another interpreter.
+`scripts/ads` runs the Python tools with the dev venv (`.venv`). Set `ADS_PYTHON` to
+use another interpreter.
 
 ## Inspect the live directory
 
@@ -174,7 +174,7 @@ scripts/ads -publish ../agent-directory/email_agent/email_agent.card.json
 Test an A2A endpoint directly, without publishing to ADS:
 
 ```bash
-registration_service/.venv/bin/python -m agentnet.scripts.validate_agent_endpoint \
+.venv/bin/python -m agentnet.scripts.validate_agent_endpoint \
   --card ../agent-directory/email_agent/email_agent.card.json \
   --skill email/current_time \
   --prompt "What time is it?" \
@@ -184,9 +184,7 @@ registration_service/.venv/bin/python -m agentnet.scripts.validate_agent_endpoin
 ## Tests
 
 ```bash
-# dirctl is mocked; from the repo root, runs in both service venvs (a2a-sdk 0.3.2 and 0.3.26)
+# dirctl is mocked; from the repo root, in the dev venv
 scripts/stack test agentnet
-# the same as:
-#   registration_service/.venv/bin/python -m pytest agentnet/tests -q -p no:cacheprovider
-#   chat_app/.venv/bin/python -m pytest agentnet/tests -q -p no:cacheprovider
+# the same as: .venv/bin/python -m pytest agentnet/tests -q -p no:cacheprovider
 ```

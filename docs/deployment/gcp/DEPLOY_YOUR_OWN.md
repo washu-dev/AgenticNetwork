@@ -534,7 +534,7 @@ rows approved before the service recorded build commits) are in [README.md](READ
 `--ingress=internal --no-allow-unauthenticated --min-instances=0 --service-account="$AGENT_SA"`,
 grant `CHAT_APP_SA` `roles/run.invoker` on it, set the card's URL to the service's `run.app` URL,
 and publish the card from your laptop through an SSH tunnel to the directory (`scripts/ads` needs
-`dirctl` and the registration venv; see [docs/AGENT_DIRECTORY.md](../../AGENT_DIRECTORY.md)):
+`dirctl` and the dev venv; see [docs/AGENT_DIRECTORY.md](../../AGENT_DIRECTORY.md)):
 
 ```bash
 gcloud compute ssh ads --zone="$ZONE" -- -N -L 8888:localhost:8888      # leave running

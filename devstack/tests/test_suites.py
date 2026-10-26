@@ -15,7 +15,7 @@ import pytest
 
 from devstack import stack, suites
 
-# Stands in for both venvs' python: answers stack.venv_report, records every other call
+# Stands in for an interpreter: answers stack.venv_report, records every other call
 # (argv, env, cwd, start and end time), and passes, fails or hangs as config.json says.
 FAKE_PYTHON = """\
 import json, os, signal, sys, time
@@ -52,12 +52,12 @@ PACKAGES = {"pytest": "9.0.3", "pytest-asyncio": "1.4.0", "pytest-cov": "7.1.0"}
 @dataclass
 class Fake:
     root: Path
-    chat: Path
-    registration: Path
+    dev: Path  # stands in for the dev venv's python
+    other: Path  # another interpreter, for --python and the service overrides
 
     def configure(self, **config: Any) -> None:
         defaults = {
-            "packages": {"chat": dict(PACKAGES), "registration": dict(PACKAGES)},
+            "packages": {"dev": dict(PACKAGES), "other": dict(PACKAGES)},
             "exit": {}, "hang": [], "ignore_term": False, "sleep": {},
         }
         (self.root / "config.json").write_text(json.dumps({**defaults, **config}), encoding="utf-8")
@@ -77,19 +77,19 @@ def fake(tmp_path, monkeypatch) -> Fake:
     script = tmp_path / "fake_python.py"
     script.write_text(FAKE_PYTHON, encoding="utf-8")
     pythons = {}
-    for role in ("chat", "registration"):
+    for role in ("dev", "other"):
         wrapper = tmp_path / f"{role}-python"
         wrapper.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{script}" {role} "$@"\n', encoding="utf-8")
         wrapper.chmod(0o755)
         pythons[role] = wrapper
-    monkeypatch.setenv("CHAT_APP_PYTHON", str(pythons["chat"]))
-    monkeypatch.setenv("REGISTRATION_PYTHON", str(pythons["registration"]))
-    for name in ("PLANNER_PYTHON", "PIPELINE_PORT_OFFSET", "PLANNER_TEST_DATABASE_DSN", "DEVSTACK_PASSTHROUGH_ENV"):
+    monkeypatch.setattr(stack, "DEV_VENV_PYTHON", pythons["dev"])
+    for name in ("CHAT_APP_PYTHON", "PLANNER_PYTHON", "REGISTRATION_PYTHON", "PIPELINE_PORT_OFFSET",
+                 "PLANNER_TEST_DATABASE_DSN", "DEVSTACK_PASSTHROUGH_ENV"):
         monkeypatch.delenv(name, raising=False)
     which = shutil.which
     monkeypatch.setattr(shutil, "which", lambda name, *a, **k: "/usr/bin/lsof" if name == "lsof" else which(name, *a, **k))
     monkeypatch.setattr(stack, "cmd_down", lambda args: pytest.fail("down ran"))
-    result = Fake(tmp_path, pythons["chat"], pythons["registration"])
+    result = Fake(tmp_path, pythons["dev"], pythons["other"])
     result.configure()
     return result
 
@@ -102,11 +102,8 @@ def test_selection_by_group_and_suite():
     names = lambda picked: [s.name for s in picked]  # noqa: E731
     assert suites.select([]) == list(suites.SUITES)
     assert names(suites.select(["pipeline"])) == ["full-chain", "scenarios"]
-    assert names(suites.select(["unit"])) == [
-        "chat_app", "registration_service", "agent_skeleton", "agentnet", "agentnet", "devstack",
-    ]
-    assert [s.venv for s in suites.select(["agentnet"])] == ["registration", "chat-app"]
-    assert [s.venv for s in suites.select(["agentnet[chat-app]"])] == ["chat-app"]
+    assert names(suites.select(["unit"])) == ["chat_app", "registration_service", "agent_skeleton", "agentnet", "devstack"]
+    assert names(suites.select(["agentnet"])) == ["agentnet"]  # once: one venv runs both services
     # Table order, each suite once.
     assert names(suites.select(["scenarios", "chat_app", "pipeline"])) == ["chat_app", "full-chain", "scenarios"]
 
@@ -120,30 +117,31 @@ def test_unknown_suite_is_a_usage_error(fake, capsys):
     assert fake.ran() == []
 
 
-def test_each_suite_runs_alone_with_its_interpreter(fake, capsys):
+def test_each_suite_runs_alone_with_the_dev_venv(fake, monkeypatch, capsys):
+    # The service overrides pick the stack's interpreters, not the tests'.
+    monkeypatch.setenv("CHAT_APP_PYTHON", str(fake.other))
+    monkeypatch.setenv("REGISTRATION_PYTHON", str(fake.other))
     assert stack.main(["test", "unit"]) == stack.EXIT_OK
     assert fake.ran() == [
-        ("chat", "chat_app/tests"),
-        ("registration", "registration_service/tests"),
-        ("registration", "agent_skeleton/tests"),
-        ("registration", "agentnet/tests"),
-        ("chat", "agentnet/tests"),
-        ("registration", "devstack/tests"),
+        ("dev", "chat_app/tests"),
+        ("dev", "registration_service/tests"),
+        ("dev", "agent_skeleton/tests"),
+        ("dev", "agentnet/tests"),
+        ("dev", "devstack/tests"),
     ]
     for call in fake.calls():
         assert call["args"][3:] == ["-q", "-p", "no:cacheprovider"]
         assert Path(call["cwd"]).resolve() == stack.REPO
     out = capsys.readouterr().out
-    assert "devstack test: all 6 passed" in out
-    assert "agentnet[registration]" in out and "agentnet[chat-app]" in out
+    assert "devstack test: all 5 passed" in out
 
 
-def test_python_replaces_both_venvs_and_runs_agentnet_once(fake, capsys):
-    assert stack.main(["test", "agentnet", "--python", str(fake.chat), "--list", "--json"]) == stack.EXIT_OK
-    assert json_out(capsys) == [{"suite": "agentnet", "path": "agentnet/tests", "python": str(fake.chat), "pipeline": False}]
+def test_python_replaces_the_dev_venv(fake, capsys):
+    assert stack.main(["test", "agentnet", "--python", str(fake.other), "--list", "--json"]) == stack.EXIT_OK
+    assert json_out(capsys) == [{"suite": "agentnet", "path": "agentnet/tests", "python": str(fake.other), "pipeline": False}]
     assert fake.ran() == []  # --list runs nothing
-    assert stack.main(["test", "agentnet", "registration_service", "--python", str(fake.chat)]) == stack.EXIT_OK
-    assert fake.ran() == [("chat", "registration_service/tests"), ("chat", "agentnet/tests")]
+    assert stack.main(["test", "agentnet", "registration_service", "--python", str(fake.other)]) == stack.EXIT_OK
+    assert fake.ran() == [("other", "registration_service/tests"), ("other", "agentnet/tests")]
 
 
 def test_args_after_double_dash_go_to_pytest(fake):
@@ -154,16 +152,16 @@ def test_args_after_double_dash_go_to_pytest(fake):
 
 def test_pipeline_files_get_their_own_ports_and_state_dirs(fake, monkeypatch):
     monkeypatch.setenv("PIPELINE_PORT_OFFSET", "21000")
+    monkeypatch.setenv("CHAT_APP_PYTHON", str(fake.other))
     assert stack.main(["test", "pipeline"]) == stack.EXIT_OK
-    assert fake.ran() == [("registration", "tests/pipeline/test_full_chain.py"),
-                          ("registration", "tests/pipeline/test_scenarios.py")]
+    assert fake.ran() == [("dev", "tests/pipeline/test_full_chain.py"), ("dev", "tests/pipeline/test_scenarios.py")]
     envs = [call["env"] for call in fake.calls()]
     assert [(env["PIPELINE_PORT_OFFSET"], env["PIPELINE_STATE_DIR"]) for env in envs] == [
         ("21000", str(stack.REPO / ".devstack-pipeline")),
         ("21100", str(stack.REPO / ".devstack-scenarios")),
     ]
     # The stack it starts runs its services with the interpreters preflight checked.
-    assert all(env["CHAT_APP_PYTHON"] == str(fake.chat) for env in envs)
+    assert all(env["CHAT_APP_PYTHON"] == str(fake.other) for env in envs)
     monkeypatch.setenv("PIPELINE_PORT_OFFSET", "60000")
     assert stack.main(["test", "scenarios"]) == stack.EXIT_USAGE
 
@@ -172,7 +170,7 @@ def test_suites_get_a_clean_environment(fake, monkeypatch):
     for name, value in {
         "FAKE_DB": "0", "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1", "PYTHONPATH": "/elsewhere",
         "DATABASE_URL": "postgresql://db/x", "REGISTRATION_DB_DSN": "postgresql://db/x",
-        "PIPELINE_STATE_DIR": "/elsewhere",
+        "PIPELINE_STATE_DIR": "/elsewhere", "REGISTRATION_PYTHON": str(fake.other),
         "PLANNER_TEST_DATABASE_DSN": "postgresql://test/planner",
     }.items():
         monkeypatch.setenv(name, value)
@@ -189,11 +187,11 @@ def test_suites_get_a_clean_environment(fake, monkeypatch):
 def test_a_failed_suite_exits_7_after_the_rest_ran(fake, capsys):
     fake.configure(exit={"agentnet/tests": 1})
     assert stack.main(["test", "unit"]) == stack.EXIT_TESTS
-    assert len(fake.ran()) == 6
+    assert len(fake.ran()) == 5
     out = capsys.readouterr().out
-    assert "devstack test: 2 of 6 failed" in out
+    assert "devstack test: 1 of 5 failed" in out
     rows = [line.split()[:2] for line in out.splitlines()]
-    assert ["agentnet[chat-app]", "FAILED"] in rows and ["chat_app", "ok"] in rows and "1 failed in 0.01s" in out
+    assert ["agentnet", "FAILED"] in rows and ["chat_app", "ok"] in rows and "1 failed in 0.01s" in out
     fake.configure(exit={"tests/pipeline/test_scenarios.py": 1})
     assert stack.main(["test", "chat_app", "scenarios", "--json"]) == stack.EXIT_TESTS
     summary = json_out(capsys)
@@ -201,19 +199,26 @@ def test_a_failed_suite_exits_7_after_the_rest_ran(fake, capsys):
     assert summary["suites"][1]["logs"] == str(stack.REPO / ".devstack-scenarios" / "logs")
 
 
-@pytest.mark.parametrize("case", ["no interpreter", "no pytest-asyncio", "no pytest-cov", "no lsof"])
+@pytest.mark.parametrize(
+    "case", ["no dev venv", "no service interpreter", "no pytest-asyncio", "no pytest-cov", "no lsof"],
+)
 def test_preflight_problems_exit_3_before_anything_runs(fake, monkeypatch, capsys, case):
     argv = ["test", "registration_service"]
-    if case == "no interpreter":
-        monkeypatch.setenv("REGISTRATION_PYTHON", str(fake.root / "absent"))
-        expected = "set REGISTRATION_PYTHON"
+    if case == "no dev venv":
+        monkeypatch.setattr(stack, "DEV_VENV_PYTHON", fake.root / "absent")
+        expected = f"Create the dev venv from the repo root ({stack.DEV_VENV_SETUP}"
+    elif case == "no service interpreter":
+        monkeypatch.setenv("CHAT_APP_PYTHON", str(fake.root / "absent"))
+        assert stack.main(["test", "registration_service"]) == stack.EXIT_OK  # only the pipeline starts services
+        argv = ["test", "full-chain"]
+        expected = "The pipeline's services need it. Create the dev venv from the repo root"
     elif case == "no pytest-asyncio":
-        fake.configure(packages={"chat": PACKAGES, "registration": {"pytest": "9.0.3"}})
+        fake.configure(packages={"dev": {"pytest": "9.0.3"}, "other": PACKAGES})
         expected = "lacks pytest-asyncio"
-        # The other suites in that venv need only pytest.
+        # The other suites need only pytest.
         assert stack.main(["test", "agent_skeleton"]) == stack.EXIT_OK
     elif case == "no pytest-cov":
-        fake.configure(packages={"chat": PACKAGES, "registration": {"pytest": "9.0.3", "pytest-asyncio": "1.4.0"}})
+        fake.configure(packages={"dev": {"pytest": "9.0.3", "pytest-asyncio": "1.4.0"}, "other": PACKAGES})
         argv.append("--cov")
         expected = "lacks pytest-cov"
         assert stack.main(["test", "registration_service"]) == stack.EXIT_OK  # fine without --cov
@@ -228,7 +233,7 @@ def test_preflight_problems_exit_3_before_anything_runs(fake, monkeypatch, capsy
 
 
 def test_cov_measures_each_unit_suite_into_its_own_file(fake, capsys):
-    assert stack.main(["test", "agentnet", "full-chain", "--cov", "--python", str(fake.registration), "--json"]) == 0
+    assert stack.main(["test", "agentnet", "full-chain", "--cov", "--python", str(fake.other), "--json"]) == 0
     unit, pipeline = fake.calls()
     assert unit["args"][-2:] == ["--cov=agentnet", "--cov-report="]
     assert unit["env"]["COVERAGE_FILE"] == str(stack.REPO / ".coverage.agentnet")
@@ -240,15 +245,15 @@ def test_cov_measures_each_unit_suite_into_its_own_file(fake, capsys):
 
 
 def test_parallel_runs_unit_suites_at_once_then_the_pipeline(fake, capsys):
-    fake.configure(sleep={"agentnet/tests": 1.0})
-    assert stack.main(["test", "agentnet", "full-chain", "--parallel"]) == stack.EXIT_OK
-    calls = {(c["role"], c["args"][2]): c for c in fake.calls()}
-    first, second = calls["registration", "agentnet/tests"], calls["chat", "agentnet/tests"]
+    fake.configure(sleep={"agentnet/tests": 1.0, "devstack/tests": 1.0})
+    assert stack.main(["test", "agentnet", "devstack", "full-chain", "--parallel"]) == stack.EXIT_OK
+    calls = {c["args"][2]: c for c in fake.calls()}
+    first, second = calls["agentnet/tests"], calls["devstack/tests"]
     assert max(first["started"], second["started"]) < min(first["ended"], second["ended"])
-    assert calls["registration", "tests/pipeline/test_full_chain.py"]["started"] >= max(first["ended"], second["ended"])
+    assert calls["tests/pipeline/test_full_chain.py"]["started"] >= max(first["ended"], second["ended"])
     out = capsys.readouterr().out
-    for label, python in (("agentnet[registration]", fake.registration), ("agentnet[chat-app]", fake.chat)):
-        assert f"devstack test: {label} ({python})\nagentnet/tests output\n" in out  # each in one piece
+    for name in ("agentnet", "devstack"):
+        assert f"devstack test: {name} ({fake.dev})\n{name}/tests output\n" in out  # each in one piece
 
 
 def test_a_hung_suite_is_stopped(fake, monkeypatch, capsys):
