@@ -4,7 +4,7 @@
     python3 -m devstack status --json
     python3 -m devstack smoke
     python3 -m devstack down
-    python3 -m devstack test      # every test suite, each with its interpreter (devstack/suites.py)
+    python3 -m devstack test      # every test suite, with the dev venv's interpreter (devstack/suites.py)
 
 Everything runs as local processes from the repository's dev venv; no Docker,
 no database server, no SSO, no keys. The services, in start order:
@@ -24,7 +24,7 @@ rebuilt component. Service start commands live in ``_service_specs``.
 
 Exit codes: 0 ok; 1 not ready (status) or something left running (down, reset);
 2 usage; 3 preflight failed; 5 a service failed to become ready; 6 smoke failed;
-7 a test suite failed (test).
+7 a test suite failed, or pytest arguments selected no test in any suite (test).
 
 Standard library only (Python >= 3.11).
 """
@@ -423,27 +423,45 @@ class ServiceSpec:
     stop_grace: float = 5.0
 
 
+def _interpreter(*variables: str) -> tuple[str, str | None]:
+    """(path, the variable it came from): the first of ``variables`` that is set, else the dev venv's (None)."""
+    for name in variables:
+        if os.environ.get(name):
+            return os.environ[name], name
+    return str(DEV_VENV_PYTHON), None
+
+
 def chat_app_python() -> str:
     """The chat app's interpreter: CHAT_APP_PYTHON, else the older PLANNER_PYTHON, else the dev venv."""
-    return os.environ.get("CHAT_APP_PYTHON") or os.environ.get("PLANNER_PYTHON") or str(DEV_VENV_PYTHON)
+    return _interpreter("CHAT_APP_PYTHON", "PLANNER_PYTHON")[0]
 
 
 def registration_python() -> str:
     """The registration service's interpreter: REGISTRATION_PYTHON, else the dev venv."""
-    return os.environ.get("REGISTRATION_PYTHON") or str(DEV_VENV_PYTHON)
+    return _interpreter("REGISTRATION_PYTHON")[0]
 
 
 def service_pythons() -> list[tuple[str, str, str]]:
-    """(label, interpreter, the variable that overrides it): one entry, the dev venv, unless
-    CHAT_APP_PYTHON or REGISTRATION_PYTHON points the two services at different interpreters."""
-    chat, registration = chat_app_python(), registration_python()
+    """(label, interpreter, how to fix it if it is missing): one entry when both services use one
+    interpreter (the dev venv, unless CHAT_APP_PYTHON / REGISTRATION_PYTHON say otherwise)."""
+    chat, chat_variable = _interpreter("CHAT_APP_PYTHON", "PLANNER_PYTHON")
+    registration, registration_variable = _interpreter("REGISTRATION_PYTHON")
+    services = [
+        ("chat-app interpreter", chat, (chat_variable or "CHAT_APP_PYTHON",)),
+        ("registration interpreter", registration, (registration_variable or "REGISTRATION_PYTHON",)),
+    ]
     if chat == registration:
-        return [("dev venv", chat, "CHAT_APP_PYTHON and REGISTRATION_PYTHON")]
-    return [("chat-app interpreter", chat, "CHAT_APP_PYTHON"), ("registration interpreter", registration, "REGISTRATION_PYTHON")]
+        label = "dev venv" if chat == str(DEV_VENV_PYTHON) else "service interpreter"
+        services = [(label, chat, services[0][2] + services[1][2])]
+    return [(label, path, _python_hint(path, variables)) for label, path, variables in services]
 
 
-def missing_python_hint(variable: str) -> str:
-    return f"Create the dev venv from the repo root ({DEV_VENV_SETUP}; see docs/DEVSTACK.md) or set {variable}."
+def _python_hint(path: str, variables: tuple[str, ...]) -> str:
+    """The dev venv's path: how to create it. Any other path came from ``variables``: check them."""
+    names = " and ".join(variables)
+    if path == str(DEV_VENV_PYTHON):
+        return f"Create the dev venv from the repo root ({DEV_VENV_SETUP}; see docs/DEVSTACK.md) or set {names}."
+    return f"Check the path in {names}, or unset {'them' if len(variables) > 1 else 'it'} to use the dev venv."
 
 
 def base_env() -> dict[str, str]:
@@ -982,9 +1000,9 @@ def preflight(cfg: StackConfig, running: dict[str, int | None]) -> list[str]:
     problems = []
     if sys.version_info < (3, 11):
         problems.append(f"devstack needs Python >= 3.11; this is {sys.version.split()[0]} ({sys.executable})")
-    for label, path, variable in service_pythons():
+    for label, path, hint in service_pythons():
         if not os.access(path, os.X_OK):
-            problems.append(f"{label} not found: {path}. {missing_python_hint(variable)}")
+            problems.append(f"{label} not found: {path}. {hint}")
     if not os.access(DIRCTL_SHIM, os.X_OK):
         problems.append(f"fake dirctl is not executable: {DIRCTL_SHIM} (chmod +x it)")
     for name in cfg.services:
@@ -1365,9 +1383,9 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     if pin is None:
         check("a2a-sdk pin", False, "the dev venv installs both services, so they must pin one version: "
               + ", ".join(f"{path} pins {version}" for path, version in pins.items()), warn=True)
-    for label, python, variable in service_pythons():
+    for label, python, hint in service_pythons():
         if not os.access(python, os.X_OK):
-            check(label, False, f"missing: {python}. {missing_python_hint(variable)}")
+            check(label, False, f"missing: {python}. {hint}")
             continue
         report = venv_report(python)
         if not report.get("ok"):

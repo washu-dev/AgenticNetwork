@@ -1,7 +1,8 @@
 # Offline test gates: every component's unit suite, repo hygiene, and the native
 # full-chain pipeline test. Nothing here needs Docker, Postgres, a real dirctl,
-# network services or API keys. Both test jobs install requirements-dev.txt (the one
-# dev environment) and run `scripts/stack test` (devstack/suites.py), as locally.
+# network services or API keys. The unit and pipeline jobs install requirements-dev.txt
+# (the one dev environment) and run `scripts/stack test` (devstack/suites.py), as locally;
+# the image-deps jobs run some suites with only what an image installs.
 name: tests
 
 on:
@@ -25,7 +26,7 @@ jobs:
   unit:
     name: unit (Python ${{ matrix.python }})
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
@@ -55,7 +56,52 @@ jobs:
       # (registration needs pytest-asyncio; coverage needs pytest-cov);
       # registration_service/tests/conftest.py sets FAKE_DB=1 itself.
       - name: Test
-        run: scripts/stack test unit --python "$(command -v python)" --cov
+        # The five suites run one after the other, each stopped after 180 s (the slowest
+        # takes about 30 s), then killed 60 s later if it ignores SIGTERM: at most
+        # 5 x (180 + 60) s = 20 min. This step timeout is a backstop above that and below
+        # the job's, so a hung suite is stopped and reported, and the rest still run.
+        timeout-minutes: 22
+        run: scripts/stack test unit --python "$(command -v python)" --cov --timeout 180
+
+  # The unit job tests the dev venv's versions. Each image installs only its own
+  # requirements, whose versions float (registration's file has only minimums, and
+  # agent_skeleton's openai and uvicorn too), so these jobs run the suites an image's
+  # code needs with only what that image installs.
+  image-deps:
+    name: unit, ${{ matrix.label }} deps (Python 3.11)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # A built agent image installs agent_skeleton alone: its runtime must need
+          # nothing else.
+          - label: agent image
+            deps: agent_skeleton/pyproject.toml
+            install: python -m pip install -e ./agent_skeleton pytest pytest-cov==7.1.0
+            suites: agent_skeleton
+          # Dockerfile.registration: registration_service/requirements.txt alone (from the
+          # repo root: its "-e ./agent_skeleton" is CWD-relative). agentnet runs inside it.
+          - label: registration image
+            deps: registration_service/requirements.txt
+            install: python -m pip install -r registration_service/requirements.txt pytest-cov==7.1.0
+            suites: registration_service agent_skeleton agentnet
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: ${{ matrix.deps }}
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          ${{ matrix.install }}
+      - name: Test
+        # As in the unit job: at most 3 x (180 + 60) s = 12 min, under this step timeout.
+        timeout-minutes: 14
+        run: scripts/stack test ${{ matrix.suites }} --python "$(command -v python)" --cov --timeout 180
 
   hygiene:
     name: repo hygiene

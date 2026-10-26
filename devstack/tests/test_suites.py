@@ -40,7 +40,7 @@ else:
     time.sleep(config["sleep"].get(path, 0))
     code = config["exit"].get(path, 0)
     print(f"{path} output")
-    print("1 failed in 0.01s" if code else "3 passed in 0.01s")
+    print({0: "3 passed in 0.01s", 5: "3 deselected in 0.01s"}.get(code, "1 failed in 0.01s"))
 call = {"role": role, "args": args, "env": dict(os.environ), "cwd": os.getcwd(), "started": started, "ended": time.time()}
 with (here / "calls.jsonl").open("a") as log:
     log.write(json.dumps(call) + "\\n")
@@ -199,6 +199,28 @@ def test_a_failed_suite_exits_7_after_the_rest_ran(fake, capsys):
     assert summary["suites"][1]["logs"] == str(stack.REPO / ".devstack-scenarios" / "logs")
 
 
+def test_a_suite_where_pytest_args_select_no_test_is_none_not_failed(fake, capsys):
+    fake.configure(exit={"agentnet/tests": 5, "tests/pipeline/test_full_chain.py": 5})  # pytest: no test ran
+    assert stack.main(["test", "agentnet", "devstack", "full-chain", "--", "-k", "sweep"]) == stack.EXIT_OK
+    out = capsys.readouterr().out
+    assert "devstack test: 1 passed, 2 selected no test" in out
+    rows = [line.split()[:2] for line in out.splitlines()]
+    assert ["agentnet", "none"] in rows and ["full-chain", "none"] in rows and ["devstack", "ok"] in rows
+    assert "stack logs" not in out  # nothing to debug
+    assert stack.main(["test", "agentnet", "devstack", "--json", "--", "-k", "sweep"]) == stack.EXIT_OK
+    summary = json_out(capsys)
+    assert summary["ok"] is True and summary["failed"] == []
+    assert [(s["result"], s["exit_code"]) for s in summary["suites"]] == [("none", 5), ("ok", 0)]
+    # Arguments that select no test anywhere still fail, as a typo in -k would.
+    assert stack.main(["test", "agentnet", "--", "-k", "sweeep"]) == stack.EXIT_TESTS
+    out = capsys.readouterr().out
+    assert "devstack test: no test selected" in out and ["agentnet", "none"] in [line.split()[:2] for line in out.splitlines()]
+    # Without pytest arguments, a suite that collects nothing is broken.
+    assert stack.main(["test", "agentnet", "devstack", "--json"]) == stack.EXIT_TESTS
+    summary = json_out(capsys)
+    assert summary["failed"] == ["agentnet"] and summary["suites"][0]["result"] == "failed"
+
+
 @pytest.mark.parametrize(
     "case", ["no dev venv", "no service interpreter", "no pytest-asyncio", "no pytest-cov", "no lsof"],
 )
@@ -211,7 +233,7 @@ def test_preflight_problems_exit_3_before_anything_runs(fake, monkeypatch, capsy
         monkeypatch.setenv("CHAT_APP_PYTHON", str(fake.root / "absent"))
         assert stack.main(["test", "registration_service"]) == stack.EXIT_OK  # only the pipeline starts services
         argv = ["test", "full-chain"]
-        expected = "The pipeline's services need it. Create the dev venv from the repo root"
+        expected = "The pipeline's services need it. Check the path in CHAT_APP_PYTHON, or unset it"
     elif case == "no pytest-asyncio":
         fake.configure(packages={"dev": {"pytest": "9.0.3"}, "other": PACKAGES})
         expected = "lacks pytest-asyncio"

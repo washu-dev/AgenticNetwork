@@ -4,7 +4,8 @@ The unit and pipeline suites run offline: no Docker, Postgres, real `dirctl`, ex
 services or API keys. `scripts/stack test` runs them all from the repo root, with the dev venv
 ([Running the suites](#running-the-suites)). CI
 ([`.github/workflows/tests.yml`](../.github/workflows/tests.yml)) runs the same command on every
-pull request, on pushes to `main` and on demand. A second workflow
+pull request, on pushes to `main` and on demand, and runs the suites an image's code needs with
+only what that image installs. A second workflow
 ([`.github/workflows/compose.yml`](../.github/workflows/compose.yml)) runs the tier-2 Docker check.
 
 ## Three tiers
@@ -90,11 +91,19 @@ shell cannot change a result. Selected suites run in table order and the command
 after a failure; `--parallel` runs the unit suites at once, but the pipeline files always run one
 after the other. A suite still running after `--timeout` seconds (default 900, 600 per pipeline
 file) is stopped. `--python PATH` runs every suite with that interpreter instead of the dev
-venv's, as CI does (on Python 3.11 and 3.13).
+venv's, as CI does (on Python 3.11 and 3.13, each suite stopped after 180 s). CI's image-deps jobs
+also run, on Python 3.11, `agent_skeleton` with only `pip install -e ./agent_skeleton` (what a
+built agent image gets) and `registration_service`, `agent_skeleton` and `agentnet` with only
+`registration_service/requirements.txt` (what the registration image gets). Those files set
+minimum versions, so these jobs see the newer releases the images install, which the dev venv's
+pins (through `chat_app/requirements.txt`) hold back.
 
 The command exits 0 when every selected suite passed, 7 when any failed or was stopped, 3 when the
 dev venv, a test plugin or (for the pipeline) `lsof` is missing, naming the fix, and 2 for an unknown
-suite.
+suite. With pytest arguments after `--`, a suite where they select no test (pytest's exit code 5,
+such as a `-k` that matches nothing there) shows `none` in the summary and does not count as
+failed, unless no suite ran a test at all, which exits 7. Without pytest arguments, a suite that
+collects no test is a failure.
 
 ### Coverage
 

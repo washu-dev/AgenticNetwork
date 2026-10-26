@@ -130,11 +130,24 @@ def test_preflight_checks_the_dev_venv_once_and_says_how_to_create_it(tmp_path, 
     [problem] = stack.preflight(cfg, running)
     assert problem.startswith(f"dev venv not found: {tmp_path / 'absent' / 'python'}.")
     assert stack.DEV_VENV_SETUP in problem and "CHAT_APP_PYTHON and REGISTRATION_PYTHON" in problem
-    # An override splits the check per service, each naming its own variable.
+    # An override splits the check per service. The overridden path names the variable it came
+    # from; the dev venv's still says how to create it.
     monkeypatch.setenv("CHAT_APP_PYTHON", str(tmp_path / "chat-python"))
     chat, registration = stack.preflight(cfg, running)
-    assert chat.startswith("chat-app interpreter not found:") and chat.endswith("or set CHAT_APP_PYTHON.")
-    assert registration.startswith("registration interpreter not found:") and registration.endswith("REGISTRATION_PYTHON.")
+    assert chat == (f"chat-app interpreter not found: {tmp_path / 'chat-python'}. "
+                    "Check the path in CHAT_APP_PYTHON, or unset it to use the dev venv.")
+    assert registration.startswith("registration interpreter not found:") and stack.DEV_VENV_SETUP in registration
+    assert registration.endswith("or set REGISTRATION_PYTHON.")
+    # Both services on one other interpreter: one check, not called the dev venv.
+    monkeypatch.setenv("REGISTRATION_PYTHON", str(tmp_path / "chat-python"))
+    [problem] = stack.preflight(cfg, running)
+    assert problem == (f"service interpreter not found: {tmp_path / 'chat-python'}. "
+                       "Check the path in CHAT_APP_PYTHON and REGISTRATION_PYTHON, or unset them to use the dev venv.")
+    # The older PLANNER_PYTHON is named when it is the one set.
+    monkeypatch.delenv("CHAT_APP_PYTHON")
+    monkeypatch.setenv("PLANNER_PYTHON", str(tmp_path / "chat-python"))
+    [problem] = stack.preflight(cfg, running)
+    assert "Check the path in PLANNER_PYTHON and REGISTRATION_PYTHON" in problem
 
 
 def test_both_services_pin_one_a2a_sdk():
@@ -171,6 +184,14 @@ def test_doctor_checks_the_dev_venv_against_the_one_a2a_pin(tmp_path, monkeypatc
     assert checks["dev venv a2a-sdk"]["detail"].startswith(f"has 0.3.26, the services pin {pin}")
     checks = doctor(None)
     assert checks["dev venv"]["level"] == "fail" and stack.DEV_VENV_SETUP in checks["dev venv"]["detail"]
+    # Both services pointed at one other interpreter: not the dev venv, so no advice to create it.
+    for name in ("CHAT_APP_PYTHON", "REGISTRATION_PYTHON"):
+        monkeypatch.setenv(name, str(tmp_path / "other-python"))
+    checks = doctor(pin)
+    assert "dev venv" not in checks and checks["service interpreter"]["level"] == "fail"
+    detail = checks["service interpreter"]["detail"]
+    assert detail.startswith(f"missing: {tmp_path / 'other-python'}. Check the path in CHAT_APP_PYTHON and REGISTRATION_PYTHON")
+    assert stack.DEV_VENV_SETUP not in detail
 
 
 def test_env_file_parsing(tmp_path):

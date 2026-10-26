@@ -455,7 +455,8 @@ auth-unaware.
 All suites run from the repo root, offline (no Docker, Postgres, `dirctl` or API key).
 `scripts/stack test` runs them, each in its own pytest process with the dev venv's interpreter
 (`devstack/suites.py`); CI runs the same command on Python 3.11 and 3.13 in `.github/workflows/tests.yml`
-(with `--python` and coverage summaries), plus a repo-hygiene job and the full-chain and scenario pipeline;
+(with `--python` and coverage summaries), the registration, skeleton and agentnet suites again with
+only each image's own requirements, a repo-hygiene job and the full-chain and scenario pipeline;
 `.github/workflows/compose.yml` runs tier 2 (the Docker Compose smoke test) on PRs and pushes to
 `main` touching deployment or service code, weekly and on demand. Each suite gets a clean
 environment, so a stray `FAKE_DB=0` or `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1` cannot leak in. When you
@@ -563,7 +564,7 @@ planner → saved history → register an agent → shut down with nothing left 
 | `registration_service/tests/` | pytest suite; run from the repo root with `scripts/stack test registration_service` (its conftest sets `FAKE_DB=1`) |
 | `devstack/` + `scripts/stack` | Native one-command dev stack (mock LLM, fake `dirctl`, identity proxy, seed agents); see `docs/DEVSTACK.md`. `scripts/stack test` runs every test suite (`devstack/suites.py`) |
 | `tests/pipeline/` | Full-chain test driving the dev stack over HTTP (Goal 1 in `docs/OPEN_SOURCE_RELEASE.md`) |
-| `.github/workflows/tests.yml` | CI: unit suites (with coverage), repo hygiene, full-chain + scenario pipeline |
+| `.github/workflows/tests.yml` | CI: unit suites (with coverage), image-deps suites, repo hygiene, full-chain + scenario pipeline |
 | `.github/workflows/compose.yml`, `deployment/compose/` | Tier 2: Docker Compose stack and its smoke test ([`docs/deployment/COMPOSE.md`](docs/deployment/COMPOSE.md)) |
 | `docs/OPEN_SOURCE_RELEASE.md` | Open-source release plan and status |
 | `AGENTS.md` | Project direction + working rules + validation |

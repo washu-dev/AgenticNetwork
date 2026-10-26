@@ -20,8 +20,8 @@ Each service image still installs only its own requirements file (`chat_app/requ
 `registration_service/.venv`) are no longer used and can be deleted.
 
 The dev stack needs Python 3.11 or newer as `python3`. CI runs every unit suite on Python 3.11
-and 3.13 (the images' two versions) and the full-chain test on 3.12. `scripts/stack doctor`
-checks your setup.
+and 3.13 (the images' two versions), the registration and agent suites again with only their
+image's requirements, and the full-chain test on 3.12. `scripts/stack doctor` checks your setup.
 
 ## Running tests
 
@@ -57,11 +57,18 @@ to `main`, and on demand:
 
 - **unit**: the unit suites above (chat app, registration, skeleton, agentnet, dev stack), one
   job per Python version (3.11 and 3.13), each in a fresh environment from
-  `requirements-dev.txt`: each job runs `scripts/stack test unit --python <its interpreter> --cov`.
+  `requirements-dev.txt`: each job runs `scripts/stack test unit --python <its interpreter> --cov
+  --timeout 180`.
+- **image deps**: on Python 3.11, the suites an image's code needs, with only what that image
+  installs, so the newer versions its requirements allow are tested too: `agent_skeleton` after
+  `pip install -e ./agent_skeleton` (a built agent image), and `registration_service`,
+  `agent_skeleton` and `agentnet` after `pip install -r registration_service/requirements.txt`
+  (the registration image).
 - **repo hygiene**: no tracked file that `.gitignore` excludes; no tracked secrets, keys,
   credential or token files, model weights, slide decks, local databases, logs or wheels
   (`*.example` templates are allowed); no tracked file over 1 MB.
-- **unit coverage**: each unit job also prints a line-coverage summary (report only, no threshold).
+- **unit coverage**: each unit and image-deps job also prints a line-coverage summary (report
+  only, no threshold).
 - **pipeline**: after the unit jobs pass, builds the dev venv, runs `scripts/stack doctor`,
   then `scripts/stack test pipeline` (the full-chain test and the scenario tests,
   `tests/pipeline/test_scenarios.py`), and uploads the dev stack logs if either fails.
@@ -70,7 +77,7 @@ A separate workflow, `.github/workflows/compose.yml`, builds the Docker images a
 Compose smoke test (`deployment/compose/smoke.sh`) when a pull request or a push to `main` changes
 deployment or service code.
 
-Make sure the three `tests.yml` jobs (unit, repo hygiene, pipeline) pass on your pull request, and `compose.yml` when your change triggers it.
+Make sure the `tests.yml` jobs (unit, image deps, repo hygiene, pipeline) pass on your pull request, and `compose.yml` when your change triggers it.
 
 ## Code conventions
 

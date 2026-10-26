@@ -113,8 +113,8 @@ def preflight(suites: list[Suite], python: str, *, cov: bool, explicit: bool) ->
     hints = {python: "Check the --python path." if explicit else (
         f"Create the dev venv from the repo root ({stack.DEV_VENV_SETUP}; see docs/DEVSTACK.md) or pass --python.")}
     if any(suite.pipeline for suite in suites):
-        for _, py, variable in stack.service_pythons():  # the pipeline's stack runs its services with these
-            hints.setdefault(py, f"The pipeline's services need it. {stack.missing_python_hint(variable)}")
+        for _, py, hint in stack.service_pythons():  # the pipeline's stack runs its services with these
+            hints.setdefault(py, f"The pipeline's services need it. {hint}")
         if not shutil.which("lsof"):
             problems.append("lsof not found: the pipeline's `down` needs it to find leftover agents")
     packages: dict[str, dict[str, Any]] = {}
@@ -212,12 +212,21 @@ def run_suite(suite: Suite, python: str, args: argparse.Namespace, offset: int, 
     started = time.monotonic()
     timeout = args.timeout or (PIPELINE_TIMEOUT if suite.pipeline else UNIT_TIMEOUT)
     code, tail, timed_out = execute(command, env, out, timeout)
+    if timed_out:
+        status = "timeout"
+    elif code == 0:
+        status = "ok"
+    elif code == 5 and args.pytest_args:  # the arguments after -- selected no test here
+        status = "none"
+    else:  # without them, 5 (nothing collected) is a failure too
+        status = "failed"
     result: dict[str, Any] = {
         "suite": suite.name,
         "path": suite.path,
         "python": python,
         "exit_code": code,
-        "ok": code == 0 and not timed_out,
+        "result": status,
+        "ok": status in ("ok", "none"),
         "seconds": round(time.monotonic() - started, 1),
         "timed_out": timed_out,
         "summary": f"stopped after {timeout:g} s" if timed_out else summary_line(tail),
@@ -265,16 +274,30 @@ def run_all(suites: list[Suite], python: str, args: argparse.Namespace, offset: 
     return results
 
 
+def passed(results: list[dict[str, Any]]) -> bool:
+    """No suite failed, and at least one ran a test: pytest arguments that select no test in
+    any suite are a mistake, as pytest's own exit code 5 says."""
+    return all(r["ok"] for r in results) and any(r["result"] == "ok" for r in results)
+
+
 def print_summary(results: list[dict[str, Any]], *, as_json: bool) -> None:
     failed = [r["suite"] for r in results if not r["ok"]]
     if as_json:
-        print(json.dumps({"ok": not failed, "failed": failed, "suites": results}, indent=2))
+        print(json.dumps({"ok": passed(results), "failed": failed, "suites": results}, indent=2))
         return
-    verdict = f"{len(failed)} of {len(results)} failed" if failed else f"all {len(results)} passed"
+    none = sum(r["result"] == "none" for r in results)
+    if failed:
+        verdict = f"{len(failed)} of {len(results)} failed"
+    elif not none:
+        verdict = f"all {len(results)} passed"
+    elif none < len(results):
+        verdict = f"{len(results) - none} passed, {none} selected no test"
+    else:
+        verdict = "no test selected"
     print(f"devstack test: {verdict}")
     print(f"  {'SUITE':<24} {'RESULT':<8} {'TIME':>7}  SUMMARY")
     for r in results:
-        result = "ok" if r["ok"] else ("TIMEOUT" if r["timed_out"] else "FAILED")
+        result = r["result"] if r["ok"] else r["result"].upper()
         coverage = f" (coverage {r['coverage']})" if r.get("coverage") else ""
         print(f"  {r['suite']:<24} {result:<8} {r['seconds']:>6.1f}s  {r['summary'] or '-'}{coverage}")
         if not r["ok"] and r.get("logs"):
@@ -302,7 +325,7 @@ def cmd_test(args: argparse.Namespace) -> int:
         raise stack.StackError("preflight failed:\n  - " + "\n  - ".join(problems), stack.EXIT_PREFLIGHT)
     results = run_all(chosen, python, args, offset, sys.stderr if args.json else sys.stdout)
     print_summary(results, as_json=args.json)
-    return stack.EXIT_OK if all(r["ok"] for r in results) else stack.EXIT_TESTS
+    return stack.EXIT_OK if passed(results) else stack.EXIT_TESTS
 
 
 def add_parser(sub: Any) -> None:
