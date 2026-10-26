@@ -4,12 +4,13 @@ import logging
 import os
 import inspect
 from abc import ABC, abstractmethod
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 from urllib.parse import urlsplit
 
 import httpx
 from a2a.client import A2AClient as SdkA2AClient
+from a2a.client import A2AClientHTTPError, A2AClientTimeoutError
 from a2a.types import (
     Artifact,
     Message,
@@ -89,6 +90,15 @@ class A2ATransport(ABC):
 
 
 class HTTPA2ATransport(A2ATransport):
+    """Calls agents over A2A HTTP (JSON-RPC), streaming when the card says so.
+
+    The clients it creates time out after ``timeout_seconds`` and raise
+    httpx.HTTPStatusError for a non-2xx reply (``raise_for_error_status``). An injected
+    client keeps its own settings: its timeout bounds streaming calls too, and it needs
+    ``raise_for_error_status`` among its response hooks for a refused streaming call to
+    report its own status.
+    """
+
     def __init__(
         self,
         http_client: httpx.AsyncClient | None = None,
@@ -120,13 +130,19 @@ class HTTPA2ATransport(A2ATransport):
         )
         if injected_client is not None:
             sdk_client = SdkA2AClient(httpx_client=injected_client, agent_card=card)
-            sdk_response = await self._send(sdk_client, sdk_request, card, agent, progress_callback)
+            sdk_response = await self._send(
+                sdk_client, injected_client.timeout, sdk_request, card, agent, progress_callback
+            )
         else:
             async with httpx.AsyncClient(
-                timeout=self.timeout_seconds, auth=CloudRunIdTokenAuth()
+                timeout=self.timeout_seconds,
+                auth=CloudRunIdTokenAuth(),
+                event_hooks={"response": [raise_for_error_status]},
             ) as http_client:
                 sdk_client = SdkA2AClient(httpx_client=http_client, agent_card=card)
-                sdk_response = await self._send(sdk_client, sdk_request, card, agent, progress_callback)
+                sdk_response = await self._send(
+                    sdk_client, http_client.timeout, sdk_request, card, agent, progress_callback
+                )
         result = a2a_response_to_internal_task_result(sdk_response)
         logger.info(
             "a2a_http_send_done agent_id=%s endpoint=%s skill=%s task_id=%s state=%s artifacts=%d error=%s",
@@ -143,6 +159,7 @@ class HTTPA2ATransport(A2ATransport):
     async def _send(
         self,
         sdk_client: SdkA2AClient,
+        timeout: httpx.Timeout,
         sdk_request: Any,
         card: Any,
         agent: DiscoveredAgent,
@@ -153,7 +170,8 @@ class HTTPA2ATransport(A2ATransport):
         Streaming keeps bytes flowing while the peer thinks (each ``update_status``
         event from the executor reaches us as an SSE chunk), so the underlying
         httpx read timeout never fires on long-running peers — without raising
-        the timeout itself.
+        the timeout itself. ``timeout`` is the http client's own, passed explicitly
+        to the streaming call (see ``_stream``).
         """
         if not (card.capabilities and card.capabilities.streaming):
             return await sdk_client.send_message(sdk_request)
@@ -164,7 +182,7 @@ class HTTPA2ATransport(A2ATransport):
         artifacts_by_id: dict[str, Artifact] = {}
         last_task: Task | None = None
         last_message: Message | None = None
-        async for envelope in sdk_client.send_message_streaming(streaming_request):
+        async for envelope in _stream(sdk_client, streaming_request, timeout):
             event = envelope.root.result
             if isinstance(event, Task):
                 last_task = event
@@ -214,6 +232,47 @@ class HTTPA2ATransport(A2ATransport):
             if key in self._http_clients_by_origin:
                 return self._http_clients_by_origin[key]
         return None
+
+
+async def raise_for_error_status(response: httpx.Response) -> None:
+    """httpx response hook: raise httpx.HTTPStatusError for a non-2xx reply.
+
+    a2a-sdk 0.3.2's streaming call checks the reply's content type before its status, so
+    without this an error page (Cloud Run's 403 for a caller it does not admit, an agent's
+    500) is reported as HTTP 400 "Invalid SSE response". Non-streaming calls raise for
+    the status themselves, with the same result.
+    """
+    if not response.is_success:
+        response.raise_for_status()
+
+
+async def _stream(
+    sdk_client: SdkA2AClient,
+    request: SendStreamingMessageRequest,
+    timeout: httpx.Timeout,
+) -> AsyncIterator[Any]:
+    """``send_message_streaming`` bounded by ``timeout``, with its failures raised as the
+    non-streaming path raises them.
+
+    a2a-sdk 0.3.2 streams with no timeout at all unless one is passed, so the http
+    client's own timeout goes in explicitly: a peer that sends nothing for longer than
+    its read timeout, before or between events, raises A2AClientTimeoutError, whichever
+    SDK version wraps (or does not wrap) the underlying httpx timeout. A non-2xx reply
+    caught by ``raise_for_error_status`` raises A2AClientHTTPError with its status.
+    """
+    try:
+        async for envelope in sdk_client.send_message_streaming(
+            request, http_kwargs={"timeout": timeout}
+        ):
+            yield envelope
+    except httpx.TimeoutException as exc:
+        raise A2AClientTimeoutError("Client Request timed out") from exc
+    except httpx.HTTPStatusError as exc:
+        raise A2AClientHTTPError(exc.response.status_code, str(exc)) from exc
+    except A2AClientHTTPError as exc:
+        if isinstance(exc.__cause__, httpx.TimeoutException):
+            raise A2AClientTimeoutError("Client Request timed out") from exc.__cause__
+        raise
 
 
 async def _emit_progress(callback: ProgressCallback, entry: dict[str, Any]) -> None:

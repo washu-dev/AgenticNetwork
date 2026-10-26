@@ -92,13 +92,13 @@ enforced by `require_admin` (401 if no identity, 403 if not allowlisted). The ol
 The shared token was **open when unset** — a silent hole. **Rationale.** Deriving admin from
 the same SSO identity removes a second secret to manage and can't be left accidentally open;
 it fails closed (empty allowlist → no admins). Enforced in both the planner and the
-registration service (dev-open under `FAKE_DB=1`). **Code.** `auth.py::is_admin`/`admin_emails`,
-`server.py::_require_admin` + the `/register/*` proxy gate, `registration_service/server.py::_require_admin`.
+registration service (dev-open under `FAKE_DB=1`). **Code.** `agentnet/identity.py::is_admin`/`admin_emails`,
+`chat_app/server.py::_require_admin` + the `/register/*` proxy gate, `registration_service/server.py::_require_admin`.
 *2026-10-25:* both services read the identity headers and `ADMIN_EMAILS` through one module,
-`agentnet/identity.py`. The chat app checks admin on the header identity only, so its anonymous
-stand-in (`demo-user`) is never admin, and its `/register/*` pass-through forwards the identity it
-read as one `mail` header (none without one). The registration service answers 403, not 401,
-without an identity.
+`agentnet/identity.py` (`is_admin` and `admin_emails` moved there from `chat_app/auth.py`). The
+chat app checks admin on the header identity only, so its anonymous stand-in (`demo-user`) is
+never admin, and its `/register/*` pass-through forwards the identity it read as one `mail`
+header (none without one). The registration service answers 403, not 401, without an identity.
 
 ## D7 — Public landing page; the chat UI is hard-gated at `/app`
 **Decision.** `/` serves a public landing page (no identity); the chat UI moves to `/app`,
@@ -139,7 +139,7 @@ round-tripping card field) because ADS discovery discards the `annotations` map.
 strings, with an idempotent migration rewriting legacy values (`openai`→`openai_api_key`, …).
 **Context.** The catalog and the live store used different strings, so injection wouldn't match.
 **Rationale.** One canonical namespace makes injection deterministic and the declared `env_var`
-names what the agent reads it under. **Code.** `credential_catalog.py` (both services),
+names what the agent reads it under. **Code.** `agentnet/credential_catalog.py` (imported by both services),
 `credentials_router.py` (accepted set), `db.py` (legacy-value migration).
 *2026-10-25:* the two copies are now one, `agentnet/credential_catalog.py`, which both services
 import; a `custom:<slug>` type must match in full (a trailing newline no longer passes).

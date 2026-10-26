@@ -73,6 +73,30 @@ repository goes public.
   pushing `:latest`.
 - **Chat app image** (`Dockerfile.chat-app`, image `agenticnetwork-chat-app`): six unused pins
   left `requirements.txt`; the first clean install should pass `pip check`.
+- **Chat app image's `a2a-sdk` (2026-10-25):** 0.3.26 → 0.3.2, the client that calls every
+  agent. The two versions' streaming clients differ: 0.3.2 sets no timeout on a stream and reads
+  an error page as an invalid stream. agentnet's transport now passes the http client's timeout
+  to every streaming call and raises on an error status before the stream is read, so
+  `A2A_HTTP_TIMEOUT_SECONDS` still bounds calls to streaming agents and an error keeps its
+  status (`agentnet/tests/test_transport.py`; the pipeline's silent streaming agent). Before
+  pushing `:latest`, go through an ENGR test instance or a non-traffic Cloud Run revision and
+  call a streaming agent, a private Cloud Run (`*.run.app`) agent and scout. Check that the
+  answers arrive, that a refused call names its real status (a 403, not "HTTP Error 400:
+  Invalid SSE response") and that an agent that stops answering fails after the timeout.
+- **Database setting (2026-10-25):** both services read `DATABASE_URL`; `REGISTRATION_DB_DSN`
+  still works (logged once as deprecated), and `DATABASE_URL` wins when both are set to
+  different values. Before the push, check that nothing in ENGR's real `deployment/.env` or a
+  Cloud Run service already sets an unrelated `DATABASE_URL`. Keep the old name until every
+  image in use was built after the rename: an older chat app image reads only the old name
+  ([ENGR guide](deployment/engr/README.md), [DEPLOY_YOUR_OWN.md](deployment/gcp/DEPLOY_YOUR_OWN.md)).
+  Agents the registration service starts no longer receive either name. On a test instance,
+  check `GET /ready` and a signed-in chat.
+- **Registration pass-through identity (2026-10-25):** the chat app's `/register/*`
+  pass-through no longer copies the identity headers it received; it forwards the identity it
+  read itself as one `mail` header, or none. The registration service answers 403 without an
+  identity. On a test instance, register an agent through the chat app as a signed-in user and
+  check that the user is recorded as its owner; then check that an admin can approve it and
+  that a second, non-admin account gets 403 when it tries to change it.
 - **Chat app start command:** images built after the `planner_agent/` → `chat_app/` rename
   hold `chat_app/` and `agentnet/` and start with `python -m chat_app` (`entrypoint-chat-app.sh`
   does this on ENGR and Compose). The old Cloud Run `planner` service, started with
@@ -454,8 +478,9 @@ agent and the answer is saved for that user only; streaming; a newly registered 
 agent receives the prompt that matches it; a body `user_id` is ignored when a login
 identity exists; `down` leaves nothing running. `tests/pipeline/test_scenarios.py` adds: a
 declaring agent receives only its scoped credentials and an undeclared one none; an
-unreachable agent (refused or silent) yields a clear error within the A2A timeout; after
-`down` and `up`, a registered agent is listed once and answers; a `proxy` agent registered
+unreachable agent (refused, or silent behind a card with or without streaming) yields a clear
+error within the A2A timeout; after `down` and `up`, a registered agent is listed once and
+answers; a `proxy` agent registered
 through `add-agent` relays to its upstream; an `llm` agent with the preset `calculator` calls
 it; the step limit ends a turn that never answers (`max_steps_exceeded`); `ask_user` pauses a
 turn and the reply continues it with the history; in strict policy mode a write skill runs
@@ -505,8 +530,8 @@ lines removed or rewritten.
 | Drop `build_manifest`'s dict-config support | 25 | typed test fixtures |
 | **Dependency and version upgrades** | | |
 | `dir`/`dirctl` v1.2 → v1.7, then delete the stored-but-not-routed workarounds (agentnet's backend, ADS repair/watch tooling) | 1,550 | re-validating publish and discovery on ENGR and GCP |
-| One `a2a-sdk` line: done 2026-10-25, 0.3.2 everywhere (the chat app moved from 0.3.26; both services share one dev venv, `requirements-dev.txt`, and CI runs every unit suite on Python 3.11 and 3.13). Agent images are unchanged | — | — |
-| `a2a-sdk` 1.x, replacing the deprecated `A2AClient` and the skeleton's import guard ([plan below](#a2a-sdk-1x-plan-2026-10-25)) | 270 | the compatibility test in that plan; rebuilt agent images |
+| One `a2a-sdk` line: done 2026-10-25, 0.3.2 everywhere (the chat app moved from 0.3.26; both services share one dev venv, `requirements-dev.txt`, and CI runs every unit suite on Python 3.11 and 3.13). The chat app image changes (a check before its next push, above); agent images are unchanged | — | — |
+| `a2a-sdk` 1.x, replacing the deprecated `A2AClient` and the skeleton's import guard ([plan below](#a2a-sdk-1x-plan-2026-10-25)) | 270 | the compatibility test and the upload gate in that plan; separating the runtime from the registration service's environment; rebuilt agent images |
 | Test-only deps into `requirements-dev.txt` (the file exists since 2026-10-25, for the one dev venv; the test deps are still in the service files); the chat app's pip freeze becomes direct deps plus a lock file | 50 | a locking tool, with CI and docs updated together |
 | Pin `registration_service/requirements.txt` (only minimums today, so a fresh clone gets e.g. openai 3.x where the tested venv has 2.x; all suites passed with both on 2026-10-15), or add a constraints file | 40 | the same locking tool; a registration image rebuild |
 | **Images, deploy config and hygiene** | | |
@@ -530,8 +555,12 @@ lines removed or rewritten.
 ### a2a-sdk 1.x plan (2026-10-25)
 
 This repo runs `a2a-sdk` 0.3.2 everywhere today: both services, and the agent runtime, whose exact
-pin in `agent_skeleton/pyproject.toml` is what every built agent image installs. A built image
-keeps the SDK it was built with, so a community agent changes only when it is rebuilt.
+pin in `agent_skeleton/pyproject.toml` every agent build installs first. The upload's own project
+(`pip install /app`) and its `requirements` are installed after the runtime, both in the image
+(`registration_service/builder.py`) and in a local agent's venv (`registration_service/backend.py`),
+so an upload that names `a2a-sdk` replaces the runtime's pin. The uploads that pin it today pin
+0.3.2. A built image keeps the SDK it was built with, so a community agent changes only when it
+is rebuilt.
 
 **What 1.x changes** (A2A spec 1.0; `a2a-sdk` 1.0.0 shipped 2026-04-20):
 
@@ -560,7 +589,24 @@ and `agent_skeleton/system_tools/call_endpoint.py` are 0.3 clients too.
 2. If the runtime moves to 1.x as well, an old 0.3.2 client still reaches an agent on the new
    runtime. If it cannot, the change is called out as breaking for old callers before it lands.
 
-The services can move first (step 1 alone). The runtime pin then moves for new approvals only.
+**What moves together.** The registration service installs the runtime: its requirements
+include `-e ./agent_skeleton`, with the runtime's exact pin, so a 1.x registration service and a
+0.3.2 runtime do not resolve in one environment. It also runs 0.3 A2A servers in its own
+interpreter: the `llm` and `proxy` handlers build `A2AStarletteApplication`s, and custom handlers
+run through the runtime's `HandlerExecutor`. Local subprocess agents run under that interpreter,
+or in a venv built on its site-packages. So the registration service, the runtime's code and its
+pin move together, and local subprocess agents switch at that moment; only built images keep
+0.3.2 until they are rebuilt. Only the chat app's client side (`agentnet/a2a/` and the chat app's
+pin) can move ahead, gated by step 1, and it then needs its own venv again, because the shared
+dev venv holds the runtime's exact pin. For the runtime pin to move for new approvals only, the
+runtime's install has to be separated from the registration service's first, for example with a
+separate interpreter or venv for the agents it spawns.
+
+**Before the runtime pin moves: uploads may no longer replace it.** Either reject or strip
+`a2a-sdk` in an upload's `requirements` and `pyproject.toml` dependencies, or install uploads
+with a constraints file that holds `a2a-sdk` at the runtime's pin, in both the image build and
+the local venv. Without that, an upload that pins 0.3.2 and is approved after the move puts
+0.3.2 under a 1.x runtime; pip only warns about the conflict, so the build still passes.
 
 Outside this repo: in `agent-directory`, scout and geoSpatial accept any newer `a2a-sdk`, and
 `agntcy-app-sdk` 0.6.0 (2026-10-21) requires `a2a-sdk` 1.1.0, so rebuilding either could move it

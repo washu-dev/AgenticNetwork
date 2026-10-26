@@ -208,14 +208,19 @@ status, gotchas), `.../DEPLOYED_COMPONENTS.md` (inventory + control commands), a
 has its own conda env or venv, and agents may disagree on library versions. This is fine
 because **agents only ever communicate over A2A (HTTP)** — agents share no Python imports
 at runtime, so each can have any dependencies, any Python version, even run on a different
-machine or container. A built agent image keeps the `a2a-sdk` it was built with (the
-runtime's exact pin in `agent_skeleton/pyproject.toml`), so it changes only when rebuilt.
+machine or container. A built agent image keeps the `a2a-sdk` it was built with, so it
+changes only when rebuilt. That is the runtime's exact pin in `agent_skeleton/pyproject.toml`,
+installed first, unless the upload names `a2a-sdk` itself: its project and requirements are
+installed after the runtime and replace the pin.
 
 The two services in this repo are different: they share code in-process (both import
 `agentnet/`, and the registration service also imports `agent_skeleton` to run agents), so
 for development they share **one venv**, `.venv` at the repo root, on one `a2a-sdk`
 version (0.3.2). Each service image still installs only its own requirements file. The
-plan for `a2a-sdk` 1.x is in [`docs/OPEN_SOURCE_RELEASE.md`](docs/OPEN_SOURCE_RELEASE.md).
+registration service installs the runtime (`-e ./agent_skeleton`, with its exact pin) and runs
+local subprocess agents in its own interpreter, so it and the runtime change `a2a-sdk`
+together, and those agents switch at once; only the chat app's client side can move ahead.
+The plan for `a2a-sdk` 1.x is in [`docs/OPEN_SOURCE_RELEASE.md`](docs/OPEN_SOURCE_RELEASE.md).
 
 | Env | Components | How to create |
 |---|---|---|

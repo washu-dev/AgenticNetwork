@@ -109,12 +109,17 @@ def call(method: str, url: str, body: Any = None, headers: dict[str, str] | None
 
 def stream(
     url: str, body: Any, headers: dict[str, str] | None = None, timeout: float = 120,
+    total: float | None = None,
 ) -> tuple[int, str, list]:
-    """POST and read a server-sent-event stream: (status, content type, [(event, data)])."""
+    """POST and read a server-sent-event stream: (status, content type, [(event, data)]).
+    ``timeout`` bounds each read; ``total``, if set, the whole stream, which the chat app's
+    heartbeats (every 15 s) otherwise keep open for as long as its turn runs."""
+    deadline = None if total is None else time.monotonic() + total
     conn, resp = _open("POST", url, body, headers, timeout=timeout)
     events, name, data = [], "message", []
     with contextlib.closing(conn):
         for raw in resp:
+            assert deadline is None or time.monotonic() < deadline, f"stream still open after {total}s: {events}"
             line = raw.decode("utf-8").rstrip("\r\n")
             if line.startswith("event:"):
                 name = line[6:].strip()

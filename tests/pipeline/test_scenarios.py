@@ -126,14 +126,15 @@ class Directory:
 
     def publish(
         self, name: str, description: str, url: str, credentials: list[dict[str, Any]] | None = None,
-        skill: str | None = None,
+        skill: str | None = None, streaming: bool = False,
     ) -> None:
         """Publish a card for an agent at ``url``: the seed agent's record with its card swapped,
-        and its one skill's id replaced by ``skill`` if given."""
+        its one skill's id replaced by ``skill`` if given, and streaming advertised if
+        ``streaming`` (the planner then calls it with message/stream)."""
         routed = (self.dirctl("pull", ref["record_ref"]["cid"]) for ref in self.dirctl("routing", "list"))
         record = next(record for record in routed if card_of(record)["name"] == SEED_AGENT)
         card = card_of(record)
-        card.update(name=name, description=description, url=url, capabilities={"streaming": False})
+        card.update(name=name, description=description, url=url, capabilities={"streaming": streaming})
         card["skills"] = [{**card["skills"][0], "description": description, **({"id": skill} if skill else {})}]
         if credentials:
             card["capabilities"]["extensions"] = [
@@ -284,13 +285,17 @@ UNREACHABLE = {  # failure: (name, description, prompt)
                 "What is the lamp status of the lighthouses along the rocky coast?"),
     "silent": ("Glacier Surveyor", "Measures glacier drift across the frozen fjord.",
                "How far did the glacier drift across the frozen fjord?"),
+    # The same silence behind a streaming card, which the planner calls with message/stream.
+    "silent-streaming": ("Tide Gauge", "Reads tide heights at the harbour mouth beacon.",
+                         "What tide height does the harbour mouth beacon read?"),
 }
 
 
 @pytest.mark.parametrize("failure", sorted(UNREACHABLE))
 def test_2_unreachable_agent_ends_the_turn_with_a_clear_error(stack, directory, failure):
-    """An agent that refuses the connection, or accepts it and never answers, fails the call
-    with an error naming the agent; the turn ends normally, within a bounded time."""
+    """An agent that refuses the connection, or accepts it and never answers (with a streaming
+    card or without), fails the call with an error naming the agent; the turn ends normally,
+    within a bounded time."""
     name, description, prompt = UNREACHABLE[failure]
     with contextlib.ExitStack() as cleanup:
         if failure == "refused":
@@ -301,10 +306,14 @@ def test_2_unreachable_agent_ends_the_turn_with_a_clear_error(stack, directory, 
             silent.bind(("127.0.0.1", 0))
             silent.listen()  # the kernel accepts the connection; nobody reads or replies
             port = silent.getsockname()[1]
-        directory.publish(name, description, f"http://127.0.0.1:{port}/")
+        directory.publish(name, description, f"http://127.0.0.1:{port}/",
+                          streaming=failure == "silent-streaming")
         agent_id = wait_listed(stack["proxy"], name)[name]
         started = time.monotonic()
-        status, _, events = stream(f"{stack['proxy']}/messages/stream", browser_body(prompt), timeout=A2A_TIMEOUT + 60)
+        status, _, events = stream(
+            f"{stack['proxy']}/messages/stream", browser_body(prompt), timeout=A2A_TIMEOUT + 60,
+            total=A2A_TIMEOUT + 60,
+        )
         elapsed = time.monotonic() - started
 
     names = [event for event, _ in events]
