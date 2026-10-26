@@ -4,10 +4,11 @@ The demo is safe to edit because nothing the platform ships depends on it: the
 runtime never imports it, and it is left out of a regular install, the registration
 service image, the copy vendored into built images and the generator's
 wrapper_engine/. These tests hold both halves: the demo works, and the runtime works
-without it. The runtime's source has no demo import anywhere (a static check, so an
-import that runs only on a request counts too), and the runtime imports and builds
-its apps without the demo (in a fresh interpreter, so modules this test process
-already imported can't hide an import).
+without it. The runtime's source has no import statement of the demo and no string that
+names it or its folder, which a load by name or path would need (a static check, so code
+that runs only on a request counts too), and the runtime imports and builds its apps
+without the demo (in a fresh interpreter, so modules this test process already imported
+can't hide an import).
 """
 from __future__ import annotations
 
@@ -15,6 +16,7 @@ import ast
 import importlib.metadata
 import importlib.util
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -34,12 +36,33 @@ from agent_skeleton.tools import validate_tool_registry
 _PACKAGE_DIR = Path(__file__).resolve().parents[1]
 _REPO_ROOT = _PACKAGE_DIR.parent
 _NOT_RUNTIME = ("demo", "tests")
+# A string that names the demo: its module ("agent_skeleton.demo", for importlib or
+# runpy) or its folder as a path part ("demo", "demo/tools.py", "agent_skeleton/demo").
+_NAMES_THE_DEMO = re.compile(r"agent_skeleton\.demo\b|(?:^|[/\\])demo(?:[/\\]|$)")
+
+
+def _docstrings_and_ignore_patterns(tree: ast.AST) -> set[int]:
+    """ids of the string constants that cannot load anything: docstrings, and the
+    arguments of shutil.ignore_patterns (names of files to leave out of a copy)."""
+    skipped: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            first = node.body[0] if node.body else None
+            if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant):
+                skipped.add(id(first.value))
+        elif isinstance(node, ast.Call):
+            func = node.func
+            if getattr(func, "attr", getattr(func, "id", None)) == "ignore_patterns":
+                skipped.update(id(arg) for arg in node.args)
+    return skipped
 
 
 def _scan_runtime_for_demo_imports() -> tuple[set[str], list[str]]:
-    """``(files scanned, file:line of each demo import)`` over the runtime: every
-    package under agent_skeleton/ except demo/ and tests/. ast.walk reaches imports
-    at any depth, so one inside a function or a tool body counts."""
+    """``(files scanned, file:line of each demo import or name)`` over the runtime:
+    every package under agent_skeleton/ except demo/ and tests/. ast.walk reaches
+    imports and strings at any depth, so one inside a function or a tool body counts.
+    A string that names the demo or its folder outside a docstring counts too, since
+    importlib, runpy or spec.load_tool_module would need one to load the demo."""
     scanned: set[str] = set()
     found: list[str] = []
     stack = [_PACKAGE_DIR]
@@ -50,7 +73,13 @@ def _scan_runtime_for_demo_imports() -> tuple[set[str], list[str]]:
                   if p.is_dir() and p.name not in _NOT_RUNTIME and (p / "__init__.py").is_file()]
         for path in folder.glob("*.py"):
             scanned.add(path.relative_to(_PACKAGE_DIR).as_posix())
-            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"), str(path))):
+            tree = ast.parse(path.read_text(encoding="utf-8"), str(path))
+            skipped = _docstrings_and_ignore_patterns(tree)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                    if id(node) not in skipped and _NAMES_THE_DEMO.search(node.value):
+                        found.append(f"{path.relative_to(_REPO_ROOT)}:{node.lineno}")
+                    continue
                 if isinstance(node, ast.Import):
                     modules = [a.name for a in node.names]
                 elif isinstance(node, ast.ImportFrom):
@@ -165,11 +194,25 @@ def test_runtime_entry_points_require_a_spec():
 
 
 def test_runtime_source_never_imports_the_demo():
-    # Static, so it also covers an import on the request path (inside execute(), a
-    # tool or a fallback), which the probes below never run.
+    # Static, so it also covers an import or a load on the request path (inside
+    # execute(), a tool or a fallback), which the probes below never run.
     scanned, found = _scan_runtime_for_demo_imports()
     assert {"executor.py", "llm_loop.py", "serve.py", "system_tools/preset_tools.py"} <= scanned
-    assert not found, f"runtime code imports agent_skeleton.demo: {found}"
+    assert not found, f"runtime code imports or names agent_skeleton.demo: {found}"
+
+
+@pytest.mark.parametrize(("string", "names_it"), [
+    ("agent_skeleton.demo", True),
+    ("agent_skeleton.demo.tools", True),
+    ("demo", True),
+    ("demo/tools.py", True),
+    ("/srv/agent_skeleton/demo", True),
+    ("demo-user", False),
+    ("a demo agent", False),
+    ("agent_skeleton.demonstration", False),
+])
+def test_demo_name_pattern(string, names_it):
+    assert bool(_NAMES_THE_DEMO.search(string)) is names_it
 
 
 @pytest.mark.parametrize(("setuptools", "wheel", "can_build"), [

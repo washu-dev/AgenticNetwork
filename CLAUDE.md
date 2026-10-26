@@ -219,7 +219,9 @@ for development they share **one venv**, `.venv` at the repo root, on one `a2a-s
 version (0.3.2). Each service image still installs only its own requirements file. The
 registration service installs the runtime (`-e ./agent_skeleton`, with its exact pin) and runs
 local subprocess agents in its own interpreter, so it and the runtime change `a2a-sdk`
-together, and those agents switch at once; only the chat app's client side can move ahead.
+together, and those agents switch at once; only the chat app's client side can move ahead:
+`agentnet/a2a/` and `agentnet/directory/`. Both services import the directory code, so it must
+first work on both SDK lines (or be split).
 The plan for `a2a-sdk` 1.x is in [`docs/OPEN_SOURCE_RELEASE.md`](docs/OPEN_SOURCE_RELEASE.md).
 
 | Env | Components | How to create |

@@ -89,7 +89,8 @@ with no `stack.json` (a stack that never started) stops only what its pid files 
 
 **Exit codes:** 0 ok; 1 not ready (`status`) or something left running (`down`, `reset`);
 2 usage error; 3 preflight failed (a missing dev venv, a busy port or a missing setting);
-5 a service did not become ready; 6 smoke test failed; 7 a test suite failed (`test`). When `up` fails it names the
+5 a service did not become ready; 6 smoke test failed; 7 a test suite failed, or pytest
+arguments selected no test in any suite (`test`). When `up` fails it names the
 service and prints the last 40 lines of its log. `up --json` and `status --json` print
 machine-readable JSON, so a script or an agent can check the stack without reading logs.
 

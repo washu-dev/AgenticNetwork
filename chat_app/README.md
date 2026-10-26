@@ -235,7 +235,7 @@ different values, the new name wins, and that is logged too. The full list is in
 | `PLANNER_POLICY_MODE`          | `permissive`  | `permissive` allows write skills; `strict` requires confirmation |
 | `PLANNER_HISTORY_LIMIT`        | `20`          | Last-N user/assistant turns sent to LLM                       |
 | `PLANNER_UNSCOPED_CREDENTIAL_AGENTS` | —       | Comma-separated agent ids that get the user's whole credential bundle (legacy agents that read credentials without declaring them; logged). Others get only declared + granted types |
-| `A2A_HTTP_TIMEOUT_SECONDS`     | `30`          | Timeout for each call to an agent                             |
+| `A2A_HTTP_TIMEOUT_SECONDS`     | `30`          | How long a call to an agent may wait for the agent's next bytes (to connect, for its reply, between streamed events). Not a cap on the whole call: a live streaming agent's pings and heartbeats keep the call open |
 | `CHAT_APP_HOST`                | `0.0.0.0`     | Address the server listens on                                 |
 | `CHAT_APP_PORT`                | `8090`        | HTTP port                                                     |
 | `CHAT_APP_LOG_LEVEL`           | `INFO`        | Python log level                                              |

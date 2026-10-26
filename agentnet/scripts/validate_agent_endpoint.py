@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Any, Sequence
 from uuid import uuid4
 
-import httpx
 from a2a.types import AgentCard
 
 from agentnet.a2a.transport import HTTPA2ATransport
@@ -111,9 +110,10 @@ async def _send_external_task(
     request: A2ATaskRequest,
     timeout: float,
 ) -> Any:
-    async with httpx.AsyncClient(timeout=timeout) as http_client:
-        transport = HTTPA2ATransport(http_client=http_client)
-        return await transport.send_task(a2a_agent_card_to_discovered_agent(card), request)
+    # The transport's own client, as the chat app uses: it raises on an error status, so a
+    # refused streaming call reports its real status, and it signs *.run.app calls.
+    transport = HTTPA2ATransport(timeout_seconds=timeout)
+    return await transport.send_task(a2a_agent_card_to_discovered_agent(card), request)
 
 
 def _request(

@@ -280,21 +280,28 @@ def passed(results: list[dict[str, Any]]) -> bool:
     return all(r["ok"] for r in results) and any(r["result"] == "ok" for r in results)
 
 
-def print_summary(results: list[dict[str, Any]], *, as_json: bool) -> None:
-    failed = [r["suite"] for r in results if not r["ok"]]
-    if as_json:
-        print(json.dumps({"ok": passed(results), "failed": failed, "suites": results}, indent=2))
-        return
+def verdict(results: list[dict[str, Any]]) -> str:
+    """One line on the whole run, the same in the text and the JSON summary."""
+    failed = sum(not r["ok"] for r in results)
     none = sum(r["result"] == "none" for r in results)
     if failed:
-        verdict = f"{len(failed)} of {len(results)} failed"
-    elif not none:
-        verdict = f"all {len(results)} passed"
-    elif none < len(results):
-        verdict = f"{len(results) - none} passed, {none} selected no test"
-    else:
-        verdict = "no test selected"
-    print(f"devstack test: {verdict}")
+        return f"{failed} of {len(results)} failed"
+    if not none:
+        return f"all {len(results)} passed"
+    if none < len(results):
+        return f"{len(results) - none} passed, {none} selected no test"
+    return "no test selected"
+
+
+def print_summary(results: list[dict[str, Any]], *, as_json: bool) -> None:
+    if as_json:
+        # "failed" lists failed suites only; "verdict" also says when the run failed because
+        # no suite ran a test.
+        failed = [r["suite"] for r in results if not r["ok"]]
+        print(json.dumps({"ok": passed(results), "verdict": verdict(results), "failed": failed,
+                          "suites": results}, indent=2))
+        return
+    print(f"devstack test: {verdict(results)}")
     print(f"  {'SUITE':<24} {'RESULT':<8} {'TIME':>7}  SUMMARY")
     for r in results:
         result = r["result"] if r["ok"] else r["result"].upper()

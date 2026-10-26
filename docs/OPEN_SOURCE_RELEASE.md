@@ -77,12 +77,19 @@ repository goes public.
   agent. The two versions' streaming clients differ: 0.3.2 sets no timeout on a stream and reads
   an error page as an invalid stream. agentnet's transport now passes the http client's timeout
   to every streaming call and raises on an error status before the stream is read, so
-  `A2A_HTTP_TIMEOUT_SECONDS` still bounds calls to streaming agents and an error keeps its
-  status (`agentnet/tests/test_transport.py`; the pipeline's silent streaming agent). Before
-  pushing `:latest`, go through an ENGR test instance or a non-traffic Cloud Run revision and
-  call a streaming agent, a private Cloud Run (`*.run.app`) agent and scout. Check that the
-  answers arrive, that a refused call names its real status (a 403, not "HTTP Error 400:
-  Invalid SSE response") and that an agent that stops answering fails after the timeout.
+  `A2A_HTTP_TIMEOUT_SECONDS` again bounds the wait before and between bytes on a streaming
+  call, and an error keeps its status (`agentnet/tests/test_transport.py`; the pipeline's
+  silent streaming agent). It bounds silence on the connection, not the whole call: it cuts
+  off a dead, frozen or half-open agent, but a live agent keeps sending bytes while its handler
+  hangs (a2a-sdk servers send an SSE ping every 15 s, and the skeleton's executors a `working`
+  heartbeat every 20 s), so such a call stays open until the agent itself gives up (the
+  skeleton stops a custom handler after 1800 s by default). An overall deadline per call would
+  be a separate feature. Before pushing `:latest`, go through an ENGR test instance or a
+  non-traffic Cloud Run revision and call a streaming agent, a private Cloud Run (`*.run.app`)
+  agent and scout. Check that the answers arrive, that a refused call names its real status (a
+  403, not "HTTP Error 400: Invalid SSE response") and that a frozen agent fails after the
+  timeout: stop a test agent's process with `kill -STOP`, or point a card at a socket that
+  accepts connections and never replies.
 - **Database setting (2026-10-25):** both services read `DATABASE_URL`; `REGISTRATION_DB_DSN`
   still works (logged once as deprecated), and `DATABASE_URL` wins when both are set to
   different values. Before the push, check that nothing in ENGR's real `deployment/.env` or a
@@ -172,6 +179,16 @@ repository goes public.
 - **Stored agents:** `entry_file` must now be a bare `*.py` name, and stored configs are
   validated when read. All 17 registered agents use `handler.py`; before deploying, check
   that no production row has a nested `entry_file`.
+- **Reserved upload names (2026-10-26):** uploads on every backend now refuse a root module,
+  package or file, and an `entry_file`, whose name up to the first dot is `agent_skeleton`,
+  `agentnet` or `registration_service` (so `agentnet/`, `agentnet.py` and `agentnet.md` too;
+  production today refuses only the exact root names `agent_skeleton` and `Dockerfile`).
+  Stored configs are validated when read, so before deploying, check that no production row's
+  `entry_file` uses one of those names; this query should return no rows:
+  `SELECT name FROM agents WHERE split_part(config->>'entry_file', '.', 1) IN ('agent_skeleton', 'agentnet', 'registration_service')`.
+  The chat app's `/register/*` pass-through also stops forwarding hop-by-hop request headers
+  and the headers its `Connection` header names; the pass-through check above exercises it
+  behind Apache.
 - **Tool schemas (2026-10-15):** agents rebuilt with this skeleton check each tool schema's
   envelope at startup: top-level `"type": "function"`, and `parameters.type` `"object"` when
   parameters are given. A wrong value fails startup; a missing one only logs a warning, so an
@@ -598,11 +615,18 @@ interpreter: the `llm` and `proxy` handlers build `A2AStarletteApplication`s, an
 run through the runtime's `HandlerExecutor`. Local subprocess agents run under that interpreter,
 or in a venv built on its site-packages. So the registration service, the runtime's code and its
 pin move together, and local subprocess agents switch at that moment; only built images keep
-0.3.2 until they are rebuilt. Only the chat app's client side (`agentnet/a2a/` and the chat app's
-pin) can move ahead, gated by step 1, and it then needs its own venv again, because the shared
-dev venv holds the runtime's exact pin. For the runtime pin to move for new approvals only, the
-runtime's install has to be separated from the registration service's first, for example with a
-separate interpreter or venv for the agents it spawns.
+0.3.2 until they are rebuilt. Only the chat app's client side can move ahead, gated by step 1:
+`agentnet/a2a/`, `agentnet/directory/` (`card_oasf.py`, `backends.py`, `client.py`,
+`publisher.py`) and the chat app's pin. The chat app finds and resolves agents through
+`agentnet/directory/`, which reads and builds cards as 0.3's pydantic `AgentCard`
+(`model_validate`, `model_copy`, the top-level `url`), and the 0.3.2 registration service imports
+the same modules. So before the chat app's pin moves, `agentnet/directory/` must work on both SDK
+lines (for example by handling cards as plain JSON rather than SDK objects) or be split per
+service, and step 1 must also cover directory search and resolve under 1.x. The chat app then
+needs its own venv again, because the shared dev venv holds the runtime's exact pin. For the
+runtime pin to move for new approvals only, the runtime's install has to be separated from the
+registration service's first, for example with a separate interpreter or venv for the agents it
+spawns.
 
 **Before the runtime pin moves: uploads may no longer replace it.** Either reject or strip
 `a2a-sdk` in an upload's `requirements` and `pyproject.toml` dependencies, or install uploads

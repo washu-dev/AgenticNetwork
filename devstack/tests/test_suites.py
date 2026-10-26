@@ -196,6 +196,7 @@ def test_a_failed_suite_exits_7_after_the_rest_ran(fake, capsys):
     assert stack.main(["test", "chat_app", "scenarios", "--json"]) == stack.EXIT_TESTS
     summary = json_out(capsys)
     assert summary["ok"] is False and summary["failed"] == ["scenarios"]
+    assert summary["verdict"] == "1 of 2 failed"
     assert summary["suites"][1]["logs"] == str(stack.REPO / ".devstack-scenarios" / "logs")
 
 
@@ -210,11 +211,17 @@ def test_a_suite_where_pytest_args_select_no_test_is_none_not_failed(fake, capsy
     assert stack.main(["test", "agentnet", "devstack", "--json", "--", "-k", "sweep"]) == stack.EXIT_OK
     summary = json_out(capsys)
     assert summary["ok"] is True and summary["failed"] == []
+    assert summary["verdict"] == "1 passed, 1 selected no test"
     assert [(s["result"], s["exit_code"]) for s in summary["suites"]] == [("none", 5), ("ok", 0)]
     # Arguments that select no test anywhere still fail, as a typo in -k would.
     assert stack.main(["test", "agentnet", "--", "-k", "sweeep"]) == stack.EXIT_TESTS
     out = capsys.readouterr().out
     assert "devstack test: no test selected" in out and ["agentnet", "none"] in [line.split()[:2] for line in out.splitlines()]
+    # The JSON summary says why too: no suite failed, so "failed" alone can't.
+    assert stack.main(["test", "agentnet", "--json", "--", "-k", "sweeep"]) == stack.EXIT_TESTS
+    summary = json_out(capsys)
+    assert summary["ok"] is False and summary["failed"] == []
+    assert summary["verdict"] == "no test selected"
     # Without pytest arguments, a suite that collects nothing is broken.
     assert stack.main(["test", "agentnet", "devstack", "--json"]) == stack.EXIT_TESTS
     summary = json_out(capsys)

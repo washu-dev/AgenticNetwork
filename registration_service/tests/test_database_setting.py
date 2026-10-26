@@ -126,13 +126,14 @@ def test_cluster_agents_do_not_get_the_database_address(monkeypatch):
     ("DATABASE_URL=" + URL, "", URL),
     ("DATABASE_URL=" + OLD_URL, "DATABASE_URL=" + URL, URL),  # the secrets file is sourced last
     ("", "", ""),  # neither: the services fall back to the PG* variables
+    ("PGPORT=5433", "", ""),  # which, too, come only from the files
 ])
 def test_submit_sbatch_takes_the_address_from_its_files_under_both_names(
     tmp_path, dotenv, secrets, expected
 ):
     # sbatch passes the submitting shell's environment on; a database address set
-    # there must not reach the services. Old images read only the old name, so
-    # both names carry the one address.
+    # there, under any name, must not reach the services. Old images read only the
+    # old name, so both names carry the one address.
     sbatch = (_REPO_ROOT / "deployment" / "submit.sbatch").read_text()
     start = sbatch.index("# Load env vars")
     end = sbatch.index("\nfi\n", sbatch.index('export DATABASE_URL REGISTRATION_DB_DSN="$DATABASE_URL"')) + 4
@@ -142,13 +143,19 @@ def test_submit_sbatch_takes_the_address_from_its_files_under_both_names(
         "PATH": os.environ["PATH"],
         "DATABASE_URL": "postgresql://other.example/project",
         "REGISTRATION_DB_DSN": "postgresql://other.example/old",
+        **{name: "other.example" for name in settings.PG_ADDRESS_NAMES},
+        "PGPORT": "6543",
         "ENV_FILE": str(tmp_path / ".env"),
         "SECRETS_FILE": str(tmp_path / "secrets.env"),
     }
     # What a step the script starts sees: only exported values.
-    show = """sh -c 'printf "%s|%s" "${DATABASE_URL-}" "${REGISTRATION_DB_DSN-}"'"""
+    names = ["DATABASE_URL", "REGISTRATION_DB_DSN", *settings.PG_ADDRESS_NAMES]
+    show = "sh -c 'printf \"%s|\" " + " ".join(f'"${{{name}-}}"' for name in names) + "'"
     out = subprocess.run(
         ["bash", "-c", "{\n" + sbatch[start:end] + "} >/dev/null\n" + show],
         env=shell, capture_output=True, text=True, check=True,
     )
-    assert out.stdout == f"{expected}|{expected}"
+    seen = dict(zip(names, out.stdout.split("|")))
+    from_files = dict(line.split("=", 1) for line in (dotenv, secrets) if line.startswith("PG"))
+    assert seen == {"DATABASE_URL": expected, "REGISTRATION_DB_DSN": expected,
+                    **{name: from_files.get(name, "") for name in settings.PG_ADDRESS_NAMES}}

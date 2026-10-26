@@ -251,14 +251,19 @@ async def _stream(
     request: SendStreamingMessageRequest,
     timeout: httpx.Timeout,
 ) -> AsyncIterator[Any]:
-    """``send_message_streaming`` bounded by ``timeout``, with its failures raised as the
-    non-streaming path raises them.
+    """``send_message_streaming`` bounded by ``timeout``, with its failures mapped to the
+    SDK's client errors.
 
     a2a-sdk 0.3.2 streams with no timeout at all unless one is passed, so the http
     client's own timeout goes in explicitly: a peer that sends nothing for longer than
     its read timeout, before or between events, raises A2AClientTimeoutError, whichever
-    SDK version wraps (or does not wrap) the underlying httpx timeout. A non-2xx reply
-    caught by ``raise_for_error_status`` raises A2AClientHTTPError with its status.
+    SDK version wraps (or does not wrap) the underlying httpx timeout. The timeout bounds
+    silence, not the whole call: a live peer's SSE pings or heartbeats keep it open.
+    A non-2xx reply caught by ``raise_for_error_status`` raises A2AClientHTTPError with
+    its status. Any other network error, such as a refused connection, raises
+    A2AClientHTTPError 503 "Network communication error", as on the non-streaming path.
+    One difference is left: a connect, write or pool timeout raises A2AClientTimeoutError
+    here, while the SDK's non-streaming call reports it as that 503.
     """
     try:
         async for envelope in sdk_client.send_message_streaming(
@@ -267,6 +272,8 @@ async def _stream(
             yield envelope
     except httpx.TimeoutException as exc:
         raise A2AClientTimeoutError("Client Request timed out") from exc
+    except httpx.RequestError as exc:  # after TimeoutException, which is one
+        raise A2AClientHTTPError(503, f"Network communication error: {exc}") from exc
     except httpx.HTTPStatusError as exc:
         raise A2AClientHTTPError(exc.response.status_code, str(exc)) from exc
     except A2AClientHTTPError as exc:

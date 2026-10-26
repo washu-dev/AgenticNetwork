@@ -45,7 +45,10 @@ mkdir -p "$LOGS"
 # Load env vars — inherited by all srun steps via Slurm environment propagation.
 # sbatch passes the submitting shell's environment on, so drop any database address
 # from there first: it comes only from .env, the secrets file or the test block below.
-unset DATABASE_URL REGISTRATION_DB_DSN
+# The PG* names are the ones agentnet.settings.PG_ADDRESS_NAMES lists (the services fall
+# back to them; the registration entrypoint waits on PGPORT).
+unset DATABASE_URL REGISTRATION_DB_DSN PGHOST PGHOSTADDR PGPORT PGUSER PGPASSWORD PGPASSFILE \
+    PGDATABASE PGSERVICE PGSERVICEFILE
 set -a
 source "$ENV_FILE"
 set +a

@@ -3,7 +3,7 @@
 Open work and ideas left over from the summer 2026 build of AgenticNetwork, during Washington
 University in St. Louis's Digital Transformation Research Corps (DTRC). The list was drawn up after
 the summer and cleaned up for this repository: statuses were checked against the code on
-2026-10-20 (S4, S5, S27 and S57 updated 2026-10-21; S10, S22, S25 and S28 2026-10-25), and items that are finished or concern things outside this repository were removed.
+2026-10-20 (S4, S5, S27 and S57 updated 2026-10-21; S10, S22, S25 and S28 2026-10-25; S25 and S30 2026-10-26), and items that are finished or concern things outside this repository were removed.
 Item IDs (S1–S109) are kept from the original working list, so gaps in the numbering are those
 removed items. Nothing here is a commitment. Ideas are research directions, not features.
 
@@ -101,7 +101,7 @@ For context, these summer items are finished and no longer listed:
 | S25 | Separate the template you copy from the library you install, so authors never edit installed files | Task | Partly done. The README was reworded on 2026-10-20 to call `tool_schemas.py`, `tools.py` and `prompt.py` the demo agent's files and say not to edit them. On 2026-10-25 the demo moved to `agent_skeleton/demo/`, which the runtime never imports and which no image, regular install or generator output includes (the registration image since 2026-10-26); anything under `demo/` is safe to edit, and everything else in `agent_skeleton/` is runtime. Still a flat layout with no template to copy | Important | Move to a `src/` layout and add a template in `examples/` or a `new-agent` command | M |
 | S27 | Remaining skeleton correctness issues | Task | Partly done (2026-10-21): the tool loop now ends with an explicit step-limit message instead of an empty answer, and a handler result without a string `answer` fails the task cleanly. Open: (1) the default step limit is still `MAX_TOOL_STEPS=4` (`agent_skeleton/config.py`); (2) `HandlerExecutor.cancel` leaves the handler running; (4) `call_endpoint` with `protocol="a2a"` drops the structured payload | Important | Raise the default step limit (about 8); fix (2) and (4), each with a test | M |
 | S28 | Newcomer conveniences: a local `serve-handler` / `test-handler` command to run and smoke-test an `AgentHandler` without registering; optional `.env` loading for it; a pre-serve structural check of an agent folder using registration's rules | Idea | Not started (`agent_skeleton/serve.py` has `serve-wrapper`; the demo's `check` and `serve` moved to `python -m agent_skeleton.demo` on 2026-10-25) | Nice (good first issues) | Label them for newcomers (S107) | S |
-| S30 | Small docs fixes for contributors | Task | Open: document the reserved `agent_skeleton` package name in `docs/BUILDING_AGENTS.md` and `docs/REGISTRATION_SERVICE.md`; replace links to example agents in a separate, unpublished repository with an in-repo example (S72) | Important | One docs change, with S5 | S |
+| S30 | Small docs fixes for contributors | Task | Partly done. On 2026-10-26 (232fb16) `docs/BUILDING_AGENTS.md` and `docs/REGISTRATION_SERVICE.md` came to document the reserved names: no root module, package or entry file named `agent_skeleton`, `agentnet` or `registration_service` (nor a root `Dockerfile` or `*.card.json`). Open: replace links to example agents in a separate, unpublished repository with an in-repo example (S72) | Important | One docs change, with S5 | S |
 
 ## 4. Planner, protocol and typed parameters
 

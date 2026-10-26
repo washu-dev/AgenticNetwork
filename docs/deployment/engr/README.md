@@ -92,7 +92,7 @@ Edit `.env` — the values you may actually change (most have working defaults):
 | `GOOGLE_CLIENT_ID` / `GOOGLE_REDIRECT_URI` | OAuth web-client (non-secret half; the secret is in the secrets file, Step 3) |
 | `GITHUB_REPO` | Repo for the custom-agent build pipeline (default `washu-dev/agent-directory`) |
 | `IMAGE_REGISTRY` | Image namespace (default `di2washu`; see [`docs/MULTI_CONTRIBUTOR.md`](../../MULTI_CONTRIBUTOR.md)) |
-| `DATABASE_URL` | Postgres URL both services read (`postgresql://` or `postgres://`); the default points at the node's `registration` database. A test instance overrides it. The old name `REGISTRATION_DB_DSN` still works. `submit.sbatch` takes the address only from `.env`, the secrets file or its test-instance block (a `DATABASE_URL` in the submitting shell is ignored) and exports it under both names, so images built before 2026-10-25, which read only the old name, get it too |
+| `DATABASE_URL` | Postgres URL both services read (`postgresql://` or `postgres://`); the default points at the node's `registration` database. A test instance overrides it. The old name `REGISTRATION_DB_DSN` still works. `submit.sbatch` takes the address only from `.env`, the secrets file or its test-instance block (a `DATABASE_URL`, `REGISTRATION_DB_DSN` or `PG*` variable such as `PGHOST` or `PGPORT` in the submitting shell is ignored) and exports it under both names, so images built before 2026-10-25, which read only the old name, get it too |
 
 > `.env` holds **non-secret config only** — it is shared and world-readable on `/engrfs`.
 >

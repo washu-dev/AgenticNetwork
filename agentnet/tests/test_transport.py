@@ -1,13 +1,15 @@
 """HTTPA2ATransport against small A2A peers on a local socket: the http client's timeout
 bounds streaming calls (a peer that stalls after one event, or never replies), and an error
-reply to a streaming call reports its own HTTP status. None of this may depend on the
-installed a2a-sdk version."""
+reply to a streaming call reports its own HTTP status, as does a refused connection (503), and
+the endpoint validator reports the same. None of this may depend on the installed a2a-sdk
+version."""
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
 import json
+import socket
 import time
 from collections.abc import AsyncIterator
 from typing import Any
@@ -18,6 +20,7 @@ from a2a.client import A2AClientHTTPError, A2AClientTimeoutError
 
 from agentnet.a2a.transport import HTTPA2ATransport
 from agentnet.models import A2AMessage, A2APart, A2ATaskRequest, A2ATaskState, DiscoveredAgent
+from agentnet.scripts.validate_agent_endpoint import validate_endpoint
 
 TIMEOUT = 1.0  # seconds: the transport's timeout in these tests
 SSE_HEAD = (
@@ -69,7 +72,14 @@ async def _read_request(reader: asyncio.StreamReader) -> dict[str, Any]:
 async def _peer(mode: str) -> AsyncIterator[str]:
     """An A2A peer on a local port; yields its URL. ``mode``: "silent" accepts the connection
     and never replies; "stall" sends one `working` event, then nothing; "answer" streams a
-    whole task but keeps the connection open; "forbidden" replies 403 with an HTML page."""
+    whole task but keeps the connection open; "forbidden" replies 403 with an HTML page;
+    "refused" is a port nothing listens on."""
+    if mode == "refused":
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+        yield f"http://127.0.0.1:{port}/"
+        return
     release = asyncio.Event()
 
     async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
@@ -159,3 +169,32 @@ def test_error_reply_reports_its_own_http_status(streaming):
     assert isinstance(outcome, A2AClientHTTPError), repr(outcome)
     assert outcome.status_code == 403, outcome
     assert "403 Forbidden" in str(outcome), outcome
+
+
+@pytest.mark.parametrize("streaming", [True, False])
+def test_refused_connection_reports_a_network_error(streaming):
+    outcome, _ = _send("refused", streaming=streaming)
+    assert isinstance(outcome, A2AClientHTTPError), repr(outcome)
+    assert outcome.status_code == 503, outcome
+    assert "Network communication error" in str(outcome), outcome
+
+
+def test_endpoint_validator_reports_an_error_replys_own_status(tmp_path):
+    card = tmp_path / "peer.card.json"
+    card.write_text(json.dumps({
+        "name": "Peer", "description": "A test peer.", "url": "http://127.0.0.1:1/",
+        "version": "0.1.0", "protocolVersion": "0.3.0", "preferredTransport": "JSONRPC",
+        "capabilities": {"streaming": True},
+        "defaultInputModes": ["text/plain"], "defaultOutputModes": ["text/plain"],
+        "skills": [{"id": "echo", "name": "Echo", "description": "Echo.", "tags": ["echo"]}],
+    }))
+
+    async def main() -> dict[str, Any]:
+        async with _peer("forbidden") as url:
+            return await validate_endpoint(
+                card_path=card, skill="echo", prompt="hello", endpoint=url, timeout=TIMEOUT,
+            )
+
+    report = asyncio.run(main())
+    assert report["card_valid"] and not report["endpoint_reachable"], report
+    assert len(report["errors"]) == 1 and "HTTP Error 403" in report["errors"][0], report["errors"]
