@@ -15,6 +15,12 @@ The system is split across two repos:
   agent runtime.
 - **[`agent-directory`](https://github.com/washu-dev/agent-directory)** owns the
   specialist agents: email, coding, intelligence, geoSpatial, disaster_response, scout.
+  Its `registered_agents/*/agent_skeleton/` folders are copies of this repo's runtime,
+  written by the registration service on each approval; never edit them by hand.
+
+A third repo, `washu-dev/agent-skeleton`, is a hackathon template copied from
+`agent_skeleton/` in July 2026. It has the same import name, but nothing here imports
+it and it has diverged: changes to the agent runtime go in `agent_skeleton/` in this repo.
 
 Within this repo:
 - `agentnet/` is the one shared directory (ADS) and A2A library that the chat app
