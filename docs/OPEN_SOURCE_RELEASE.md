@@ -86,11 +86,12 @@ repository goes public.
 - **Database setting (2026-10-25):** both services read `DATABASE_URL`; `REGISTRATION_DB_DSN`
   still works (logged once as deprecated), and `DATABASE_URL` wins when both are set to
   different values. Before the push, check that nothing in ENGR's real `deployment/.env` or a
-  Cloud Run service already sets an unrelated `DATABASE_URL`. Keep the old name until every
-  image in use was built after the rename: an older chat app image reads only the old name
-  ([ENGR guide](deployment/engr/README.md), [DEPLOY_YOUR_OWN.md](deployment/gcp/DEPLOY_YOUR_OWN.md)).
-  Agents the registration service starts no longer receive either name. On a test instance,
-  check `GET /ready` and a signed-in chat.
+  Cloud Run service already sets an unrelated `DATABASE_URL`. On Cloud Run, keep the old name
+  until every image in use was built after the rename: an older chat app image reads only the
+  old name ([DEPLOY_YOUR_OWN.md](deployment/gcp/DEPLOY_YOUR_OWN.md)); on ENGR, `submit.sbatch`
+  exports the address under both names ([ENGR guide](deployment/engr/README.md)). Agents the
+  registration service starts, and the steps that install their code, no longer receive either
+  name or the `PG*` variables. On a test instance, check `GET /ready` and a signed-in chat.
 - **Registration pass-through identity (2026-10-25):** the chat app's `/register/*`
   pass-through no longer copies the identity headers it received; it forwards the identity it
   read itself as one `mail` header, or none. The registration service answers 403 without an

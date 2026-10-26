@@ -43,6 +43,9 @@ MOUNTS=$REPO:/workspace
 mkdir -p "$LOGS"
 
 # Load env vars — inherited by all srun steps via Slurm environment propagation.
+# sbatch passes the submitting shell's environment on, so drop any database address
+# from there first: it comes only from .env, the secrets file or the test block below.
+unset DATABASE_URL REGISTRATION_DB_DSN
 set -a
 source "$ENV_FILE"
 set +a
@@ -91,6 +94,13 @@ else
     echo "[submit] WARN: secrets file not found ($SECRETS_FILE)."
     echo "[submit]       CREDENTIALS_ENCRYPTION_KEY and other secrets will be missing —"
     echo "[submit]       set SECRETS_FILE or create it (see deployment/secrets.env.example)."
+fi
+
+# One database address under both names (DATABASE_URL wins, as in agentnet/settings.py):
+# images built before the 2026-10-25 rename read only REGISTRATION_DB_DSN.
+DATABASE_URL="${DATABASE_URL:-${REGISTRATION_DB_DSN:-}}"
+if [ -n "$DATABASE_URL" ]; then
+    export DATABASE_URL REGISTRATION_DB_DSN="$DATABASE_URL"
 fi
 
 # Cross-user singleton per instance: refuse to start if ANOTHER job with the same

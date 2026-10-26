@@ -37,7 +37,7 @@ from pathlib import Path
 
 import httpx
 
-from agentnet.settings import DATABASE_URL, OLD_DATABASE_NAMES
+from agentnet.settings import DATABASE_URL, OLD_DATABASE_NAMES, PG_ADDRESS_NAMES
 from registration_service.archive import IGNORED_DIRS
 from registration_service.models import AnyConfig, UploadSpec, normalize_handler_type, upload_spec
 
@@ -52,10 +52,12 @@ _STOP_GRACE_SECONDS = 5.0
 # below 500 on /health" was not enough: the A2A app has no /health, so any
 # listener on the port (an orphan, another program) passed with a 404.
 _READY_PATH = "/.well-known/agent-card.json"
-# A spawned agent gets the service's environment minus the database address: agents
-# never need the platform's database, and many frameworks connect to whatever
-# DATABASE_URL names. (deployment/spawn_agent_loop.py does the same on the cluster.)
-_AGENT_ENV_EXCLUDED = (DATABASE_URL, *OLD_DATABASE_NAMES)
+# A spawned agent, and each step that installs its code, gets the service's
+# environment minus the database address (the URL under either name, and the PG*
+# variables the service may build it from): agents never need the platform's
+# database, and many frameworks and Postgres clients connect to whatever these name.
+# (deployment/spawn_agent_loop.py does the same on the cluster.)
+_AGENT_ENV_EXCLUDED = (DATABASE_URL, *OLD_DATABASE_NAMES, *PG_ADDRESS_NAMES)
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _AGENT_SKELETON_DIR = _REPO_ROOT / "agent_skeleton"
@@ -64,6 +66,12 @@ _AGENT_SKELETON_DIR = _REPO_ROOT / "agent_skeleton"
 # root on PYTHONPATH, and a per-agent venv for its requirements) is a property of
 # the CONFIG, not of the handler_type name — ``upload_spec(config)`` answers it for
 # both uploaded-code shapes (``custom`` and ``llm`` + ``tools.source='upload'``).
+
+
+def _env_without_database() -> dict[str, str]:
+    """The service's environment minus ``_AGENT_ENV_EXCLUDED``: what an agent and its
+    install steps start from."""
+    return {k: v for k, v in os.environ.items() if k not in _AGENT_ENV_EXCLUDED}
 
 
 def _handler_files_dir() -> Path:
@@ -238,7 +246,7 @@ class SubprocessBackend(ContainerBackend):
         # health loop) would orphan the first process, which still holds the port.
         await self.stop(agent_id)
 
-        env = {k: v for k, v in os.environ.items() if k not in _AGENT_ENV_EXCLUDED}
+        env = _env_without_database()
         env["AGENT_CONFIG_JSON"] = _config_envelope(
             agent_id, name, description, handler_type, config, port
         )
@@ -520,12 +528,16 @@ async def _run(cmd: list[str]) -> None:
 
     The output goes to a temporary file, not a pipe, so the wait ends when the
     step exits, even if something it started outside its group still holds
-    the output open."""
+    the output open.
+
+    A step runs the agent's own build code (its setup.py or build backend, an
+    sdist's), so it gets the same environment as the agent: no database address."""
     with tempfile.TemporaryFile() as out:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=out,
             stderr=asyncio.subprocess.STDOUT,
+            env=_env_without_database(),
             # Own process group, so the kill below also reaches what pip started
             # (a build backend, git); no controlling terminal to prompt on.
             start_new_session=True,

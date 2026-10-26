@@ -16,7 +16,7 @@
 name: agenticnetwork
 
 # Settings the chat app and the registration service share.
-# Spawned agents inherit registration's environment (all but DATABASE_URL), so they
+# Spawned agents inherit registration's environment (all but the database address), so they
 # get the same LLM endpoint.
 x-shared-env: &shared-env
   ADS_SERVER_ADDR: localhost:8888

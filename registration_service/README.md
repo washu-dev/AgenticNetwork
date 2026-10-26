@@ -174,7 +174,7 @@ the component you are working on.
 
 | Variable | Default | Description |
 |---|---|---|
-| `DATABASE_URL` | — | Full Postgres URL (`postgresql://` or `postgres://`; asyncpg rejects other schemes). If unset, constructed from `PGHOST`/`PGPORT`/`PGUSER`/`PGPASSWORD`/`PGDATABASE`. The old name `REGISTRATION_DB_DSN` still works (logged once as deprecated); `DATABASE_URL` wins when both are set. Agents this service starts do not get either name |
+| `DATABASE_URL` | — | Full Postgres URL (`postgresql://` or `postgres://`; asyncpg rejects other schemes). If unset, constructed from `PGHOST`/`PGPORT`/`PGUSER`/`PGPASSWORD`/`PGDATABASE`. The old name `REGISTRATION_DB_DSN` still works (logged once as deprecated); `DATABASE_URL` wins when both are set. Agents this service starts, and the steps that install their code, get neither name nor the `PG*` variables. A `DATABASE_URL` exported in your shell for another project counts too: unset it before running the service by hand |
 | `PGHOST` | `localhost` | Postgres host |
 | `PGPORT` | `5432` | Postgres port |
 | `PGUSER` | `postgres` | Postgres user |

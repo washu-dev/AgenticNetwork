@@ -22,6 +22,14 @@ logger = logging.getLogger(__name__)
 
 DATABASE_URL = "DATABASE_URL"
 OLD_DATABASE_NAMES = ("REGISTRATION_DB_DSN",)  # renamed 2026-10-25
+# The libpq variables that name a Postgres server, database or login. With no URL
+# set, both services build the address from PGHOST/PGPORT/PGUSER/PGDATABASE (the
+# registration service also reads PGPASSWORD); libpq clients and asyncpg read them
+# on their own.
+PG_ADDRESS_NAMES = (
+    "PGHOST", "PGHOSTADDR", "PGPORT", "PGUSER", "PGPASSWORD", "PGPASSFILE",
+    "PGDATABASE", "PGSERVICE", "PGSERVICEFILE",
+)
 
 # Old names already warned about. The chat app reads the setting on every request,
 # so each warning is logged once per process.

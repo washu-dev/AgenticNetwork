@@ -27,9 +27,14 @@ REG = os.environ.get("REGISTRATION_INTERNAL_URL", "http://localhost:8091")
 POLL = float(os.environ.get("SPAWN_LOOP_POLL_SECONDS", "15"))
 LOGS = os.environ.get("LOGS", "/tmp")
 # Agents get this loop's environment (which holds the whole .env) minus the database
-# address, as SubprocessBackend does. The names match agentnet/settings.py; this
-# script runs on the host without the repo's packages, so it lists them itself.
-_AGENT_ENV_EXCLUDED = ("DATABASE_URL", "REGISTRATION_DB_DSN")
+# address (the URL under either name, and the PG* variables), as SubprocessBackend
+# does. The names match registration_service/backend.py; this script runs on the
+# host without the repo's packages, so it lists them itself.
+_AGENT_ENV_EXCLUDED = (
+    "DATABASE_URL", "REGISTRATION_DB_DSN",
+    "PGHOST", "PGHOSTADDR", "PGPORT", "PGUSER", "PGPASSWORD", "PGPASSFILE",
+    "PGDATABASE", "PGSERVICE", "PGSERVICEFILE",
+)
 
 
 def _get(path: str):

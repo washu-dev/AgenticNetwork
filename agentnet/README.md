@@ -42,7 +42,8 @@ agentnet/
 ├── models.py              wire models (DiscoveredAgent, A2A task/message/part, PublishedRecord)
 │                          and the required-credentials extension URI
 ├── settings.py            the database address both services read: DATABASE_URL, falling back
-│                          to the old REGISTRATION_DB_DSN (standard library only)
+│                          to the old REGISTRATION_DB_DSN, and the PG* variables that can also
+│                          name it (standard library only)
 ├── identity.py            the SSO identity headers (mail, then eppn, then remote-user) and the
 │                          ADMIN_EMAILS allowlist (standard library only)
 ├── credential_catalog.py  the credential types agents declare and users store: the catalog
