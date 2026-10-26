@@ -28,10 +28,12 @@ Three rules follow:
 
 - **Anything under `demo/` is safe to change; anything else in `agent_skeleton/`
   is runtime that reaches every hosted agent.** Nothing in the runtime imports the
-  demo, and it is left out of the install (`pyproject.toml`), the copy vendored
-  into images (`registration_service/supervisor.py`) and the generator's
-  `wrapper_engine/` (`generator/repo_emitter.py`); `tests/test_demo.py` guards
-  that. Keep it that way: never import `agent_skeleton.demo` from runtime code.
+  demo (`tests/test_demo.py` guards that), and it is left out of a regular install
+  (`pyproject.toml`; an editable dev install still reaches it), the registration
+  image (`../.dockerignore`), the copy vendored into agent images
+  (`registration_service/supervisor.py`) and the generator's `wrapper_engine/`
+  (`generator/repo_emitter.py`). Keep it that way: never import
+  `agent_skeleton.demo` from runtime code.
 - **Don't build an agent by editing the runtime.** A change there reaches every
   hosted agent. Authors register one of three kinds instead
   ([`README.md`](README.md) "Building an agent";

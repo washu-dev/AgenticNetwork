@@ -1,10 +1,12 @@
 """The demo agent: a small, complete ``llm`` agent with two text tools.  DEMO AGENT
 
 SAFE TO EDIT. Nothing in the runtime imports this package, and it is left out of
-everything the platform ships: the installed package (pyproject.toml), the copy
-vendored into built images (registration_service/supervisor.py) and the generator's
-``wrapper_engine/`` (generator/repo_emitter.py). A change here changes only the
-demo. Everything else in agent_skeleton/ is runtime that reaches every hosted agent.
+everything the platform ships: a regular install (pyproject.toml; only an editable
+dev install reaches it), the registration service image (.dockerignore), the copy
+vendored into built agent images (registration_service/supervisor.py) and the
+generator's ``wrapper_engine/`` (generator/repo_emitter.py). A change here changes
+only the demo. Everything else in agent_skeleton/ is runtime that reaches every
+hosted agent.
 
   * ``__init__.py``      SYSTEM_PROMPT + demo_spec(), the demo's AgentSpec
   * ``tools.py``         TOOL_SCHEMAS + tool bodies + TOOL_REGISTRY, shaped like an

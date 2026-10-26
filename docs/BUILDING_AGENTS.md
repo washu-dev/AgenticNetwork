@@ -134,5 +134,5 @@ python -m agentnet.scripts.validate_agent_endpoint \
 | `agent_skeleton/system_tools/preset_tools.py` | built-in preset-tool catalog for registration `llm` agents with `tools.source = "presets"` |
 | `agent_skeleton/serve.py` | `create_app`, `serve-wrapper` CLI |
 | `agent_skeleton/generator/` | `answers.json` → deployable wrapper-agent folder |
-| `agent_skeleton/demo/` | the demo agent (safe to edit; not installed or vendored); its `tools.py` has the uploaded-tools shape |
+| `agent_skeleton/demo/` | the demo agent (safe to edit; in no image or regular install); its `tools.py` has the uploaded-tools shape |
 | `registration_service/handlers/custom_handler.py` | wires an uploaded handler into `HandlerExecutor` |

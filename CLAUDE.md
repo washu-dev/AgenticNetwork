@@ -553,7 +553,7 @@ planner → saved history → register an agent → shut down with nothing left 
 | `agentnet/a2a/` | A2A transport, adapters and client |
 | `agentnet/scripts/` | publish / show / diagnose / repair / watch ADS |
 | `deployment/ads_daemon.local.yaml` | Fast-routing local daemon config |
-| `agent_skeleton/` | **Agent runtime** every hosted agent imports (LLM tool loop + `spec.py`, A2A executor/server, `AgentHandler`, `container_runner.py` image entry point, `system_tools/`) + a small demo agent (`demo/`: the only part safe to edit; the runtime never imports it, and it is not installed or vendored into images) + answers→agent **`generator/`** |
+| `agent_skeleton/` | **Agent runtime** every hosted agent imports (LLM tool loop + `spec.py`, A2A executor/server, `AgentHandler`, `container_runner.py` image entry point, `system_tools/`) + a small demo agent (`demo/`: the only part safe to edit; the runtime never imports it, and no image or regular install includes it) + answers→agent **`generator/`** |
 | `deployment/` | Infra **machinery** (shared images/entrypoints/launch scripts): `submit.sbatch`, `dockerfiles/`, `entrypoints/`, `build_and_push.sh`, `scripts/gcp_iam_step7.sh`. Deployment **docs** live in `docs/deployment/` |
 | `docs/deployment/` | Deployment guides: `engr/README.md` (cluster runbook), `gcp/README.md` (GCP runbook) + `gcp/MIGRATION.md`, `gcp/DEPLOYED_COMPONENTS.md`, `gcp/DESIGN_`/`IMPLEMENTATION_CLOUDRUN_BACKEND.md`; agnostic: `AGENT_INTEGRATION_SPEC.md`, `DOWNSTREAM_CONSIDERATIONS.md` |
 | `registration_service/server.py` | FastAPI app — REST API for agent registration + static UI at `/` |

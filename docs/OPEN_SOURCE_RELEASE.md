@@ -516,7 +516,8 @@ lines removed or rewritten.
 | **Skeleton subtree and runner merge** | | |
 | The `git subtree` merge | 1,500 | "Before the subtree merge" above |
 | Merge registration's `runner.py` + `handlers/` with `container_runner.py`; one A2A app factory; isolate the ENGR-only code | 580 | the subtree merge; a stable full-chain test |
-| Drop the generator (with `repo_emitter`'s unused `import os`); make `AgentSpec` mandatory and drop the demo lane | 1,030 | the generator and template decisions at the merge |
+| Make `AgentSpec` mandatory and drop the demo lane: done 2026-10-25 (`e62d0d0`; `run_agent`, `SkeletonAgentExecutor` and `create_app` require a spec, and the demo agent moved out of the runtime into `agent_skeleton/demo/`, which no image, regular install or generator output includes) | — | — |
+| Drop the generator (with `repo_emitter`'s unused `import os`) | 800 | the generator and template decisions at the merge |
 | The multi-endpoint manager | 260 | wire it or drop it (above) |
 | Refresh the 17 vendored skeleton copies in `agent-directory/registered_agents/` | 2,200 | a re-vendor pass, or the subtree merge |
 | **Chat app and planner structure** | | |

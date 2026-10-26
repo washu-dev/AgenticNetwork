@@ -26,10 +26,11 @@ repo, with the other specialist agents) and split into small, labeled files.
 
 > **Anything under [`demo/`](demo/) is safe to change; anything else in
 > `agent_skeleton/` is runtime that reaches every hosted agent.** Nothing in the
-> runtime imports the demo, and the demo is not installed, vendored into images or
-> copied by the generator. For example, `normalize_result()` in `prompt.py` shapes
-> the result of every hosted LLM agent that does not bring its own. Don't build an
-> agent by editing the runtime: write one of the three things below.
+> runtime imports the demo, and the demo is left out of a regular install, every
+> image and the generator's output (an editable dev install still runs it). For
+> example, `normalize_result()` in `prompt.py` shapes the result of every hosted
+> LLM agent that does not bring its own. Don't build an agent by editing the
+> runtime: write one of the three things below.
 
 ---
 

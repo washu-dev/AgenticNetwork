@@ -1,13 +1,18 @@
 """The demo agent (agent_skeleton/demo/) and its separation from the runtime.
 
 The demo is safe to edit because nothing the platform ships depends on it: the
-runtime never imports it, and it is left out of the installed package, the copy
-vendored into built images and the generator's wrapper_engine/. These tests hold
-both halves: the demo works, and the runtime works without it (in a fresh
-interpreter, so modules this test process already imported can't hide an import).
+runtime never imports it, and it is left out of a regular install, the registration
+service image, the copy vendored into built images and the generator's
+wrapper_engine/. These tests hold both halves: the demo works, and the runtime works
+without it. The runtime's source has no demo import anywhere (a static check, so an
+import that runs only on a request counts too), and the runtime imports and builds
+its apps without the demo (in a fresh interpreter, so modules this test process
+already imported can't hide an import).
 """
 from __future__ import annotations
 
+import ast
+import importlib.metadata
 import importlib.util
 import os
 import shutil
@@ -17,15 +22,65 @@ import sysconfig
 from pathlib import Path
 
 import pytest
+from packaging.version import Version
 
 from agent_skeleton import llm_loop
 from agent_skeleton.demo import demo_spec
+from agent_skeleton.executor import SkeletonAgentExecutor
 from agent_skeleton.serve import build_parser, create_app
 from agent_skeleton.spec import load_tool_module, tool_loop_spec
 from agent_skeleton.tools import validate_tool_registry
 
 _PACKAGE_DIR = Path(__file__).resolve().parents[1]
 _REPO_ROOT = _PACKAGE_DIR.parent
+_NOT_RUNTIME = ("demo", "tests")
+
+
+def _scan_runtime_for_demo_imports() -> tuple[set[str], list[str]]:
+    """``(files scanned, file:line of each demo import)`` over the runtime: every
+    package under agent_skeleton/ except demo/ and tests/. ast.walk reaches imports
+    at any depth, so one inside a function or a tool body counts."""
+    scanned: set[str] = set()
+    found: list[str] = []
+    stack = [_PACKAGE_DIR]
+    while stack:
+        folder = stack.pop()
+        package = ("agent_skeleton", *folder.relative_to(_PACKAGE_DIR).parts)
+        stack += [p for p in folder.iterdir()
+                  if p.is_dir() and p.name not in _NOT_RUNTIME and (p / "__init__.py").is_file()]
+        for path in folder.glob("*.py"):
+            scanned.add(path.relative_to(_PACKAGE_DIR).as_posix())
+            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"), str(path))):
+                if isinstance(node, ast.Import):
+                    modules = [a.name for a in node.names]
+                elif isinstance(node, ast.ImportFrom):
+                    parts = [node.module] if node.module else []
+                    if node.level:  # relative: resolve against this file's package
+                        parts = [*package[: len(package) - node.level + 1], *parts]
+                    module = ".".join(parts)
+                    # "from . import demo" names the demo as an imported name.
+                    modules = [module, *(f"{module}.{a.name}" for a in node.names)]
+                else:
+                    continue
+                if any(m == "agent_skeleton.demo" or m.startswith("agent_skeleton.demo.")
+                       for m in modules):
+                    found.append(f"{path.relative_to(_REPO_ROOT)}:{node.lineno}")
+    return scanned, sorted(found)
+
+
+def _build_tools_problem(setuptools: str | None, wheel: bool) -> str | None:
+    """Why ``pip install --no-build-isolation`` can't build the package with this
+    environment's build tools, or None. Without isolation pip uses them as they are:
+    setuptools must meet pyproject's ``setuptools>=68``, and setuptools older than
+    70.1 builds a wheel only with the separate ``wheel`` package installed."""
+    if setuptools is None:
+        return "setuptools is not installed"
+    if Version(setuptools) < Version("68"):
+        return f"setuptools {setuptools} is older than the package's build requirement (>=68)"
+    if Version(setuptools) < Version("70.1") and not wheel:
+        return f"setuptools {setuptools} builds wheels only with 'wheel', which is not installed"
+    return None
+
 
 # Imports every runtime entry point, builds one spec of each kind and serves each
 # through create_app, then fails if any demo module was loaded along the way.
@@ -84,10 +139,19 @@ def test_demo_tools_load_as_an_uploaded_tools_module():
     assert spec.dispatch("reverse_text", {"text": "ab", "uppercase": True})["reversed"] == "BA"
 
 
+def test_registration_image_leaves_out_the_demo():
+    # The registration image copies agent_skeleton/ and installs it editable, which
+    # would reach demo/ if it were in the build context.
+    ignored = (_REPO_ROOT / ".dockerignore").read_text(encoding="utf-8").splitlines()
+    assert "agent_skeleton/demo" in ignored
+
+
 def test_runtime_entry_points_require_a_spec():
     # The runtime has no default agent to fall back on.
     with pytest.raises(TypeError):
         llm_loop.run_agent({"prompt": "hi"})
+    with pytest.raises(TypeError):
+        SkeletonAgentExecutor()
     with pytest.raises(TypeError):
         create_app(object())
     with pytest.raises(TypeError):
@@ -98,6 +162,26 @@ def test_runtime_entry_points_require_a_spec():
     for command in ("check", "serve-a2a"):
         with pytest.raises(SystemExit):
             build_parser().parse_args([command])
+
+
+def test_runtime_source_never_imports_the_demo():
+    # Static, so it also covers an import on the request path (inside execute(), a
+    # tool or a fallback), which the probes below never run.
+    scanned, found = _scan_runtime_for_demo_imports()
+    assert {"executor.py", "llm_loop.py", "serve.py", "system_tools/preset_tools.py"} <= scanned
+    assert not found, f"runtime code imports agent_skeleton.demo: {found}"
+
+
+@pytest.mark.parametrize(("setuptools", "wheel", "can_build"), [
+    (None, True, False),
+    ("65.5.0", True, False),
+    ("68.0.0", False, False),
+    ("70.0.0", False, False),
+    ("68.0.0", True, True),
+    ("70.1.0", False, True),
+])
+def test_offline_build_needs_setuptools_70_1_or_wheel(setuptools, wheel, can_build):
+    assert (_build_tools_problem(setuptools, wheel) is None) is can_build
 
 
 def test_runtime_never_loads_the_demo():
@@ -114,8 +198,10 @@ def test_installed_runtime_runs_without_the_demo(tmp_path):
     # Built images run a non-editable install, which holds only the packages pyproject
     # lists. Install that way (offline) and run the runtime from it, away from the repo.
     pytest.importorskip("a2a.types")
-    if importlib.util.find_spec("setuptools") is None:
-        pytest.skip("setuptools is not installed, so the package can't be built offline")
+    setuptools = importlib.metadata.version("setuptools") if importlib.util.find_spec("setuptools") else None
+    problem = _build_tools_problem(setuptools, importlib.util.find_spec("wheel") is not None)
+    if problem:
+        pytest.skip(f"{problem}, so the package can't be built offline")
     source = tmp_path / "pkg-source"
     shutil.copytree(_PACKAGE_DIR, source, ignore=shutil.ignore_patterns(
         "tests", "build", "dist", "*.egg-info", "__pycache__",

@@ -29,6 +29,11 @@ data
 # Development/planning docs (not part of any image)
 docs/dev
 
+# The skeleton's demo agent and its tests: no image runs them (built agent images
+# and the generator's output leave them out too)
+agent_skeleton/demo
+agent_skeleton/tests
+
 # Secrets must never be baked into an image; the *.example templates are harmless
 **/.env
 **/.env.*
