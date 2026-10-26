@@ -545,6 +545,53 @@ def test_register_proxy_returns_headers_that_match_the_body_it_sends(monkeypatch
     assert resp.headers.get_list("set-cookie") == ["a=1", "b=2"]
 
 
+def test_register_proxy_drops_hop_by_hop_request_headers(monkeypatch) -> None:
+    # The pass-through re-sends the body it read with its own Content-Length, so a
+    # chunked request's Transfer-Encoding must not go with it (a server may refuse a
+    # request that carries both), nor any other header that describes only the
+    # caller's connection, including one its Connection header names.
+    seen: list[httpx.Request] = []
+    real_client = httpx.AsyncClient
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={})
+
+    def client(*args, **kwargs):
+        if kwargs.get("base_url"):  # the /register pass-through client
+            kwargs["transport"] = httpx.MockTransport(upstream)
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", client)
+    app = _final_answer_app()
+    monkeypatch.setattr(httpx, "AsyncClient", real_client)
+
+    async def chunks():
+        yield b'{"name": '
+        yield b'"echo"}'
+
+    async def register():
+        async with real_client(transport=httpx.ASGITransport(app=app), base_url="http://t") as c:
+            return await c.post("/register/agents", content=chunks(), headers={
+                "mail": "bob@example.com", "content-type": "application/json",
+                "connection": "keep-alive, x-hop", "x-hop": "1", "keep-alive": "timeout=5",
+                "te": "trailers", "trailer": "x-sum", "upgrade": "h2c",
+                "proxy-authorization": "Basic eDp5", "x-kept": "1",
+            })
+
+    resp = asyncio.run(register())
+    assert resp.status_code == 200, resp.text
+    [sent] = seen
+    received = {name.lower() for name in sent.headers}
+    assert not received & {"transfer-encoding", "x-hop", "keep-alive", "te", "trailer",
+                           "upgrade", "proxy-authorization"}, sent.headers
+    assert "x-hop" not in sent.headers.get("connection", "")  # httpx's own keep-alive only
+    assert sent.content == b'{"name": "echo"}'
+    assert sent.headers["content-length"] == str(len(sent.content))
+    assert (sent.headers["content-type"], sent.headers["x-kept"]) == ("application/json", "1")
+    assert sent.headers.get_list("mail") == ["bob@example.com"]
+
+
 @pytest.mark.parametrize(
     "timeout, status, says",
     [

@@ -105,11 +105,23 @@ def test_symlink_in_a_virtualenv_says_to_leave_it_out(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    "reserved", ["Dockerfile", "agent_skeleton/__init__.py", "agentnet/__init__.py", "foo.card.json"]
+    "reserved",
+    ["Dockerfile", "agent_skeleton/__init__.py", "agentnet/__init__.py", "foo.card.json",
+     # A module file shadows a package the local runner imports just as a folder does.
+     "agentnet.py", "agent_skeleton.py", "agentnet.cpython-311-darwin.so",
+     "registration_service/__init__.py", "registration_service.py"],
 )
 def test_reject_reserved_root_names(tmp_path: Path, reserved: str) -> None:
     with pytest.raises(ArchiveError, match="Reserved name"):
         unpack_archive(_zip({"handler.py": HANDLER, reserved: "x"}), tmp_path / "a", "handler.py")
+
+
+@pytest.mark.parametrize(
+    "member", ["agentnet_tools.py", "my_agentnet/__init__.py", "lib/agentnet.py", "lib/registration_service.py"]
+)
+def test_names_that_only_resemble_a_reserved_one_are_accepted(tmp_path: Path, member: str) -> None:
+    manifest, _ = unpack_archive(_zip({"handler.py": HANDLER, member: "x"}), tmp_path / "a", "handler.py")
+    assert member in manifest
 
 
 @pytest.mark.parametrize(

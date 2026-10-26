@@ -47,12 +47,19 @@ logger = logging.getLogger(__name__)
 _MAX_TRACE_ROWS = 10
 _MAX_FIELD_LEN = 200
 
-# Registration-service response headers the /register/* pass-through does not copy:
-# hop-by-hop headers, and the encoding and length of a body httpx has already decoded.
-_UNFORWARDED_RESPONSE_HEADERS = frozenset({
-    "connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te",
-    "trailer", "transfer-encoding", "upgrade", "content-encoding", "content-length",
+# Hop-by-hop headers (RFC 9110 section 7.6.1) describe one connection, so the
+# /register/* pass-through copies them in neither direction.
+_HOP_BY_HOP_HEADERS = frozenset({
+    "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
+    "proxy-connection", "te", "trailer", "transfer-encoding", "upgrade",
 })
+# Registration-service response headers the pass-through does not copy: hop-by-hop
+# headers, and the encoding and length of a body httpx has already decoded.
+_UNFORWARDED_RESPONSE_HEADERS = _HOP_BY_HOP_HEADERS | {"content-encoding", "content-length"}
+# Request headers it does not copy: hop-by-hop headers, the host, the length of the
+# body it re-sends (httpx sets its own), and the browser's Accept-Encoding, so httpx
+# asks only for encodings it decodes.
+_UNFORWARDED_REQUEST_HEADERS = _HOP_BY_HOP_HEADERS | {"host", "content-length", "accept-encoding"}
 
 
 def _truncate(text: str | None, limit: int = _MAX_FIELD_LEN) -> str:
@@ -312,9 +319,12 @@ def create_app(
         if _is_admin_reg_action(request.method, url):
             _require_admin(request)
         body = await request.body()
-        # Drop the browser's Accept-Encoding so httpx asks only for encodings it decodes.
+        # A header the caller's Connection header names is hop-by-hop too.
+        dropped = _UNFORWARDED_REQUEST_HEADERS | {
+            t.strip().lower() for t in request.headers.get("connection", "").split(",")
+        }
         headers = [(k, v) for k, v in without_identity_headers(request.headers.items())
-                   if k.lower() not in ("host", "content-length", "accept-encoding")]
+                   if k.lower() not in dropped]
         # Forward exactly the identity this app reads, as one mail header, so the
         # registration service sees the same caller whatever identity headers came in
         # (duplicates, other spellings). None without a header identity: never the

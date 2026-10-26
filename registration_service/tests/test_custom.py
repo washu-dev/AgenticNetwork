@@ -181,6 +181,18 @@ async def test_entry_file_must_be_bare_name(client: AsyncClient, entry_file: str
     assert (await client.post("/agents", json=llm)).status_code == 422
 
 
+@pytest.mark.parametrize("entry_file", ["agentnet.py", "agent_skeleton.py", "registration_service.py"])
+async def test_entry_file_must_not_take_a_reserved_package_name(client: AsyncClient, entry_file: str) -> None:
+    # A single-file upload is stored under this name in the project folder, which a
+    # locally run agent has first on its import path, so it would replace that package.
+    custom = {**CUSTOM_PAYLOAD, "config": {**CUSTOM_PAYLOAD["config"], "entry_file": entry_file}}
+    resp = await client.post("/agents", json=custom)
+    assert resp.status_code == 422 and "reserved platform package name" in resp.text, resp.text
+    tools = {"source": "upload", "entry_file": entry_file}
+    llm = {**LLM_PAYLOAD, "config": {**LLM_PAYLOAD["config"], "tools": tools}}
+    assert (await client.post("/agents", json=llm)).status_code == 422
+
+
 async def test_upload_zip_bad_structural_entry_422(client: AsyncClient, monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("HANDLER_FILES_DIR", str(tmp_path))
     agent = await _register_custom(client)

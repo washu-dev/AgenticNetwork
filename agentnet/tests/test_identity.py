@@ -112,8 +112,9 @@ def test_the_dev_identity_proxy_strips_the_same_headers():
 # ── Imports ───────────────────────────────────────────────────────────────────
 
 # Modules both services import from agentnet, which also run in their images and
-# (the catalog) in locally spawned agents.
-_STDLIB_ONLY = ("identity.py", "credential_catalog.py", "settings.py")
+# (the catalog) in locally spawned agents. Importing any of them runs the package's
+# __init__.py first, so it is held to the same rule.
+_STDLIB_ONLY = ("__init__.py", "identity.py", "credential_catalog.py", "settings.py")
 _SERVICES = frozenset({"chat_app", "registration_service", "agent_skeleton"})
 
 
@@ -131,7 +132,7 @@ def _imported_roots(path: Path) -> set[str]:
 @pytest.mark.parametrize("name", _STDLIB_ONLY)
 def test_shared_modules_import_only_the_standard_library(name):
     roots = _imported_roots(_AGENTNET / name)
-    assert roots, name
+    assert roots or name == "__init__.py", name  # the package's is only a docstring
     assert roots <= sys.stdlib_module_names, sorted(roots - sys.stdlib_module_names)
 
 

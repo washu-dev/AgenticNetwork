@@ -24,10 +24,16 @@ from pathlib import Path
 # Top-level names reserved for platform-injected build-context files. A user
 # archive that carries these at its root would collide with what the builder /
 # supervisor write alongside the project tree (see builder.generate_dockerfile
-# and supervisor._commit_to_github). ``agentnet`` is the platform's shared package:
-# a local subprocess agent has its project folder first on PYTHONPATH (see
-# backend.SubprocessBackend), so a top-level agentnet/ there would replace it.
-RESERVED_ROOT_NAMES = {"agent_skeleton", "agentnet", "Dockerfile"}
+# and supervisor._commit_to_github).
+RESERVED_ROOT_NAMES = {"agent_skeleton", "Dockerfile"}
+
+# Platform packages an agent run locally by the registration service imports from
+# the repository. Its project folder comes first on the import path (see
+# backend.SubprocessBackend), so a top-level module or package of the same name
+# would replace the platform's. A root name is compared up to its first dot, so
+# agentnet/, agentnet.py and agentnet.cpython-311-darwin.so are all refused; so is
+# an entry_file of that name (models._check_entry_file).
+RESERVED_IMPORT_NAMES = frozenset({"agent_skeleton", "agentnet", "registration_service"})
 
 # The import package the platform vendors and installs on every custom image; the
 # container ENTRYPOINT is ``python -m agent_skeleton.container_runner``. An uploaded
@@ -154,10 +160,11 @@ def unpack_archive(raw: bytes, dest: Path, entry_file: str) -> tuple[list[str], 
         if target != dest_resolved and dest_resolved not in target.parents:
             raise ArchiveError(f"Archive member escapes the target directory: {name!r}")
 
-        # Reserved names at the archive root collide with injected build files.
+        # Reserved names at the archive root collide with injected build files or
+        # replace a platform package.
         parts = Path(name).parts
         top = parts[0] if parts else name
-        if top in RESERVED_ROOT_NAMES:
+        if top in RESERVED_ROOT_NAMES or top.split(".", 1)[0] in RESERVED_IMPORT_NAMES:
             raise ArchiveError(f"Reserved name at archive root: {top!r}")
         if len(parts) == 1 and name.endswith(".card.json"):
             raise ArchiveError(f"Reserved name at archive root: {name!r}")

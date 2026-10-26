@@ -1,5 +1,6 @@
 """Integration test: a multi-file custom agent spawned by SubprocessBackend can
-import its sibling modules (project root on PYTHONPATH) and serve over A2A.
+import its sibling modules (project root first on the import path) and serve over
+A2A, including siblings named like the registration service's own modules.
 
 Skipped when a2a-sdk / uvicorn aren't importable (the engine can be tested
 without them, but *serving* requires them). Spawns a real subprocess bound to a
@@ -21,15 +22,21 @@ from registration_service.models import CustomConfig  # noqa: E402
 
 pytestmark = pytest.mark.asyncio
 
-# handler.py imports a sibling module; no pyproject.toml → PYTHONPATH-only (no venv).
+# handler.py imports sibling modules; no pyproject.toml → PYTHONPATH-only (no venv).
+# models.py and handlers/ share their names with registration_service/models.py and
+# registration_service/handlers/, which the runner script sits next to.
 _ENTRY = (
     "from agent_skeleton import AgentHandler\n"
     "from mylib import tag\n"
+    "from models import shout\n"
+    "from handlers import mark\n"
     "class MultiHandler(AgentHandler):\n"
     "    async def handle_structured(self, user_input, files=[]):\n"
-    "        return {'answer': tag(user_input)}\n"
+    "        return {'answer': mark(shout(tag(user_input)))}\n"
 )
 _SIBLING = "def tag(s): return 'tagged:' + s\n"
+_MODELS = "def shout(s): return s.upper()\n"
+_HANDLERS = "def mark(s): return s + '!'\n"
 
 
 def _free_port() -> int:
@@ -47,6 +54,9 @@ async def test_multifile_subprocess_resolves_sibling_import(monkeypatch, tmp_pat
     (hd / "mylib").mkdir(parents=True)
     (hd / "handler.py").write_text(_ENTRY)
     (hd / "mylib" / "__init__.py").write_text(_SIBLING)
+    (hd / "models.py").write_text(_MODELS)
+    (hd / "handlers").mkdir()
+    (hd / "handlers" / "__init__.py").write_text(_HANDLERS)
 
     port = _free_port()
     backend = SubprocessBackend()
@@ -68,6 +78,6 @@ async def test_multifile_subprocess_resolves_sibling_import(monkeypatch, tmp_pat
         }
         async with httpx.AsyncClient() as c:
             r = await c.post(f"http://localhost:{port}/", json=payload, timeout=15)
-        assert "tagged:hello" in r.text  # sibling module's output round-tripped
+        assert "TAGGED:HELLO!" in r.text  # every sibling module's output round-tripped
     finally:
         await backend.stop(agent_id)

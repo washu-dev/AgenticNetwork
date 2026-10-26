@@ -104,7 +104,10 @@ answer 403 without one. Both are dev-open under `FAKE_DB=1` — see [AUTH.md](AU
    sanitized and cut at 63 characters) matches an existing agent's, on every backend.
 2. `POST /agents/{id}/handler` → write the upload (a `.py` entry file, or a `.zip` unpacked to a
    tree — detected by suffix or PK magic) to a staging directory and AST-validate the entry file
-   (a bare `*.py` name; paths are refused at registration). A rejected upload (422) leaves the
+   (a bare `*.py` name; paths are refused at registration). An archive may not carry a root
+   `Dockerfile` or `*.card.json`, and no root module or package (or entry file) may take a name the
+   local runner imports, `agent_skeleton`, `agentnet` or `registration_service`
+   (`archive.RESERVED_IMPORT_NAMES`, compared up to the first dot). A rejected upload (422) leaves the
    stored files and the row unchanged. An accepted one replaces `HANDLER_FILES_DIR/{id}/` by
    rename and resets the agent to the pre-approval state: `approved=FALSE`, `status='registered'`,
    `image_ref` and `build_commit` cleared. A re-upload of a running, published or building agent therefore stops and
@@ -170,7 +173,8 @@ answer 403 without one. Both are dev-open under `FAKE_DB=1` — see [AUTH.md](AU
    - **Local** (`SubprocessBackend`): spawn a subprocess directly (venv + `pip install` if
      `requirements`/`install_project`; the project is installed from a temporary copy, since pip
      builds in the directory it installs from and the stored tree must stay the reviewed code),
-     `PYTHONPATH` = handler dir + repo root, `HANDLER_FILE_PATH`
+     `PYTHONPATH` = handler dir + repo root (the runner starts with `python -P`, so its own
+     `registration_service/` folder is not ahead of them), `HANDLER_FILE_PATH`
      set; wait until it serves `/.well-known/agent-card.json`; publish; `status='live'`.
 5. `POST /agents/{id}/reject` → the same pre-approval reset as a re-upload: an agent that may
    still run or be published (any status but `registered` or `stopped`, or one that holds an image

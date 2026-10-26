@@ -566,7 +566,9 @@ chat app :8090     ← trusts those headers as the user id       ← ephemeral S
   name pointing at the gateway host; the Shibboleth SP on it is registered with WashU's
   identity provider (a one-time WashU-IT/ENGR setup owned by the maintainer —
   `amaan@wustl.edu`). **The gateway's nginx/Apache/Shibboleth config is not in this
-  repo** — only the *contract* (the injected headers) lives here, in `auth.py`.
+  repo** — only the *contract* (the injected header names and the order they are tried)
+  lives here, in `agentnet/identity.py` (`IDENTITY_HEADERS`), which both services use;
+  `chat_app/auth.py` applies it (401 when none is present).
 - **Why the link can break:** the chat app runs on an ephemeral compute node whose
   hostname changes every Slurm run, while the gateway is persistent — so after each
   (re)deploy the gateway's upstream must be repointed to the current node (or an SSH

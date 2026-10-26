@@ -79,9 +79,14 @@ entry point would disappear, and the agent would not start.
 `registration_service/archive.py` rejects these uploads. Name your project after
 your agent and package only your own code.
 
-A top-level `agentnet/` folder is refused too. `agentnet` is the platform's shared
-package, and an agent run locally by the registration service has the uploaded
-project first on its import path, so the upload's folder would replace it.
+An agent run locally by the registration service has the uploaded project first on
+its import path, and it imports `agent_skeleton`, `agentnet` (the platform's shared
+package) and `registration_service` from the repository. A top-level module or
+package with one of those names would replace the platform's, so the upload may not
+have one: no folder (`agentnet/`), module file (`agentnet.py`, a compiled
+`agentnet.*.so`) or `entry_file` by that name. Any other top-level name shadows an
+installed package of the same name the same way (a `pydantic.py` replaces
+pydantic), so name your modules after your agent.
 
 ---
 

@@ -61,6 +61,10 @@ class MyHandler(AgentHandler):
 
 Upload a single `.py`, or a `.zip` whose root holds the entry file next to the packages it imports.
 Zip only the project's own files, for example `zip -r agent.zip handler.py mypkg requirements.txt`.
+The platform's own package names are reserved: no top-level module, package or entry file may be
+named `agent_skeleton`, `agentnet` or `registration_service` (nor a `Dockerfile` or `*.card.json`),
+since locally run agents have the project first on their import path (see
+[agent_skeleton/README.md](../agent_skeleton/README.md), "The name `agent_skeleton` is reserved").
 Every file in the upload is stored, shown to the approver and, on the cluster and Cloud Run,
 committed to the agent-directory repository and built into the agent's image, which is public on
 Docker Hub: never include `.env` files or other secrets. Those two backends also take text files

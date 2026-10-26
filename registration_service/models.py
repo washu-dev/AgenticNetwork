@@ -39,6 +39,7 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from agentnet.credential_catalog import is_known_type
+from registration_service.archive import RESERVED_IMPORT_NAMES
 
 
 class OASFSkill(BaseModel):
@@ -140,6 +141,13 @@ _ENTRY_FILE_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]*\.py")
 def _check_entry_file(v: str) -> str:
     if not _ENTRY_FILE_RE.fullmatch(v) or ".." in v:
         raise ValueError(f"entry_file must be a bare .py file name at the upload root; got {v!r}")
+    # A single-file upload is stored under this name without going through the
+    # archive's reserved-name check (archive.RESERVED_IMPORT_NAMES).
+    if v.split(".", 1)[0] in RESERVED_IMPORT_NAMES:
+        raise ValueError(
+            f"entry_file {v!r} uses a reserved platform package name "
+            f"({', '.join(sorted(RESERVED_IMPORT_NAMES))}); rename it"
+        )
     return v
 
 

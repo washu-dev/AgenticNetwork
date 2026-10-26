@@ -274,7 +274,9 @@ class SubprocessBackend(ContainerBackend):
                 )
             # The uploaded project root (handler_dir) also goes on the path, first,
             # so a multi-file handler can `import` its siblings. Single-file
-            # handlers never needed it; it's harmless for them.
+            # handlers never needed it; it's harmless for them. A top-level name the
+            # runner imports from the repo is refused at upload
+            # (archive.RESERVED_IMPORT_NAMES).
             pythonpath.insert(0, str(handler_dir))
             if spec.requirements or (spec.install_project and _has_build_metadata(handler_dir)):
                 python = await self._ensure_venv(handler_dir, spec)
@@ -295,6 +297,10 @@ class SubprocessBackend(ContainerBackend):
             offset = log.tell()
             proc = await asyncio.create_subprocess_exec(
                 python,
+                # -P: don't put runner.py's own folder (registration_service/) ahead
+                # of PYTHONPATH, where its modules (models, db, handlers, ...) would
+                # replace an upload's same-named siblings.
+                "-P",
                 runner_path,
                 env=env,
                 stdout=log,

@@ -82,7 +82,8 @@ Both Docker images copy it to `/app/agentnet` and set
 `PYTHONPATH=/app`. Agents the registration service starts as local subprocesses
 import `credential_catalog.py` too (through `registration_service/models.py`), with
 the uploaded project first on their path, so an upload may not carry a top-level
-`agentnet/` folder (`registration_service/archive.py`). The agent images built for
+`agentnet` module or package (`agentnet/`, `agentnet.py`, or an `entry_file` of that
+name; `registration_service/archive.py`). The agent images built for
 the cluster and Cloud Run do not include agentnet, and `agent_skeleton` never imports it.
 
 > **Note:** `ads_diagnostics.py`'s record-state classification reads the local
