@@ -5,16 +5,19 @@ first for the plain-English overview and the run tiers; this doc is the design d
 
 ## The shape of the system
 
-AgenticNetwork is an **"internet of agents"**: independent LLM-powered HTTP services that
-discover each other through a shared directory and call each other over a standard
-agent-to-agent protocol.
+AgenticNetwork is an **"internet of agents"**: anyone can add an agent and anyone can use it.
+Independent LLM-powered HTTP services publish themselves to a shared directory, and a router
+(today, the planner) finds the right ones there and calls them over a standard agent-to-agent
+protocol.
 
 - **The chat app** — `chat_app/`. The web service people sign in to and chat in: sign-in, the
   chat page, saved conversations, each user's encrypted keys, admin pages and the `/register/*`
   pass-through to the registration service. Overview: [`chat_app/README.md`](../chat_app/README.md).
 - **One orchestrator** — the **planner**, the LLM loop inside the chat app
-  (`chat_app/planner/`). The brain you talk to. It has *no domain skills of its own*; it
-  discovers other agents and delegates whole tasks. It is deliberately **agent-agnostic**: adding
+  (`chat_app/planner/`). The brain you talk to. It has two jobs today: **routing** (it searches
+  the directory and delegates whole tasks to the chosen agents) and **responding** (it writes
+  the reply the user sees from their results). It does no domain work itself, and it is
+  deliberately **agent-agnostic**: adding
   an agent to the directory makes it usable with zero planner code changes. Deep dive:
   [PLANNER.md](PLANNER.md).
 - **Specialist agents** — each wraps one capability behind an HTTP endpoint (email, coding,

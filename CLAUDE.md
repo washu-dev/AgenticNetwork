@@ -10,17 +10,19 @@ the component index see [`README.md`](README.md). Each component also has its ow
 
 ## 1. What this is
 
-AgenticNetwork is a demo of an **"Internet of Agents"**: a set of independent,
-LLM-powered services that **discover each other through a shared directory** and
-then **call each other over a standard agent-to-agent protocol** to complete a
-task. The main pieces:
+AgenticNetwork is a demo of an **"Internet of Agents"**: anyone can add an agent and
+anyone can use it. Independent, LLM-powered services **publish themselves to a shared
+directory**; a router (today, the planner) **finds the right ones there** and **calls them
+over a standard agent-to-agent protocol** to complete a task. The main pieces:
 
 - **The chat app** (`chat_app/`) — the web service people sign in to and chat in: sign-in,
   the chat page, saved conversations, each user's encrypted keys, admin pages and the
   `/register/*` pass-through to the registration service.
 - **One orchestrator** — the **planner**, the LLM loop inside the chat app (`chat_app/planner/`).
-  The "brain" you talk to. It has *no domain skills of its own*; it discovers other agents and
-  delegates whole tasks to them. It is deliberately **agent-agnostic**: adding a
+  The "brain" you talk to. It has two jobs today: **routing** (it searches the directory and
+  delegates whole tasks to the chosen agents) and **responding** (it writes the reply the user
+  sees from their results). It does no domain work itself, and it is deliberately
+  **agent-agnostic**: adding a
   new agent to the directory makes it usable with **zero planner code changes**.
 - **The registration service** (`registration_service/`) — where agent authors register
   agents (sign-up wizard + API). It also builds and runs those agents, on the `agent_skeleton`

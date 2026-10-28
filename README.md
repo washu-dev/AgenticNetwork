@@ -1,11 +1,18 @@
 # AgenticNetwork
 
-AgenticNetwork is a research system for an **"Internet of Agents"**: independent, LLM-powered
-services that find each other in a shared directory and call each other over a standard
-agent-to-agent protocol. You sign in to one web service, the **chat app**, and chat with the
-**planner** inside it: an LLM loop that has no skills of its own. The planner searches the
-directory for agents that can do the task and delegates to them over A2A, so adding an agent to
-the directory makes it usable with no planner code changes.
+AgenticNetwork is a research system for an **"Internet of Agents"**: like the web, where anyone
+can publish a page and anyone can visit it, anyone can add an agent here and anyone can use it.
+An author registers an agent once: a no-code LLM agent, a wrapper around an existing API, or
+uploaded code (which an admin approves first). From then on every signed-in user can reach it
+from one chat window, with no change to the rest of the system.
+
+Between a user's prompt and the agents that answer it sits **routing**: deciding which agents
+the prompt needs. Today that job belongs to the **planner**, an LLM agent inside the **chat
+app**, the one web service people sign in to; later it could be any routing algorithm. Agents
+find each other through a shared **directory**: each one publishes an Agent Card describing its
+skills, and a caller (today, the planner) searches the cards and sends the task to the chosen
+agent over **A2A**, a standard agent-to-agent protocol. A new agent is usable as soon as its card
+is published, with no planner code changes.
 
 ## How it works
 
@@ -15,7 +22,7 @@ flowchart LR
     G["Agent author"] --> F
     subgraph C["Chat app (chat_app/)"]
         W["Web server<br/>sign-in, chat page, saved conversations,<br/>each user's keys, admin approvals"]
-        P["Planner<br/>(LLM loop that picks agents)"]
+        P["Planner<br/>(LLM loop: routes to agents,<br/>writes the reply)"]
         W -->|"chat messages"| P
     end
     F --> W
@@ -31,10 +38,16 @@ flowchart LR
 
 The chat app is the only service people reach directly. It signs people in, serves the chat
 page, keeps saved conversations and each user's encrypted keys, runs the admin pages (including
-approving new agents), and files bug reports. The planner is the part of it that answers chat
-messages. Its LLM sees five tools: `list_agents`, `describe_agent`, `call_agent`, `ask_user` and
-`final_answer`. A request goes browser → front door (which adds the user's identity) → chat app
-→ planner → directory search → A2A call to the chosen agent → answer back to the user.
+approving new agents), and files bug reports.
+
+The **planner**, inside the chat app, handles every chat message. It has two jobs today:
+**routing**, which means choosing the agent a message needs and sending it the task, and
+**responding**, which means writing the reply the user sees from what the agent returned (or
+asking the user a question first). It is an LLM loop whose model sees five tools: `list_agents`
+and `describe_agent` to search the directory and read cards, `call_agent` to send an A2A task,
+and `ask_user` and `final_answer` to reply. A request goes browser → front door (which adds the
+user's identity) → chat app → planner → directory search → A2A call to the chosen agent → answer
+back to the user.
 
 Agent authors use a separate place, the registration service's sign-up wizard, to register an
 agent; the registration service then runs the agent (once an admin approves it, for uploaded
