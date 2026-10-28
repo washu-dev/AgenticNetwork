@@ -3,7 +3,7 @@
 A map of every doc, grouped by who it is for. New here? Read the repo-root
 [`README.md`](../README.md) first (what the system is, the quickstart), then come back.
 
-These docs go deeper than the root README and [`CLAUDE.md`](../CLAUDE.md) (the single-file
+These docs go deeper than the root README and [`AGENTS.md`](../AGENTS.md) (the single-file
 system guide): they explain internals, decisions and rationale rather than repeat run steps.
 Each component (`chat_app/`, `registration_service/`, `agentnet/`,
 `agent_skeleton/`) has its own `README.md` with its install and run steps.
@@ -67,5 +67,4 @@ The guides are here; the machinery (Dockerfiles, entrypoints, launch scripts) is
 - [`README.md`](../README.md): what the system is, quickstart, deployment options, layout.
 - [`CONTRIBUTING.md`](../CONTRIBUTING.md): setup, tests, CI, pull requests, conventions.
 - [`SECURITY.md`](../SECURITY.md): how to report a vulnerability, the security model, known hazards.
-- [`CLAUDE.md`](../CLAUDE.md): single-file system guide and operating manual (written for coding agents).
-- [`AGENTS.md`](../AGENTS.md): project direction and working rules.
+- [`AGENTS.md`](../AGENTS.md): single-file system guide, operating manual, project direction and working rules (written for coding agents; [`CLAUDE.md`](../CLAUDE.md) only imports it).

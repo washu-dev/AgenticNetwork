@@ -90,7 +90,7 @@ publication scheduler + reconciler indexer intervals to ~5s so re-published reco
 - **Scout uses a different directory.** Every other agent uses `dirctl` at `:8888`; scout uses
   `agntcy_app_sdk` `AgentDirectory` at `DIRECTORY_ENDPOINT` (gRPC, default `:8889`). It's unverified
   whether these are the same logical directory — scout may not be discoverable by the others (see
-  [`CLAUDE.md`](../CLAUDE.md) §9).
+  [`AGENTS.md`](../AGENTS.md) §9).
 - **The converter/A2A stack is duplicated** across ~4 copies (canonical `agentnet/`,
   `_vendor_v2/` in coding/intelligence, inline copies). A routing/policy fix in one may not
   propagate. See [ARCHITECTURE.md](ARCHITECTURE.md).

@@ -380,7 +380,7 @@ steps are its prerequisites; the cutover itself is a config change on the out-of
 - Provision a **Cloud SQL Postgres** instance; wire both the planner and the registration service to it
   (Cloud SQL connector / auth proxy or private IP over the VPC), replacing the ephemeral/local Postgres.
   Both services need durable Postgres before real users: the planner for `users`, `user_credentials`,
-  `conversation_messages`, `pending_confirmations`, `agent_credential_grants` (CLAUDE.md §8); the
+  `conversation_messages`, `pending_confirmations`, `agent_credential_grants` (AGENTS.md §8); the
   registration service for the `agents` table the CloudRunBackend lifecycle sits on (`db.py`). The reg
   service can't run the CloudRunBackend *live* on GCP without its DB, so this also unblocks deploying the
   registration singleton on Cloud Run.
@@ -459,7 +459,7 @@ card (routable, `oasf:` tag) → planner discovers it → a query cold-starts it
 Then generalize to the fleet.
 
 ## Out of scope / follow-ups (tracked, not this pass)
-- Full converter unification + the 5-copy protocol dedup (CLAUDE.md §9); the two-`agent_skeleton`
+- Full converter unification + the 5-copy protocol dedup (AGENTS.md §9); the two-`agent_skeleton`
   submodule collapse; scout's separate directory reconciliation.
 - Per-agent SAs (graduate from the shared `agent-runtime` SA).
 - `GKEBackend` for GPU/isolation agents.

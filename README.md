@@ -9,9 +9,9 @@ from one chat window, with no change to the rest of the system.
 Between a user's prompt and the agents that answer it sits **routing**: deciding which agents
 the prompt needs. Today that job belongs to the **planner**, an LLM agent inside the **chat
 app**, the one web service people sign in to; later it could be any routing algorithm. Agents
-find each other through a shared **directory**: each one publishes an Agent Card describing its
-skills, and a caller (today, the planner) searches the cards and sends the task to the chosen
-agent over **A2A**, a standard agent-to-agent protocol. A new agent is usable as soon as its card
+are found through a shared **directory**: each one publishes an Agent Card describing its
+skills, and a caller (today the planner, and a few hand-built agents) reads the cards and sends
+the task to the chosen agent over **A2A**, a standard agent-to-agent protocol. A new agent is usable as soon as its card
 is published, with no planner code changes.
 
 ## How it works
@@ -27,7 +27,7 @@ flowchart LR
     end
     F --> W
     W -.->|"/register/* passed through<br/>(internal routes blocked, approvals admin-only)"| R["Registration service<br/>sign-up wizard + API;<br/>runs agents and publishes their cards"]
-    P <-->|"search by skill, read cards<br/>(agentnet)"| D[("Directory (ADS)<br/>AGNTCY dir, via dirctl")]
+    P <-->|"list agents, read cards<br/>(agentnet)"| D[("Directory (ADS)<br/>AGNTCY dir, via dirctl")]
     W -.->|"agent list, health checks,<br/>admin removal (agentnet)"| D
     P -->|"A2A task (agentnet)"| A["Agents"]
     R -->|"starts and monitors"| A
@@ -66,7 +66,7 @@ remove them (admin). Agents registered through the registration service run on
 **Key ideas**
 
 - **Agent Card**: a JSON description of an agent (name, endpoint URL, skills, and any credentials it needs).
-- **Directory (ADS)**: the AGNTCY `dir` service, driven by the `dirctl` CLI; agents publish cards there and the planner searches it by skill.
+- **Directory (ADS)**: the AGNTCY `dir` service, driven by the `dirctl` CLI; agents publish cards there, and the planner lists them (best match first when it passes a query) and reads their skills to choose one.
 - **A2A**: the agent-to-agent protocol (HTTP/JSON-RPC, the `a2a-sdk` package) the planner uses to send a task to an agent.
 - **Credential scoping**: users store API keys and OAuth tokens encrypted; the planner passes an agent only the credential types it declared and the user granted, in the A2A task metadata, never through the LLM.
 
@@ -123,7 +123,7 @@ What to run before a pull request, and what CI checks, is in [`CONTRIBUTING.md`]
 
 | Path | What it is |
 |---|---|
-| [`chat_app/`](chat_app/README.md) | The chat app, the web service people sign in to and chat in (port 8090): sign-in, chat page, saved conversations, each user's keys, admin pages and the `/register/*` pass-through. The planner, the LLM loop that picks agents and calls them, is inside it in `chat_app/planner/`. |
+| [`chat_app/`](chat_app/README.md) | The chat app, the web service people sign in to and chat in (port 8090): sign-in, chat page, saved conversations, each user's keys, admin pages and the `/register/*` pass-through. The planner, the LLM loop that routes messages to agents and writes the reply, is inside it in `chat_app/planner/`. |
 | [`registration_service/`](registration_service/README.md) | The registration service (port 8091): a sign-up wizard and REST API where agent authors register agents. It also builds and runs those agents, monitors them and publishes their cards. |
 | [`agent_skeleton/`](agent_skeleton/README.md) | The agent runtime that registered agents run on, plus a small demo agent in `agent_skeleton/demo/` (the one part that is safe to edit). |
 | [`agentnet/`](agentnet/README.md) | Shared library for the directory (ADS) and A2A calls, used by the chat app and the registration service; plus operator tooling to publish, inspect, diagnose and repair directory records (`scripts/ads`). |
@@ -142,9 +142,8 @@ own: the dev stack registers a seed agent, and the registration service adds mor
 ## Documentation
 
 Start at [`docs/README.md`](docs/README.md), a map of every doc grouped by audience: users, agent
-builders, contributors and operators. [`CLAUDE.md`](CLAUDE.md) is a single-file system guide
-(written for coding agents, useful to people too) and [`AGENTS.md`](AGENTS.md) holds the working
-rules.
+builders, contributors and operators. [`AGENTS.md`](AGENTS.md) is a single-file system guide with the working
+rules (written for coding agents, useful to people too); [`CLAUDE.md`](CLAUDE.md) only imports it.
 
 ## Using the WashU deployment
 

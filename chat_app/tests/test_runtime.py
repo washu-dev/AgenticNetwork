@@ -270,6 +270,61 @@ async def _list_agents_returns_full_directory() -> None:
     assert {"email-agent", "weather-agent"}.issubset(agent_ids)
 
 
+def test_list_agents_query_ranks_best_match_first() -> None:
+    asyncio.run(_list_agents_query(shortlist=None))
+
+
+def test_list_agents_query_returns_shortlist_past_limit(monkeypatch) -> None:
+    from chat_app.planner import runtime
+
+    monkeypatch.setattr(runtime, "SHORTLIST_SIZE", 1)
+    asyncio.run(_list_agents_query(shortlist=1))
+
+
+def test_list_agents_query_with_no_match_lists_every_agent(monkeypatch) -> None:
+    from chat_app.planner import runtime
+
+    monkeypatch.setattr(runtime, "SHORTLIST_SIZE", 1)
+    asyncio.run(_list_agents_query(shortlist=None, query="translate this poem"))
+
+
+async def _list_agents_query(shortlist: int | None, query: str = "weather forecast for tomorrow") -> None:
+    directory = SpyDirectory(fake_ads=True)
+    directory.publish_agent_card(load_agent_card(EMAIL_CARD))
+    directory.publish_agent_card(load_agent_card(WEATHER_CARD))
+    llm = ScriptedLLMClient(
+        [
+            ToolCall(tool_name="list_agents", arguments={"query": query}),
+            ToolCall(tool_name="final_answer", arguments={"text": "The weather agent can help."}),
+        ]
+    )
+    app = create_app(
+        config=_config(),
+        directory_client=directory,
+        a2a_client=FailA2A(),
+        llm_client=llm,
+    )
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client:
+        resp = await client.post(
+            "/messages",
+            json={"user_id": "u", "channel": "api", "text": "Will it rain tomorrow?"},
+        )
+    assert resp.status_code == 200, resp.text
+    content = next(t for t in resp.json()["tool_trace"] if t["tool"] == "list_agents")["content"]
+    if query == "translate this poem":
+        assert content["count"] == 2 and "every agent is listed" in content["note"]
+        assert "order" not in content
+        return
+    assert content["query"] == query
+    assert content["agents"][0]["agent_id"] == "weather-agent"
+    if shortlist is None:
+        assert content["count"] == 2 and "note" not in content
+    else:
+        assert content["count"] == shortlist
+        assert content["total"] == 2
+        assert "no query" in content["note"]
+
+
 async def _progress_callback_receives_tool_trace_entries() -> None:
     directory = SpyDirectory(fake_ads=True)
     directory.publish_agent_card(load_agent_card(EMAIL_CARD))

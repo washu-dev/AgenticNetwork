@@ -23,7 +23,7 @@ repository goes public.
   scenarios) pass offline. CI (`.github/workflows/tests.yml`) runs them, plus a repo-hygiene
   job, on every PR and push to `main`; it first passed on GitHub for `d069aaf` (2026-10-15).
   The tier-2 workflow (`compose.yml`) now also runs on pushes to `main` that touch service or
-  deployment code; its first GitHub run passed on `28ab3ce` (2026-10-15, amd64, about 3 min). Commands: `CLAUDE.md` §10.
+  deployment code; its first GitHub run passed on `28ab3ce` (2026-10-15, amd64, about 3 min). Commands: `AGENTS.md` §10.
 - **Goals 1–3** (below): tier 1 of Goal 1 is done; the full-chain test passed 20 runs in a
   row locally on 2026-10-13. `scripts/stack` covers Goals 2 and 3 for the native tier
   ([`DEVSTACK.md`](DEVSTACK.md)).
@@ -259,7 +259,7 @@ repository goes public.
   and record the copyright line.
 - **Other decisions before visibility changes (audit 2026-10-15):**
   - The ops docs: about 80 references in 25 shipping files point into them (the README's
-    deployment table, `DEPLOY_YOUR_OWN.md`, `SECURITY.md`, `CLAUDE.md`, `docs/README.md`), so
+    deployment table, `DEPLOY_YOUR_OWN.md`, `SECURITY.md`, `AGENTS.md`, `docs/README.md`), so
     moving them needs a link pass first.
   - Links to the private `agent-directory` repo (about 9 in shipping docs) 404 for the public:
     publish that repo after its own scrub, or turn the links into plain text.
@@ -560,9 +560,9 @@ lines removed or rewritten.
 | Prune cluster- and person-specific `.gitignore` rules; dedupe the secrets rules | 16 | checking the ENGR checkout |
 | Delete the untracked `Local/` laptop stack | — | Ronak (it holds local secrets) |
 | **Docs restructure** | | |
-| Fold `CLAUDE.md` into `CONTRIBUTING.md`, `ARCHITECTURE.md` and the deployment docs; keep a short agent entry file | 450 | an agreed outline; a `§`-reference checker |
+| Split human-facing parts of `AGENTS.md` into `CONTRIBUTING.md`, `ARCHITECTURE.md` and the deployment docs, if wanted (2026-10-28: the guide moved from `CLAUDE.md` into `AGENTS.md`, which `CLAUDE.md` now only imports) | 450 | an agreed outline; a `§`-reference checker |
 | Move `agent-directory`-specific content (specialist envs, LLM matrix, caveats, hand-built cluster path) to that repo | 540 | a docs home there |
-| Replace `agent_skeleton/README.md` and `CLAUDE.md` with the standalone repo's docs | 365 | the subtree merge |
+| Replace `agent_skeleton/README.md` and `agent_skeleton/AGENTS.md` with the standalone repo's docs | 365 | the subtree merge |
 | Rewrite the protocol-duplication docs: done for this repo 2026-10-20 (`SECURITY.md` §3 lists the copies left, mostly in `agent-directory`) | — | — |
 | `SECURITY.md` becomes a public policy; this file becomes a roadmap/changelog or goes | 260 | the security fixes; release sign-off |
 | A docs link and `§`-reference check in CI | 60 | the doc fixes landing |

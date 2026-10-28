@@ -1,22 +1,22 @@
 # Architecture
 
-How AgenticNetwork fits together, one level below [`CLAUDE.md`](../CLAUDE.md) §1–§2. Read that
+How AgenticNetwork fits together, one level below [`AGENTS.md`](../AGENTS.md) §1–§2. Read that
 first for the plain-English overview and the run tiers; this doc is the design deep-dive.
 
 ## The shape of the system
 
 AgenticNetwork is an **"internet of agents"**: anyone can add an agent and anyone can use it.
-Independent LLM-powered HTTP services publish themselves to a shared directory, and a router
-(today, the planner) finds the right ones there and calls them over a standard agent-to-agent
-protocol.
+Agents, each an independent HTTP service, publish cards describing their skills to a shared
+directory, and a router (today, the planner) finds the right agents there and calls them over a
+standard agent-to-agent protocol.
 
 - **The chat app** — `chat_app/`. The web service people sign in to and chat in: sign-in, the
   chat page, saved conversations, each user's encrypted keys, admin pages and the `/register/*`
   pass-through to the registration service. Overview: [`chat_app/README.md`](../chat_app/README.md).
-- **One orchestrator** — the **planner**, the LLM loop inside the chat app
-  (`chat_app/planner/`). The brain you talk to. It has two jobs today: **routing** (it searches
-  the directory and delegates whole tasks to the chosen agents) and **responding** (it writes
-  the reply the user sees from their results). It does no domain work itself, and it is
+- **The planner** — the LLM loop inside the chat app (`chat_app/planner/`) that handles every
+  chat message. It has two jobs today: **routing** (it searches the directory and delegates whole
+  tasks to the chosen agents) and **responding** (it writes the reply the user sees from their
+  results, or asks the user a question first). It does no domain work itself, and it is
   deliberately **agent-agnostic**: adding
   an agent to the directory makes it usable with zero planner code changes. Deep dive:
   [PLANNER.md](PLANNER.md).
@@ -35,14 +35,14 @@ protocol.
 
 ## The three contracts
 
-Everything interoperates through three contracts, and nothing else — see [`CLAUDE.md`](../CLAUDE.md)
+Everything interoperates through three contracts, and nothing else — see [`AGENTS.md`](../AGENTS.md)
 §1 for the table (Agent Card / ADS / A2A). This is what lets agents be written in any
 language/framework and still cooperate: because agents share only these wire contracts — never
 Python imports at runtime — each can have any dependencies, any Python version, and run on any
 machine or container. That's why agents deliberately use *different* environments and may even
 disagree on library versions; a built agent image keeps the `a2a-sdk` it was built with. The two
 services in this repo share code in-process (`agentnet/`), so they are developed in one venv on
-one `a2a-sdk` version (0.3.2). See [`CLAUDE.md`](../CLAUDE.md) §5.
+one `a2a-sdk` version (0.3.2). See [`AGENTS.md`](../AGENTS.md) §5.
 
 ## Request lifecycle (end to end)
 
@@ -90,7 +90,8 @@ dedup) are in [PLANNER.md](PLANNER.md); identity + credentials in [AUTH.md](AUTH
 ## The load-bearing subtlety: stored vs. routed
 
 ADS records are both **stored** (content-addressed; `dirctl search`) **and** separately
-**routed** (a routing index; `dirctl routing list/search`). A record can be **stored but not
+**routed** (the directory's own routing index, `dirctl routing list/search`; not the planner's
+routing of prompts to agents). A record can be **stored but not
 routed** — in which case it is **invisible to live discovery** even though it exists. The
 directory backend deliberately raises `DirectoryUnavailable` rather than silently falling back
 to storage search, so this failure mode surfaces instead of hiding. The entire

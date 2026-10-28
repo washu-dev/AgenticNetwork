@@ -22,7 +22,7 @@ three kinds instead (README.md, "Building an agent"; docs/BUILDING_AGENTS.md): a
 custom AgentHandler, an ``llm`` agent with an uploaded tools module, or a no-code
 proxy/http agent.
 
-See README.md for the walkthrough and CLAUDE.md for working notes.
+See README.md for the walkthrough and AGENTS.md for working notes.
 
 Exposed API:
     AgentSpec, endpoint_wrapper_spec          — the spec-driven engine

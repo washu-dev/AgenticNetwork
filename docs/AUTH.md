@@ -2,7 +2,7 @@
 
 The identity, admin, per-user-credential, and multi-user-safety model of the chat app
 (`chat_app/`) and the planner inside it. This is
-the deep version of [`CLAUDE.md`](../CLAUDE.md) §8; the *why* behind each choice is in
+the deep version of [`AGENTS.md`](../AGENTS.md) §8; the *why* behind each choice is in
 [DECISIONS.md](DECISIONS.md) (D5–D11).
 
 Everything here happens in the chat app — specialist agents remain auth-unaware (see

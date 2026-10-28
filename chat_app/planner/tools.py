@@ -12,9 +12,17 @@ def tool_schemas() -> list[dict[str, Any]]:
     return [
         _function(
             "list_agents",
-            "List every agent currently discoverable through ADS, with a one-line capability summary. "
-            "Use this when the user asks what agents exist, what is available, or what can the network do.",
-            {},
+            "List the agents currently discoverable through ADS, each with a one-line capability summary. "
+            "Use this when the user asks what agents exist, what is available, or what can the network do "
+            "(no query: every agent is listed), or to find agents for a task (pass query).",
+            {
+                "query": {
+                    "type": "string",
+                    "description": "Optional. The task in a few words; agents are then returned best match "
+                    "first, and a large directory returns only a shortlist.",
+                },
+            },
+            required=[],
         ),
         _function(
             "describe_agent",
@@ -88,7 +96,7 @@ discover the right agent and delegate.
 
 Available tools (call exactly one tool in each model step; the runtime may give you more steps in \
 the same user turn):
-  - list_agents()                          → enumerate all agents in ADS
+  - list_agents(query?)                    → enumerate agents in ADS (with a query: best match first)
   - describe_agent(agent_id)               → full skill catalog for one agent
   - call_agent(agent_id, task_input, skill?)→ ask one agent to handle a task (skill is only an optional hint)
   - ask_user(text)                         → clarification question, ends turn

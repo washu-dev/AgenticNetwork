@@ -3,9 +3,9 @@
 Open work and ideas left over from the summer 2026 build of AgenticNetwork, during Washington
 University in St. Louis's Digital Transformation Research Corps (DTRC). The list was drawn up after
 the summer and cleaned up for this repository: statuses were checked against the code on
-2026-10-20 (S4, S5, S27 and S57 updated 2026-10-21; S10, S22, S25 and S28 2026-10-25; S25 and S30 2026-10-26), and items that are finished or concern things outside this repository were removed.
+2026-10-20 (S4, S5, S27 and S57 updated 2026-10-21; S10, S22, S25 and S28 2026-10-25; S25 and S30 2026-10-26; S34, S50, S81 and S106 2026-10-28), and items that are finished or concern things outside this repository were removed.
 Item IDs (S1–S109) are kept from the original working list, so gaps in the numbering are those
-removed items. Nothing here is a commitment. Ideas are research directions, not features.
+removed items; S110–S112 were added on 2026-10-28. Nothing here is a commitment. Ideas are research directions, not features.
 
 How to read the tables:
 - **Type:** Task (a known change), Idea (a direction to explore) or Question (needs a decision).
@@ -26,16 +26,24 @@ distinctive design questions; the rest make it easier for newcomers to build on.
 2. **S91: networks of specialized planners.** Today there is one planner and one directory. The
    direction is hubs, each with its own directory and planner, that pass work to each other. The
    first concrete step is wrapping a planner as an A2A agent so another planner can call it.
-3. **S50 with S64: discovery at scale.** `list_agents` lists every agent, which stops working well
-   as directories grow. Measure where selection accuracy drops, then move to retrieval.
-4. **S34: agents that call other agents.** Only the planner can discover and call agents today;
-   give the skeleton opt-in tools for it, with loop and depth limits.
-5. **S72: an `examples/` folder,** one agent per onboarding path (S68, S69, S71).
-6. **S82 with S103: a first-agent tutorial,** ending in a real request and response, plus a table of
+3. **S50 with S64 and S111: discovery at scale.** `list_agents` lists every agent unless the model
+   passes a query, which ranks agents by keyword overlap and shortlists past 25
+   (`chat_app/planner/routing.py`). Measure where selection accuracy drops, replace the keyword
+   ranker with retrieval, and tune how many skills agents advertise alongside it.
+4. **S34: agents that call other agents (graph routing).** Today only the planner chooses agents.
+   Agents added through the registration service can't look agents up: a proxy or HTTP-tool
+   agent can call only the one endpoint fixed when it was registered, so community-added agents
+   can't choose each other at run time. Opening that up turns routing into a
+   graph; settle credentials, trust, limits and tracing first (see "S34 in more detail" in
+   section 4).
+5. **S110: work with other agent systems instead of competing with them,** so assistants like
+   Claude, and other A2A systems, can route into the agents people add here.
+6. **S72: an `examples/` folder,** one agent per onboarding path (S68, S69, S71).
+7. **S82 with S103: a first-agent tutorial,** ending in a real request and response, plus a table of
    what an agent can send and receive today.
-7. **S27: the remaining skeleton correctness issues,** including the tool loop's low default step limit.
-8. **S107 with S28: open one GitHub issue per open item** and label the newcomer-friendly ones.
-9. **S84: a one-to-two-page roadmap** built from the ideas in sections 4, 5, 7 and 10.
+8. **S27: the remaining skeleton correctness issues,** including the tool loop's low default step limit.
+9. **S107 with S28: open one GitHub issue per open item** and label the newcomer-friendly ones.
+10. **S84: a one-to-two-page roadmap** built from the ideas in sections 4, 5, 7 and 10.
 
 Plain-language terms used below:
 - **A2A, Agent Card, directory (ADS):** see the root [`README.md`](../README.md#how-it-works).
@@ -108,13 +116,50 @@ For context, these summer items are finished and no longer listed:
 | ID | Item | Type | Status (2026-10-20) | Priority | Next step | Effort |
 |---|---|---|---|---|---|---|
 | S33 | A typed-parameter "manager" layer and structured A2A input. The planner's prose lands in one text field, so an agent with many typed parameters (for example, a paper-search agent with 17 filters) can use only the one that fits. Variants considered: a manager LLM that fills typed parameters with a tool call; a DataPart dictionary on the A2A message; "tools of tools" as a special tool call; moving away from natural language between agents | Idea | Partly there. `call_agent` accepts a free-form `task_input` that the planner sends as a DataPart and in metadata (`chat_app/planner/runtime.py` `_build_a2a_request`), and skeleton tool-loop agents merge it into the model's input. Missing: cards can't declare an input schema per skill, the planner doesn't validate against one, `custom` handlers and registration-hosted `llm` agents never see the DataPart, and `call_endpoint`'s A2A path drops it | Important (the clearest design problem) | Open a design issue with the paper-search numbers; prototype per-skill input schemas on one agent | M |
-| S34 | Let agents call other agents: `list_agents` / `describe_agent` / `call_agent` as opt-in skeleton system tools | Idea | Not started. `agent_skeleton/system_tools/__init__.py` calls them "a planned addition"; only the planner has them. `agent_skeleton/README.md` already says agents can call other agents as tools | Important (core "internet of agents" claim) | Add them with depth and loop limits and identity and credential scoping; until then, reword the README claim (reworded on 2026-10-20: it now says only the planner calls agents) | M |
+| S34 | Let agents call other agents (graph routing): `list_agents` / `describe_agent` / `call_agent` as opt-in skeleton system tools, so community-added agents can build on each other | Idea | Not started. `agent_skeleton/system_tools/__init__.py` calls them "a planned addition"; in this repo only the planner has them, and `agent_skeleton/README.md` says agents on this runtime don't call other agents. In `agent-directory`, coding and intelligence already look up and call peers (`discover_agents`), and others can when their peer tools are switched on | Important (lets agents, not only people, use the agents others add) | Settle the questions in "S34 in more detail" below, then add the tools with depth and loop limits and identity and credential scoping | M |
 | S35 | Show what happened under the hood of a reply: which agents were called and where it failed | Idea | Not started in the chat view. The SSE trace event shows only "Thinking…"; traces appear in the admin view (`/admin/traces`) | Important (authors need to debug their agents) | Add a collapsible per-reply trace fed by the existing trace events and the final `tool_trace` | S |
-| S37 | MCP: how this system relates to MCP servers; an MCP-backed example agent | Question | Not started; nothing in the repo mentions MCP | Important (one of the first questions outsiders ask) | Add a short "A2A vs MCP" FAQ paragraph; defer the example | S |
+| S37 | MCP: how this system relates to MCP servers; an MCP-backed example agent | Question | Not started; nothing in the repo mentions MCP | Important (one of the first questions outsiders ask) | Add a short "A2A vs MCP" FAQ paragraph; defer the example; see S110 | S |
 | S38 | Document exactly what a called agent receives from the planner | Task | Answered in code, not written down. `_build_a2a_request` sends the turn's user text, the planner's `task_input` (as a DataPart and in metadata), a skill hint, at most one uploaded file and the conversation id, but no history | Nice | Write it into `docs/BUILDING_AGENTS.md` | S |
 | S40 | Let an agent hide irrelevant tools for a few loop steps, configured from metadata | Idea | Not started | Nice | Add to the roadmap (S84) | M |
 | S41 | An optional prompt-rewriting step before the planner's tool loop | Idea | Not started. (The other half of the original item, showing authors the LLM response object, is in `agent_skeleton/README.md`) | Nice | Add to the roadmap (S84) | M |
 | S103 | Widen what an agent can receive and return: files and images back to the user, jobs that outlive one HTTP stream, and multi-turn clarification between the user and a specialist | Idea | Partly there. Agents receive text, a DataPart and one uploaded file. The chat UI renders no file or image output; long jobs rely on streaming heartbeats and a 30-minute handler cap, with no push notifications or polling; a specialist's request for more input comes back to the planner, and the next call is a new task in the same conversation | Important (outside authors hit these limits first) | Add a table of what an agent can send and receive today to `docs/BUILDING_AGENTS.md`, then file each gap as an issue | M |
+
+### S34 in more detail: graph routing with community-added agents (2026-10-28)
+
+Today routing is a star: only the planner chooses agents. Its system prompt asks it to send a
+compound task whole to one primary agent and let that agent bring in peers; the runtime allows
+calls to several different agents in one turn (up to `PLANNER_MAX_STEPS`) and skips only a repeat
+call to the same agent. Some hand-built agents in `agent-directory` can bring in peers (coding and
+intelligence through `discover_agents`; others, such as geospatial, when their peer tools are
+switched on). Agents added through the registration service can't look agents up: they can call
+only an endpoint fixed at registration (`call_endpoint`, or a proxy agent's upstream), and
+uploaded code can call any URL it is written to call. So a registered agent does only its own
+part, and the planner makes at most one follow-up call, when the agent reports a failed peer
+handoff. Letting every agent find and call others turns the star into a
+graph: an uploaded agent could use the best agent someone else added, and routing would be shared
+between the planner and the agents (S91, S92). What that changes:
+
+- **Credentials and consent.** The planner gives an agent only the credential types it declared
+  and the user granted to it (`runtime._scope_credentials`, grants from `credential_gate.py`),
+  except legacy agents listed in `PLANNER_UNSCOPED_CREDENTIAL_AGENTS`, which get every credential.
+  When agent A calls agent B, B must not inherit A's credentials: each hop needs the user's grant
+  for that agent, or gets none, and the legacy agents need the same rule before they call peers.
+- **Trust.** Admin approval checks an uploaded agent's code, not what it later sends to other
+  agents. A community agent could pass a user's data to any agent in the directory, so peer calls
+  need a rule: an allowlist, the user's consent per target, or both. Agent ports have no
+  authentication today (`SECURITY.md`), so a broker also needs agent authentication or egress
+  limits.
+- **Limits and cost.** Loops (A calls B calls A), depth and fan-out need limits carried in request
+  metadata (S91 phase 2 plans the same loop guard for planners), and every hop costs tokens.
+- **Tracing and credit.** The planner's `tool_trace` sees only the first hop. Debugging and credit
+  for multi-hop answers need one trace id passed along every call (S35, S66, S90).
+- **Routing quality.** Every calling agent becomes a router, so the routing benchmark (S63) would
+  need to score whole paths, not one pick, and skill granularity (S111) matters more once many
+  agents search the directory.
+
+One cautious first step: give skeleton agents the opt-in tools, but route their calls through a
+broker in the chat app, so grants, limits and traces stay in one place; direct peer-to-peer calls
+can follow once those rules exist.
 
 ## 5. Directory, discovery and naming
 
@@ -126,8 +171,10 @@ For context, these summer items are finished and no longer listed:
 | S46 | One path for every agent: remove the split between the built-in specialist agents and registered agents | Task | Open. `deployment/submit.sbatch` still starts a fixed set of built-in agents through a separate hand-written path | Nice | Register them through the registration service like any other agent, or drop them from the launcher | M |
 | S47 | Version every agent, and allow choosing or pinning a version ("version control where specific orchestration can be chosen") | Idea | Partly done. Uploaded-code agents get an allowlisted `agent.json` manifest (`registration_service/build_manifest.py`); `llm` and `proxy` agent configs exist only in the database | Nice | Export `llm` and `proxy` configs (allowlisted, no secrets) the same way | M |
 | S48 | Treat a new upstream commit as an agent update, gated by tests; ingest a GitHub repo as a folder holding the repo plus its dependency docs | Idea | Not started; registration has no update route | Nice | Add to the roadmap (S84) | M |
-| S50 | Discovery at scale: `list_agents` must become retrieval, not a full listing, as directories grow toward thousands of agents | Idea | Open. `_tool_list_agents` (`chat_app/planner/runtime.py`) returns every agent; the directory backend (`agentnet/directory/backends.py`) caps search at 200 records with no warning and fetches each record with its own call | Important (scaling story) | Move to skill or semantic search with paging, warn on truncation, add a test with more agents than the limit, and measure where listing breaks (S64) | M |
+| S50 | Discovery at scale: `list_agents` must become retrieval, not a full listing, as directories grow toward thousands of agents | Idea | Open. `_tool_list_agents` (`chat_app/planner/runtime.py`) returns every agent (2026-10-28: unless the model passes a `query`; `rank_agents` in `chat_app/planner/routing.py` then orders agents by keyword overlap and shortlists past 25, the place to plug in retrieval); the directory backend (`agentnet/directory/backends.py`) caps search at 200 records with no warning and fetches each record with its own call | Important (scaling story) | Move to skill or semantic search with paging, warn on truncation, add a test with more agents than the limit, and measure where listing breaks (S64) | M |
 | S51 | Agent heartbeats vs polling; a relational registry vs a lightweight denormalized directory | Question | Open design question. The supervisor polls agent health every 30 s | None | Record an answer in `docs/DECISIONS.md` only if it's still useful | S |
+| S111 | Tune how many skills an agent advertises | Idea | Not started. Wizard authors pick skills from a fixed OASF list; `_build_agent_card` (`registration_service/supervisor.py`) makes one card skill per pick, each reusing the agent's description with no examples (the offline generator, `agent_skeleton/generator/card_builder.py`, can write richer skills), and `list_agents` shows up to 12 skill tags per agent | Important (routing accuracy as the directory grows) | First let wizard authors write a description and examples per skill (with S45). Too many fine-grained skills make a card long and harder for the planner to search; too few broad ones match too many requests (false positives). The right grain may scale with the directory: a handful of agents can share broad skills, but hundreds of overlapping agents need narrower, distinct skills with examples. Overlap with similar agents probably matters more than the raw count, which is a proxy for it. Measure it with S63 and S64, then turn the result into card-writing guidance and a registration check (for example, a warning past some number of skills or on near-duplicate skills across agents) | M |
+| S112 | Rename "skills" in this project's own words, soon | Question | Open. "Skills" now means something else in other agent tools (Claude's Agent Skills, for example: packaged instructions and scripts an agent loads). It is also a protocol name: `skills` is a required field of the A2A Agent Card (`AgentSkill`: id, name, description, tags, examples, input and output modes, security), and OASF records classify agents by skills too. This repo's own model already uses a third name (`AgentCapability`, `agentnet/models.py`), and A2A's `capabilities` field means something else (streaming, push notifications, extensions) | Important (before the release makes the word stick) | Keep `skills` wherever it is the A2A or OASF field. Pick one word for the docs and UI, say once that it maps to the A2A `skills` field, and rename `AgentCapability` to match | S |
 
 ## 6. Deployment, scaling and cloud
 
@@ -171,7 +218,7 @@ For context, these summer items are finished and no longer listed:
 
 | ID | Item | Type | Status (2026-10-20) | Priority | Next step | Effort |
 |---|---|---|---|---|---|---|
-| S81 | Keep the docs in step with the code; split AI-assistant instructions from human docs | Task | Partly done. `CLAUDE.md`'s internal address and old file-sharing section, and the dead handover pointer, are gone; one internal address remains in an operations doc (`docs/deployment/DOWNSTREAM_CONSIDERATIONS.md`). `CLAUDE.md` is still a single-file system guide serving both AI assistants and people | Important | Decide whether `CLAUDE.md` stays one file; check each doc against the code before release | M |
+| S81 | Keep the docs in step with the code; split AI-assistant instructions from human docs | Task | Partly done. `CLAUDE.md`'s internal address and old file-sharing section, and the dead handover pointer, are gone; one internal address remains in an operations doc (`docs/deployment/DOWNSTREAM_CONSIDERATIONS.md`). The system guide is still one file serving both AI assistants and people (in `AGENTS.md` since 2026-10-28; `CLAUDE.md` only imports it) | Important | Decide whether `AGENTS.md` stays one file; check each doc against the code before release | M |
 | S82 | A worked explanation of what an agent author must handle (request → handler → response) and a "build your first agent" tutorial that ends in a real request and response | Task | Partly done. `docs/BUILDING_AGENTS.md` and `agent_skeleton/` docs exist; there is no walkthrough with a real `curl` or A2A-client request | Important | Write one tutorial that ends in a real request and response | M |
 | S83 | Architecture diagrams: what runs in containers, the hardware, how pieces talk, and one request flow per onboarding path | Task | Partly done. The root README has a system flowchart | Important | Add one request-flow diagram per onboarding path | M |
 | S84 | A short roadmap: the deep open problems, what has been done, what needs doing | Task | Not started | Important (it seeds a public ROADMAP) | Write 1-2 pages from S33, S50, S61-S64 and S91-S92 | S |
@@ -191,7 +238,8 @@ For context, these summer items are finished and no longer listed:
 | S96 | A collaboration-finder agent: reviews datasets, methods and questions, and suggests high-impact collaborations between groups that don't usually work together | Idea | Not started | Nice (a good flagship demo agent) | Prototype it as an `llm` agent on the dev stack | M |
 | S97 | A model informed by an institution's own knowledge, which can teach it and advise collaborations | Idea | Not started | None | Park it | L |
 | S98 | Small-world organization; agents that post global skill or task requests; a shared example-data store; a shared space where agents note how to work together | Idea | Not started | None | Park it | L |
-| S99 | A connector to coding agents (file-based handoff, parallel strands) | Idea | Not started | Nice | Add to the roadmap | M |
-| S100 | Positioning: how this differs from single-agent coding assistants ("ecosystem") and from AGNTCY, whose directory it uses | Question | Not started. The docs name AGNTCY only as the directory implementation | Important | Draft one README paragraph | S |
+| S99 | A connector to coding agents (file-based handoff, parallel strands) | Idea | Not started | Nice | Add to the roadmap; part of S110 | M |
+| S100 | Positioning: how this differs from single-agent coding assistants ("ecosystem") and from AGNTCY, whose directory it uses | Question | Not started. The docs name AGNTCY only as the directory implementation | Important | Draft one README paragraph, framed as working with these systems (S110) | S |
 | S101 | Look into related work such as SakanaAI's fugu | Question | Unknown | None | Skim it once; drop it if irrelevant | S |
-| S106 | Learn cheaper routing from usage: log the planner's all-in-context choices and use them as labels for scalable retrieval-style routing. Compare top-down routing (split the prompt, choose through hubs) with bottom-up propagation, where agents in the same hub as active ones get boosted | Idea | Not started. The planner returns a tool trace per request but nothing aggregates traces (S66), and `list_agents` still lists every agent (S50) | Nice (research; links S66, S50 and S63) | Once S66 logs requests, agents chosen and outcomes, train a simple ranker and score it against plain listing with the S63 benchmark | L |
+| S106 | Learn cheaper routing from usage: log the planner's all-in-context choices and use them as labels for scalable retrieval-style routing. Compare top-down routing (split the prompt, choose through hubs) with bottom-up propagation, where agents in the same hub as active ones get boosted | Idea | Not started. The planner returns a tool trace per request but nothing aggregates traces (S66), and `list_agents` lists every agent unless given a query, which ranks agents by keyword overlap and shortlists past 25 (S50, `chat_app/planner/routing.py`) | Nice (research; links S66, S50 and S63) | Once S66 logs requests, agents chosen and outcomes, train a simple ranker and score it against plain listing and the keyword ranker (`rank_agents`, which it would replace) with the S63 benchmark | L |
+| S110 | Work with other agent systems instead of competing with them: let Claude, other assistants and other A2A systems use the agents people add here, and bring their tools in | Idea | Not started; nothing exposes the network to other systems. The planner's routing tools (`list_agents`, `describe_agent`, `call_agent`) are already generic, and credentials and confirmations stay on the server, outside the model (`chat_app/planner/tools.py`, `credential_gate.py`) | Important (a cooperative pitch: any assistant can route into agents anyone added) | Three steps: (1) serve those three tools as an MCP server behind the same sign-in, so an assistant such as Claude becomes the router (needs sign-in for remote MCP clients and a way to confirm write actions inside the assistant); (2) give the planner its own Agent Card and A2A endpoint, so any A2A client can call the whole network as one agent (S91 phase 2). Community-added agents then become reachable from other systems, and this network becomes one node in their routing graphs, which brings S34's questions: outside callers carry no signed-in user here, so they get no user credentials until identity is passed through, and loops across systems need the same guard; (3) an `mcp` registration type that wraps an existing MCP server as an agent (S37's example). It is the umbrella for S37 (MCP FAQ and example), S99 (coding-agent connector) and S100 (positioning), which keep their own next steps | L |

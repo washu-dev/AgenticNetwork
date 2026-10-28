@@ -37,6 +37,7 @@ from chat_app.env import upload_dir
 from chat_app.planner.config import PlannerConfig
 from chat_app.planner.credential_gate import CredentialGate
 from chat_app.planner.llm_client import LLMClient, ToolCall, TurnState
+from chat_app.planner.routing import SHORTLIST_SIZE, score_agents
 # The store modules themselves, not names from them: tests patch their attributes.
 from chat_app.store import conversation_store, pending_store
 
@@ -109,7 +110,7 @@ class TurnResult(BaseModel):
 
 
 class PlannerRuntime:
-    """The planner: an LLM tool loop that picks agents and calls them.
+    """The planner: an LLM tool loop that routes messages to agents and writes the reply.
 
     Owns ADS discovery, A2A transport, conversation memory, and policy gating.
     The LLM only sees TurnState (safe view) and chooses one tool per step.
@@ -347,7 +348,7 @@ class PlannerRuntime:
             )
 
         if name == "list_agents":
-            obs = self._tool_list_agents(discovered)
+            obs = self._tool_list_agents(args, discovered)
         elif name == "describe_agent":
             obs = self._tool_describe_agent(args, discovered)
         elif name == "call_agent":
@@ -401,7 +402,12 @@ class PlannerRuntime:
 
     # -------- tool implementations --------
 
-    def _tool_list_agents(self, discovered: dict[str, DiscoveredAgent]) -> dict[str, Any]:
+    def _tool_list_agents(
+        self,
+        args: dict[str, Any],
+        discovered: dict[str, DiscoveredAgent],
+    ) -> dict[str, Any]:
+        query = str(args.get("query") or "").strip()
         try:
             agents = self.directory.search_agents()
         except DirectoryUnavailable as exc:
@@ -418,14 +424,31 @@ class PlannerRuntime:
             }
         for agent in agents:
             discovered[agent.agent_id] = agent
-        return {
-            "tool": "list_agents",
-            "status": "ok",
-            "content": {
+        scored = score_agents(query, agents) if query else []
+        if not any(score > 0 for _, score in scored):
+            # No query, or no card shares a keyword with it: list every agent.
+            content: dict[str, Any] = {
                 "agents": [_agent_summary(agent) for agent in agents],
                 "count": len(agents),
-            },
+            }
+            if query:
+                content["note"] = "No agent card shares a keyword with the query; every agent is listed."
+            return {"tool": "list_agents", "status": "ok", "content": content}
+        shown = [agent for agent, _ in scored[:SHORTLIST_SIZE]]
+        content = {
+            "agents": [_agent_summary(agent) for agent in shown],
+            "count": len(shown),
+            "query": query,
+            "order": "best keyword match first",
         }
+        if len(scored) > len(shown):
+            content["total"] = len(scored)
+            content["note"] = (
+                f"Showing the {len(shown)} of {len(scored)} agents whose cards best match the query's "
+                "keywords; an agent described in other words may be missing, so call list_agents "
+                "with no query to list every agent."
+            )
+        return {"tool": "list_agents", "status": "ok", "content": content}
 
     def _tool_describe_agent(
         self,

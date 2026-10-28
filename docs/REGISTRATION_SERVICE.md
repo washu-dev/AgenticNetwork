@@ -3,8 +3,9 @@
 `registration_service/` — a FastAPI app (`:8091`) + static web UI (the sign-up wizard) that
 registers agents into the network and then runs them: it spawns them (building an image first on
 the cluster and Cloud Run), publishes their card to ADS, and monitors health. People reach it at
-`/register/` on the chat app's address, which passes those requests through. It is the on-ramp for
-**user-uploaded custom agents** and the home of the approval trust boundary.
+`/register/` on the chat app's address, which passes those requests through. It is the on-ramp
+where any signed-in user adds an agent (a no-code LLM agent, a wrapper around an existing API,
+or uploaded code) and the home of the approval trust boundary for uploaded code.
 
 Tests: `scripts/stack test registration_service`, pytest in the dev venv
 (conftest sets `FAKE_DB=1`). Whole system locally: `scripts/stack up` ([DEVSTACK.md](DEVSTACK.md)).

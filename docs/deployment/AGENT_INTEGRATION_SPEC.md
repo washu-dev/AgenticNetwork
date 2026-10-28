@@ -6,7 +6,7 @@ generator) and for anyone reasoning about how the current ENGR-cluster deploy
 differs from a future cloud/scaled one.
 
 It is a companion to three other docs — read them for the surrounding context:
-- [`CLAUDE.md`](../../CLAUDE.md) (repo root) — the system overview (architecture, ports, LLM config).
+- [`AGENTS.md`](../../AGENTS.md) (repo root) — the system overview (architecture, ports, LLM config).
 - [`engr/README.md`](engr/README.md) — how to build/run the cluster deploy.
 - [`DOWNSTREAM_CONSIDERATIONS.md`](DOWNSTREAM_CONSIDERATIONS.md) — forward-looking
   scale/cloud decisions; **entries #1–#3 there are the authoritative "what changes
@@ -29,7 +29,7 @@ It is a companion to three other docs — read them for the surrounding context:
 ## 0. How to read this
 
 The system's whole premise (see §7) is that **an agent is integrated as *data* — a
-card in a directory — not as *code* in the orchestrator.** So "what the system needs
+card in a directory — not as *code* in the planner.** So "what the system needs
 to know about an agent" is a concrete, enumerable list. §3 is that inventory. §4
 maps each item to *why it exists* (which dependency requires it) and *whether it
 survives* the two big migrations ahead (cloud, scale-to-zero). §5 is the practical
@@ -60,7 +60,7 @@ authority on what's required. **(2) The ADS directory** — agents `push` their 
 to the routing index → discoverable). **(3) A2A** — the planner places an HTTP/
 JSON-RPC `message/send` to an agent's URL and reads back a text summary plus a
 structured `DataPart` artifact. The planner contains **no per-agent code** (§7), so
-a new agent that publishes a valid card is callable with zero orchestrator change.
+a new agent that publishes a valid card is callable with no planner code changes.
 
 ---
 
@@ -336,7 +336,7 @@ The first three are the durable core; the rest are scaffolding.
   against the mounted config. `Dockerfile.ads` bakes the same command as its default
   `ENTRYPOINT`; unlike the other services, ADS has no `entrypoint-*.sh` wrapper.
 - **Two poll timeouts, not one:** the `submit.sbatch` coarse poll waits **30 s**;
-  each agent's `entrypoint-*.sh` retries up to **60 s**. (CLAUDE.md §4's "60 s" is the
+  each agent's `entrypoint-*.sh` retries up to **60 s**. (AGENTS.md §4's "60 s" is the
   entrypoint figure.)
 - **Both endpoint vars:** `OPENAI_BASE_URL` (OpenAI-SDK agents) *and* `OPENAI_API_BASE`
   (litellm: intelligence, coding). `submit.sbatch` auto-discovers the vLLM node and sets

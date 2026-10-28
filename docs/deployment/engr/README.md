@@ -522,7 +522,7 @@ an SSH tunnel.
    The gated vLLM validates the key: it must match its `--api-key` (a dummy gets 401).
    Open **http://localhost:8080/app**. The planner and the seed agent both use the tunnel.
 4. **(Optional) the hand-run specialists** — to run the `agent-directory` specialists against a
-   real ADS daemon on `:8888` (the one vLLM tunnel serves them all), see repo-root `CLAUDE.md`
+   real ADS daemon on `:8888` (the one vLLM tunnel serves them all), see repo-root `AGENTS.md`
    §4 Tier B.
 
 **The inverse** (network on the cluster, browser on your laptop) is the tunnel in

@@ -111,7 +111,7 @@ PLANNER_LLM_MODEL=gpt-4o-mini
 
 Any OpenAI-compatible Chat Completions endpoint works: a hosted API, vLLM or Ollama. The
 model must support tool calling (for vLLM, see the launch flags in
-[`CLAUDE.md`](../../CLAUDE.md) §7). The endpoint must be reachable from the containers;
+[`AGENTS.md`](../../AGENTS.md) §7). The endpoint must be reachable from the containers;
 `127.0.0.1` inside the stack is the stack itself, not your machine.
 
 The seed agent stores its model name when it is registered. If the stack already ran

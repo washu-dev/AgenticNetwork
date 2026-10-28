@@ -1,8 +1,10 @@
 # Planner internals
 
-The planner (`chat_app/planner/`) is the brain you talk to: the LLM loop that picks agents and
-calls them. It has no domain skills — it discovers agents via ADS and delegates whole tasks over
-A2A. It runs inside the chat app (`chat_app/`), the web service people sign in to, which handles
+The planner (`chat_app/planner/`) is the LLM loop that handles every chat message. It has two
+jobs today: **routing**, which means searching the directory (ADS) for the agent a message needs
+and sending it the whole task over A2A, and **responding**, which means writing the reply the
+user sees from what the agent returned (or asking the user a question first). It does no domain
+work itself. It runs inside the chat app (`chat_app/`), the web service people sign in to, which handles
 sign-in, the chat page, saved conversations, each user's keys and the admin pages
 ([`chat_app/README.md`](../chat_app/README.md) covers the whole app and its settings).
 
@@ -45,7 +47,7 @@ Completions) may call only the **5 primitives** defined in `chat_app/planner/too
 
 | Tool | Effect |
 |---|---|
-| `list_agents` | ADS search → candidate agents |
+| `list_agents` | every agent in ADS with a one-line summary; with an optional `query`, best keyword match first and, past `SHORTLIST_SIZE` (25) agents, a shortlist (`routing.py`) |
 | `describe_agent` | full card for one agent (`_agent_full_card`) |
 | `call_agent` | dispatch a task to an agent over A2A (`_tool_call_agent`) |
 | `ask_user` | pause and ask the user a question |
@@ -53,6 +55,20 @@ Completions) may call only the **5 primitives** defined in `chat_app/planner/too
 
 The system prompt (tools.py) forbids the model from soliciting secrets; credential handling is
 entirely out-of-band (§ below).
+
+### Routing today (`list_agents` and `routing.py`)
+
+Routing, choosing the agent a message needs, is done by the model: it reads the agent summaries
+that `list_agents` returns (and full cards from `describe_agent`) and names one agent in
+`call_agent`. The system prompt asks it to send a compound task whole to one primary agent rather
+than split it. With no arguments `list_agents` returns every agent in directory order. With a
+`query` (the task in a few words), `rank_agents` in `chat_app/planner/routing.py` orders the
+agents by keyword overlap with their cards (name, skill names and tags, then descriptions and
+examples), and past `SHORTLIST_SIZE` (25) agents only the best matches are shown, with a note
+saying how many exist; if no card shares a keyword with the query, every agent is listed. Keyword overlap is a placeholder: a better routing algorithm (retrieval
+over skills, embeddings, a ranker learned from traces) can replace `rank_agents` without changing
+the loop. The directory client can also filter by OASF skill (`search_agents(skill=…)`), but the
+planner does not use that filter, because the model's free-text query rarely names an OASF skill.
 
 ### `call_agent` path (`_tool_call_agent`)
 1. Resolve the agent from ADS (`DirectoryClient`).
@@ -182,7 +198,7 @@ Every `dirctl` call is killed after `DIRCTL_TIMEOUT_SECONDS` (default 60) and su
 
 `llm_client.py` uses OpenAI **Chat Completions** (vLLM-compatible) — the planner was migrated off
 the Responses API. Point it at a vLLM server with `OPENAI_BASE_URL` + a dummy key + the served model
-name. Full matrix in [`CLAUDE.md`](../CLAUDE.md) §7.
+name. Full matrix in [`AGENTS.md`](../AGENTS.md) §7.
 
 ## Testing
 

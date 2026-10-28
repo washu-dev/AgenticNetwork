@@ -31,7 +31,7 @@ behind a WashU Shibboleth gateway). This is a **research/demo** posture — seve
 fine on a trusted single node become hard requirements before any broader exposure. The GCP Cloud
 Run deployment (on hold since summer 2026; cloud is a critical leg going forward) and the local
 dev stack have their own rows in the table below. Companion docs: repo-root
-[`CLAUDE.md`](CLAUDE.md) §8–§9 (auth + caveats), [`docs/AUTH.md`](docs/AUTH.md) (the auth model)
+[`AGENTS.md`](AGENTS.md) §8–§9 (auth + caveats), [`docs/AUTH.md`](docs/AUTH.md) (the auth model)
 and [`docs/deployment/DOWNSTREAM_CONSIDERATIONS.md`](docs/deployment/DOWNSTREAM_CONSIDERATIONS.md)
 #2–#3 (the at-scale hardening plan). Update this file when the posture changes.
 

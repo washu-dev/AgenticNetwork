@@ -3,8 +3,9 @@
 The web service people sign in to and chat in. It serves the chat page, keeps
 conversations, stores each user's encrypted API keys, runs the admin pages and bug
 reports, and forwards the `/register/*` pages to the registration service. Inside it,
-the **planner** (`chat_app/planner/`) is the LLM tool loop that discovers agents in
-ADS and calls them over A2A.
+the **planner** (`chat_app/planner/`) is the LLM tool loop with two jobs: routing
+(finding the agent a message needs in ADS and sending it the task over A2A) and
+responding (writing the reply the user sees, or asking the user a question first).
 
 > One-shot environment self-check: `chat_app/scripts/doctor.sh`.
 
@@ -15,13 +16,13 @@ The chat app needs only the shared `agentnet/` package from the rest of the repo
 ## Design
 
 The planner is **agent-agnostic**. Domain logic lives in the agents
-ADS publishes; the planner is a thin tool-loop coordinator.
+listed in ADS; the planner is a thin tool loop that routes messages and writes the replies.
 
 The LLM only sees five safe primitives:
 
 | Tool             | Purpose                                                                 |
 | ---------------- | ----------------------------------------------------------------------- |
-| `list_agents`    | Enumerate every agent in ADS with a one-line summary                    |
+| `list_agents`    | Every agent in ADS with a one-line summary; an optional `query` puts the best keyword matches first and, past 25 agents, returns only a shortlist (`planner/routing.py`) |
 | `describe_agent` | Full skill catalog (ids, descriptions, examples) for one agent          |
 | `call_agent`     | Dispatch the whole task to one discovered agent through A2A             |
 | `ask_user`       | Stop the turn and ask a clarifying question                             |
@@ -61,10 +62,11 @@ chat_app/
 ├── github_issues.py        # files bug reports as GitHub issues (POST /issues)
 ├── env.py                  # setting names, with the old names as fallbacks
 ├── web/                    # index.html (chat UI) + landing.html (pre-login page)
-├── planner/                # the planner: the LLM loop that picks agents and calls them
+├── planner/                # the planner: the LLM loop that routes to agents and writes the reply
 │   ├── runtime.py          # PlannerRuntime: tool loop, ADS, A2A, memory, policy, dedup
 │   ├── llm_client.py       # OpenAI Chat Completions client + ScriptedLLMClient
 │   ├── tools.py            # 5 tool schemas + system prompt
+│   ├── routing.py          # rank_agents: orders agents for a list_agents query (keyword placeholder)
 │   ├── config.py           # PlannerConfig from env vars
 │   ├── models.py           # ConversationContext, policy records; re-exports the wire models from agentnet
 │   ├── credential_gate.py  # CredentialGate protocol + InMemoryCredentialGate
@@ -205,8 +207,8 @@ through `dirctl` instead of the in-process fake.
 
 ## Environment variables
 
-`PLANNER_*` settings tune the planner (the LLM loop that picks agents and calls
-them). `CHAT_APP_*` settings tune the web server around it. Settings other
+`PLANNER_*` settings tune the planner (the LLM loop that routes to agents and
+writes the reply). `CHAT_APP_*` settings tune the web server around it. Settings other
 services share keep their own names.
 
 **Old names still work.** Most of these settings used to start with

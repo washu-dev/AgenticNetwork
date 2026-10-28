@@ -19,7 +19,7 @@ Supersedes `GCP_MIGRATION_PLAN.md`, `GCP_MIGRATION_PROPOSAL.md`, `GCP_TEST_STATU
 [`gcp_target_architecture.svg`](../../../deployment/gcp_target_architecture.svg). Kept separate (broader than
 GCP): [`DOWNSTREAM_CONSIDERATIONS.md`](../DOWNSTREAM_CONSIDERATIONS.md) (cloud-agnostic scaling
 log), [`AGENT_INTEGRATION_SPEC.md`](../AGENT_INTEGRATION_SPEC.md) (agent-authoring reference),
-[`CLAUDE.md`](../../../CLAUDE.md) (whole-system overview).
+[`AGENTS.md`](../../../AGENTS.md) (whole-system overview).
 
 ---
 
@@ -77,7 +77,7 @@ possible, so activation-on-request *is* the on-demand mechanism and the service'
 *is* the agent's directory address.
 
 **Why one service per agent, not a shared pool:** each agent already has its own
-image/dependencies (the environments "even disagree on library versions" — CLAUDE.md §5),
+image/dependencies (the environments "even disagree on library versions" — AGENTS.md §5),
 scale-to-zero is a per-service property (a shared service would stay warm whenever *any*
 agent inside it is in use, defeating the point), and each agent's card resource field (see
 "three load-bearing code changes" below) sizes CPU/mem/GPU independently. The pattern is

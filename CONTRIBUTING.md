@@ -124,7 +124,7 @@ registration body in `devstack/seeds/`.
   the repo; check it.
 - Use `example.com` or `example.test` addresses in examples, never real personal data.
 - `docs/dev/` is ignored by git; use it for local working notes.
-- If you change a test command or CI, update `CLAUDE.md` §10 to match.
+- If you change a test command or CI, update `AGENTS.md` §10 to match.
 
 ## Reporting security issues
 

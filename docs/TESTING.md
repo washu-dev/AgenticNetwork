@@ -31,7 +31,7 @@ The request path (user → planner → directory → A2A → agent → answer) a
 
 | Suite | Command | Tests | Line coverage | What it covers |
 |---|---|---|---|---|
-| Chat app | `scripts/stack test chat_app` | 261 (+12) | 76% | The tool loop (scripted LLM, fake directory), the HTTP API (identity, conversation ownership, streaming, confirmations), credential discovery and enforcement, `/ready`, startup, bug reports, setting names and their old-name fallbacks, that every import of the repo's own code resolves and the package's layers import one way |
+| Chat app | `scripts/stack test chat_app` | 270 (+12) | 76% | The tool loop (scripted LLM, fake directory), `list_agents` query ranking and shortlist (`planner/routing.py`), the HTTP API (identity, conversation ownership, streaming, confirmations), credential discovery and enforcement, `/ready`, startup, bug reports, setting names and their old-name fallbacks, that every import of the repo's own code resolves and the package's layers import one way |
 | Registration | `scripts/stack test registration_service` | 504 | 87% | The API, upload checks, the image build manifest, the native supervisor and agent processes, the Cloud Run backend (mocked), which handler module the runner starts for each handler type, streaming and uploaded-tools agents, credentials, the fake database, that every import of the repo's own code (here and in `agent_skeleton/`) resolves |
 | Agent skeleton | `scripts/stack test agent_skeleton` | 114 | 78% | The spec-driven engine, the `call_endpoint` tool and its secret redaction, per-operation tools, preset tools, the multi-endpoint manager, the generator, credentials kept out of the LLM prompt, the tool-schema and handler contract, the demo agent, and that the runtime never imports the demo (no import statement of it, and no string naming it or its folder, in the runtime's source; the runtime imports and builds its apps without it, from the source tree and from a regular install) |
 | agentnet (directory + A2A) | `scripts/stack test agentnet` | 91 | 61% | Card ↔ record conversion, the `dirctl` CLI backend (mocked), the A2A transport against local peers (the timeout on streaming calls to a silent or stalled agent, an error reply's own status, a refused connection's 503, the endpoint validator's error status), the registration service's publisher (id-only skills, no legacy routing, its errors), the fake-directory flag, route summaries and routing wake-up |
@@ -39,7 +39,8 @@ The request path (user → planner → directory → A2A → agent → answer) a
 | Pipeline | `scripts/stack test pipeline` (`full-chain`, then `scenarios`) | 20 | — | The running system, end to end (next section) |
 
 Counts and coverage were measured for every suite on 2026-10-26 with the dev venv
-(`scripts/stack test unit --parallel --cov`); both move as tests are added. One agent skeleton test (`test_demo.py`, the regular-install check)
+(`scripts/stack test unit --parallel --cov`; the chat app count was updated on 2026-10-28, its
+coverage not re-measured); both move as tests are added. One agent skeleton test (`test_demo.py`, the regular-install check)
 builds the package offline and skips when the interpreter can't: no `setuptools` (a Python 3.12
 venv has none unless you install it), or a `setuptools` older than 70.1 without `wheel`. The chat app's other 12 tests (`test_pending_store_postgres.py`) run the
 pending-confirmation statements on a real Postgres and are skipped unless

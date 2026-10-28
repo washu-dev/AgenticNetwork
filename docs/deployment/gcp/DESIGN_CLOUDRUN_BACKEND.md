@@ -188,7 +188,7 @@ min=0 → auto-publish → planner discovers → cold-start on query), then gene
   `registration_service/oasf_skills.py`) — all four converter copies honor that tag. (The reg-service
   publish path was *already* on the working skill-mapping logic as of 2026-07-09 — see the
   "Corrections" note near the top of this doc; there was no pointing to do.) Full converter unification +
-  the 5-copy protocol dedup (CLAUDE.md §9) are tracked as separate follow-ups.
+  the 5-copy protocol dedup (AGENTS.md §9) are tracked as separate follow-ups.
 - **Agents run as one shared, low-privilege `agent-runtime` SA** — NOT the Editor-carrying default
   compute SA, and NOT per-agent SAs (defer that to the security-hardening phase). The registration SA
   deploys agents *as* this SA (`iam.serviceAccountUser` on it). Least-privilege without per-agent mgmt.

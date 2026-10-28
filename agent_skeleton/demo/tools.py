@@ -22,7 +22,7 @@ Three rules the startup check enforces (tools.validate_tool_registry):
 
 So the schema and the Python signature are two views of one thing. (If you ever
 want this to be impossible to get wrong, generate these schemas FROM the typed
-functions instead — see CLAUDE.md "Closing the gap further".)
+functions instead — see agent_skeleton/AGENTS.md §5.)
 
 Adding a tool = add one schema + write the function (keyword args named exactly
 like its schema `properties`, returning a JSON-able dict) + add one registry entry.

@@ -102,10 +102,13 @@ An agent is a **small HTTP service** that does two things:
    executor runs the agent and turns its result into the response. **Agent code
    never parses the wire protocol.**
 
-That's it. The planner (the LLM "brain") finds agents by skill and delegates whole
-tasks to them. Adding an agent needs **zero planner code changes**.
+That's it. The planner, the LLM loop in the chat app, routes each message: it reads the
+agents' cards in the directory, sends the task to the one it chooses, then writes the reply the
+user sees from what that agent returned. Adding an agent needs **zero planner code changes**.
 
-Agents don't call other agents through the directory today; only the planner does.
+Agents built on this runtime don't call other agents through the directory today. The
+planner does, and so do some specialist agents in `agent-directory`: coding and intelligence
+(`discover_agents`), and others, such as geospatial, when their peer tools are switched on.
 (`call_endpoint` can call the one fixed A2A endpoint an agent wraps. Tools such as
 `call_agent` are planned; see `system_tools/__init__.py`.)
 
@@ -284,7 +287,7 @@ run it before they return (`AgentSpec.validate()`), `create_app` runs it at star
 and `python -m agent_skeleton.demo check` runs it on the demo. It verifies the
 envelope (`"type": "function"`, `parameters.type` `"object"`), that every schema has
 a function, every property is a parameter, optional properties have defaults, and
-there are no undeclared required parameters. See *CLAUDE.md → "Closing the gap further"*
+there are no undeclared required parameters. See *AGENTS.md → §5, "The alignment check (and closing the gap further)"*
 for the even-stronger option (generate schemas *from* typed functions).
 
 ---
@@ -297,4 +300,4 @@ and `create_disaster_a2a_app` serve. That agent now lives in
 the separate [`agent-directory`](https://github.com/washu-dev/agent-directory) repo
 (the specialist agents were extracted there). Background contracts:
 [`../docs/deployment/AGENT_INTEGRATION_SPEC.md`](../docs/deployment/AGENT_INTEGRATION_SPEC.md)
-and [`../CLAUDE.md`](../CLAUDE.md).
+and [`../AGENTS.md`](../AGENTS.md).

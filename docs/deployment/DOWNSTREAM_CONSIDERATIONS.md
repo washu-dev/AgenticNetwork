@@ -131,7 +131,7 @@ agents on the OpenAI *Responses* API (or Gemini) need a code rewrite.
 | geospatial | **Responses + Gemini** | ❌ hard | rewrite + vision + web-grounding gaps |
 
 Only **geospatial** remains on the Responses API — planner, disaster, and email are all migrated to
-Chat Completions (CLAUDE.md §7 is kept current on this).
+Chat Completions (AGENTS.md §7 is kept current on this).
 
 **Recommendation.**
 
@@ -216,7 +216,7 @@ Chat Completions (CLAUDE.md §7 is kept current on this).
   - Whether to standardize the fleet on **litellm** so endpoint swaps become uniform
     (vs. the current Chat/Responses/litellm/Gemini mix).
   - The `_vendor_v2/` divergence (coding, intelligence) means a publish-semantics fix
-    must be replicated across copies (see CLAUDE.md §9).
+    must be replicated across copies (see AGENTS.md §9).
 
 - **References.**
   - `../email_agent/email_agent.py` (`_openai_client`, already Chat Completions),
@@ -224,7 +224,7 @@ Chat Completions (CLAUDE.md §7 is kept current on this).
   - `../chat_app/planner/llm_client.py` (Chat-Completions reference),
     `../disaster_response_agent/disaster_response_agent.py` (`build_response`)
   - `../scout_agent/scout/{config.py,network/directory.py,cli.py}`
-  - CLAUDE.md §7 (LLM/self-hosting), §9 (caveats); [`AGENT_INTEGRATION_SPEC.md`](AGENT_INTEGRATION_SPEC.md) §4
+  - AGENTS.md §7 (LLM/self-hosting), §9 (caveats); [`AGENT_INTEGRATION_SPEC.md`](AGENT_INTEGRATION_SPEC.md) §4
 
 ---
 
@@ -242,9 +242,9 @@ agent inherits, so they are tracked once here rather than repeated per agent.
 
 **Current behavior.**
 - **Card URLs are LAN IPs / `127.0.0.1:<port>`** (single-node `localhost` reach),
-  and inconsistent across copies (CLAUDE.md §3).
+  and inconsistent across copies (AGENTS.md §3).
 - **No auth:** cards have empty `securitySchemes`/`security`, agents bind `0.0.0.0`,
-  and the OASF record's `auth` block is carried but never enforced (CLAUDE.md §9).
+  and the OASF record's `auth` block is carried but never enforced (AGENTS.md §9).
 - **The vLLM endpoint is an ephemeral SLURM node hostname** pasted into `.env`
   (`OPENAI_BASE_URL` **and** `OPENAI_API_BASE`) every run.
 - **Secrets are env-set or baked** (email Google creds `COPY`'d into the image).
@@ -260,7 +260,7 @@ agent inherits, so they are tracked once here rather than repeated per agent.
   2. **Real A2A authn/authz** — populate `securitySchemes` and enforce at the planner
      and each agent before any shared-network exposure.
   3. **A stable vLLM gateway / reverse-proxy** in front of the ephemeral SLURM node;
-     agents target the gateway, not the per-run hostname (CLAUDE.md §7
+     agents target the gateway, not the per-run hostname (AGENTS.md §7
      "Ephemeral endpoint").
   4. **Externalize secrets** — mounted Secrets / secret manager / Workload Identity;
      no baked creds, no env-only API keys for shared infra.
@@ -277,7 +277,7 @@ agent inherits, so they are tracked once here rather than repeated per agent.
   - Where auth lives: the planner front door, a service mesh/sidecar, or each agent.
 
 - **References.**
-  - CLAUDE.md §3 (hardcoded card URLs), §7 (ephemeral endpoint), §9 (no auth,
+  - AGENTS.md §3 (hardcoded card URLs), §7 (ephemeral endpoint), §9 (no auth,
     scout's different directory)
   - `start_vllm.sbatch`, `.env.example`, [`AGENT_INTEGRATION_SPEC.md`](AGENT_INTEGRATION_SPEC.md) §4
   - Entry #1 (scale-to-zero) — the activation model that owns advertised URLs
@@ -354,7 +354,7 @@ services proxy`), **no Cloud SQL, no SP in front** — i.e. not yet safe to expo
   pinned; cold-start latency on the first post-cutover request (raise the planner's read timeout, already
   bumped in Phase 3).
 - **References.**
-  - CLAUDE.md §8 (auth chain), [`docs/AUTH.md`](../AUTH.md) (identity/Shibboleth)
+  - AGENTS.md §8 (auth chain), [`docs/AUTH.md`](../AUTH.md) (identity/Shibboleth)
   - [`MIGRATION.md`](gcp/MIGRATION.md) "Identity, gateway & auth" (the sidecar/Option-2 sketch) and
     "Login (must-do)" (the header-trust invariant)
   - [`DEPLOYED_COMPONENTS.md`](gcp/DEPLOYED_COMPONENTS.md) "What's live vs. deferred" (front door = next step; Cloud SQL live as of 2026-08-03)
