@@ -75,8 +75,10 @@ For how this maps onto the HPC cluster deployment, see the comparison table in
 - Quotas: the deployment needs two always-on Cloud Run services, one small VM, one `db-f1-micro`
   database and one VPC connector. A new project's default quotas should cover that; if a create
   command fails on quota, request an increase under IAM & Admin > Quotas.
-- To register agents ([step 13](#13-add-agents)): a GitHub repository with the custom-agent build
-  workflow, a GitHub token that can write to it, and a public Docker Hub namespace.
+- Nothing outside Google Cloud to register agents: Cloud Build builds their images into Artifact
+  Registry ([step 9](#9-deploy-the-registration-service)). (Until 2026-11-25 this needed a GitHub
+  repository with a build workflow, a GitHub token and a public Docker Hub namespace; the ENGR
+  cluster still builds that way.)
 - A budget with alerts on the billing account. Alerts notify; they don't stop spending, so every
   deploy below also sets `--max-instances`.
 
@@ -106,10 +108,8 @@ export REG_SA="registration-service@${PROJECT_ID}.iam.gserviceaccount.com"
 # The chat app's runtime identity. The reference used the default Compute Engine SA; a dedicated
 # least-privilege SA is the recommended hardening (untested here; create it and set it instead).
 export CHAT_APP_SA="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
-
-# Only for registering agents (step 13):
-export DOCKERHUB_NAMESPACE=my-dockerhub-user    # becomes IMAGE_REGISTRY on the registration service
-export GITHUB_REPO=example-org/agent-directory  # repo holding the custom-agent build workflow
+export AGENT_CODE_BUCKET="${PROJECT_ID}-agent-code"   # uploaded agent code and build contexts
+export BUILD_SA="agent-builder@${PROJECT_ID}.iam.gserviceaccount.com"   # Cloud Build runs agent builds as this
 ```
 
 ## 2. Enable APIs
@@ -197,7 +197,7 @@ Create each secret with `printf %s`, never `echo`: a trailing newline breaks bea
 | `registration-db-dsn` | `DATABASE_URL` | chat app, registration | yes |
 | `credentials-encryption-key` | `CREDENTIALS_ENCRYPTION_KEY` | chat app (`chat_app/store/crypto.py`) | yes |
 | `llm-api-key` | `OPENAI_API_KEY` | chat app | for a key-based LLM (step 10) |
-| `github-token` | `GITHUB_TOKEN` | registration (`supervisor.py`, build commits) | to register agents |
+| `github-token` | `GITHUB_TOKEN` | registration (`supervisor.py`, build commits) | only for the GitHub build path (not needed with Cloud Build, step 9) |
 | `github-issues-token` | `GITHUB_ISSUES_TOKEN` | chat app (`chat_app/github_issues.py`) | only for in-app bug reports |
 
 The reference named the LLM secret `vllm-api-key`; any name works if you use it consistently.
@@ -221,14 +221,12 @@ printf %s "postgresql://regsvc:${DB_PASSWORD}@/registration?host=/cloudsql/${SQL
 python3 -c "import os,base64; print(base64.b64encode(os.urandom(32)).decode(), end='')" \
   | gcloud secrets create credentials-encryption-key --data-file=-
 
-printf %s 'REPLACE_ME' | gcloud secrets create github-token --data-file=-   # PAT with write access to GITHUB_REPO
 
 grant () {  # $1 = secret, $2 = service account
   gcloud secrets add-iam-policy-binding "$1" \
     --member="serviceAccount:$2" --role=roles/secretmanager.secretAccessor
 }
 grant registration-db-dsn "$REG_SA"
-grant github-token "$REG_SA"
 grant registration-db-dsn "$CHAT_APP_SA"
 grant credentials-encryption-key "$CHAT_APP_SA"
 ```
@@ -321,8 +319,20 @@ gcloud run deploy registration \
   --min-instances=0 --max-instances=1 --no-cpu-throttling \
   --ingress=all --no-allow-unauthenticated \
   --vpc-connector="$CONNECTOR" --add-cloudsql-instances="$SQL_CONN" \
-  --set-env-vars="SPAWN_BACKEND=cloudrun,SKIP_STARTUP_WAITS=1,GCP_PROJECT=${PROJECT_ID},GCP_REGION=${REGION},AGENT_RUNTIME_SA=${AGENT_SA},CHAT_APP_INVOKER_SA=${CHAT_APP_SA},ADS_SERVER_ADDR=${ADS_IP}:8888,ADMIN_EMAILS=${ADMIN_EMAIL},IMAGE_REGISTRY=${DOCKERHUB_NAMESPACE},GITHUB_REPO=${GITHUB_REPO}" \
-  --set-secrets="DATABASE_URL=registration-db-dsn:latest,GITHUB_TOKEN=github-token:latest"
+  --set-env-vars="SPAWN_BACKEND=cloudrun,SKIP_STARTUP_WAITS=1,GCP_PROJECT=${PROJECT_ID},GCP_REGION=${REGION},AGENT_RUNTIME_SA=${AGENT_SA},CHAT_APP_INVOKER_SA=${CHAT_APP_SA},ADS_SERVER_ADDR=${ADS_IP}:8888,ADMIN_EMAILS=${ADMIN_EMAIL},AGENT_BUILDER=cloudbuild,AGENT_CODE_BUCKET=${AGENT_CODE_BUCKET},CLOUD_BUILD_SERVICE_ACCOUNT=${BUILD_SA},IMAGE_REGISTRY=${IMAGE_PREFIX}" \
+  --set-secrets="DATABASE_URL=registration-db-dsn:latest"
+```
+
+Then set up the agent builds: a versioned bucket for uploaded code and build contexts, the
+`agent-builder` identity Cloud Build runs as, the registration service's rights to start builds and
+use the bucket, and a Pub/Sub push from Cloud Build's `cloud-builds` topic to the registration
+service's `/internal/build-events`, so a finished build deploys at once even when the service has
+scaled to zero. Three of its bindings need Owner or `roles/resourcemanager.projectIamAdmin`
+(the script says which):
+
+```bash
+GCP_PROJECT="$PROJECT_ID" GCP_REGION="$REGION" AGENT_CODE_BUCKET="$AGENT_CODE_BUCKET" \
+  bash deployment/scripts/gcp_cloud_build_setup.sh
 ```
 
 What the `CloudRunBackend` reads (`registration_service/backend.py`):
@@ -333,7 +343,10 @@ What the `CloudRunBackend` reads (`registration_service/backend.py`):
 | `GCP_PROJECT`, `GCP_REGION` | where agents are deployed (`GCP_PROJECT` is required; region defaults to `us-central1`) |
 | `AGENT_RUNTIME_SA` | identity each agent runs as |
 | `CHAT_APP_INVOKER_SA` | granted `run.invoker` on each agent so the planner can call it |
-| `IMAGE_REGISTRY` | Docker Hub namespace of the custom-agent images (default `di2washu`, so set it) |
+| `AGENT_BUILDER=cloudbuild` | builds custom-agent images with Cloud Build (`registration_service/gcp_build.py`) instead of the GitHub commit → GitHub Action → Docker Hub path |
+| `AGENT_CODE_BUCKET` | bucket for uploaded code (`uploads/<agent id>.tar.gz`, restored on a new instance, since a Cloud Run instance's disk goes when it stops) and build contexts (`build-contexts/<slug>/…`) |
+| `CLOUD_BUILD_SERVICE_ACCOUNT` | identity the builds run as (`agent-builder`) |
+| `IMAGE_REGISTRY` | where custom-agent images are pushed and pulled: the Artifact Registry repository (default `di2washu`, Docker Hub, so set it) |
 | `VPC_CONNECTOR` | optional; attaches a connector to agents for private egress. The reference left it unset. If you set it, grant `roles/vpcaccess.user` to `REG_SA` (see the script's comments) |
 | `CLOUDRUN_FORWARD_ENV` | optional, comma-separated extra env vars to copy into agents |
 | `CLOUDRUN_OPERATION_TIMEOUT_SECONDS` | optional (default `900`); how long a deploy or delete may take before it counts as failed (a failed deploy marks the agent `failed`). Other requests for that agent wait for it meanwhile |
@@ -523,19 +536,16 @@ curl -s -X POST "http://localhost:8091/agents/${AGENT_ID}/approve" -H "mail: ${A
 
 If an upload is refused, delete the leftover record as an admin:
 `curl -X DELETE "http://localhost:8091/agents/${AGENT_ID}" -H "mail: ${ADMIN_EMAIL}"`. The registration
-service commits the build context to `GITHUB_REPO`; a GitHub Action there builds the image and pushes
-it to Docker Hub as `${IMAGE_REGISTRY}/agenticnetwork-custom-<name>`, tagged with the commit's SHA
-and `:latest`; the build poll sees that commit's image, and the `CloudRunBackend` deploys it by
+service uploads the build context to `AGENT_CODE_BUCKET` and starts a Cloud Build build, which pushes
+`${IMAGE_REGISTRY}/agenticnetwork-custom-<name>` tagged with the build's id; when the build ends
+(Cloud Build's notice, or the 30-second poll), the `CloudRunBackend` deploys it by
 digest as `agent-<name>` (min instances 0, max 1, as `agent-runtime`, `ingress=all` without public access, so only callers with `run.invoker` get in), grants the chat app `run.invoker`, and publishes the card with the agent's
 `run.app` URL. Limits today:
 
 - Only uploaded-code agents work on Cloud Run. The supervisor rejects prompt-only `llm` agents and
   proxy agents on this backend (`registration_service/supervisor.py`).
-- The build workflow (`build-custom-agent.yml`) lives in the separate `agent-directory` repository,
-  not in this one. You need your own copy of it in `GITHUB_REPO`, pushing to your namespace and
-  tagging each image with the commit's SHA (`${{ github.sha }}`): the build poll waits for that tag.
-- The build poll reads Docker Hub's public API without credentials (`_image_exists_on_dockerhub`),
-  so custom-agent images must be **public on Docker Hub**, not in Artifact Registry.
+- A failed build marks the agent `failed`; the registration log line `custom_build_failed` has the
+  build's log URL. Fix the code, upload it again and approve.
 - An agent can ask for CPU, memory, concurrency and max instances in its registration
   (`resources`); a GPU request fails, because Cloud Run has no GPU path here.
 - The card needs at least one routable OASF skill, or it is stored but never found
@@ -602,7 +612,12 @@ gcloud compute instances delete ads --zone="$ZONE"
 gcloud compute firewall-rules delete allow-ads-from-connector     # and allow-vllm-from-connector, if created
 gcloud compute networks vpc-access connectors delete "$CONNECTOR" --region="$REGION"
 gcloud sql instances delete "$SQL_INSTANCE"
-for s in registration-db-dsn credentials-encryption-key github-token llm-api-key github-issues-token; do  # the last only if created
+gcloud pubsub subscriptions delete registration-build-events
+gcloud pubsub topics delete cloud-builds
+gcloud storage rm -r "gs://${AGENT_CODE_BUCKET}"
+gcloud iam service-accounts delete "$BUILD_SA"
+gcloud iam service-accounts delete "build-notifier@${PROJECT_ID}.iam.gserviceaccount.com"
+for s in registration-db-dsn credentials-encryption-key llm-api-key github-issues-token; do  # the last only if created
   gcloud secrets delete "$s"
 done
 gcloud artifacts repositories delete agenticnetwork --location="$REGION"
@@ -625,7 +640,8 @@ From the reference deployment ([MIGRATION.md](MIGRATION.md#operational-gotchas-l
 | The proxy returns 404 | The service was deployed with `--ingress=internal`; use `--ingress=all` with `--no-allow-unauthenticated`. |
 | The first call to an agent times out | Cold start; raise `A2A_HTTP_TIMEOUT_SECONDS`. |
 | An agent is deployed but the planner can't find it | Its card has no routable OASF skill. |
-| An approved agent stays `building` | The build workflow in `GITHUB_REPO` doesn't push the `:<commit SHA>` tag the build poll waits for, or its build failed (see its Actions log). Fix it, then restart the agent. |
+| An approval answers 500 with `403 Forbidden` from `cloudbuild.googleapis.com` | The registration service's SA lacks `roles/cloudbuild.builds.editor` (a project-level grant that needs Owner; see `gcp_cloud_build_setup.sh`). |
+| An approved agent stays `building` | Its Cloud Build build is still running or its notice was missed; the 30-second poll catches up while the service runs. Check `gcloud builds list --filter=tags=custom-agent`. |
 | Chat-app-to-agent calls get 404 | The agent has `--ingress=internal`. The chat app reaches `*.run.app` over the internet (its egress is `private-ranges-only`), which internal ingress refuses with 404 (seen 2026-11-16). Use `--ingress=all` with `--no-allow-unauthenticated`; the registration service deploys agents that way since 2026-11-25. |
 
 ## Not covered

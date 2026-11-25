@@ -109,17 +109,20 @@ teammate access: `gcloud run services add-iam-policy-binding chat-app --region=u
   that the registration service reports since the 2026-10-21 approval fixes; in front of an older
   `registration` revision it says so and cannot approve. A config-only `chat-app` update also pulls
   the shared `:latest` again, so push and roll out `registration` first.
-- **The register→deploy loop:** register a `custom` agent → approve (fires a commit to `agent-directory`) →
-  the `build-custom-agent.yml` GitHub Action builds the image → the reg service's build poll deploys it via
-  the `CloudRunBackend`. Full trace + acceptance test: [IMPLEMENTATION_CLOUDRUN_BACKEND.md](IMPLEMENTATION_CLOUDRUN_BACKEND.md).
+- **The register→deploy loop:** register a `custom` agent → upload (saved to the `AGENT_CODE_BUCKET`
+  bucket too) → approve (uploads the build context and starts a Cloud Build build into Artifact
+  Registry) → Cloud Build's notice on the `cloud-builds` topic wakes the reg service, which deploys it via
+  the `CloudRunBackend` (the 30-second build poll is the fallback). Since 2026-11-25; before that, approval
+  committed to `agent-directory` and a GitHub Action built to Docker Hub, which the ENGR cluster still uses.
+  Setup: `deployment/scripts/gcp_cloud_build_setup.sh`. Full trace + acceptance test: [IMPLEMENTATION_CLOUDRUN_BACKEND.md](IMPLEMENTATION_CLOUDRUN_BACKEND.md).
 - **Reach Cloud SQL directly:** `gcloud components install cloud-sql-proxy` then
   `gcloud sql connect agenticnetwork-db --user=regsvc --database=registration` (password is in the
   `registration-db-dsn` secret).
 
 **Operational gotchas** (learned the hard way — see MIGRATION.md / IMPLEMENTATION Step 9 for detail):
-- The build poll waits for the image tagged with the approval's commit SHA (the row's `build_commit`); an
-  approved agent stuck in `building` means that tag was never pushed (the workflow lacks it, or the build
-  failed). Only a row approved before the service recorded commits uses the old **freshness guard**, which
+- On Cloud Build, the row's `build_commit` holds the build id (which also tags the image); a failed build
+  marks the agent `failed`. On the GitHub path it is the approval's commit SHA; an approved agent stuck in
+  `building` there means that tag was never pushed (the workflow lacks it, or the build failed). Only a row approved before the service recorded commits uses the old **freshness guard**, which
   ignores a `:latest` older than the agent's `updated_at`.
 - An **`update_updated_at` trigger** force-sets `updated_at=now()`, so you can't backdate a row; to force a
   redeploy, set `status`/`image_ref` directly and restart (recovery deploys it).
