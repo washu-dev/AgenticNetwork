@@ -90,10 +90,15 @@ order at the end.
       2 agents, and a chat turn through the disaster agent answers.
 - [x] Uncommitted work committed on `fix/directory-off-event-loop` (PR).
 - [ ] `agent-echo-test` kept on purpose for the Phase 2 ingress fix.
-- [ ] Update `DEPLOYED_COMPONENTS.md` from the table above.
-- [ ] A real register → approve → deploy → discover → answer round trip
-      (`IMPLEMENTATION_CLOUDRUN_BACKEND.md` "End-to-end acceptance"). It commits to `agent-directory`
-      and needs the two bugs below fixed first.
+- [x] `DEPLOYED_COMPONENTS.md` rewritten from the inventory (2026-11-25).
+- [ ] **Blocked on a new GitHub token.** The register → approve → deploy → discover → answer round
+      trip (`IMPLEMENTATION_CLOUDRUN_BACKEND.md` "End-to-end acceptance"). A test agent, `Loop Check`
+      (custom echo handler, skill 10203), is registered, uploaded and approved. The approval's commit to
+      `washu-dev/agent-directory` fails because GitHub answers **401 to `github-token`**: the token
+      has expired or been revoked. Once the secret has a new fine-grained token (Contents: read and write on
+      `agent-directory` only), re-approve `Loop Check`. Then confirm the image build, the deploy, the
+      card in `/agents` and a chat turn. Set `--ingress=all` on `agent-loop-check` by hand until the
+      Phase 2 ingress change lands. After that, delete `agent-echo-test` through the registration API.
 
 **Bugs found by the registration upgrade** (both predate today's changes):
 
@@ -108,7 +113,11 @@ order at the end.
       thinks every agent's service is gone: it removes the agent's card from the directory and
       redeploys it. Today that happened to `agent-echo-test`. Fix: read `svc.terminal_condition`, and
       fix the test's fake client to match the real API.
-- [ ] **The directory now rejects category-level skills.** Republishing Echo Test's card failed:
+- [x] **Fixed 2026-11-25** (commit `d9aad31`, rev `registration-00007`). The cause was data, not
+      the directory: Echo Test was registered with skill **id 1**, the `natural_language_processing`
+      category, and registration accepted any id. Registration now answers 400 for ids not in
+      `OASF_SKILLS`, and spawn and deploy fail early for older rows with one.
+      **The directory now rejects category-level skills.** Republishing Echo Test's card failed:
       `"natural_language_processing" is not a valid option at "skills[0]"; please specify a concrete
       skill within the "base_skill" taxonomy`. Any agent registered with a category-level OASF skill
       can't be published. Registration's preflight (`registration_service/oasf_skills.py`) should

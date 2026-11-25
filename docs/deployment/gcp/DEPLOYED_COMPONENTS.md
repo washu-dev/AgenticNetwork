@@ -1,103 +1,106 @@
-# Deployed components — what was live on GCP (updated 2026-08-03)
+# Deployed components — what is live on GCP (updated 2026-11-25)
 
-> **Names (2026-10-25):** the chat app's deployment pieces this record calls `planner` (Cloud Run
-> service, image `agenticnetwork-planner`, `PLANNER_SA`/`PLANNER_INVOKER_SA`, `planner-connector`,
-> Slurm step and `planner.log`) are now named `chat-app` (`CHAT_APP_SA`, `CHAT_APP_INVOKER_SA`,
-> `chat-app-connector`). This record keeps the names as they were deployed.
+Operator reference for what runs in project `di2-agenticweb`, region `us-central1`. Checked
+2026-11-25 with `gcloud run services list`, `gcloud compute instances list`, `gcloud sql instances
+list`, `gcloud secrets list` and a chat turn through the proxy; re-check before relying on it. The
+plan for the rest of the move is [`HOSTING_CHECKLIST.md`](HOSTING_CHECKLIST.md). Design and history:
+[`MIGRATION.md`](MIGRATION.md), [`IMPLEMENTATION_CLOUDRUN_BACKEND.md`](IMPLEMENTATION_CLOUDRUN_BACKEND.md).
 
-Operator reference for what runs on GCP. As of 2026-08-03 (not re-verified since; check with
-`gcloud run services list` and `gcloud compute instances list` before relying on it) this is **Phases 0-3 + the
-CloudRunBackend (Phase 4) live**: planner + real ADS + on-demand agent, **plus the registration service on
-Cloud Run wired to Cloud SQL, auto-deploying agents end-to-end**. Full design/status:
-[`MIGRATION.md`](MIGRATION.md) + [`IMPLEMENTATION_CLOUDRUN_BACKEND.md`](IMPLEMENTATION_CLOUDRUN_BACKEND.md)
-(Step 9 notes). Everything is in project `di2-agenticweb`, region `us-central1`.
+Until 2026-10-25 the chat app ran as Cloud Run service `planner` (image `agenticnetwork-planner`).
+That service was deleted on 2026-11-25. The VPC connector keeps its old name, `planner-connector`,
+because a connector can't be renamed.
 
 ## The request paths
 
 ```
 User path:
-  you ─(gcloud run proxy, for now)─▶ Cloud Run: planner ──dirctl──▶ ADS VM (10.128.0.3:8888)  [discover]
+  you ─(gcloud run services proxy, for now)─▶ Cloud Run: chat-app ──dirctl──▶ ADS VM (10.128.0.3:8888)  [discover]
                         │                                                    [route ↓ via ID token]
-                        │  LLM (vLLM primary → Vertex fallback)   Cloud Run agents (min=0, e.g. disaster,
-                        ▼                                          agent-echo-test) cold-start on demand
-        vLLM-relay VM :8100 ─autossh─▶ h100-2405 (vLLM)          Cloud SQL (agenticnetwork-db) ◀─ planner
-                                                                  persists users/creds/conversations
+                        │  LLM (Vertex primary → vLLM fallback, for now)    Cloud Run agents (min=0, e.g. disaster,
+                        ▼                                                    agent-echo-test) cold-start on demand
+        Vertex AI  /  vllm-relay VM :8100 ─autossh─▶ ENGR vLLM              Cloud SQL (agenticnetwork-db) ◀─ chat-app
+                                                                            persists users/creds/conversations
 
-Onboarding path (Phase 4, automated):
+Onboarding path (automated):
   register agent ▶ Cloud Run: registration ─commit─▶ GitHub Action builds image ─▶ Docker Hub
                         │                                                              │
-                        └─ build-poll sees image ─▶ CloudRunBackend deploys agent (min=0, as agent-runtime SA,
-                           grants planner run.invoker) ─▶ publishes card to ADS ─▶ planner can discover it
+                        └─ build poll sees image ─▶ CloudRunBackend deploys agent (min=0, as agent-runtime SA,
+                           grants chat-app run.invoker) ─▶ publishes card to ADS ─▶ chat app can discover it
 ```
 
 ## Components
 
-**Cloud Run `planner`** — orchestrator + chat UI. Discovers via ADS (`dirctl` in-image,
-`ADS_SERVER_ADDR=10.128.0.3:8888`), routes over authenticated A2A (Google OIDC ID token for `*.run.app`),
-reasons via **vLLM-primary / Vertex-fallback**. **Now on Cloud SQL** (`REGISTRATION_DB_DSN` secret →
-persists users/credentials/conversation history; `CREDENTIALS_ENCRYPTION_KEY` secret). Still
-`PLANNER_ALLOW_ANON=1` + IAM-private (`ingress=all`, `--no-allow-unauthenticated`, reach via
-`gcloud run services proxy`) — the real front door is Step 10 (see below). `min=1`, `--no-cpu-throttling`.
+**Cloud Run `chat-app`** (rev `chat-app-00004`) — the chat app with the planner. Image
+`us-central1-docker.pkg.dev/di2-agenticweb/agenticnetwork/agenticnetwork-chat-app:5bf4fe0-dirfix`
+(directory calls off the event loop), started with `python -m chat_app`. min 0, max 1, 1 vCPU, 1 GiB,
+CPU always allocated while running. Runs as the default Compute SA (`267355023116-compute@`, Editor;
+replacing it is in the checklist's Phase 4). `ingress=all` + `--no-allow-unauthenticated`
+(IAM-private; reach it with `gcloud run services proxy`). `CHAT_APP_ALLOW_ANON=1` until the front door
+exists. Connector `planner-connector`, egress `private-ranges-only`, Cloud SQL attached.
+- LLM: **Vertex `google/gemini-2.5-flash` primary**, vLLM (`openai/gpt-oss-120b` via the relay) as
+  fallback. The intended order is the reverse: switch back once the ENGR vLLM job is up (it was down on
+  2026-11-16 and 2026-11-25).
+- Secrets: `DATABASE_URL` ← `registration-db-dsn`, `CREDENTIALS_ENCRYPTION_KEY` ←
+  `credentials-encryption-key` (created 2026-11-25), `OPENAI_API_KEY` ← `vllm-api-key`.
+- `HEALTH_PROBE_SKIP_AGENTS=disaster-response-agent` (the old name of
+  `CHAT_APP_HEALTH_PROBE_SKIP_AGENTS`; both work).
 
-**Cloud Run `registration`** — the CloudRunBackend host. `SPAWN_BACKEND=cloudrun`, runs as the
-`registration-service` SA. Wired to Cloud SQL (`--add-cloudsql-instances`, DSN in `registration-db-dsn`),
-`--vpc-connector planner-connector` for ADS, `github-token` secret for the build-commit path,
-`ADMIN_EMAILS=amaan@wustl.edu`. `ingress=all` + `--no-allow-unauthenticated` (IAM-private, reach via proxy).
-**Singleton: `min=max=1`, `--no-cpu-throttling`** (holds in-memory backend state + the build-poll/recovery
-loops). Env: `GCP_PROJECT`/`GCP_REGION`/`AGENT_RUNTIME_SA`/`PLANNER_INVOKER_SA`/`IMAGE_REGISTRY`,
-`SKIP_STARTUP_WAITS=1`.
+**Cloud Run `registration`** (rev `registration-00007`) — the registration service and
+`CloudRunBackend` host. Image `.../agenticnetwork/agenticnetwork-registration:d9aad31` (Artifact
+Registry). **min 0, max 1** since 2026-11-25: it scales to zero between registrations, and a request
+wakes it. CPU stays allocated while it runs, so the build poll (every 30 s) runs for the ~15 minutes
+Cloud Run keeps an idle instance. Runs as `registration-service@`. `SPAWN_BACKEND=cloudrun`,
+`CHAT_APP_INVOKER_SA` = the chat app's SA, `IMAGE_REGISTRY=di2washu` (Docker Hub, for custom-agent
+images), `GITHUB_REPO=washu-dev/agent-directory`, `ADMIN_EMAILS` (two admins), `SKIP_STARTUP_WAITS=1`.
+Secrets: `DATABASE_URL` ← `registration-db-dsn`, `GITHUB_TOKEN` ← `github-token`.
+- **`github-token` is rejected by GitHub (401) as of 2026-11-25**, so approving a custom agent fails
+  until the secret has a new token.
 
-**Cloud SQL `agenticnetwork-db`** — POSTGRES_15, db-f1-micro, connection
-`di2-agenticweb:us-central1:agenticnetwork-db`. Database `registration` is **shared** by the planner and
-the reg service (disjoint tables; distinct trigger fns, no clobber). User `regsvc`; full socket DSN in
-secret `registration-db-dsn`. Reached via Cloud Run's built-in Cloud SQL connector (auth-proxy socket) —
-no public exposure.
+**Cloud Run agents (on-demand, min 0)**
+- `disaster` — manual deploy from Phase 3 (image `di2washu/agenticnetwork-disaster:vertex`), Vertex
+  Gemini, `ingress=all`, runs as the default Compute SA. Answers through the chat app.
+- `agent-echo-test` — deployed by the `CloudRunBackend` in August. `ingress=internal`, so the chat app
+  gets 404 calling it (fixed in Phase 2). Registered with skill id 1 (a category), so the directory
+  refuses its card; it is listed from an older record.
+- Registered, not built: `Loop Check` (an echo agent for the register-to-answer test), waiting on the
+  GitHub token.
 
-**Cloud Run agents (on-demand, `min=0`)** — `disaster` (manual, from Phase 3) and `agent-echo-test` (a
-**throwaway** deployed by the CloudRunBackend to prove the loop — safe to delete: `gcloud run services
-delete agent-echo-test --region=us-central1`). Run as `agent-runtime` SA, internal ingress, planner granted
-`run.invoker`. $0 idle.
+**Cloud SQL `agenticnetwork-db`** — POSTGRES_15, `db-f1-micro`, zonal. Database `registration` is
+shared by the chat app and the registration service (separate tables). User `regsvc`; the socket DSN is
+in `registration-db-dsn`. Public IP with no authorized networks, so it is reached only through Cloud
+Run's Cloud SQL connector. **Backups since 2026-11-25:** daily at 08:00 UTC (7 kept) and point-in-time
+recovery (7 days).
 
-**`ads` VM (directory)** — COS GCE VM (`10.128.0.3`): `dirctl daemon` + co-located `registry:2` (host
-networking, sqlite `ads_daemon.gcp.yaml`). Ports 8888/8999 open in the COS host firewall (+ reboot
-startup-script). Holds the routed agent catalog.
+**`ads` VM** — e2-small COS VM (`10.128.0.3`): `dirctl daemon` with `--tmpfs /root/.agntcy/dir` and a
+co-located `registry:2` (host networking, sqlite, `ads_daemon.gcp.yaml`). A startup script opens
+8888/8999 in the COS host firewall. Validates records against `https://schema.oasf.outshift.com`, which
+refuses category-level skills. Logs repeat `Failed to get namespace entries for labels` every 5 s for
+one record (not yet investigated).
 
-**`vllm-relay` VM** — always-on e2-micro (`10.128.0.2`), autossh tunnel (systemd) to `h100-2405:8100`.
-Dormant when the planner is on the Vertex fallback.
+**`vllm-relay` VM** — e2-micro (`10.128.0.2`). systemd `vllm-tunnel.service` (autossh) to the ENGR vLLM
+on `:8100`. On 2026-11-25 the tunnel was running, but nothing answered at the ENGR end.
 
-**`planner-connector` (Serverless VPC connector, `10.8.0.0/28`)** — used by **both** the planner and the
-registration service to reach the private ADS VM (+ relay). Firewall allows the connector range → `ads`
-(8888/8999) and → `vllm-relay` (8100).
+**`planner-connector`** (Serverless VPC Access, `10.8.0.0/28`, e2-micro, 2–10 instances) — used by
+`chat-app`, `registration` and `disaster`. Firewall: connector → `ads` (8888/8999) and → `vllm-relay`
+(8100).
 
-**Service accounts** — `agent-runtime@` (low-priv identity agents run as: Vertex user),
-`registration-service@` (reg-service runtime + deployer: `run.admin`, `serviceAccountUser` on
-agent-runtime, `cloudsql.client`, secret access, `vpcaccess.user`). Planner runs as the **default compute
-SA** (`267355023116-compute@`, Editor-carrying → hardening follow-up). Captured in
-[`scripts/gcp_iam_step7.sh`](../../../deployment/scripts/gcp_iam_step7.sh).
+**Artifact Registry `agenticnetwork`** (docker, `us-central1`) — infra images, built with
+`deployment/cloudbuild.yaml` and tagged with the commit SHA.
 
-**Secret Manager** — `vllm-api-key` (planner's `OPENAI_API_KEY`), `disaster-card`, `registration-db-dsn`
-(shared Cloud SQL DSN), `github-token` (reg-service build-commit path), `credentials-encryption-key`
-(planner AES-256-GCM). Note: `registration-db-password` (base64) is **superseded** by the DSN secret.
+**Service accounts** — `agent-runtime@` (agents run as this; Vertex user), `registration-service@`
+(runtime and deployer: `run.admin`, `serviceAccountUser` on `agent-runtime`, `cloudsql.client`, secret
+access, `vpcaccess.user`), and the default Compute SA for `chat-app` and `disaster`. Grants are in
+[`deployment/scripts/gcp_iam_step7.sh`](../../../deployment/scripts/gcp_iam_step7.sh).
 
-**ENGR vLLM (`gpt-oss-120b` on `h100-2405`)** — *not a GCP resource*; primary LLM via the relay.
+**Secret Manager** — `registration-db-dsn`, `credentials-encryption-key`, `github-token` (needs a new
+token), `vllm-api-key`, `disaster-card`, and `registration-db-password` (superseded by the DSN secret).
 
-## What's live vs. deferred
-- **Live (as of 2026-08-03):** planner (on Cloud SQL) + real ADS + authenticated A2A + on-demand agents + LLM failover, **and
-  the full register→build→deploy→publish automation** (registration service + CloudRunBackend + Cloud SQL).
-- **Next when cloud work resumes** (paused since the end of summer 2026; cloud is a critical leg of the
-  project going forward, so resuming it is a priority — ENGR is the live public deployment meanwhile): the
-  **public front door** (decided approach Option A, gateway mints an ID token → run.app; build outline
-  in `IMPLEMENTATION_CLOUDRUN_BACKEND.md` Step 10) and the **Option-1 cutover**
-  (`agenticweb.engr.wustl.edu` → GCP). Plus the rest of the specialist agent fleet. Handoff summary:
-  [`README.md`](README.md#status--deferred-work-handoff).
+**ENGR vLLM (`gpt-oss-120b`)** — not a GCP resource. Intended primary LLM, reached through the relay.
 
 ## Cost / pause
-Always-on billers: planner (min=1), **registration (min=1)**, **Cloud SQL `agenticnetwork-db`**, `ads` VM,
-`vllm-relay` VM, the connector. To pause the serverless bits: `min-instances=0` on planner + registration;
-`gcloud compute instances stop ads vllm-relay`; `gcloud sql instances patch agenticnetwork-db
---activation-policy=NEVER` to stop the DB. The connector can't be paused (delete/recreate for long idles).
-A `min-instances` change makes a new revision, which pulls the current `:latest`. Once a `:latest`
-built after the 2026-10-20 rename exists (ENGR pushes the same one), `planner` must also get
-`--command=python --args=-m,chat_app` in that update, or the new revision cannot start (its old
-override starts `planner_agent.scripts.run_server`, which newer images lack). See
-[README.md](README.md#dev-workflow).
+
+Always-on billers: Cloud SQL, the `ads` and `vllm-relay` VMs, and the connector (min 2 instances).
+`chat-app` and `registration` run at min 0, so they bill while serving and while an idle instance
+lingers. To pause the rest: `gcloud compute instances stop ads vllm-relay --zone=us-central1-a` and
+`gcloud sql instances patch agenticnetwork-db --activation-policy=NEVER` (restart both before use). The
+connector can't be paused; delete and recreate it for long idles.
