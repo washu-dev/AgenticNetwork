@@ -54,7 +54,7 @@ At a glance (exact names, env, and control commands are in [DEPLOYED_COMPONENTS.
 | LLM | vLLM on a GPU node in the same allocation | vLLM via the `vllm-relay` VM (primary) → **Vertex fallback** |
 | Config / secrets | env from `.env`/`secrets.env` via `--export=ALL` | Cloud Run env + **Secret Manager** |
 | Images | `di2washu/agenticnetwork-*` | **same images** (shared; the entrypoint branches on `SKIP_STARTUP_WAITS`) |
-| Ports | fixed (8090/8091/8888/19105-8) | Cloud Run injects `$PORT` (8080); agents use internal ingress |
+| Ports | fixed (8090/8091/8888/19105-8) | Cloud Run injects `$PORT` (8080); agents use `ingress=all`, IAM-only (no public access) |
 | Lifetime | ephemeral (Slurm time limit; node hostname changes each run) | persistent (stable `*.run.app` URLs) |
 | Front door | Shibboleth gateway → chat app :8090 | **not yet** — currently anon + proxy (see below); Option-A front door planned |
 

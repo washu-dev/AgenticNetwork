@@ -146,7 +146,7 @@ def test_deploy_spec_uses_digest(monkeypatch):
     assert spec["min_instances"] == 0
     assert spec["max_instances"] == 1
     assert spec["container_port"] == 8080
-    assert spec["ingress"] == "internal-only"
+    assert spec["ingress"] == "all"
     assert spec["allow_unauthenticated"] is False
     assert spec["service_account"] == "agent-runtime@x.iam.gserviceaccount.com"
     assert spec["invoker_member"] == "serviceAccount:chat-app@x.iam.gserviceaccount.com"
@@ -377,6 +377,21 @@ async def test_real_client_get_reads_terminal_condition():
 
     client._services = _Services(service(run_v2.Condition.State.CONDITION_FAILED))
     assert (await client.get("agent-x"))["ready"] is False
+
+
+def test_real_client_builds_service_with_spec_ingress():
+    """The Service sent to Cloud Run carries the spec's ingress (it used to be
+    hard-coded internal-only, which made the chat app get 404 from every agent)."""
+    run_v2 = pytest.importorskip("google.cloud.run_v2")
+    client = _CloudRunClient.__new__(_CloudRunClient)
+    client._run_v2 = run_v2
+    spec = _deploy_spec(
+        agent_id="a1", name="Paper Reviewer", description="d", handler_type="custom",
+        config=_custom_config(), image_ref="sha256:deadbeef",
+        service_account=None, invoker_member=None, vpc_connector=None,
+    )
+    service = client._build_service(spec)
+    assert service.ingress == run_v2.IngressTraffic.INGRESS_TRAFFIC_ALL
 
 
 def test_make_backend_selects_cloudrun(monkeypatch):

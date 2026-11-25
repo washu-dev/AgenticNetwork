@@ -17,9 +17,8 @@ same images, same services, your names.
 > 4. Vertex AI as the *primary* LLM, and the Vertex base URL (taken from Google's documentation,
 >    not this repo). The reference used Vertex only as the fallback behind vLLM.
 > 5. A hosted OpenAI-compatible API as the planner's LLM on Cloud Run.
-> 6. Whether the chat app needs `--vpc-egress=all-traffic` to reach agents deployed with internal
->    ingress (see [Troubleshooting](#troubleshooting)). The reference docs don't record the
->    chat app's egress setting.
+> 6. ~~Whether the chat app needs `--vpc-egress=all-traffic` to reach agents deployed with internal
+>    ingress.~~ Settled 2026-11-25: agents use `ingress=all`, IAM-only (see [Troubleshooting](#troubleshooting)).
 > 7. Publishing an agent card by hand over an SSH tunnel ([step 13](#13-add-agents)).
 >
 > If you run this guide, please fix what breaks and update this box.
@@ -527,7 +526,7 @@ If an upload is refused, delete the leftover record as an admin:
 service commits the build context to `GITHUB_REPO`; a GitHub Action there builds the image and pushes
 it to Docker Hub as `${IMAGE_REGISTRY}/agenticnetwork-custom-<name>`, tagged with the commit's SHA
 and `:latest`; the build poll sees that commit's image, and the `CloudRunBackend` deploys it by
-digest as `agent-<name>` (min instances 0, max 1, as `agent-runtime`, internal ingress), grants the chat app `run.invoker`, and publishes the card with the agent's
+digest as `agent-<name>` (min instances 0, max 1, as `agent-runtime`, `ingress=all` without public access, so only callers with `run.invoker` get in), grants the chat app `run.invoker`, and publishes the card with the agent's
 `run.app` URL. Limits today:
 
 - Only uploaded-code agents work on Cloud Run. The supervisor rejects prompt-only `llm` agents and
@@ -547,7 +546,7 @@ Known operational traps (the `updated_at` trigger, and the build poll's freshnes
 rows approved before the service recorded build commits) are in [README.md](README.md#dev-workflow).
 
 **Deploy an existing agent by hand (unverified).** Deploy its image as a Cloud Run service with
-`--ingress=internal --no-allow-unauthenticated --min-instances=0 --service-account="$AGENT_SA"`,
+`--ingress=all --no-allow-unauthenticated --min-instances=0 --service-account="$AGENT_SA"`,
 grant `CHAT_APP_SA` `roles/run.invoker` on it, set the card's URL to the service's `run.app` URL,
 and publish the card from your laptop through an SSH tunnel to the directory (`scripts/ads` needs
 `dirctl` and the dev venv; see [docs/AGENT_DIRECTORY.md](../../AGENT_DIRECTORY.md)):
@@ -627,7 +626,7 @@ From the reference deployment ([MIGRATION.md](MIGRATION.md#operational-gotchas-l
 | The first call to an agent times out | Cold start; raise `A2A_HTTP_TIMEOUT_SECONDS`. |
 | An agent is deployed but the planner can't find it | Its card has no routable OASF skill. |
 | An approved agent stays `building` | The build workflow in `GITHUB_REPO` doesn't push the `:<commit SHA>` tag the build poll waits for, or its build failed (see its Actions log). Fix it, then restart the agent. |
-| Planner-to-agent calls get 403 or 404 (unverified) | Internal ingress may require the planner's traffic to `*.run.app` to go through the VPC. Try `gcloud run services update chat-app --region="$REGION" --vpc-egress=all-traffic`; with that setting, a hosted LLM API also needs a Cloud NAT route to the internet. |
+| Chat-app-to-agent calls get 404 | The agent has `--ingress=internal`. The chat app reaches `*.run.app` over the internet (its egress is `private-ranges-only`), which internal ingress refuses with 404 (seen 2026-11-16). Use `--ingress=all` with `--no-allow-unauthenticated`; the registration service deploys agents that way since 2026-11-25. |
 
 ## Not covered
 
