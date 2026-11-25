@@ -1534,3 +1534,76 @@ def _geospatial_card() -> AgentCard:
             )
         ],
     )
+
+
+# Strict mode: a call that names no skill cannot skip confirmation.
+
+
+def test_strict_mode_unnamed_skill_on_a_write_capable_agent_requires_confirmation() -> None:
+    asyncio.run(_strict_unnamed_skill_write_agent())
+
+
+async def _strict_unnamed_skill_write_agent() -> None:
+    directory = SpyDirectory(fake_ads=True)
+    directory.publish_agent_card(load_agent_card(EMAIL_CARD))
+    a2a = SpyA2A()
+    llm = ScriptedLLMClient(
+        [
+            ToolCall(tool_name="list_agents", arguments={}),
+            # No "skill": the agent would choose the operation itself.
+            ToolCall(
+                tool_name="call_agent",
+                arguments={"agent_id": "email-agent", "task_input": {"to": ["bob@example.com"]}},
+            ),
+        ]
+    )
+    app = create_app(
+        config=_config(policy="strict"), directory_client=directory, a2a_client=a2a,
+        state_store=MemoryStore(), llm_client=llm,
+    )
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client:
+        first = (await client.post(
+            "/messages", json={"user_id": "u", "channel": "api", "text": "Email bob about the meeting."},
+        )).json()
+        assert first["confirmation_required"] is True
+        assert first["pending_confirmation"]["skill"] is None
+        assert "email/send" in first["pending_confirmation"]["reason"]
+        assert "None" not in first["text"]
+        assert a2a.calls == []
+
+        second = (await client.post(
+            "/messages",
+            json={"user_id": "u", "channel": "api", "context_id": first["context_id"], "text": "yes"},
+        )).json()
+    assert second["confirmation_required"] is False
+    # Confirmed, the call goes out as asked: no skill, so the agent chooses.
+    assert a2a.calls == [("email-agent", None)]
+    assert a2a.requests[0].metadata["confirmed"] is True
+
+
+def test_strict_mode_unnamed_skill_on_a_read_only_agent_needs_no_confirmation() -> None:
+    asyncio.run(_strict_unnamed_skill_read_only_agent())
+
+
+async def _strict_unnamed_skill_read_only_agent() -> None:
+    directory = SpyDirectory(fake_ads=True)
+    directory.publish_agent_card(load_agent_card(WEATHER_CARD))
+    a2a = SpyA2A()
+    agent_id = directory.search_agents()[0].agent_id
+    llm = ScriptedLLMClient(
+        [
+            ToolCall(tool_name="list_agents", arguments={}),
+            ToolCall(tool_name="call_agent", arguments={"agent_id": agent_id, "task_input": {}}),
+            ToolCall(tool_name="final_answer", arguments={"text": "Done."}),
+        ]
+    )
+    app = create_app(
+        config=_config(policy="strict"), directory_client=directory, a2a_client=a2a,
+        state_store=MemoryStore(), llm_client=llm,
+    )
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client:
+        reply = (await client.post(
+            "/messages", json={"user_id": "u", "channel": "api", "text": "Weather in St. Louis?"},
+        )).json()
+    assert reply["confirmation_required"] is False
+    assert a2a.calls == [(agent_id, None)]
