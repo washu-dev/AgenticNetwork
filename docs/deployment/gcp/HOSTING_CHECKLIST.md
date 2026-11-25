@@ -272,9 +272,12 @@ outage raises an alert while chat keeps working on Vertex.
 - [x] **`default-allow-rdp` deleted** (2026-11-25): RDP open to `0.0.0.0/0`, with no Windows VMs.
 - [x] **`ADMIN_EMAILS`** set on `chat-app` to match `registration` (two admins).
 - [x] **`PLANNER_POLICY_MODE=strict`** on `chat-app`: a call to a write skill needs the user's confirmation.
-      No GCP agent has write skills yet. **Gap to fix in code** (`chat_app/planner/runtime.py`,
-      `_evaluate_policy`): when the model names no skill, the check allows the call, so a write can
-      skip confirmation.
+      No GCP agent has write skills yet. **The no-skill gap is fixed** (commit `6b3490f`, deployed): a call
+      that names no skill now needs confirmation when the agent advertises a skill whose id or tag names a
+      side effect (`email/send`, `code/bug_fix`); read-only agents are unchanged (checked live with
+      `disaster` and the echo agent). Still open: the card converter marks a skill as a write when its
+      *description* contains a word like "send" (`agentnet/directory/card_oasf._looks_like_write_skill`),
+      so a *named* call to such a read-only skill asks for confirmation it doesn't need.
 - [x] **`GITHUB_TOKEN` and `GITHUB_REPO` removed from `registration`** (Cloud Build path). The
       `github-token` secret is still in Secret Manager; delete it once the cluster no longer needs this copy.
 - [ ] **Secrets still missing on `chat-app`**, each needing a credential from a person:

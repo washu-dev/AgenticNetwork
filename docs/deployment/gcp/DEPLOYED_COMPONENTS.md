@@ -31,7 +31,7 @@ Onboarding path (automated, Cloud Build since 2026-11-25):
 ## Components
 
 **Cloud Run `chat-app`** — the chat app with the planner. Image
-`us-central1-docker.pkg.dev/di2-agenticweb/agenticnetwork/agenticnetwork-chat-app:6980889`, started
+`us-central1-docker.pkg.dev/di2-agenticweb/agenticnetwork/agenticnetwork-chat-app:6b3490f`, started
 with `python -m chat_app`. `REGISTRATION_SERVICE_URL` points at `registration` (the `/register/*`
 pass-through authenticates with an ID token), `ADMIN_EMAILS` (two admins), `PLANNER_POLICY_MODE=strict`. `CHAT_APP_DIRECTORY_CACHE_SECONDS=10`; health probes skip `*.run.app` agents.
 One instance served 204 turns/min at 20 users on 2026-11-25 (`benchmarks/RESULTS.md` §13). min 0, max 1, 1 vCPU, 1 GiB,
