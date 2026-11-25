@@ -97,7 +97,11 @@ order at the end.
 
 **Bugs found by the registration upgrade** (both predate today's changes):
 
-- [ ] **Every registration restart redeploys every live agent.** `CloudRunBackend.get()`
+- [x] **Fixed 2026-11-25** (commit `b61cb8b`, rev `registration-00006`; startup logged
+      `recovery_complete_cloud confirmed=1 redeployed=0`). Registration also now **scales to zero**
+      (`min=0`, `max=1`, CPU allocated while running) instead of running all the time, which saves
+      about $45–50/month at list price. Not yet observed: the instance actually reaching zero and cold-starting on the next request.
+      **Every registration restart redeploys every live agent.** `CloudRunBackend.get()`
       (`registration_service/backend.py`, used by `is_alive`) looks for a `Ready` condition in the
       Cloud Run v2 `conditions` list. But v2 reports `Ready` as `terminal_condition`, and
       `conditions` only holds `RoutesReady` / `ConfigurationsReady` (checked against the live API). So recovery
@@ -129,6 +133,11 @@ order at the end.
         Registry (Workload Identity Federation from GitHub Actions, no JSON key), still tagged with the commit SHA.
       - set `IMAGE_REGISTRY` on `registration` to the Artifact Registry path. Grant `agent-runtime` / the
         Cloud Run service agent `artifactregistry.reader`.
+- [ ] **Wake registration when an agent image lands.** Registration scales to zero, so a build that
+      outlasts its ~15-minute idle window waits in `building` until the next request. With agent images
+      in Artifact Registry, have a Pub/Sub push subscription on the `gcr` topic (Artifact Registry's push
+      notifications) call a new registration endpoint, authenticated with an OIDC token for a dedicated SA.
+      The endpoint runs the build check for that image, so a finished build deploys right away.
 - [ ] **Directory CPU cost.** Every listing launches `dirctl` once per agent (about 0.45 CPU-s per
       listing with 2 agents, growing with directory size). Add the proposed ~10 s cache for the chat
       app's listing with one fetch in flight (`RESULTS.md` §11). Longer term, replace the `dirctl`

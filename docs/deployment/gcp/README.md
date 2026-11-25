@@ -29,7 +29,8 @@ auto-deploys + auto-publishes it — no operator step. The request-path diagram 
 At a glance (exact names, env, and control commands are in [DEPLOYED_COMPONENTS.md](DEPLOYED_COMPONENTS.md)):
 
 - **Cloud Run** — `chat-app` (the chat app, min=1; named `planner` until 2026-10-25), `registration`
-  (singleton min=max=1, `SPAWN_BACKEND=cloudrun`), and on-demand agents (`disaster`, custom agents; min=0).
+  (max=1, scales to zero between registrations since 2026-11-25; `SPAWN_BACKEND=cloudrun`), and
+  on-demand agents (`disaster`, custom agents; min=0).
 - **Cloud SQL** — `agenticnetwork-db` (Postgres 15). One `registration` database **shared** by the chat app
   and the registration service (disjoint tables).
 - **GCE VMs** — `ads` (the `dirctl` directory, COS VM at `10.128.0.3`) and `vllm-relay` (autossh tunnel to
@@ -129,7 +130,8 @@ teammate access: `gcloud run services add-iam-policy-binding chat-app --region=u
 
 ## Operate / cost / pause
 
-Always-on billers: `chat-app` + `registration` (min=1), Cloud SQL, the `ads` + `vllm-relay` VMs, the connector.
+Always-on billers: Cloud SQL, the `ads` + `vllm-relay` VMs, the connector. `chat-app` and
+`registration` run at min=0 as of 2026-11-25, so they bill only while serving or idling after a request.
 Pause commands are in [DEPLOYED_COMPONENTS.md](DEPLOYED_COMPONENTS.md#cost--pause).
 
 ## Status & deferred work (handoff)

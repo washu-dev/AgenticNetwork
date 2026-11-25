@@ -303,8 +303,15 @@ Check it: `gcloud compute ssh ads --zone="$ZONE" --command='docker ps; docker lo
 
 ## 9. Deploy the registration service
 
-A singleton (`min=max=1`, CPU always allocated), because it keeps backend state in memory and runs
-the build-poll and recovery loops. `SKIP_STARTUP_WAITS=1` skips the entrypoint's cluster-only
+At most one instance (`--max-instances=1`), because it keeps backend state in memory and two
+copies could deploy the same agent. It scales to zero when idle (`--min-instances=0`). A request
+(the registration page, a register, upload or approve call) starts it, and on start it reconciles
+live agents against Cloud Run without redeploying them. CPU stays allocated while it runs
+(`--no-cpu-throttling`), so its build poll (every 30 s) keeps working for the ~15 minutes Cloud Run
+keeps an idle instance. If an agent's image build outlasts that, the agent waits in `building`
+until the next request wakes the service, then deploys within one poll. For no wait, keep
+`--min-instances=1` (about $45–50 a month at list price for 1 vCPU and 512 MiB, always allocated).
+The reference ran it at `min=max=1`. `SKIP_STARTUP_WAITS=1` skips the entrypoint's cluster-only
 waits for Postgres and ADS on localhost, and the entrypoint listens on Cloud Run's `$PORT`
 (`deployment/entrypoints/entrypoint-registration.sh`).
 
@@ -312,7 +319,7 @@ waits for Postgres and ADS on localhost, and the entrypoint listens on Cloud Run
 gcloud run deploy registration \
   --image="${IMAGE_PREFIX}/agenticnetwork-registration:latest" \
   --region="$REGION" --service-account="$REG_SA" \
-  --min-instances=1 --max-instances=1 --no-cpu-throttling \
+  --min-instances=0 --max-instances=1 --no-cpu-throttling \
   --ingress=all --no-allow-unauthenticated \
   --vpc-connector="$CONNECTOR" --add-cloudsql-instances="$SQL_CONN" \
   --set-env-vars="SPAWN_BACKEND=cloudrun,SKIP_STARTUP_WAITS=1,GCP_PROJECT=${PROJECT_ID},GCP_REGION=${REGION},AGENT_RUNTIME_SA=${AGENT_SA},CHAT_APP_INVOKER_SA=${CHAT_APP_SA},ADS_SERVER_ADDR=${ADS_IP}:8888,ADMIN_EMAILS=${ADMIN_EMAIL},IMAGE_REGISTRY=${DOCKERHUB_NAMESPACE},GITHUB_REPO=${GITHUB_REPO}" \
@@ -561,9 +568,9 @@ gcloud run services update chat-app --region="$REGION" \
 
 ## Cost
 
-- **Always on:** the `chat-app` and `registration` services (one instance each, CPU
-  always allocated), the Cloud SQL instance, the `ads` VM and the VPC connector, plus any vLLM
-  host. The reference
+- **Always on:** the `chat-app` service (one instance, CPU always allocated), the Cloud SQL
+  instance, the `ads` VM and the VPC connector, plus any vLLM host. The `registration` service
+  scales to zero between registrations (step 9). The reference
   estimated about $220–320 a month for this control plane ([MIGRATION.md](MIGRATION.md#cost--runway));
   that is a planning estimate, not a measured bill.
 - **LLM:** pay per token for a hosted API or Vertex; GPU hours for self-hosted vLLM.
