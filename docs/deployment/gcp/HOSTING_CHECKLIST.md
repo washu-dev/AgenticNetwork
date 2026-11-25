@@ -33,6 +33,14 @@ order at the end.
 - [x] **Images: Artifact Registry (decided 2026-11-25).** All images (infra and custom agents) move
       there. Cloud Run failed to create a revision from a Docker Hub image (`mirror.gcr.io ... not
       found`); copying it to Artifact Registry fixed it. The code changes are in Phase 2.
+- [x] **Custom agents on GCP are built with Cloud Build (decided 2026-11-25).** Today, approving an
+      agent commits its build context to `washu-dev/agent-directory`, a GitHub Action builds the image to
+      Docker Hub, and registration polls Docker Hub. On GCP, registration will instead submit the
+      build context straight to Cloud Build, which pushes to Artifact Registry. That removes the GitHub
+      token and Docker Hub from the GCP path, and Cloud Build's completion notice wakes registration
+      (Phase 2). The cluster keeps the GitHub path until ENGR is retired. Trade-off: approved code is
+      no longer recorded in git history, so a versioned Cloud Storage bucket keeps each approved build
+      context instead.
 - [x] **Front-door credential: SA keys are allowed (checked 2026-11-25).** Both
       `iam.disableServiceAccountKeyCreation` and `iam.managed.disableServiceAccountKeyCreation` are
       `enforce: false` on `di2-agenticweb` (`gcloud org-policies describe <constraint>
@@ -91,14 +99,13 @@ order at the end.
 - [x] Uncommitted work committed on `fix/directory-off-event-loop` (PR).
 - [ ] `agent-echo-test` kept on purpose for the Phase 2 ingress fix.
 - [x] `DEPLOYED_COMPONENTS.md` rewritten from the inventory (2026-11-25).
-- [ ] **Blocked on a new GitHub token.** The register → approve → deploy → discover → answer round
-      trip (`IMPLEMENTATION_CLOUDRUN_BACKEND.md` "End-to-end acceptance"). A test agent, `Loop Check`
-      (custom echo handler, skill 10203), is registered, uploaded and approved. The approval's commit to
-      `washu-dev/agent-directory` fails because GitHub answers **401 to `github-token`**: the token
-      has expired or been revoked. Once the secret has a new fine-grained token (Contents: read and write on
-      `agent-directory` only), re-approve `Loop Check`. Then confirm the image build, the deploy, the
-      card in `/agents` and a chat turn. Set `--ingress=all` on `agent-loop-check` by hand until the
-      Phase 2 ingress change lands. After that, delete `agent-echo-test` through the registration API.
+- [ ] **Moved to Phase 2.** The register → approve → deploy → discover → answer round trip
+      (`IMPLEMENTATION_CLOUDRUN_BACKEND.md` "End-to-end acceptance"). On 2026-11-25 approval failed
+      because GitHub answers **401 to `github-token`** (expired or revoked; the secret still has only
+      its 2026-08-03 version). With custom-agent builds moving to Cloud Build, the round trip runs on
+      that path instead, so the token isn't needed for GCP. A test agent, `Loop Check` (custom echo
+      handler, skill 10203), is registered, uploaded and approved, waiting to be re-approved once the
+      Cloud Build path is deployed.
 
 **Bugs found by the registration upgrade** (both predate today's changes):
 
@@ -123,7 +130,7 @@ order at the end.
       can't be published. Registration's preflight (`registration_service/oasf_skills.py`) should
       require a concrete skill. Echo Test still shows in `/agents`, from an older record.
 
-**Done when:** the inventory doc matches reality and one custom agent completes the full loop.
+**Done when:** the inventory doc matches reality (done 2026-11-25). The full-loop check moved to Phase 2.
 
 ## Phase 2: Fix the bugs found in the Nov 16 testing
 
@@ -135,18 +142,30 @@ order at the end.
       without a token gets 403. Re-run the load test with the driver's strict check: echoed text
       returned and `call_agent` completed. Update the deploy text in `DEPLOY_YOUR_OWN.md` step 13
       and its 404 troubleshooting row.
-- [ ] **Custom-agent images on Artifact Registry**, which requires code changes:
-      - the build poll checks Docker Hub's public API (`_image_exists_on_dockerhub` in the registration
-        service). Add an Artifact Registry check.
-      - `build-custom-agent.yml` in `agent-directory` pushes to Docker Hub. Make it push to Artifact
-        Registry (Workload Identity Federation from GitHub Actions, no JSON key), still tagged with the commit SHA.
-      - set `IMAGE_REGISTRY` on `registration` to the Artifact Registry path. Grant `agent-runtime` / the
-        Cloud Run service agent `artifactregistry.reader`.
-- [ ] **Wake registration when an agent image lands.** Registration scales to zero, so a build that
-      outlasts its ~15-minute idle window waits in `building` until the next request. With agent images
-      in Artifact Registry, have a Pub/Sub push subscription on the `gcr` topic (Artifact Registry's push
-      notifications) call a new registration endpoint, authenticated with an OIDC token for a dedicated SA.
-      The endpoint runs the build check for that image, so a finished build deploys right away.
+- [ ] **Build custom agents with Cloud Build** (Phase 0 decision). Code in `registration_service`:
+      - On approval with `SPAWN_BACKEND=cloudrun`, assemble the same build context the GitHub commit
+        carries today (`builder.generate_dockerfile`, the card, the `build_manifest` `agent.json`, the
+        uploaded code, the `agent_skeleton` runtime). Upload it as a tarball to a **versioned** Cloud
+        Storage bucket (the record of approved code), and create a Cloud Build build from that object.
+        The build pushes `…/agenticnetwork/agenticnetwork-custom-<slug>:<approval id>` to Artifact Registry.
+        Store the build id on the agent row (alongside or instead of `build_commit`).
+      - Finished builds: Cloud Build publishes to the Pub/Sub topic `cloud-builds`. A push subscription
+        (OIDC token from a dedicated SA with `run.invoker` on `registration`) calls a new registration
+        endpoint. That endpoint checks the build, records the image digest, marks the agent
+        `image_ready` and deploys it. This wakes a scaled-to-zero registration, so a long build no
+        longer waits for the next visitor. Keep the 30 s poll as a fallback, asking Cloud Build's API
+        (`builds.get`) instead of Docker Hub. A failed build marks the agent `failed`, with the build's log URL.
+      - Keep the cluster on the GitHub path (`ClusterBackend`; the `owns_build` flag already separates
+        backends). `github-token` is then needed only there.
+      - Tests: a fake Cloud Build client, like the fake Cloud Run client.
+      - IAM: a build SA with `artifactregistry.writer` and `logging.logWriter`. On `registration-service@`:
+        `cloudbuild.builds.editor`, `iam.serviceAccountUser` on the build SA, and `storage.objectCreator` on
+        the bucket. Cloud Run pulls the image from Artifact Registry in the same project.
+      - Then run the round trip moved from Phase 1: re-approve `Loop Check`, and check the build, the
+        deploy by digest, the card in `/agents` and a chat answer. Then delete `agent-echo-test` (and its old
+        directory record) through the registration API.
+      - Docs: `DEPLOY_YOUR_OWN.md` step 13 (drop the GitHub repo, Docker Hub and public-image requirements
+        for Cloud Run), `REGISTRATION_SERVICE.md`, `gcp/README.md` "Dev workflow".
 - [ ] **Directory CPU cost.** Every listing launches `dirctl` once per agent (about 0.45 CPU-s per
       listing with 2 agents, growing with directory size). Add the proposed ~10 s cache for the chat
       app's listing with one fetch in flight (`RESULTS.md` §11). Longer term, replace the `dirctl`
@@ -203,7 +222,9 @@ outage raises an alert while chat keeps working on Vertex.
       `CREDENTIALS_ENCRYPTION_KEY`, DB DSN, `GITHUB_TOKEN`, LLM key, `GITHUB_ISSUES_TOKEN` and
       `GITHUB_ISSUES_REPO` (a private repo), and the **Google OAuth client** ID/secret for the `/auth/google`
       connect flow. Never rotate `credentials-encryption-key` without re-encrypting stored credentials.
-- [ ] Scope `github-token` to the one `agent-directory` repo (fine-grained PAT or a GitHub App). Set a rotation date.
+- [ ] Remove `github-token` from `registration` once Cloud Build handles GCP builds. It is only used to
+      commit build contexts, and on GCP it is expired anyway (401 on 2026-11-25). The ENGR cluster still needs
+      a working token until it is retired: fine-grained, `agent-directory` only, with a rotation date.
 - [ ] Planner `policy_mode`: set a non-permissive mode for a shared deployment
       (`DOWNSTREAM_CONSIDERATIONS.md` #2, planner bullet).
 - [ ] `ADMIN_EMAILS` on both services: the real admin list.
