@@ -255,27 +255,40 @@ outage raises an alert while chat keeps working on Vertex.
 
 ## Phase 4: Security and IAM hardening
 
-- [ ] **Dedicated chat-app service account.** It currently runs as the default Compute SA
-      (`267355023116-compute@`, Editor). Create `chat-app@` with only `cloudsql.client`,
-      `aiplatform.user`, `secretAccessor` on its own secrets and `vpcaccess.user`. Redeploy as that account and set
-      `CHAT_APP_INVOKER_SA` on `registration` to it. **Then re-grant `run.invoker` on every existing
-      agent to the new SA**, because only new deploys get it automatically.
-- [ ] **`/register/*` pass-through.** The chat app forwards to `REGISTRATION_SERVICE_URL` without a
-      Google ID token, so on GCP it cannot reach the IAM-private registration service
-      (`DEPLOY_YOUR_OWN.md` step 10). Public users register through the chat app, so this must attach an ID
-      token (audience = the registration `run.app` URL) and forward the trusted identity header. Then
-      grant the chat-app SA `run.invoker` on `registration`.
-- [ ] Secrets: confirm every key is in Secret Manager with per-secret grants. This covers the
-      `CREDENTIALS_ENCRYPTION_KEY`, DB DSN, `GITHUB_TOKEN`, LLM key, `GITHUB_ISSUES_TOKEN` and
-      `GITHUB_ISSUES_REPO` (a private repo), and the **Google OAuth client** ID/secret for the `/auth/google`
-      connect flow. Never rotate `credentials-encryption-key` without re-encrypting stored credentials.
-- [ ] Remove `github-token` from `registration` once Cloud Build handles GCP builds. It is only used to
-      commit build contexts, and on GCP it is expired anyway (401 on 2026-11-25). The ENGR cluster still needs
-      a working token until it is retired: fine-grained, `agent-directory` only, with a rotation date.
-- [ ] Planner `policy_mode`: set a non-permissive mode for a shared deployment
-      (`DOWNSTREAM_CONSIDERATIONS.md` #2, planner bullet).
-- [ ] `ADMIN_EMAILS` on both services: the real admin list.
-- [ ] Cloud Armor / ingress: the services stay `--no-allow-unauthenticated`; the org blocks `allUsers`.
+- [ ] **Dedicated chat-app service account: prepared, waiting on the Owner.** Created 2026-11-25:
+      `chat-app@`, with `secretAccessor` on `registration-db-dsn`, `credentials-encryption-key` and
+      `vllm-api-key`, and `run.invoker` on `registration`, `disaster` and `agent-echo-test`. Still needed,
+      project-level (Owner): `roles/cloudsql.client` and `roles/aiplatform.user` for it. Then, in this order:
+      `gcloud run services update registration --update-env-vars=CHAT_APP_INVOKER_SA=chat-app@di2-agenticweb.iam.gserviceaccount.com`,
+      `gcloud run services update chat-app --service-account=chat-app@di2-agenticweb.iam.gserviceaccount.com`,
+      and grant it `run.invoker` on any agent deployed since. Check `/ready` and a chat turn through an agent.
+- [x] **`/register/*` pass-through fixed 2026-11-25** (commits `b0a6416` and `6980889`, the
+      second for `X-Serverless-Authorization`). It attaches an ID token for `*.run.app` and no longer forwards the
+      caller's credentials. `REGISTRATION_SERVICE_URL` is set on `chat-app`, and the Compute SA has `run.invoker`
+      on `registration`. Checked live: `/register/agents` through the chat app lists the registered agents.
+- [x] **`disaster` runs as `agent-runtime@`** (2026-11-25), from an Artifact Registry copy of its image
+      (`agenticnetwork-disaster:vertex`; Cloud Run could not create a revision from the Docker Hub one).
+      Still answers through the chat app, on Vertex.
+- [x] **`default-allow-rdp` deleted** (2026-11-25): RDP open to `0.0.0.0/0`, with no Windows VMs.
+- [x] **`ADMIN_EMAILS`** set on `chat-app` to match `registration` (two admins).
+- [x] **`PLANNER_POLICY_MODE=strict`** on `chat-app`: a call to a write skill needs the user's confirmation.
+      No GCP agent has write skills yet. **Gap to fix in code** (`chat_app/planner/runtime.py`,
+      `_evaluate_policy`): when the model names no skill, the check allows the call, so a write can
+      skip confirmation.
+- [x] **`GITHUB_TOKEN` and `GITHUB_REPO` removed from `registration`** (Cloud Build path). The
+      `github-token` secret is still in Secret Manager; delete it once the cluster no longer needs this copy.
+- [ ] **Secrets still missing on `chat-app`**, each needing a credential from a person:
+      - Google OAuth client ID/secret for the `/auth/google` "connect your Google account" flow (used
+        by the email agent, Phase 5): an OAuth client in this project, redirect URI on the front door's hostname.
+      - `GITHUB_ISSUES_TOKEN` and `GITHUB_ISSUES_REPO` (a private repo) for the "Report a bug" form; it
+        answers 502 without them.
+- [ ] **VMs run as the default Compute SA** (`ads`, `vllm-relay`), with narrow access scopes (storage read,
+      logging, monitoring, Pub/Sub). Lower risk than Cloud Run. A dedicated VM account needs
+      `logging.logWriter` and `monitoring.metricWriter` (Owner), and changing it stops the VM, which takes the
+      directory down for a minute.
+- [ ] Agent builds are set to run as `agent-builder@` and wait on its Phase 2 grants (or switch them to the
+      default Compute SA as a stopgap, which has Editor).
+- [x] Cloud Armor / ingress: the services stay `--no-allow-unauthenticated`; the org blocks `allUsers`.
 
 **Done when:** no runtime identity holds Editor, and no secret is a plain env var except the agent LLM
 variables you chose to accept in Phase 3.

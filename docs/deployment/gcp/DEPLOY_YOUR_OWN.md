@@ -442,9 +442,17 @@ gcloud run deploy chat-app \
   proxy adds none. Everyone who reaches the chat app then shares the `demo-user` identity, including
   its stored credentials, so IAM is your only access control (next step).
 
-The chat app's `/register/*` pass-through forwards to `REGISTRATION_SERVICE_URL` (default
-`http://localhost:8091`) without a Google ID token, so they can't reach the IAM-private
-registration service. Use the registration service's own proxy instead (step 11).
+The chat app's `/register/*` pass-through (how people register agents through the chat app)
+forwards to `REGISTRATION_SERVICE_URL` (default `http://localhost:8091`) with the caller's identity
+and, for a `*.run.app` URL, an ID token for the chat app's own account (since 2026-11-25). Point it
+at the registration service and let the chat app's account call it:
+
+```bash
+REG_URL=$(gcloud run services describe registration --region="$REGION" --format='value(status.url)')
+gcloud run services update chat-app --region="$REGION" --update-env-vars="REGISTRATION_SERVICE_URL=${REG_URL}"
+gcloud run services add-iam-policy-binding registration --region="$REGION" \
+  --member="serviceAccount:${CHAT_APP_SA}" --role=roles/run.invoker
+```
 
 ## 11. Access
 

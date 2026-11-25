@@ -31,11 +31,13 @@ Onboarding path (automated, Cloud Build since 2026-11-25):
 ## Components
 
 **Cloud Run `chat-app`** — the chat app with the planner. Image
-`us-central1-docker.pkg.dev/di2-agenticweb/agenticnetwork/agenticnetwork-chat-app:280e313`, started
-with `python -m chat_app`. `CHAT_APP_DIRECTORY_CACHE_SECONDS=10`; health probes skip `*.run.app` agents.
+`us-central1-docker.pkg.dev/di2-agenticweb/agenticnetwork/agenticnetwork-chat-app:6980889`, started
+with `python -m chat_app`. `REGISTRATION_SERVICE_URL` points at `registration` (the `/register/*`
+pass-through authenticates with an ID token), `ADMIN_EMAILS` (two admins), `PLANNER_POLICY_MODE=strict`. `CHAT_APP_DIRECTORY_CACHE_SECONDS=10`; health probes skip `*.run.app` agents.
 One instance served 204 turns/min at 20 users on 2026-11-25 (`benchmarks/RESULTS.md` §13). min 0, max 1, 1 vCPU, 1 GiB,
-CPU always allocated while running. Runs as the default Compute SA (`267355023116-compute@`, Editor;
-replacing it is in the checklist's Phase 4). `ingress=all` + `--no-allow-unauthenticated`
+CPU always allocated while running. Runs as the default Compute SA (`267355023116-compute@`, Editor).
+Its replacement, `chat-app@`, is created and granted its secrets and invoker rights; the switch waits on
+the Owner's `cloudsql.client` and `aiplatform.user` grants (checklist Phase 4). `ingress=all` + `--no-allow-unauthenticated`
 (IAM-private; reach it with `gcloud run services proxy`). `CHAT_APP_ALLOW_ANON=1` until the front door
 exists. Connector `planner-connector`, egress `private-ranges-only`, Cloud SQL attached.
 - LLM: **Vertex `google/gemini-2.5-flash` primary**, vLLM (`openai/gpt-oss-120b` via the relay) as
@@ -55,14 +57,15 @@ bucket `di2-agenticweb-agent-code` (versioned), builds run as `agent-builder@`, 
 `IMAGE_REGISTRY` = `us-central1-docker.pkg.dev/di2-agenticweb/agenticnetwork`. Cloud Build's
 `cloud-builds` topic pushes to `/internal/build-events` (subscription `registration-build-events`, as
 `build-notifier@`). **Approvals fail with 403 until the project Owner runs the three grants in
-`deployment/scripts/gcp_cloud_build_setup.sh`.** `GITHUB_REPO`/`GITHUB_TOKEN` are still set but unused.
+`deployment/scripts/gcp_cloud_build_setup.sh`.** `GITHUB_REPO`/`GITHUB_TOKEN` were removed 2026-11-25.
 Secrets: `DATABASE_URL` ← `registration-db-dsn`, `GITHUB_TOKEN` ← `github-token`.
 - **`github-token` is rejected by GitHub (401) as of 2026-11-25**, so approving a custom agent fails
   until the secret has a new token.
 
 **Cloud Run agents (on-demand, min 0)**
-- `disaster` — manual deploy from Phase 3 (image `di2washu/agenticnetwork-disaster:vertex`), Vertex
-  Gemini, `ingress=all`, runs as the default Compute SA. Answers through the chat app.
+- `disaster` — manual deploy from the July work; image copied to Artifact Registry
+  (`agenticnetwork-disaster:vertex`) on 2026-11-25. Vertex Gemini, `ingress=all`, runs as
+  `agent-runtime@`. Answers through the chat app.
 - `agent-echo-test` — deployed by the `CloudRunBackend` in August; switched to `ingress=all` on
   2026-11-25 (the chat app reaches it). Registered with skill id 1 (a category), so the directory
   refuses its card; it is listed from an older record.
@@ -89,14 +92,15 @@ app is using the fallback LLM" (log metric `chat_app_llm_failover`) emails when 
 
 **`planner-connector`** (Serverless VPC Access, `10.8.0.0/28`, e2-micro, 2–10 instances) — used by
 `chat-app`, `registration` and `disaster`. Firewall: connector → `ads` (8888/8999) and → `vllm-relay`
-(8100).
+(8100); SSH only from WashU (`128.252.0.0/16`); `default-allow-rdp` deleted 2026-11-25.
 
 **Artifact Registry `agenticnetwork`** (docker, `us-central1`) — infra images, built with
 `deployment/cloudbuild.yaml` and tagged with the commit SHA.
 
-**Service accounts** — `agent-runtime@` (agents run as this; Vertex user), `registration-service@`
+**Service accounts** — `agent-runtime@` (agents, `disaster` included, run as this; Vertex user), `registration-service@`
 (runtime and deployer: `run.admin`, `serviceAccountUser` on `agent-runtime`, `cloudsql.client`, secret
-access, `vpcaccess.user`), and the default Compute SA for `chat-app` and `disaster`. Grants are in
+access, `vpcaccess.user`), `chat-app@` (prepared for the chat app, not yet in use), `agent-builder@` and
+`build-notifier@` (Cloud Build path), and the default Compute SA for `chat-app`, the two VMs and builds. Grants are in
 [`deployment/scripts/gcp_iam_step7.sh`](../../../deployment/scripts/gcp_iam_step7.sh).
 
 **Secret Manager** — `registration-db-dsn`, `credentials-encryption-key`, `github-token` (needs a new
