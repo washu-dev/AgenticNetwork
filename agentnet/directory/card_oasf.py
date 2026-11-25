@@ -363,12 +363,18 @@ def published_record_from_oasf(
 
 
 def _skill_policy(skill: Any) -> dict[str, Any]:
-    tags = set(skill.tags or [])
-    is_write = (
-        skill.id in WRITE_SKILL_IDS
-        or "write" in tags
-        or _looks_like_write_skill(skill)
-    )
+    """Whether a skill has side effects (and so needs confirmation in strict mode).
+
+    A known write id or an explicit "write" tag makes it a write; otherwise an explicit
+    "read" tag makes it a read; otherwise its id and tags are matched against
+    WRITE_SKILL_TERMS (_looks_like_write_skill)."""
+    tags = {str(tag).lower() for tag in (skill.tags or [])}
+    if skill.id in WRITE_SKILL_IDS or "write" in tags:
+        is_write = True
+    elif "read" in tags:
+        is_write = False
+    else:
+        is_write = _looks_like_write_skill(skill)
     return {
         "risk_level": "medium" if is_write else "low",
         "action_type": "write" if is_write else "read",
@@ -382,18 +388,15 @@ def _custom_tags_for_skill(skill: Any) -> list[str]:
 
 
 def _looks_like_write_skill(skill: Any) -> bool:
+    """True if the skill's id or a tag contains a write term (send, create, update, ...).
+
+    Only the id and tags: a skill's name and description are prose, where these words
+    describe what the agent produces as often as an action it takes. Matching them
+    marked read-only skills as writes ("Use an AI model to create a detailed plan",
+    "Create Disaster Checklist", "summarizes any text you send it"), and strict mode
+    then asked users to confirm them (7% of disaster-agent turns in the 2026-11-25 load test)."""
     values = {str(skill.id).lower(), *(str(tag).lower() for tag in (skill.tags or []))}
-    description = str(getattr(skill, "description", "") or "").lower()
-    name = str(getattr(skill, "name", "") or "").lower()
-    for term in WRITE_SKILL_TERMS:
-        term_text = term.replace("_", " ")
-        if (
-            any(term in value for value in values)
-            or term_text in description
-            or term_text in name
-        ):
-            return True
-    return False
+    return any(term in value for term in WRITE_SKILL_TERMS for value in values)
 
 
 def _ads_record_name(provider_url: str, agent_id: str) -> str:

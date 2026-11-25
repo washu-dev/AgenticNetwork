@@ -1800,10 +1800,9 @@ def _agent_write_skills(agent: DiscoveredAgent) -> list[str]:
     """The skills an agent advertises whose id or tag names a side effect
     (_is_write_skill: send, create, update, delete, write, ...).
 
-    Not the capability's action_type: the card converter also sets that from words in
-    a skill's free-text description (agentnet/directory/card_oasf._looks_like_write_skill),
-    so a summarizer described as "summarizes any text you send it" counts as a write
-    there, and every unnamed call to it would ask for confirmation."""
+    Ids and tags only, like the card converter's per-skill check
+    (agentnet/directory/card_oasf._skill_policy). Unlike that check it does not honour an
+    explicit "read" tag: one write-capable skill is enough when the model names none."""
     out: list[str] = []
     for cap in agent.skills:
         tags = list(cap.skill_tags) + list(cap.custom_skill_tags)

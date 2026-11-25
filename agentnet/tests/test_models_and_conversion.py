@@ -204,3 +204,36 @@ def test_oasf_skill_from_tag_parses_and_rejects() -> None:
     assert _oasf_skill_from_tag("oasf:nlp/no_id") is None
     assert _oasf_skill_from_tag("oasf:nlp/bad:notanint") is None
     assert _oasf_skill_from_tag("oasf::123") is None
+
+
+def _skill(skill_id, name, description, tags):
+    from a2a.types import AgentSkill
+    return AgentSkill(id=skill_id, name=name, description=description, tags=tags)
+
+
+def test_prose_does_not_make_a_skill_a_write():
+    """Words in a skill's name or description describe what it produces, not an action:
+    the disaster agent's plan and checklist skills are read-only."""
+    from agentnet.directory.card_oasf import _skill_policy
+
+    plan = _skill("disaster/response_plan", "Build Disaster Response Plan",
+                  "Use an AI model to create a detailed emergency response plan.",
+                  ["disaster/response_plan", "disaster", "planning"])
+    checklist = _skill("disaster/checklist", "Create Disaster Checklist",
+                       "Generate an actionable checklist.", ["disaster/checklist", "checklist"])
+    echo = _skill("nlp/text_summarization", "Text Summarization",
+                  "Summarizes any text you send it.", ["nlp/text_summarization"])
+    for skill in (plan, checklist, echo):
+        assert _skill_policy(skill)["action_type"] == "read", skill.id
+
+
+def test_ids_tags_and_explicit_declarations_decide_writes():
+    from agentnet.directory.card_oasf import _skill_policy
+
+    assert _skill_policy(_skill("calendar/create_event", "Create event", "", []))["action_type"] == "write"
+    assert _skill_policy(_skill("notes/add", "Add note", "", ["notes", "write"]))["action_type"] == "write"
+    # An explicit "read" tag wins over a write-looking id...
+    assert _skill_policy(_skill("report/create_summary", "Summary", "", ["read"]))["action_type"] == "read"
+    # ...but not over a known write id or an explicit "write" tag.
+    assert _skill_policy(_skill("email/send", "Send", "", ["read"]))["action_type"] == "write"
+    assert _skill_policy(_skill("x/y", "Y", "", ["read", "write"]))["action_type"] == "write"
