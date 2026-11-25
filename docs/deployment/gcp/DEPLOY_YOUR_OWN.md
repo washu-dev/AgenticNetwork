@@ -281,10 +281,19 @@ gcloud compute ssh ads --zone="$ZONE" --command="
   docker-credential-gcr configure-docker --registries=${REGION}-docker.pkg.dev &&
   docker run -d --name oci-registry --restart unless-stopped -p 5000:5000 registry:2 &&
   docker run -d --name ads --restart unless-stopped --network host \
+    --tmpfs /root/.agntcy/dir \
     -v /var/lib/ads:/var/lib/ads \
     -v \$HOME/ads_daemon.gcp.yaml:/app/ads_daemon.yaml \
     ${IMAGE_PREFIX}/agenticnetwork-ads:latest"
 ```
+
+Keep `--tmpfs /root/.agntcy/dir`. `dirctl daemon start` writes its pid (always `1` in a container)
+to `/root/.agntcy/dir/daemon.pid` and deletes it only on a clean shutdown. After a crash or a VM
+reset the file stays in the container's filesystem, and every restart then reads pid 1 (itself),
+exits with `Error: daemon already running (pid 1)` and loops, so the directory is down until the
+file is removed. The tmpfs puts that folder in memory, which is empty on every start; the
+directory's data stays in `/var/lib/ads`. (Found on the reference VM 2026-11-16: after a reset it
+loops without the flag and comes back by itself with it.)
 
 The `docker-credential-gcr` line lets the VM pull from Artifact Registry; drop it if your images are
 on Docker Hub. The VM keeps its default external IP so it can pull `registry:2` from Docker Hub;

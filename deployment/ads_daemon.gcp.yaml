@@ -11,9 +11,12 @@
 # Run with host networking so `localhost:5000` resolves to the co-located registry:
 #   docker run -d --name oci-registry --restart unless-stopped -p 5000:5000 registry:2
 #   docker run -d --name ads --restart unless-stopped --network host \
+#     --tmpfs /root/.agntcy/dir \
 #     -v /var/lib/ads:/var/lib/ads \
 #     -v $PWD/ads_daemon.gcp.yaml:/app/ads_daemon.yaml \
 #     di2washu/agenticnetwork-ads:latest
+# --tmpfs keeps dirctl's daemon.pid in memory: a pid file left by a crash or VM reset otherwise
+# makes every restart exit with "daemon already running (pid 1)" (docs/deployment/gcp/DEPLOY_YOUR_OWN.md step 8).
 
 server:
   listen_address: "0.0.0.0:8888"
