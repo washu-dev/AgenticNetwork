@@ -119,6 +119,35 @@ teammate access: `gcloud run services add-iam-policy-binding chat-app --region=u
   `gcloud sql connect agenticnetwork-db --user=regsvc --database=registration` (password is in the
   `registration-db-dsn` secret).
 
+**Automatic image builds.** `deployment/cloudbuild-ci.yaml` builds the `chat-app`, `registration` and
+`ads` images in parallel (~5 minutes) and pushes each as `:<short sha>` and `:latest` to Artifact
+Registry; it does not deploy. To run it on every merge to `main`, someone with admin rights on the
+`washu-dev` GitHub org installs the **Google Cloud Build** GitHub App for `AgenticNetwork` and connects
+the repository in the Cloud console (Cloud Build → Triggers → Connect repository, **global** region: a
+regional build was refused in this project), then:
+
+```bash
+gcloud builds triggers create github --project=di2-agenticweb --name=infra-images-main \
+  --repo-owner=washu-dev --repo-name=AgenticNetwork --branch-pattern='^main$' \
+  --build-config=deployment/cloudbuild-ci.yaml \
+  --service-account=projects/di2-agenticweb/serviceAccounts/267355023116-compute@developer.gserviceaccount.com
+```
+
+Deploy by the commit's tag, `registration` first. Until the trigger exists, run the same build by hand:
+`gcloud builds submit --config=deployment/cloudbuild-ci.yaml --substitutions=SHORT_SHA=$(git rev-parse --short HEAD) .`
+
+**Monitoring (2026-11-25).** Alert policies email the team's channel: server errors from `chat-app` or
+`registration`; requests rejected by Cloud Run (429); the agent directory unreachable from the chat app
+(log metric `chat_app_directory_unavailable`); a failed agent build, deploy, upload or recovery
+(`registration_agent_pipeline_errors`); the `ads` VM not running; and the chat app on its fallback LLM
+(`chat_app_llm_failover`). No uptime check probes the chat app: one every few minutes would keep its
+scale-to-zero instance awake (about $50 a month). Add one if the chat app runs with min-instances 1.
+
+**Backups.** Cloud SQL: daily (7 kept) plus 7 days of point-in-time recovery. The `ads` VM disk, which
+holds the agent directory: snapshot schedule `ads-daily` (09:00 UTC, 7 days). Artifact Registry
+`agenticnetwork`: cleanup deletes a version only when it is older than 30 days *and* not among its
+image's 10 most recent; `latest` and `vertex` tags are kept.
+
 **Operational gotchas** (learned the hard way — see MIGRATION.md / IMPLEMENTATION Step 9 for detail):
 - On Cloud Build, the row's `build_commit` holds the build id (which also tags the image); a failed build
   marks the agent `failed`. On the GitHub path it is the approval's commit SHA; an approved agent stuck in

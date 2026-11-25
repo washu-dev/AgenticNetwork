@@ -1,0 +1,49 @@
+# Build all three infrastructure images on every merge to main, tagged with the commit.
+# Used by a Cloud Build trigger on washu-dev/AgenticNetwork (see docs/deployment/gcp/README.md
+# "Automatic image builds"). It only builds and pushes; deploying stays a separate, deliberate
+# step (registration before chat-app), by the commit's tag:
+#
+#   gcloud run services update registration --image=<prefix>/agenticnetwork-registration:<sha>
+#   gcloud run services update chat-app --image=<prefix>/agenticnetwork-chat-app:<sha>
+#
+# Run by hand from the repo root (same as the trigger):
+#   gcloud builds submit --config=deployment/cloudbuild-ci.yaml \
+#     --substitutions=SHORT_SHA=$(git rev-parse --short HEAD) .
+#
+# Pushes :<SHORT_SHA> and :latest for each image. The repository's cleanup policy keeps the
+# 10 most recent versions of each image and anything tagged latest.
+substitutions:
+  _REGION: us-central1
+  _REPO: agenticnetwork
+
+steps:
+  - id: chat-app
+    name: gcr.io/cloud-builders/docker
+    waitFor: ["-"]
+    args: ["build", "-f", "deployment/dockerfiles/Dockerfile.chat-app",
+           "-t", "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/agenticnetwork-chat-app:${SHORT_SHA}",
+           "-t", "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/agenticnetwork-chat-app:latest", "."]
+  - id: registration
+    name: gcr.io/cloud-builders/docker
+    waitFor: ["-"]
+    args: ["build", "-f", "deployment/dockerfiles/Dockerfile.registration",
+           "-t", "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/agenticnetwork-registration:${SHORT_SHA}",
+           "-t", "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/agenticnetwork-registration:latest", "."]
+  - id: ads
+    name: gcr.io/cloud-builders/docker
+    waitFor: ["-"]
+    args: ["build", "-f", "deployment/dockerfiles/Dockerfile.ads",
+           "-t", "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/agenticnetwork-ads:${SHORT_SHA}",
+           "-t", "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/agenticnetwork-ads:latest", "."]
+
+images:
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/agenticnetwork-chat-app:${SHORT_SHA}
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/agenticnetwork-chat-app:latest
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/agenticnetwork-registration:${SHORT_SHA}
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/agenticnetwork-registration:latest
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/agenticnetwork-ads:${SHORT_SHA}
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/agenticnetwork-ads:latest
+
+options:
+  machineType: E2_HIGHCPU_8
+timeout: 2400s

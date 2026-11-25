@@ -333,23 +333,32 @@ chat app. Agents must **not** self-publish/unpublish tied to process lifetime on
 
 ## Phase 6: CI/CD, reproducibility, operations
 
-- [ ] CI builds and pushes `chat-app`, `registration` and `ads` images to Artifact Registry on merge to
-      `main`, tagged with the commit SHA (`deployment/cloudbuild.yaml` or GitHub Actions + WIF).
-- [ ] Deploy by **digest or SHA tag**, not `:latest`. Any config-only update today re-pulls `:latest`
-      (`DEPLOYED_COMPONENTS.md` "Cost / pause").
-- [ ] Encode the rollout order: **`registration` before `chat-app`** (`README.md` "Dev workflow").
-- [ ] Optional but recommended: capture the infrastructure as code (Terraform), or at least a single
-      script, so the project can be rebuilt. `DEPLOY_YOUR_OWN.md` has never been run end to end on a fresh project.
-- [ ] **Backups:** Cloud SQL automated backups + point-in-time recovery. A snapshot schedule on the
-      `ads` VM disk (`/var/lib/ads`, which holds the directory). Note: the encryption key secret is required to read
-      restored credentials.
-- [ ] **Monitoring and alerts:** uptime checks on chat-app `/health` and `/ready`. Alerts on 5xx and
-      Cloud Run 429s, the ADS VM being down, Cloud SQL CPU/connections, an LLM failover spike, and
-      registration build-poll failures (an agent stuck in `building`). Add the front-door token refresh after Phase 7.
-- [ ] Billing budget alerts (Phase 0). Every service has `--max-instances` set.
-- [ ] Update the runbooks (`README.md`, `DEPLOYED_COMPONENTS.md`, `AGENTS.md` Tier E) to the new state.
+- [ ] **CI builds: config ready, trigger needs a GitHub org admin.** `deployment/cloudbuild-ci.yaml` builds
+      `chat-app`, `registration` and `ads` in parallel to Artifact Registry as `:<short sha>` and `:latest`
+      (run by hand 2026-11-25: 5m23s, success). A trigger on merges to `main` needs the Google Cloud Build
+      GitHub App installed on `washu-dev` and the repo connected (global region); the command is in
+      `gcp/README.md` "Automatic image builds".
+- [x] **Deploy by commit tag, not `:latest`** — every deploy since 2026-11-25 uses `:<short sha>`
+      (`gcloud run services update <svc> --image=…:<sha>`).
+- [x] **Rollout order** (`registration` before `chat-app`) is in `gcp/README.md` "Dev workflow" and in the
+      CI config's header.
+- [ ] Optional: infrastructure as code (Terraform), or one script, so the project can be rebuilt.
+      `DEPLOY_YOUR_OWN.md` plus `gcp_iam_step7.sh` and `gcp_cloud_build_setup.sh` are the closest today.
+- [x] **Backups (2026-11-25).** Cloud SQL daily backups and point-in-time recovery (Phase 1). `ads` disk:
+      snapshot schedule `ads-daily` (09:00 UTC, 7 days) plus a manual `ads-manual-20261125`. Restoring
+      stored credentials needs the `credentials-encryption-key` secret.
+- [x] **Artifact Registry cleanup policy (2026-11-25):** delete a version only when older than 30 days and
+      not among its image's 10 most recent; keep `latest` and `vertex` tags.
+- [x] **Alerts (2026-11-25), emailing `m.tahir (WashU email)`:** server errors (`chat-app`, `registration`);
+      Cloud Run 429s on `chat-app`; directory unreachable (new `directory_unavailable` log line, commit
+      `4cbd026`); agent build/deploy/upload/recovery failures; `ads` VM not running; chat app on the
+      fallback LLM (Phase 3). No uptime check on the chat app on purpose: it would keep the scale-to-zero
+      instance awake. Revisit with min-instances 1 at launch, and add the front-door token refresh in Phase 7.
+- [ ] **Billing budget alerts** need Billing Account Costs Manager on the billing account (not the project).
+- [x] Runbooks updated as each phase landed (`gcp/README.md`, `DEPLOYED_COMPONENTS.md`, this checklist).
 
-**Done when:** a merge to `main` produces a deployable image without anyone's laptop, and someone gets paged if prod goes down.
+**Done when:** a merge to `main` produces a deployable image without anyone's laptop (needs the trigger),
+and someone gets an email if prod goes down (done).
 
 ## Phase 7: Public front door (Option A; `IMPLEMENTATION_CLOUDRUN_BACKEND.md` Step 10)
 
