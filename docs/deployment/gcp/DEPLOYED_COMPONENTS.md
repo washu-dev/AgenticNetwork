@@ -81,8 +81,11 @@ co-located `registry:2` (host networking, sqlite, `ads_daemon.gcp.yaml`). A star
 refuses category-level skills. Logs repeat `Failed to get namespace entries for labels` every 5 s for
 one record (not yet investigated).
 
-**`vllm-relay` VM** — e2-micro (`10.128.0.2`). systemd `vllm-tunnel.service` (autossh) to the ENGR vLLM
-on `:8100`. On 2026-11-25 the tunnel was running, but nothing answered at the ENGR end.
+**`vllm-relay` VM** — e2-micro (`10.128.0.2`). `vllm-tunnel.service` forwards `:8100` to whichever ENGR
+node runs the `agenticnetwork-vllm` Slurm job (looked up with `squeue` on the login host, as the ENGR
+account the tunnel logs in with), and `vllm-tunnel-check.timer` reconnects when vLLM stops answering
+(`deployment/relay/`, installed 2026-11-25). No vLLM job was running on 2026-11-25. Alert policy "Chat
+app is using the fallback LLM" (log metric `chat_app_llm_failover`) emails when the chat app fails over.
 
 **`planner-connector`** (Serverless VPC Access, `10.8.0.0/28`, e2-micro, 2–10 instances) — used by
 `chat-app`, `registration` and `disaster`. Firewall: connector → `ads` (8888/8999) and → `vllm-relay`
