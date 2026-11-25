@@ -22,6 +22,7 @@ from a2a.types import AgentCard, AgentCapabilities, AgentSkill
 from registration_service.card_credentials import build_credentials_extension
 from registration_service.card_resources import build_resources_extension
 
+from registration_service import gcp_build
 from registration_service.archive import list_tree, tree_revision
 from registration_service.backend import (
     _AGENT_SKELETON_DIR,
@@ -81,19 +82,25 @@ def _backend_flag(backend: object, name: str, default: bool) -> bool:
     return getattr(backend, name, default)
 
 
-def _oob_build_enabled() -> bool:
-    """True when custom approvals should go through the GitHub → Docker Hub build.
-
-    Both out-of-band-build backends use this pipeline: the ENGR cluster and Cloud
-    Run. They diverge only at launch (host-loop srun vs. Cloud Run Admin API), not
-    at build. (`owns_build` is the per-backend flag; this env gate additionally
-    requires the GitHub credentials the commit step needs.)
-    """
+def _github_build_enabled() -> bool:
+    """True when approvals build through a GitHub commit → GitHub Action → Docker Hub."""
     return (
         os.getenv("SPAWN_BACKEND") in ("cluster", "cloudrun")
         and bool(os.getenv("GITHUB_TOKEN"))
         and bool(os.getenv("GITHUB_REPO"))
     )
+
+
+def _oob_build_enabled() -> bool:
+    """True when custom approvals go through an out-of-band image build.
+
+    Two build paths: Cloud Build (Cloud Run with AGENT_BUILDER=cloudbuild, see
+    gcp_build) and the GitHub commit → GitHub Action → Docker Hub build (the ENGR
+    cluster, and Cloud Run without Cloud Build). The backends diverge at launch
+    (host-loop srun vs. Cloud Run Admin API). (`owns_build` is the per-backend flag;
+    this env gate additionally requires what the build step needs.)
+    """
+    return (gcp_build.cloud_build_enabled() and bool(gcp_build.code_bucket())) or _github_build_enabled()
 
 
 class LaunchRefused(RuntimeError):
@@ -126,6 +133,9 @@ class Supervisor:
         # /health stays responsive, one at a time (a sqlite-backed dir daemon
         # answers SQLITE_BUSY to concurrent writes, e.g. recovery's gather).
         self._directory_lock = asyncio.Lock()
+        # The 30 s poll and a build-finished notice (POST /internal/build-events)
+        # both check building agents; one at a time, so a deploy is never started twice.
+        self._build_check_lock = asyncio.Lock()
 
     # ── Public API ─────────────────────────────────────────────────────────────
 
@@ -190,7 +200,8 @@ class Supervisor:
                 raise LaunchRefused(
                     503,
                     f"Agent {agent_id} ships uploaded code, which this backend runs only "
-                    "from a built image: set GITHUB_TOKEN and GITHUB_REPO for the build.",
+                    "from a built image: set AGENT_BUILDER=cloudbuild and AGENT_CODE_BUCKET "
+                    "(Cloud Run), or GITHUB_TOKEN and GITHUB_REPO, for the build.",
                 )
             if agent.get("status") != "registered":
                 raise LaunchRefused(
@@ -198,7 +209,9 @@ class Supervisor:
                     f"Agent {agent_id} is {agent.get('status')!r}, not waiting for a "
                     "build; restart it to rebuild and redeploy.",
                 )
-            commit = await self._commit_to_github(agent, oasf_skills)
+            # build_commit names what the build poll waits for: the GitHub commit
+            # whose SHA tags the image, or the Cloud Build build (its id tags the image).
+            commit = await self._start_build(agent, oasf_skills)
             await update_agent(agent_id, status="building", build_commit=commit)
             logger.info(
                 "custom_build_started agent_id=%s name=%s commit=%s", agent_id, name, commit
@@ -758,52 +771,97 @@ class Supervisor:
             except Exception as exc:
                 logger.exception("build_poll_error error=%s", exc)
 
+    async def check_builds_now(self) -> None:
+        """Check building agents now (a build-finished notice woke the service).
+        Serialized with the poll, so two checks never advance the same row."""
+        try:
+            await self._check_building_agents()
+        except Exception as exc:
+            logger.exception("build_check_error error=%s", exc)
+
     async def _check_building_agents(self) -> None:
         if not _oob_build_enabled():
             return
+        async with self._build_check_lock:
+            await self._check_building_agents_locked()
+
+    async def _build_failed(self, agent: dict[str, Any], log_url: str | None) -> None:
+        """Mark a building agent 'failed' (if it is still the row that was listed)."""
+        async with _agent_lock(str(agent["id"])):
+            current = await get_agent(agent["id"])
+            if not (
+                current
+                and current["status"] == "building"
+                and current["updated_at"] == agent["updated_at"]
+            ):
+                return
+            await update_agent(str(agent["id"]), status="failed")
+        logger.error(
+            "custom_build_failed agent_id=%s build=%s log=%s -> failed",
+            agent["id"], agent.get("build_commit"), log_url,
+        )
+
+    async def _check_building_agents_locked(self) -> None:
         building = await list_agents_by_status("building")
         for agent in building:
             slug = _image_slug(agent["name"])
             image = f"{_image_registry()}/agenticnetwork-custom-{slug}"
-            # Wait for the image tagged with this approval's commit: ':latest' can
-            # hold another approval's build (an older build that finished last, or
-            # a newer one). A row that started building before build_commit was
-            # recorded waits, as before, for a ':latest' pushed since its approval.
             commit = agent.get("build_commit")
-            if commit:
-                ready = await _image_exists_on_dockerhub(image, tag=commit)
+            if gcp_build.cloud_build_enabled():
+                # build_commit holds the Cloud Build build id, which also tags the image.
+                if not commit:
+                    continue
+                try:
+                    build = await gcp_build.get_build(commit)
+                except Exception as exc:
+                    logger.warning("cloud_build_poll_error agent_id=%s build=%s error=%s", agent["id"], commit, exc)
+                    continue
+                if build["status"] in gcp_build.FAILED_STATUSES:
+                    await self._build_failed(agent, build.get("log_url"))
+                    continue
+                if build["status"] != "SUCCESS":
+                    continue
+                image_ref = build.get("digest")
             else:
-                ready = await _image_exists_on_dockerhub(image, agent.get("updated_at"))
-            if ready:
+                # Wait for the image tagged with this approval's commit: ':latest' can
+                # hold another approval's build (an older build that finished last, or
+                # a newer one). A row that started building before build_commit was
+                # recorded waits, as before, for a ':latest' pushed since its approval.
+                if commit:
+                    ready = await _image_exists_on_dockerhub(image, tag=commit)
+                else:
+                    ready = await _image_exists_on_dockerhub(image, agent.get("updated_at"))
+                if not ready:
+                    continue
                 # Best-effort digest capture: a failed lookup leaves image_ref=None
                 # (the deploy then falls back to the commit tag, or ':latest' for a
                 # row without one) rather than blocking the transition to image_ready.
                 image_ref = await _image_digest_on_dockerhub(image, commit or "latest")
-                # A reject or re-upload (and maybe a new approval) can land while
-                # Docker Hub answers: advance only the row as it was listed.
-                async with _agent_lock(str(agent["id"])):
-                    current = await get_agent(agent["id"])
-                    if not (
-                        current
-                        and current["status"] == "building"
-                        and current.get("approved")
-                        and current["updated_at"] == agent["updated_at"]
-                    ):
-                        continue
-                    await update_agent(str(agent["id"]), status="image_ready", image_ref=image_ref)
-                logger.info(
-                    "custom_image_ready agent_id=%s image=%s:%s image_ref=%s -> image_ready",
-                    agent["id"], image, commit or "latest", image_ref,
-                )
-                # Launch. Two shapes of out-of-band-build backend:
-                #  * cluster (needs_host_loop=True): hand off to the host spawn loop
-                #    — it polls /internal/spawn-queue, runs srun, calls finalize_spawned.
-                #  * Cloud Run (needs_host_loop=False): no host loop; deploy via the
-                #    Admin API right here and publish the run.app card.
-                if _backend_flag(self._backend, "owns_build", False) and not _backend_flag(
-                    self._backend, "needs_host_loop", False
+            # A reject or re-upload (and maybe a new approval) can land while
+            # the build is checked: advance only the row as it was listed.
+            async with _agent_lock(str(agent["id"])):
+                current = await get_agent(agent["id"])
+                if not (
+                    current
+                    and current["status"] == "building"
+                    and current.get("approved")
+                    and current["updated_at"] == agent["updated_at"]
                 ):
-                    await self._deploy_ready_agent(agent)
+                    continue
+                await update_agent(str(agent["id"]), status="image_ready", image_ref=image_ref)
+            logger.info(
+                "custom_image_ready agent_id=%s image=%s:%s image_ref=%s -> image_ready",
+                agent["id"], image, commit or "latest", image_ref,
+            )
+            # Launch. Two shapes of out-of-band-build backend:
+            #  * cluster (needs_host_loop=True): hand off to the host spawn loop
+            #    — it polls /internal/spawn-queue, runs srun, calls finalize_spawned.
+            #  * Cloud Run (needs_host_loop=False): no host loop; deploy via the
+            #    Admin API right here and publish the run.app card.
+            if _backend_flag(self._backend, "owns_build", False) and not _backend_flag(
+                self._backend, "needs_host_loop", False
+            ):
+                await self._deploy_ready_agent(agent)
 
     async def _deploy_ready_agent(self, agent: dict[str, Any]) -> None:
         """Deploy an image_ready agent through a direct-API backend (Cloud Run) and
@@ -961,7 +1019,7 @@ class Supervisor:
         Only acts on the cluster build path (GITHUB_TOKEN/REPO + SPAWN_BACKEND set);
         a failure is logged, never raised, so it can't block agent deletion.
         """
-        if not _oob_build_enabled():
+        if not _github_build_enabled() or gcp_build.cloud_build_enabled():
             return
         try:
             await _delete_from_github(_image_slug(name))
@@ -969,14 +1027,58 @@ class Supervisor:
         except Exception as exc:
             logger.warning("github_delete_failed name=%s error=%s", name, exc)
 
+    async def _start_build(self, agent: dict[str, Any], oasf_skills: list) -> str:
+        """Start the approved code's image build; return what the build poll waits
+        for (a Cloud Build build id, or the GitHub commit's SHA)."""
+        if gcp_build.cloud_build_enabled():
+            return await self._submit_cloud_build(agent, oasf_skills)
+        return await self._commit_to_github(agent, oasf_skills)
+
+    async def _submit_cloud_build(self, agent: dict[str, Any], oasf_skills: list) -> str:
+        """Build the image with Cloud Build from the same context the GitHub path
+        commits; the build's id tags the image and is returned."""
+        slug, files = await self._build_context_files(agent, oasf_skills)
+        build_id = await gcp_build.submit_build(
+            slug=slug,
+            image=f"{_image_registry()}/agenticnetwork-custom-{slug}",
+            files=files,
+        )
+        logger.info("cloud_build_started agent_id=%s slug=%s build_id=%s", agent["id"], slug, build_id)
+        return build_id
+
     async def _commit_to_github(self, agent: dict[str, Any], oasf_skills: list) -> str:
         """Commit the agent's build context to agent-directory and return the
         commit's SHA, which the build workflow tags the image with."""
+        repo = os.environ["GITHUB_REPO"]
+        token = os.environ["GITHUB_TOKEN"]
+        slug, raw_files = await self._build_context_files(agent, oasf_skills)
+        base = f"registered_agents/{slug}"
+        files: dict[str, str] = {}
+        for rel, data in raw_files.items():
+            try:
+                files[f"{base}/{rel}"] = data.decode("utf-8")
+            except UnicodeDecodeError:
+                raise RuntimeError(
+                    f"Cannot commit binary file {rel.removeprefix('src/')!r} for agent {agent['id']}: the "
+                    f"cluster build path currently supports text project files only."
+                )
+        commit = await _github_commit_files(
+            repo, token, files, f"Register custom agent: {agent['name']}", directory=base
+        )
+        logger.info(
+            "github_committed agent_id=%s dir=%s files=%d commit=%s",
+            agent["id"], base, len(files), commit,
+        )
+        return commit
+
+    async def _build_context_files(
+        self, agent: dict[str, Any], oasf_skills: list
+    ) -> tuple[str, dict[str, bytes]]:
+        """The agent's image build context (paths relative to its root → bytes) and
+        its slug. Both build paths build exactly these files."""
         from registration_service.build_manifest import MANIFEST_FILENAME, build_agent_manifest
         from registration_service.builder import generate_card_json, generate_dockerfile
 
-        repo = os.environ["GITHUB_REPO"]
-        token = os.environ["GITHUB_TOKEN"]
         name = agent["name"]
         slug = _image_slug(name)
 
@@ -985,6 +1087,9 @@ class Supervisor:
         config = _deserialize_config(agent)
 
         handler_path = agent.get("handler_file_path")
+        if handler_path:
+            # A new Cloud Run instance starts without the upload: restore it.
+            await gcp_build.restore_upload(str(agent["id"]), Path(handler_path).parent)
         if not handler_path or not Path(handler_path).exists():
             raise RuntimeError(f"Handler file missing for agent {agent['id']}")
         handler_dir = Path(handler_path).parent
@@ -994,10 +1099,9 @@ class Supervisor:
             generate_card_json({**agent, "oasf_skills": oasf_skills}), indent=2
         )
 
-        base = f"registered_agents/{slug}"
-        files = {
-            f"{base}/Dockerfile": dockerfile,
-            f"{base}/{slug}.card.json": card_json,
+        files: dict[str, str | bytes] = {
+            "Dockerfile": dockerfile,
+            f"{slug}.card.json": card_json,
             # The authoring fields the build context otherwise loses (class_name,
             # max_runtime_seconds, declared credentials): without them the committed
             # tree can't be reconstructed and the credential declarations never get
@@ -1009,7 +1113,7 @@ class Supervisor:
             # approval endpoint surfaces a 500 and the row stays 'registered', which
             # is retryable once the offending input is corrected. The exception text
             # never echoes the offending value, since it reaches logs and the API.
-            f"{base}/{MANIFEST_FILENAME}": build_agent_manifest(
+            MANIFEST_FILENAME: build_agent_manifest(
                 name=name,
                 description=agent.get("description") or "",
                 slug=slug,
@@ -1022,7 +1126,7 @@ class Supervisor:
             # builds a new image, also for unchanged code and card (a reject then
             # approve, or a re-upload of the same files). That build pushes the
             # image tagged with the commit's SHA, which the build poll waits for.
-            f"{base}/.approval": json.dumps(
+            ".approval": json.dumps(
                 {
                     "approved_at": datetime.now(timezone.utc).isoformat(),
                     "revision": tree_revision(handler_dir),
@@ -1033,28 +1137,16 @@ class Supervisor:
         # The user's uploaded project tree → src/ (entry file at the src root, next
         # to importable siblings). Covers both single-file and multi-file uploads.
         for rel in list_tree(handler_dir):
-            fpath = handler_dir / rel
-            try:
-                files[f"{base}/src/{rel}"] = fpath.read_text(encoding="utf-8")
-            except UnicodeDecodeError:
-                raise RuntimeError(
-                    f"Cannot commit binary file {rel!r} for agent {agent['id']}: the "
-                    f"cluster build path currently supports text project files only."
-                )
+            files[f"src/{rel}"] = (handler_dir / rel).read_bytes()
         # Vendor agent_skeleton into the build context so the image installs it from
         # a local copy (the private AgenticNetwork repo isn't reachable from CI, and
         # a token in the Dockerfile would be committed). See builder.generate_dockerfile.
         for rel, content in _vendored_skeleton_files().items():
-            files[f"{base}/agent_skeleton/{rel}"] = content
-
-        commit = await _github_commit_files(
-            repo, token, files, f"Register custom agent: {name}", directory=base
-        )
-        logger.info(
-            "github_committed agent_id=%s dir=%s files=%d commit=%s",
-            agent["id"], base, len(files), commit,
-        )
-        return commit
+            files[f"agent_skeleton/{rel}"] = content
+        return slug, {
+            rel: data if isinstance(data, bytes) else data.encode("utf-8")
+            for rel, data in files.items()
+        }
 
 
 def _vendored_skeleton_files() -> dict[str, str]:
