@@ -773,10 +773,12 @@ class _CloudRunClient:
             svc = await self._services.get_service(name=self._service_name(service_id))
         except NotFound:
             return None
-        ready = any(
-            c.type_ == "Ready" and c.state == self._run_v2.Condition.State.CONDITION_SUCCEEDED
-            for c in svc.conditions
-        )
+        # The v2 API reports the service's overall Ready state as `terminal_condition`;
+        # `conditions` holds only the sub-resources' (RoutesReady, ConfigurationsReady).
+        # Reading `conditions` for "Ready" never matched, so every registration
+        # restart treated each live agent as gone and redeployed it.
+        tc = svc.terminal_condition
+        ready = tc.type_ == "Ready" and tc.state == self._run_v2.Condition.State.CONDITION_SUCCEEDED
         return {"ready": ready, "uri": svc.uri}
 
     async def set_invoker(self, service_id: str, member: str) -> None:

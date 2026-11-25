@@ -340,6 +340,45 @@ async def test_cloud_run_operations_wait_a_bounded_time(monkeypatch):
     assert waits == [42.0, 42.0]
 
 
+@pytest.mark.asyncio
+async def test_real_client_get_reads_terminal_condition():
+    """`get` must read v2's `terminal_condition`, where the API reports Ready.
+
+    The live API (checked 2026-11-25) returns Ready only there; `conditions` holds
+    RoutesReady/ConfigurationsReady. Reading `conditions` made every ready service
+    look gone, so recovery redeployed every agent on each registration restart.
+    """
+    run_v2 = pytest.importorskip("google.cloud.run_v2")
+    succeeded = run_v2.Condition.State.CONDITION_SUCCEEDED
+
+    def service(terminal_state):
+        return run_v2.Service(
+            uri="https://agent-x.a.run.app",
+            terminal_condition=run_v2.Condition(type_="Ready", state=terminal_state),
+            conditions=[
+                run_v2.Condition(type_="RoutesReady", state=succeeded),
+                run_v2.Condition(type_="ConfigurationsReady", state=succeeded),
+            ],
+        )
+
+    class _Services:
+        def __init__(self, svc):
+            self.svc = svc
+
+        async def get_service(self, **_):
+            return self.svc
+
+    client = _CloudRunClient.__new__(_CloudRunClient)
+    client._run_v2 = run_v2
+    client._parent = "projects/example/locations/us-central1"
+
+    client._services = _Services(service(succeeded))
+    assert await client.get("agent-x") == {"ready": True, "uri": "https://agent-x.a.run.app"}
+
+    client._services = _Services(service(run_v2.Condition.State.CONDITION_FAILED))
+    assert (await client.get("agent-x"))["ready"] is False
+
+
 def test_make_backend_selects_cloudrun(monkeypatch):
     # No client is injected; construction must not import google-cloud-run.
     _cloud_env(monkeypatch)
