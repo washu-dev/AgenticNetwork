@@ -11,7 +11,7 @@ import re
 import time as _time
 from pathlib import Path
 from typing import Any, Sequence
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 from uuid import uuid4
 
 import httpx
@@ -161,6 +161,27 @@ class IssueRequest(BaseModel):
     # agent-creation feedback context (optional)
     step: str | None = None       # draft|validate|submit|approved|rejected
     agent_id: str | None = None
+
+
+def probe_targets(agents: Sequence[Any], skip: set[str], *, probe_run_app: bool = False) -> list[Any]:
+    """The agents the health loop probes: those with an endpoint, not listed in
+    ``skip`` (CHAT_APP_HEALTH_PROBE_SKIP_AGENTS) and, unless ``probe_run_app``
+    (CHAT_APP_HEALTH_PROBE_RUN_APP), not on Cloud Run (``*.run.app``).
+
+    Cloud Run agents scale to zero; a probe every minute would keep each one warm
+    and billing. Their liveness is the registration service's job (it checks them
+    through the Cloud Run Admin API, which wakes nothing), so the chat app leaves
+    them alone and the admin health page shows them as unknown.
+    """
+    out = []
+    for agent in agents:
+        if not agent.endpoint or agent.agent_id in skip:
+            continue
+        host = (urlsplit(agent.endpoint).hostname or "").lower()
+        if not probe_run_app and host.endswith(".run.app"):
+            continue
+        out.append(agent)
+    return out
 
 
 def create_app(
@@ -690,17 +711,17 @@ def create_app(
 
     async def _health_probe_loop() -> None:
         # On-demand (scale-to-zero) agents must be excluded from probing: a probe
-        # HTTP-hits the agent's card URL, which cold-starts a min=0 Cloud Run agent
-        # and keeps it warm — defeating scale-to-zero. Skip by agent_id via
-        # CHAT_APP_HEALTH_PROBE_SKIP_AGENTS (comma-separated).
+        # HTTP-hits the agent's card URL with an ID token, which cold-starts a min=0
+        # Cloud Run agent and keeps it warm — defeating scale-to-zero. See
+        # probe_targets for what is skipped.
         skip = {s.strip() for s in setting("CHAT_APP_HEALTH_PROBE_SKIP_AGENTS", "").split(",") if s.strip()}
+        probe_run_app = (setting("CHAT_APP_HEALTH_PROBE_RUN_APP", "") or "").lower() in ("1", "true", "yes")
         while True:
             try:
                 agents = await asyncio.to_thread(directory.search_agents)
                 tasks = [
                     _probe_agent(a.agent_id, a.endpoint)
-                    for a in agents
-                    if a.endpoint and a.agent_id not in skip
+                    for a in probe_targets(agents, skip, probe_run_app=probe_run_app)
                 ]
                 if tasks:
                     await asyncio.gather(*tasks, return_exceptions=True)
