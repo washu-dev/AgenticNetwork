@@ -31,6 +31,7 @@ from chat_app.credentials_router import (
     router as credentials_router,
 )
 from chat_app.env import allow_anon, setting, upload_dir
+from chat_app.directory_cache import CachedDirectory
 from chat_app.planner.config import PlannerConfig, load_config
 from chat_app.planner.llm_client import LLMClient, OpenAIToolLoopClient
 from chat_app.planner.memory_store import MemoryStore
@@ -176,6 +177,12 @@ def create_app(
         fake_ads=cfg.fake_ads,
         ads_url=cfg.ads_server_addr,
     )
+    # Cache the full directory listing for a few seconds (off unless set): each
+    # listing launches dirctl once per agent, which bounded one Cloud Run instance
+    # at ~50 turns/min. See chat_app/directory_cache.py.
+    cache_seconds = float(setting("CHAT_APP_DIRECTORY_CACHE_SECONDS", "0") or 0)
+    if cache_seconds > 0:
+        directory = CachedDirectory(directory, cache_seconds)
     a2a = a2a_client or A2AClient()
     store = state_store or MemoryStore()
     if llm_client is None:
