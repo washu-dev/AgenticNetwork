@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field
 from agentnet.a2a.client import A2AClient
 from agentnet.a2a.transport import CloudRunIdTokenAuth
 from agentnet.directory.card_oasf import load_agent_card
+from agentnet.directory import DirectoryUnavailable
 from agentnet.directory.client import DirectoryClient
 from agentnet.identity import identity_from_headers, is_admin, without_identity_headers
 from chat_app import github_issues
@@ -736,8 +737,12 @@ def create_app(
                 ]
                 if tasks:
                     await asyncio.gather(*tasks, return_exceptions=True)
-            except Exception:
-                pass
+            except DirectoryUnavailable as exc:
+                # Logged once a minute while it lasts; the "Agent directory unreachable"
+                # alert (log metric chat_app_directory_unavailable) keys on this line.
+                logger.warning("directory_unavailable error=%s", str(exc)[:300])
+            except Exception as exc:
+                logger.warning("health_probe_loop_error error=%s", str(exc)[:300])
             await asyncio.sleep(60)
 
     @app.get("/admin/agents/health")
