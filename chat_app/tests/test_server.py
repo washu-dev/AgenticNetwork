@@ -422,9 +422,11 @@ class _RecordingRegistration(http.server.BaseHTTPRequestHandler):
 
     seen: list[tuple[str, str, str | None]] = []
     identity_headers: list[list[tuple[str, str]]] = []
+    authorization: list[str | None] = []
 
     def _reply(self) -> None:
         type(self).seen.append((self.command, self.path, self.headers.get("mail")))
+        type(self).authorization.append(self.headers.get("Authorization"))
         type(self).identity_headers.append([
             (name.lower(), value) for name, value in self.headers.items()
             if name.lower().replace("_", "-") in ("mail", "eppn", "remote-user")
@@ -1052,3 +1054,68 @@ async def _me_with_db(pool: _FakeUsersPool) -> None:
     row = pool.users["erin@example.com"]
     assert first.json() == {"id": str(row["id"]), "email": "erin@example.com", "is_admin": False}
     assert again.json()["id"] == first.json()["id"]
+
+
+def test_register_proxy_never_forwards_the_callers_authorization(monkeypatch) -> None:
+    # A front door's ID token for the chat app is not a credential for the
+    # registration service; the pass-through authenticates to it as itself.
+    _RecordingRegistration.authorization = []
+    upstream = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _RecordingRegistration)
+    threading.Thread(target=upstream.serve_forever, daemon=True).start()
+    try:
+        monkeypatch.setenv("REGISTRATION_SERVICE_URL", f"http://127.0.0.1:{upstream.server_port}")
+
+        async def go() -> None:
+            app = _final_answer_app()
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client:
+                resp = await client.post(
+                    "/register/agents", content=b"{}",
+                    headers={"mail": "bob@example.com", "Authorization": "Bearer front-door-token"},
+                )
+                assert resp.status_code == 200, resp.text
+
+        asyncio.run(go())
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+    assert _RecordingRegistration.authorization == [None]
+
+
+def test_register_proxy_authenticates_to_cloud_run(monkeypatch) -> None:
+    # On Cloud Run the registration service is IAM-private: the pass-through attaches
+    # an ID token for its *.run.app audience.
+    import agentnet.a2a.transport as transport
+
+    audiences: list[str] = []
+
+    def fake_token(audience: str) -> str:
+        audiences.append(audience)
+        return "minted-token"
+
+    monkeypatch.setattr(transport, "_run_id_token", fake_token)
+    seen: list[tuple[str, str | None]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((str(request.url), request.headers.get("Authorization")))
+        return httpx.Response(200, json={})
+
+    real_client = httpx.AsyncClient
+
+    def client_with_mock(*args, **kwargs):
+        if kwargs.get("base_url", "").startswith("https://registration-"):
+            kwargs["transport"] = httpx.MockTransport(handler)
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setenv("REGISTRATION_SERVICE_URL", "https://registration-abc123-uc.a.run.app")
+    monkeypatch.setattr(httpx, "AsyncClient", client_with_mock)
+    app = _final_answer_app()
+    monkeypatch.setattr(httpx, "AsyncClient", real_client)
+
+    async def go() -> None:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client:
+            resp = await client.get("/register/agents", headers={"mail": "bob@example.com"})
+            assert resp.status_code == 200, resp.text
+
+    asyncio.run(go())
+    assert seen == [("https://registration-abc123-uc.a.run.app/agents", "Bearer minted-token")]
+    assert audiences == ["https://registration-abc123-uc.a.run.app"]

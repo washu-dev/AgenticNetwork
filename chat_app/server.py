@@ -20,6 +20,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingRes
 from pydantic import BaseModel, Field
 
 from agentnet.a2a.client import A2AClient
+from agentnet.a2a.transport import CloudRunIdTokenAuth
 from agentnet.directory.card_oasf import load_agent_card
 from agentnet.directory.client import DirectoryClient
 from agentnet.identity import identity_from_headers, is_admin, without_identity_headers
@@ -58,9 +59,13 @@ _HOP_BY_HOP_HEADERS = frozenset({
 # headers, and the encoding and length of a body httpx has already decoded.
 _UNFORWARDED_RESPONSE_HEADERS = _HOP_BY_HOP_HEADERS | {"content-encoding", "content-length"}
 # Request headers it does not copy: hop-by-hop headers, the host, the length of the
-# body it re-sends (httpx sets its own), and the browser's Accept-Encoding, so httpx
-# asks only for encodings it decodes.
-_UNFORWARDED_REQUEST_HEADERS = _HOP_BY_HOP_HEADERS | {"host", "content-length", "accept-encoding"}
+# body it re-sends (httpx sets its own), the browser's Accept-Encoding, so httpx
+# asks only for encodings it decodes, and Authorization: a caller's credential for
+# this app (e.g. a front door's ID token) is not one for the registration service,
+# which the pass-through authenticates to as itself (CloudRunIdTokenAuth).
+_UNFORWARDED_REQUEST_HEADERS = _HOP_BY_HOP_HEADERS | {
+    "host", "content-length", "accept-encoding", "authorization",
+}
 
 
 def _truncate(text: str | None, limit: int = _MAX_FIELD_LEN) -> str:
@@ -249,7 +254,10 @@ def create_app(
 
     # Client for the /register/* pass-through; the lifespan closes it on shutdown.
     _reg_base = os.getenv("REGISTRATION_SERVICE_URL", "http://localhost:8091")
-    _reg_client = httpx.AsyncClient(base_url=_reg_base, timeout=30.0)
+    # On Cloud Run the registration service is IAM-private: the client attaches an ID
+    # token minted for this app's service account to *.run.app (a no-op elsewhere),
+    # so that account needs run.invoker on the registration service.
+    _reg_client = httpx.AsyncClient(base_url=_reg_base, timeout=30.0, auth=CloudRunIdTokenAuth())
 
     @contextlib.asynccontextmanager
     async def lifespan(_app: FastAPI):
