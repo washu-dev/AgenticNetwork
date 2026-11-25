@@ -134,7 +134,10 @@ order at the end.
 
 ## Phase 2: Fix the bugs found in the Nov 16 testing
 
-- [ ] **Agent 404s.** Switch the `CloudRunBackend` to deploy agents with `ingress=all`
+- [x] **Done 2026-11-25** (commit `4308b23`). New agents deploy with `ingress=all`, IAM-only.
+      `agent-echo-test` switched by hand (`disaster` already was). Checked live: a request with no
+      token gets 403, and a chat turn through the echo agent gets its reply (it got 404 before).
+      **Agent 404s.** Switch the `CloudRunBackend` to deploy agents with `ingress=all`
       (`registration_service/backend.py`: the `"internal-only"` deploy spec and
       `INGRESS_TRAFFIC_INTERNAL_ONLY`; `registration_service/tests/test_cloudrun_backend.py` asserts
       the old value). Keep `--no-allow-unauthenticated`. Update already-deployed agents with
@@ -142,7 +145,18 @@ order at the end.
       without a token gets 403. Re-run the load test with the driver's strict check: echoed text
       returned and `call_agent` completed. Update the deploy text in `DEPLOY_YOUR_OWN.md` step 13
       and its 404 troubleshooting row.
-- [ ] **Build custom agents with Cloud Build** (Phase 0 decision). Code in `registration_service`:
+- [ ] **Code done and deployed; waiting on the project Owner.** Built 2026-11-25 (commit `18e5ead`,
+      `registration_service/gcp_build.py`, 10 tests); deployed to `registration` with
+      `AGENT_BUILDER=cloudbuild`, `AGENT_CODE_BUCKET=di2-agenticweb-agent-code`,
+      `CLOUD_BUILD_SERVICE_ACCOUNT=agent-builder@…` and `IMAGE_REGISTRY` = the Artifact Registry repo.
+      Created: the versioned bucket, `agent-builder@`, `build-notifier@` (`run.invoker` on registration),
+      topic `cloud-builds` and push subscription `registration-build-events`. **Uploads are saved and
+      restored from the bucket** (checked live: Loop Check's upload is in `uploads/`). Approval
+      still fails: Cloud Build answers 403 until the Owner grants `cloudbuild.builds.editor` to
+      `registration-service@` and `logging.logWriter` (project) plus `artifactregistry.writer` (repo
+      `agenticnetwork`) to `agent-builder@`. `deployment/scripts/gcp_cloud_build_setup.sh` has all
+      three. Then re-approve Loop Check.
+      **Build custom agents with Cloud Build** (Phase 0 decision). Code in `registration_service`:
       - On approval with `SPAWN_BACKEND=cloudrun`, assemble the same build context the GitHub commit
         carries today (`builder.generate_dockerfile`, the card, the `build_manifest` `agent.json`, the
         uploaded code, the `agent_skeleton` runtime). Upload it as a tarball to a **versioned** Cloud
@@ -166,21 +180,35 @@ order at the end.
         directory record) through the registration API.
       - Docs: `DEPLOY_YOUR_OWN.md` step 13 (drop the GitHub repo, Docker Hub and public-image requirements
         for Cloud Run), `REGISTRATION_SERVICE.md`, `gcp/README.md` "Dev workflow".
-- [ ] **Directory CPU cost.** Every listing launches `dirctl` once per agent (about 0.45 CPU-s per
+- [x] **Listing cache done 2026-11-25** (`chat_app/directory_cache.py`, commit `bf8360f`;
+      `CHAT_APP_DIRECTORY_CACHE_SECONDS=10` on `chat-app`). The network directory client is still open.
+      **Directory CPU cost.** Every listing launches `dirctl` once per agent (about 0.45 CPU-s per
       listing with 2 agents, growing with directory size). Add the proposed ~10 s cache for the chat
       app's listing with one fetch in flight (`RESULTS.md` §11). Longer term, replace the `dirctl`
       subprocess with a network/gRPC client (`MIGRATION.md` hardening backlog).
-- [ ] **Scale-out settings.** Chat app runs `max-instances=1`, `concurrency=80`. Set `--concurrency`
+- [x] **Not needed at this size (load test 2026-11-25).** With the listing cache, one instance served
+      204 turns/min at 20 users with no 429s, CPU p99 ≤ 17%, Cloud SQL ≤ 9 connections
+      (`benchmarks/RESULTS.md` §13). Kept at max 1. More instances would add redundancy, not
+      capacity; revisit if a capacity target well above ~150 active people is set (Phase 0). Checked
+      first: conversations and pending confirmations live in Postgres (the planner reloads a
+      conversation on another instance); only the admin stats and bug-report trace log are per-instance.
+      **Scale-out settings.** Chat app runs `max-instances=1`, `concurrency=80`. Set `--concurrency`
       near the measured per-instance limit (~10) so Cloud Run scales before an instance saturates, and
       raise `--max-instances`. First confirm nothing per-user is held only in memory (e.g. the
       in-process `_request_log` used for bug-report traces). `registration` stays a singleton
       (`min=max=1`).
-- [ ] **Cloud SQL size.** `db-f1-micro` has a low connection cap, and each chat-app instance opens up
+- [x] **Not needed while max-instances is 1** (≤ 9 connections under load; `db-f1-micro` allows about 25).
+      **Cloud SQL size.** `db-f1-micro` has a low connection cap, and each chat-app instance opens up
       to ~10 connections. Move to a tier that fits `max-instances × 10` plus registration.
-- [ ] **Scale-to-zero agents.** Add on-demand agents to `CHAT_APP_HEALTH_PROBE_SKIP_AGENTS`, or replace that
+- [x] **Done 2026-11-25** (commit `280e313`, `chat_app.server.probe_targets`). The health loop
+      skips `*.run.app` agents unless `CHAT_APP_HEALTH_PROBE_RUN_APP` is set; the old skip list was removed
+      from `chat-app`.
+      **Scale-to-zero agents.** Add on-demand agents to `CHAT_APP_HEALTH_PROBE_SKIP_AGENTS`, or replace that
       list with an `on_demand` card marker (`IMPLEMENTATION_CLOUDRUN_BACKEND.md` follow-ups). Otherwise the
       per-minute health probe keeps every agent warm and billing.
-- [ ] Re-run `benchmarks/cloudrun_load.py` at the Phase 0 capacity target with 0 Cloud Run 429s.
+- [x] Load test re-run 2026-11-25 at 1/5/10/20 users: 97–100% OK, 0 Cloud Run 429s, p95 ≈ 11 s.
+      No capacity target was set in Phase 0, so 20 users (about 200 turns/min) stands in for it.
+      Re-run `benchmarks/cloudrun_load.py` at the Phase 0 capacity target with 0 Cloud Run 429s.
 
 **Done when:** the load test passes at the target with real agent calls succeeding.
 

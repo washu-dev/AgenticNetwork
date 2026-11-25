@@ -21,18 +21,19 @@ User path:
         Vertex AI  /  vllm-relay VM :8100 ─autossh─▶ ENGR vLLM              Cloud SQL (agenticnetwork-db) ◀─ chat-app
                                                                             persists users/creds/conversations
 
-Onboarding path (automated):
-  register agent ▶ Cloud Run: registration ─commit─▶ GitHub Action builds image ─▶ Docker Hub
-                        │                                                              │
-                        └─ build poll sees image ─▶ CloudRunBackend deploys agent (min=0, as agent-runtime SA,
-                           grants chat-app run.invoker) ─▶ publishes card to ADS ─▶ chat app can discover it
+Onboarding path (automated, Cloud Build since 2026-11-25):
+  register + upload ▶ Cloud Run: registration ─context to bucket─▶ Cloud Build ─▶ Artifact Registry
+                        │                                              │ (cloud-builds topic → /internal/build-events)
+                        └─ build done ─▶ CloudRunBackend deploys agent by digest (min=0, as agent-runtime SA,
+                           ingress=all + IAM, grants chat-app run.invoker) ─▶ publishes card to ADS
 ```
 
 ## Components
 
-**Cloud Run `chat-app`** (rev `chat-app-00004`) — the chat app with the planner. Image
-`us-central1-docker.pkg.dev/di2-agenticweb/agenticnetwork/agenticnetwork-chat-app:5bf4fe0-dirfix`
-(directory calls off the event loop), started with `python -m chat_app`. min 0, max 1, 1 vCPU, 1 GiB,
+**Cloud Run `chat-app`** — the chat app with the planner. Image
+`us-central1-docker.pkg.dev/di2-agenticweb/agenticnetwork/agenticnetwork-chat-app:280e313`, started
+with `python -m chat_app`. `CHAT_APP_DIRECTORY_CACHE_SECONDS=10`; health probes skip `*.run.app` agents.
+One instance served 204 turns/min at 20 users on 2026-11-25 (`benchmarks/RESULTS.md` §13). min 0, max 1, 1 vCPU, 1 GiB,
 CPU always allocated while running. Runs as the default Compute SA (`267355023116-compute@`, Editor;
 replacing it is in the checklist's Phase 4). `ingress=all` + `--no-allow-unauthenticated`
 (IAM-private; reach it with `gcloud run services proxy`). `CHAT_APP_ALLOW_ANON=1` until the front door
@@ -42,16 +43,19 @@ exists. Connector `planner-connector`, egress `private-ranges-only`, Cloud SQL a
   2026-11-16 and 2026-11-25).
 - Secrets: `DATABASE_URL` ← `registration-db-dsn`, `CREDENTIALS_ENCRYPTION_KEY` ←
   `credentials-encryption-key` (created 2026-11-25), `OPENAI_API_KEY` ← `vllm-api-key`.
-- `HEALTH_PROBE_SKIP_AGENTS=disaster-response-agent` (the old name of
-  `CHAT_APP_HEALTH_PROBE_SKIP_AGENTS`; both work).
 
-**Cloud Run `registration`** (rev `registration-00007`) — the registration service and
-`CloudRunBackend` host. Image `.../agenticnetwork/agenticnetwork-registration:d9aad31` (Artifact
+**Cloud Run `registration`** — the registration service and
+`CloudRunBackend` host. Image `.../agenticnetwork/agenticnetwork-registration:18e5ead` (Artifact
 Registry). **min 0, max 1** since 2026-11-25: it scales to zero between registrations, and a request
 wakes it. CPU stays allocated while it runs, so the build poll (every 30 s) runs for the ~15 minutes
 Cloud Run keeps an idle instance. Runs as `registration-service@`. `SPAWN_BACKEND=cloudrun`,
-`CHAT_APP_INVOKER_SA` = the chat app's SA, `IMAGE_REGISTRY=di2washu` (Docker Hub, for custom-agent
-images), `GITHUB_REPO=washu-dev/agent-directory`, `ADMIN_EMAILS` (two admins), `SKIP_STARTUP_WAITS=1`.
+`CHAT_APP_INVOKER_SA` = the chat app's SA, `ADMIN_EMAILS` (two admins), `SKIP_STARTUP_WAITS=1`.
+**Custom agents build with Cloud Build** (`AGENT_BUILDER=cloudbuild`): uploads and build contexts in
+bucket `di2-agenticweb-agent-code` (versioned), builds run as `agent-builder@`, images pushed to
+`IMAGE_REGISTRY` = `us-central1-docker.pkg.dev/di2-agenticweb/agenticnetwork`. Cloud Build's
+`cloud-builds` topic pushes to `/internal/build-events` (subscription `registration-build-events`, as
+`build-notifier@`). **Approvals fail with 403 until the project Owner runs the three grants in
+`deployment/scripts/gcp_cloud_build_setup.sh`.** `GITHUB_REPO`/`GITHUB_TOKEN` are still set but unused.
 Secrets: `DATABASE_URL` ← `registration-db-dsn`, `GITHUB_TOKEN` ← `github-token`.
 - **`github-token` is rejected by GitHub (401) as of 2026-11-25**, so approving a custom agent fails
   until the secret has a new token.
@@ -59,11 +63,11 @@ Secrets: `DATABASE_URL` ← `registration-db-dsn`, `GITHUB_TOKEN` ← `github-to
 **Cloud Run agents (on-demand, min 0)**
 - `disaster` — manual deploy from Phase 3 (image `di2washu/agenticnetwork-disaster:vertex`), Vertex
   Gemini, `ingress=all`, runs as the default Compute SA. Answers through the chat app.
-- `agent-echo-test` — deployed by the `CloudRunBackend` in August. `ingress=internal`, so the chat app
-  gets 404 calling it (fixed in Phase 2). Registered with skill id 1 (a category), so the directory
+- `agent-echo-test` — deployed by the `CloudRunBackend` in August; switched to `ingress=all` on
+  2026-11-25 (the chat app reaches it). Registered with skill id 1 (a category), so the directory
   refuses its card; it is listed from an older record.
 - Registered, not built: `Loop Check` (an echo agent for the register-to-answer test), waiting on the
-  GitHub token.
+  Cloud Build grants below.
 
 **Cloud SQL `agenticnetwork-db`** — POSTGRES_15, `db-f1-micro`, zonal. Database `registration` is
 shared by the chat app and the registration service (separate tables). User `regsvc`; the socket DSN is
