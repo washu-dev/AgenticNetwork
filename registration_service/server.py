@@ -43,7 +43,7 @@ from registration_service.models import (
     upload_spec,
 )
 from registration_service.flags import fake_db_enabled, fake_supervisor_enabled
-from registration_service.oasf_skills import OASF_SKILLS, has_routable_skill
+from registration_service.oasf_skills import OASF_SKILLS, has_routable_skill, unknown_skill_ids
 from registration_service.port_pool import assign_port
 from registration_service.supervisor import (
     LaunchRefused,
@@ -395,10 +395,20 @@ async def _check_new_agent(req: RegisterRequest) -> None:
             ),
         )
 
+    skills = [s.model_dump() for s in req.oasf_skills]
+    # An id must name a specific skill: the directory refuses a record whose skill
+    # is a category (e.g. id 1), so the agent would deploy but never be published.
+    unknown = unknown_skill_ids(skills)
+    if unknown:
+        raise HTTPException(
+            status_code=400,
+            detail=f"oasf_skill id(s) {unknown} are not specific OASF skills; "
+            "use ids from GET /oasf-skills.",
+        )
     # At least one skill must carry an id so the card gets a routable
     # 'oasf:<name>:<id>' tag (_build_agent_card) — otherwise it publishes to ADS
     # stored-but-not-routed (undiscoverable). Reject before spawning anything.
-    if not has_routable_skill([s.model_dump() for s in req.oasf_skills]):
+    if not has_routable_skill(skills):
         raise HTTPException(
             status_code=400,
             detail="At least one oasf_skill must have an id (from GET /oasf-skills) "

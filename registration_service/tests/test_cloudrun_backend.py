@@ -96,7 +96,7 @@ async def _make_custom(image_ref="sha256:deadbeef", status="image_ready", resour
         name="Paper Reviewer",
         description="Reviews papers",
         handler_type="custom",
-        oasf_skills=[{"name": "nlp/text-summarization", "id": 1}],
+        oasf_skills=[{"name": "nlp/text-summarization", "id": 10202}],
         config={"class_name": "H", "python_version": "3.12", "requirements": [], "extra": {}},
         approved=True,
         resources=resources,
@@ -661,7 +661,7 @@ def test_deploy_spec_no_resource_uses_defaults_and_omits_concurrency():
 def test_build_agent_card_carries_resource_extension():
     card = _build_agent_card(
         "a1", "Paper Reviewer", "d",
-        [{"name": "nlp/text-summarization", "id": 1}], 8080,
+        [{"name": "nlp/text-summarization", "id": 10202}], 8080,
         resources={"cpu": "2", "memory": "2Gi", "gpu": False},
     )
     exts = card.capabilities.extensions or []
@@ -674,7 +674,7 @@ def test_build_agent_card_carries_resource_extension():
 def test_build_agent_card_omits_extension_when_no_resources():
     card = _build_agent_card(
         "a1", "Paper Reviewer", "d",
-        [{"name": "nlp/text-summarization", "id": 1}], 8080,
+        [{"name": "nlp/text-summarization", "id": 10202}], 8080,
     )
     assert card.capabilities.extensions is None
 
@@ -795,7 +795,7 @@ async def test_recovery_retries_failed_agent_with_image(monkeypatch):
     built = await _make_custom(image_ref="sha256:beef", status="failed")
     unbuilt = await db.create_agent(
         name="No Image", description="d", handler_type="custom",
-        oasf_skills=[{"name": "nlp/text-summarization", "id": 1}],
+        oasf_skills=[{"name": "nlp/text-summarization", "id": 10202}],
         config={"class_name": "H", "python_version": "3.12", "requirements": [], "extra": {}},
         approved=True,
     )
@@ -822,7 +822,7 @@ async def test_startup_purge_spares_failed_with_image(monkeypatch):
     built = await _make_custom(image_ref="sha256:x", status="failed")
     unbuilt = await db.create_agent(
         name="No Image", description="d", handler_type="custom",
-        oasf_skills=[{"name": "nlp/text-summarization", "id": 1}],
+        oasf_skills=[{"name": "nlp/text-summarization", "id": 10202}],
         config={"class_name": "H", "python_version": "3.12", "requirements": [], "extra": {}},
         approved=True,
     )
