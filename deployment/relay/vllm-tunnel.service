@@ -1,0 +1,16 @@
+[Unit]
+Description=SSH tunnel from this VM's :8100 to the ENGR vLLM job (deployment/relay)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# The account whose ENGR key the tunnel uses; set by install.sh.
+User=RELAY_USER
+EnvironmentFile=/etc/default/vllm-tunnel
+ExecStart=/usr/local/bin/vllm-tunnel.sh
+Restart=always
+# Also paces the squeue lookups while no vLLM job is running.
+RestartSec=60
+
+[Install]
+WantedBy=multi-user.target

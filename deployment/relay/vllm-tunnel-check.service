@@ -1,0 +1,7 @@
+[Unit]
+Description=Restart the vLLM tunnel when vLLM stops answering through it
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/default/vllm-tunnel
+ExecStart=/usr/local/bin/vllm-tunnel-check.sh

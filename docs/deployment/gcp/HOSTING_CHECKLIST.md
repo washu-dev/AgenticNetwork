@@ -216,14 +216,27 @@ order at the end.
 
 Decided 2026-11-25: the LLM stays on the ENGR cluster for now. This phase makes that path dependable.
 
-- [ ] Put the relay's autossh under systemd so it survives a VM reboot, and restrict `tcp:8100` to the
-      connector range (`MIGRATION.md` "Validation status" lists both as remaining hardening).
-- [ ] **Keep the relay pointed at the right node.** The relay tunnels to a fixed host (`h100-2405:8100`).
-      The vLLM Slurm job is time-limited and can land on a different node each run, which silently
-      breaks the relay. Either pin the job to that node, or have the relay's target updated each time
-      the job starts. Record which.
-- [ ] Keep the Vertex fallback configured (`PLANNER_LLM_FALLBACK_*`) and grant the chat app's SA
-      `roles/aiplatform.user`. Alert when the chat app is running on the fallback, so a dead vLLM job is noticed.
+- [x] **Already true (checked 2026-11-25).** The relay's autossh runs as `vllm-tunnel.service`, enabled with
+      `Restart=always`, so it survives a reboot. `tcp:8100` is open only to the connector range from
+      outside the VM's subnet (`allow-vllm-relay-from-connector`), plus other VMs on the VPC through
+      `default-allow-internal`; nothing opens it to the internet.
+- [ ] **Keep the relay pointed at the right node: written and tested, not yet installed.** Found 2026-11-25:
+      the vLLM job has `--time=12:00:00`, so it ends after 12 hours and a resubmitted job can land on
+      any GPU node, while the relay forwarded to `h100-2405` only (its log shows `Connection refused`
+      since 2026-11-16). `deployment/relay/` looks the node up with `squeue` on the ENGR login host
+      each time the tunnel starts, and a 2-minute health check restarts the tunnel when vLLM stops
+      answering. Tested locally against fake `ssh`/`curl`/`systemctl`; install on the VM with
+      `deployment/relay/install.sh` (it runs `squeue` as the ENGR account the tunnel already logs in as).
+- [ ] **Keep a vLLM job running.** The relay follows the job but doesn't start it. Someone has to submit
+      `start_vllm.sbatch` every 12 hours, or the cluster side needs a longer time limit or an automatic
+      resubmission (for example `scrontab`, if ENGR allows it). Decide who owns this. Until then, when
+      the vLLM job is up, switch `chat-app` back to vLLM primary with Vertex as the fallback (it runs on
+      Vertex primary since 2026-11-16).
+- [x] **Fallback alert created 2026-11-25.** Log metric `chat_app_llm_failover` (the planner's
+      `planner_llm_failover` line) and alert policy "Chat app is using the fallback LLM", which includes a
+      runbook note. **It has no notification channel yet**: add one (whose email or which chat
+      channel) for it to reach anyone. The chat app's SA already has Vertex access (Editor);
+      `aiplatform.user` is needed only for the dedicated SA in Phase 4.
 - [ ] Decide what the agents use. The registration service copies `OPENAI_BASE_URL`, `OPENAI_API_KEY`
       and `AGENT_MODEL` into every agent **as plain env vars**, readable by anyone who can view the service.
       Agents on the relay need the connector (`VPC_CONNECTOR` on `registration`, plus
