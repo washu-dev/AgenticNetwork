@@ -275,9 +275,9 @@ outage raises an alert while chat keeps working on Vertex.
       No GCP agent has write skills yet. **The no-skill gap is fixed** (commit `6b3490f`, deployed): a call
       that names no skill now needs confirmation when the agent advertises a skill whose id or tag names a
       side effect (`email/send`, `code/bug_fix`); read-only agents are unchanged (checked live with
-      `disaster` and the echo agent). Still open: the card converter marks a skill as a write when its
-      *description* contains a word like "send" (`agentnet/directory/card_oasf._looks_like_write_skill`),
-      so a *named* call to such a read-only skill asks for confirmation it doesn't need.
+      `disaster` and the echo agent). The card converter also guessed writes from a skill's
+      name and description, which gated 7% of disaster-agent turns in the Locust load test; fixed
+      (commit `cc97409`, deployed): ids, tags and explicit `read`/`write` tags only. Re-run: 0 of 80.
 - [x] **`GITHUB_TOKEN` and `GITHUB_REPO` removed from `registration`** (Cloud Build path). The
       `github-token` secret is still in Secret Manager; delete it once the cluster no longer needs this copy.
 - [ ] **Secrets still missing on `chat-app`**, each needing a credential from a person:
