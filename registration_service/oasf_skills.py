@@ -159,8 +159,22 @@ OASF_SKILLS: list[dict] = [
 ]
 
 
+_KNOWN_SKILL_IDS = frozenset(s["id"] for s in OASF_SKILLS)
+
+
+def unknown_skill_ids(oasf_skills: list[dict]) -> list[int]:
+    """Skill ids that are not specific skills in OASF_SKILLS.
+
+    The directory validates records against the OASF schema and rejects a category
+    id (e.g. 1, natural_language_processing) with "please specify a concrete skill",
+    so a card carrying one can never be published. Seen on GCP 2026-11-25: an agent
+    registered with id 1 deployed but its card was refused."""
+    return [s["id"] for s in oasf_skills if s.get("id") is not None and s["id"] not in _KNOWN_SKILL_IDS]
+
+
 def has_routable_skill(oasf_skills: list[dict]) -> bool:
-    """True if at least one skill carries an id (supervisor._build_agent_card
-    stamps an 'oasf:<name>:<id>' routing tag only for skills with an id — a card
-    with none is stored-but-not-routed in ADS, i.e. undiscoverable)."""
-    return any(s.get("id") is not None for s in oasf_skills)
+    """True if at least one skill carries the id of a specific skill in OASF_SKILLS
+    (supervisor._build_agent_card stamps an 'oasf:<name>:<id>' routing tag only for
+    skills with an id; a card with none is stored-but-not-routed in ADS, i.e.
+    undiscoverable, and one whose id is a category is refused by the directory)."""
+    return any(s.get("id") in _KNOWN_SKILL_IDS for s in oasf_skills)

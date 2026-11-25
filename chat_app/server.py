@@ -379,7 +379,7 @@ def create_app(
     @app.get("/agents")
     async def get_agents() -> dict[str, Any]:
         try:
-            agents = directory.search_agents()
+            agents = await asyncio.to_thread(directory.search_agents)
         except Exception as exc:
             raise HTTPException(status_code=503, detail=f"ADS unavailable: {exc}") from exc
         return {
@@ -560,7 +560,7 @@ def create_app(
             if req.context_id:
                 trace_rows = [e for e in _request_log if e.get("context_id") == req.context_id]
             try:
-                agent_versions = sorted(a.name for a in directory.search_agents())
+                agent_versions = sorted(a.name for a in await asyncio.to_thread(directory.search_agents))
             except Exception:
                 # A directory blip must not block filing a report.
                 agent_versions = []
@@ -587,7 +587,7 @@ def create_app(
     @app.get("/admin/stats")
     async def admin_stats(request: Request, _: None = Depends(_require_admin)) -> dict[str, Any]:
         try:
-            agents = directory.search_agents()
+            agents = await asyncio.to_thread(directory.search_agents)
             agent_count = len(agents)
             ads_reachable = True
         except Exception:
@@ -689,7 +689,7 @@ def create_app(
         skip = {s.strip() for s in setting("CHAT_APP_HEALTH_PROBE_SKIP_AGENTS", "").split(",") if s.strip()}
         while True:
             try:
-                agents = directory.search_agents()
+                agents = await asyncio.to_thread(directory.search_agents)
                 tasks = [
                     _probe_agent(a.agent_id, a.endpoint)
                     for a in agents
@@ -704,7 +704,7 @@ def create_app(
     @app.get("/admin/agents/health")
     async def admin_agents_health(request: Request, _: None = Depends(_require_admin)) -> dict[str, Any]:
         try:
-            agents = directory.search_agents()
+            agents = await asyncio.to_thread(directory.search_agents)
             ads_reachable = True
         except Exception:
             agents = []
@@ -806,7 +806,7 @@ def create_app(
     @app.post("/admin/agents/{agent_id}/ping")
     async def admin_ping_agent(agent_id: str, request: Request, _: None = Depends(_require_admin)) -> dict[str, Any]:
         try:
-            agents = directory.search_agents()
+            agents = await asyncio.to_thread(directory.search_agents)
         except Exception:
             agents = []
         agent = next((a for a in agents if a.agent_id == agent_id), None)

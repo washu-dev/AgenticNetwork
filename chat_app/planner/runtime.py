@@ -348,9 +348,12 @@ class PlannerRuntime:
             )
 
         if name == "list_agents":
-            obs = self._tool_list_agents(args, discovered)
+            # The directory listing shells out to dirctl; run it off the event loop so
+            # one user's listing does not stall every other user's turn.
+            obs = await asyncio.to_thread(self._tool_list_agents, args, discovered)
         elif name == "describe_agent":
-            obs = self._tool_describe_agent(args, discovered)
+            # May resolve the agent from the directory (dirctl), so off the loop too.
+            obs = await asyncio.to_thread(self._tool_describe_agent, args, discovered)
         elif name == "call_agent":
             obs, pending = await self._tool_call_agent(
                 args=args,
@@ -506,7 +509,8 @@ class PlannerRuntime:
         # Belt-and-braces: if the LLM forgot to fill task_input for an email-like skill,
         # extract recipient/subject/body from the user's text and conversation history
         # so the email agent doesn't bounce on "missing recipient address".
-        agent = self._resolve_agent_lenient(agent_id, discovered)
+        # Resolving can call dirctl (blocking), so run it off the event loop.
+        agent = await asyncio.to_thread(self._resolve_agent_lenient, agent_id, discovered)
         if agent is None:
             return (
                 _err(

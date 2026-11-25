@@ -167,8 +167,10 @@ class Supervisor:
         if not has_routable_skill(oasf_skills):
             await _set_status(agent_id, "failed")
             raise RuntimeError(
-                f"Agent {agent_id} has no OASF skill with an id — it would publish "
-                "to ADS stored-but-not-routed (undiscoverable). Fix its oasf_skills."
+                f"Agent {agent_id} has no OASF skill with an id of a specific skill "
+                "(GET /oasf-skills) — it would publish to ADS stored-but-not-routed "
+                "(undiscoverable), or the directory would refuse a category id. "
+                "Fix its oasf_skills."
             )
 
         # Out-of-band build (cluster, Cloud Run): uploaded code runs only from the

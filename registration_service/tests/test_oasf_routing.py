@@ -72,6 +72,30 @@ async def test_spawn_rejects_no_routable_skill_before_backend_spawn(monkeypatch)
     await db.close_db()
 
 
+async def test_spawn_rejects_category_skill_id(monkeypatch):
+    """A row registered before the id check (id 1, a category) fails before spawn:
+    the directory would refuse its card."""
+    monkeypatch.delenv("SPAWN_BACKEND", raising=False)
+    await _fresh_db()
+    agent = await db.create_agent(
+        name="Category Skill Agent",
+        description="Registered with a category id",
+        handler_type="llm",
+        oasf_skills=[{"name": "nlp/text-summarization", "id": 1}],
+        config={"system_prompt": "hi", "model": "openai/gpt-oss-20b"},
+        approved=True,
+    )
+
+    backend = _FakeBackend()
+    sup = Supervisor(backend=backend, publisher=_FakePublisher())
+    with pytest.raises(RuntimeError, match="specific skill"):
+        await sup.spawn_and_publish(str(agent["id"]))
+
+    assert (await db.get_agent(agent["id"]))["status"] == "failed"
+    assert backend.spawned == []
+    await db.close_db()
+
+
 async def test_spawn_succeeds_with_one_routable_skill(monkeypatch):
     monkeypatch.delenv("SPAWN_BACKEND", raising=False)
     await _fresh_db()

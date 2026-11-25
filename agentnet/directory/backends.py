@@ -6,6 +6,7 @@ import os
 import subprocess
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
 from importlib import metadata
 from pathlib import Path
 from typing import Any, Callable, Protocol
@@ -34,6 +35,9 @@ _HEALTHCHECK_TIMEOUT_SECONDS = 4.0
 # force_route_active_agents and watch_ads_routing scripts. logs/ at the repo root
 # is git-ignored.
 ADS_DAEMON_REPAIR_LOG = Path(__file__).resolve().parents[2] / "logs" / "ads_daemon_repair.log"
+
+
+_PULL_WORKERS = int(os.getenv("DIRCTL_PULL_WORKERS", "16"))
 
 
 class DirectoryBackend(Protocol):
@@ -383,7 +387,10 @@ class RealADSDirectoryBackend:
                 limit=limit,
             )
 
-        records = [self._pull_record(cid) for cid in _dedupe_values(cids)]
+        # One dirctl pull per record; run them concurrently so a listing costs about
+        # one pull's latency instead of one per agent.
+        with ThreadPoolExecutor(max_workers=_PULL_WORKERS) as pool:
+            records = list(pool.map(self._pull_record, _dedupe_values(cids)))
         agents = _filter_and_sort_records(
             _dedupe_records(records),
             skill=skill,

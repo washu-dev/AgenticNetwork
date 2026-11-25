@@ -62,7 +62,7 @@ async def _make_custom(approved=True):
         handler_type="custom",
         # No "key" on purpose — mirrors what the DB stored before the key-capture fix;
         # exercises the supervisor's name-fallback in _build_agent_card / routing.
-        oasf_skills=[{"name": "nlp/text-summarization", "id": 1}],
+        oasf_skills=[{"name": "nlp/text-summarization", "id": 10202}],
         config={"class_name": "H", "python_version": "3.12", "requirements": [], "extra": {}},
         approved=approved,
     )
@@ -111,7 +111,7 @@ async def test_cluster_rejects_non_custom_handler(monkeypatch):
         name="Chatty",
         description="An LLM agent",
         handler_type="llm",
-        oasf_skills=[{"name": "nlp/text-summarization", "id": 1}],
+        oasf_skills=[{"name": "nlp/text-summarization", "id": 10202}],
         config={"system_prompt": "You are helpful."},
         approved=True,
     )
@@ -510,7 +510,7 @@ async def test_recover_live_uploaded_tools_agent_requeues(monkeypatch, handler_t
         name="Tool Runner",
         description="Runs uploaded tools",
         handler_type=handler_type,
-        oasf_skills=[{"name": "nlp/text-summarization", "id": 1}],
+        oasf_skills=[{"name": "nlp/text-summarization", "id": 10202}],
         config=config,
         approved=True,
     )
@@ -547,7 +547,7 @@ async def test_recover_live_uploaded_agent_without_image_is_stopped(monkeypatch)
         name="Tool Runner",
         description="Runs uploaded tools",
         handler_type="llm",
-        oasf_skills=[{"name": "nlp/text-summarization", "id": 1}],
+        oasf_skills=[{"name": "nlp/text-summarization", "id": 10202}],
         config=_UPLOADED_TOOLS_ROWS[0].values[1],
         approved=True,
     )
@@ -589,7 +589,7 @@ async def test_recover_live_agent_without_upload_is_stopped(monkeypatch, handler
         name="No Upload",
         description="Uploads no code",
         handler_type=handler_type,
-        oasf_skills=[{"name": "nlp/text-summarization", "id": 1}],
+        oasf_skills=[{"name": "nlp/text-summarization", "id": 10202}],
         config=config,
         approved=True,
     )

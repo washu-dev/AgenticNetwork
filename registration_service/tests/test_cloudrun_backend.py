@@ -96,7 +96,7 @@ async def _make_custom(image_ref="sha256:deadbeef", status="image_ready", resour
         name="Paper Reviewer",
         description="Reviews papers",
         handler_type="custom",
-        oasf_skills=[{"name": "nlp/text-summarization", "id": 1}],
+        oasf_skills=[{"name": "nlp/text-summarization", "id": 10202}],
         config={"class_name": "H", "python_version": "3.12", "requirements": [], "extra": {}},
         approved=True,
         resources=resources,
@@ -338,6 +338,45 @@ async def test_cloud_run_operations_wait_a_bounded_time(monkeypatch):
     assert await client.create_or_replace({"service_id": "agent-x"}) == "https://agent-x.a.run.app"
     await client.delete("agent-x")
     assert waits == [42.0, 42.0]
+
+
+@pytest.mark.asyncio
+async def test_real_client_get_reads_terminal_condition():
+    """`get` must read v2's `terminal_condition`, where the API reports Ready.
+
+    The live API (checked 2026-11-25) returns Ready only there; `conditions` holds
+    RoutesReady/ConfigurationsReady. Reading `conditions` made every ready service
+    look gone, so recovery redeployed every agent on each registration restart.
+    """
+    run_v2 = pytest.importorskip("google.cloud.run_v2")
+    succeeded = run_v2.Condition.State.CONDITION_SUCCEEDED
+
+    def service(terminal_state):
+        return run_v2.Service(
+            uri="https://agent-x.a.run.app",
+            terminal_condition=run_v2.Condition(type_="Ready", state=terminal_state),
+            conditions=[
+                run_v2.Condition(type_="RoutesReady", state=succeeded),
+                run_v2.Condition(type_="ConfigurationsReady", state=succeeded),
+            ],
+        )
+
+    class _Services:
+        def __init__(self, svc):
+            self.svc = svc
+
+        async def get_service(self, **_):
+            return self.svc
+
+    client = _CloudRunClient.__new__(_CloudRunClient)
+    client._run_v2 = run_v2
+    client._parent = "projects/example/locations/us-central1"
+
+    client._services = _Services(service(succeeded))
+    assert await client.get("agent-x") == {"ready": True, "uri": "https://agent-x.a.run.app"}
+
+    client._services = _Services(service(run_v2.Condition.State.CONDITION_FAILED))
+    assert (await client.get("agent-x"))["ready"] is False
 
 
 def test_make_backend_selects_cloudrun(monkeypatch):
@@ -622,7 +661,7 @@ def test_deploy_spec_no_resource_uses_defaults_and_omits_concurrency():
 def test_build_agent_card_carries_resource_extension():
     card = _build_agent_card(
         "a1", "Paper Reviewer", "d",
-        [{"name": "nlp/text-summarization", "id": 1}], 8080,
+        [{"name": "nlp/text-summarization", "id": 10202}], 8080,
         resources={"cpu": "2", "memory": "2Gi", "gpu": False},
     )
     exts = card.capabilities.extensions or []
@@ -635,7 +674,7 @@ def test_build_agent_card_carries_resource_extension():
 def test_build_agent_card_omits_extension_when_no_resources():
     card = _build_agent_card(
         "a1", "Paper Reviewer", "d",
-        [{"name": "nlp/text-summarization", "id": 1}], 8080,
+        [{"name": "nlp/text-summarization", "id": 10202}], 8080,
     )
     assert card.capabilities.extensions is None
 
@@ -756,7 +795,7 @@ async def test_recovery_retries_failed_agent_with_image(monkeypatch):
     built = await _make_custom(image_ref="sha256:beef", status="failed")
     unbuilt = await db.create_agent(
         name="No Image", description="d", handler_type="custom",
-        oasf_skills=[{"name": "nlp/text-summarization", "id": 1}],
+        oasf_skills=[{"name": "nlp/text-summarization", "id": 10202}],
         config={"class_name": "H", "python_version": "3.12", "requirements": [], "extra": {}},
         approved=True,
     )
@@ -783,7 +822,7 @@ async def test_startup_purge_spares_failed_with_image(monkeypatch):
     built = await _make_custom(image_ref="sha256:x", status="failed")
     unbuilt = await db.create_agent(
         name="No Image", description="d", handler_type="custom",
-        oasf_skills=[{"name": "nlp/text-summarization", "id": 1}],
+        oasf_skills=[{"name": "nlp/text-summarization", "id": 10202}],
         config={"class_name": "H", "python_version": "3.12", "requirements": [], "extra": {}},
         approved=True,
     )

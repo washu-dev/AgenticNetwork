@@ -96,6 +96,15 @@ async def test_register_no_routable_skill_returns_400(client: AsyncClient) -> No
     assert "routable" in r.text or "id" in r.text
 
 
+async def test_register_category_skill_id_returns_400(client: AsyncClient) -> None:
+    """A category id (1 = natural_language_processing) is refused by the directory's
+    schema check, so the agent would deploy but never be published. Reject it."""
+    bad = {**LLM_PAYLOAD, "oasf_skills": [{"name": "nlp/text-summarization", "id": 1}]}
+    r = await client.post("/agents", json=bad)
+    assert r.status_code == 400
+    assert "[1]" in r.json()["detail"]
+
+
 async def test_register_mixed_skills_one_routable_succeeds(client: AsyncClient) -> None:
     """Only one of several skills needs an id for the card to be routable."""
     ok = {
@@ -210,7 +219,7 @@ async def test_oasf_skills_round_trip(client: AsyncClient) -> None:
         **LLM_PAYLOAD,
         "oasf_skills": [
             {"name": "nlp/text-summarization", "id": 10101},
-            {"name": "data/analytics", "id": 20201},
+            {"name": "data/analytics", "id": 10902},
         ],
     }
     created = (await client.post("/agents", json=payload)).json()
