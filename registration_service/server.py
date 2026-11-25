@@ -20,7 +20,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from agentnet.credential_catalog import CATALOG as CREDENTIAL_CATALOG
 from agentnet.directory.publisher import DirectoryPublisher
 from agentnet.identity import identity_from_headers, is_admin, normalize_identity
-from registration_service import db
+from registration_service import db, gcp_build
 from registration_service.archive import (
     ArchiveError,
     list_tree,
@@ -473,10 +473,11 @@ async def delete_agent(agent_id: str, request: Request, force: bool = False) -> 
         async with pool.acquire() as conn:
             await conn.execute("DELETE FROM agents WHERE id = $1", _parse_uuid(agent_id))
 
-        # Clean up any uploaded handler files / per-agent venv.
+        # Clean up any uploaded handler files / per-agent venv, and the bucket copy.
         handler_dir = _handler_dir(agent_id)
         if handler_dir.exists():
             shutil.rmtree(handler_dir, ignore_errors=True)
+        await gcp_build.delete_upload(agent_id)
 
     # Remove the committed build context from the agent-directory repo (uploaded-code
     # agents on the cluster build path only). Best-effort — never blocks the delete.
@@ -591,6 +592,15 @@ async def upload_handler(agent_id: str, request: Request, file: UploadFile = Fil
         if not result.ok:
             raise HTTPException(status_code=422, detail={"errors": result.errors})
 
+        # Keep the upload in the bucket too (no-op without one): a Cloud Run instance's
+        # disk goes when it stops, which can be long before an admin approves. Saved
+        # before anything changes, so a failed save leaves the stored upload as it was.
+        try:
+            await gcp_build.save_upload(agent_id, staging)
+        except Exception as exc:
+            logger.error("upload_save_failed agent_id=%s error=%s", agent_id, exc)
+            raise HTTPException(status_code=503, detail="Could not store the upload; try again.")
+
         async with _agent_lock(agent_id):
             await _revoke_approval(agent_id)
             _replace_dir(staging, handler_dir)
@@ -631,10 +641,12 @@ async def get_handler_source(agent_id: str, request: Request) -> dict:
         if not agent or not _uploads_code(agent):
             raise HTTPException(status_code=404, detail="Uploaded-code agent not found")
         path = agent.get("handler_file_path")
+        handler_dir = _handler_dir(agent_id)
+        if path:
+            await gcp_build.restore_upload(agent_id, handler_dir)
         if not path or not Path(path).exists():
             raise HTTPException(status_code=404, detail="No handler file uploaded")
 
-        handler_dir = _handler_dir(agent_id)
         revision = tree_revision(handler_dir)
         entry_source = Path(path).read_text(encoding="utf-8", errors="replace")
         manifest = list_tree(handler_dir) if agent.get("is_archive") else None
@@ -680,6 +692,8 @@ async def download_handler_archive(agent_id: str, request: Request) -> Response:
     if not agent or not _uploads_code(agent):
         raise HTTPException(status_code=404, detail="Uploaded-code agent not found")
     handler_dir = _handler_dir(agent_id)
+    if agent.get("is_archive"):
+        await gcp_build.restore_upload(agent_id, handler_dir)
     if not agent.get("is_archive") or not handler_dir.exists():
         raise HTTPException(status_code=404, detail="No uploaded archive for this agent")
     data = zip_tree(handler_dir)
@@ -728,6 +742,7 @@ async def approve_agent(
                     "fixed code (which returns it to approval)."
                 ),
             )
+        await gcp_build.restore_upload(agent_id, _handler_dir(agent_id))
         reviewed = body.revision if body else None
         if reviewed is not None and tree_revision(_handler_dir(agent_id)) != reviewed:
             raise HTTPException(
@@ -786,6 +801,28 @@ async def internal_spawned(body: SpawnedReport) -> dict:
 @app.get("/internal/stop-queue", tags=["internal"])
 async def internal_stop_queue() -> dict:
     return {"pids": get_supervisor().stop_queue()}
+
+
+# Background checks started by build notices; held so they aren't garbage-collected.
+_build_checks: set[asyncio.Task] = set()
+
+
+@app.post("/internal/build-events", status_code=204, tags=["internal"])
+async def internal_build_events() -> Response:
+    """A build changed state: check building agents now.
+
+    Cloud Build publishes every build's state changes to the Pub/Sub topic
+    ``cloud-builds``; a push subscription calls this, which also wakes a
+    scaled-to-zero service, so a finished build deploys without waiting for the
+    next visitor. The message body is not trusted or read: the check asks Cloud
+    Build itself. On Cloud Run, IAM (run.invoker) decides who may call this. It
+    answers at once and checks in the background (CPU stays allocated), so the
+    notice is acknowledged before a deploy, which can take minutes, finishes.
+    """
+    task = asyncio.create_task(get_supervisor().check_builds_now())
+    _build_checks.add(task)
+    task.add_done_callback(_build_checks.discard)
+    return Response(status_code=204)
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────

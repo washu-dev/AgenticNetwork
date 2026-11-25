@@ -681,7 +681,11 @@ def _deploy_spec(
         "memory": str(resource.get("memory", _CLOUD_RUN_DEFAULT_MEMORY)),
         "concurrency": int(concurrency) if concurrency is not None else None,
         "service_account": service_account,
-        "ingress": "internal-only",
+        # "all", not "internal-only": the chat app reaches *.run.app over the internet
+        # (its connector egress is private-ranges-only), and Cloud Run answers 404 to
+        # that on an internal-only service (seen 2026-11-16). IAM still guards it:
+        # no allUsers binding, so a caller needs a Google ID token with run.invoker.
+        "ingress": "all",
         "allow_unauthenticated": False,
         "vpc_connector": vpc_connector or None,
         "env": env,
@@ -735,10 +739,11 @@ class _CloudRunClient:
                 connector=spec["vpc_connector"],
                 egress=run_v2.VpcAccess.VpcEgress.PRIVATE_RANGES_ONLY,
             )
-        return run_v2.Service(
-            template=template,
-            ingress=run_v2.IngressTraffic.INGRESS_TRAFFIC_INTERNAL_ONLY,
-        )
+        ingress = {
+            "all": run_v2.IngressTraffic.INGRESS_TRAFFIC_ALL,
+            "internal-only": run_v2.IngressTraffic.INGRESS_TRAFFIC_INTERNAL_ONLY,
+        }[spec["ingress"]]
+        return run_v2.Service(template=template, ingress=ingress)
 
     async def create_or_replace(self, spec: dict) -> str:
         """Create the service (or replace it if it already exists); return its URI."""

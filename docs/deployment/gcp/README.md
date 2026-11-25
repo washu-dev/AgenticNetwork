@@ -54,7 +54,7 @@ At a glance (exact names, env, and control commands are in [DEPLOYED_COMPONENTS.
 | LLM | vLLM on a GPU node in the same allocation | vLLM via the `vllm-relay` VM (primary) → **Vertex fallback** |
 | Config / secrets | env from `.env`/`secrets.env` via `--export=ALL` | Cloud Run env + **Secret Manager** |
 | Images | `di2washu/agenticnetwork-*` | **same images** (shared; the entrypoint branches on `SKIP_STARTUP_WAITS`) |
-| Ports | fixed (8090/8091/8888/19105-8) | Cloud Run injects `$PORT` (8080); agents use internal ingress |
+| Ports | fixed (8090/8091/8888/19105-8) | Cloud Run injects `$PORT` (8080); agents use `ingress=all`, IAM-only (no public access) |
 | Lifetime | ephemeral (Slurm time limit; node hostname changes each run) | persistent (stable `*.run.app` URLs) |
 | Front door | Shibboleth gateway → chat app :8090 | **not yet** — currently anon + proxy (see below); Option-A front door planned |
 
@@ -109,17 +109,49 @@ teammate access: `gcloud run services add-iam-policy-binding chat-app --region=u
   that the registration service reports since the 2026-10-21 approval fixes; in front of an older
   `registration` revision it says so and cannot approve. A config-only `chat-app` update also pulls
   the shared `:latest` again, so push and roll out `registration` first.
-- **The register→deploy loop:** register a `custom` agent → approve (fires a commit to `agent-directory`) →
-  the `build-custom-agent.yml` GitHub Action builds the image → the reg service's build poll deploys it via
-  the `CloudRunBackend`. Full trace + acceptance test: [IMPLEMENTATION_CLOUDRUN_BACKEND.md](IMPLEMENTATION_CLOUDRUN_BACKEND.md).
+- **The register→deploy loop:** register a `custom` agent → upload (saved to the `AGENT_CODE_BUCKET`
+  bucket too) → approve (uploads the build context and starts a Cloud Build build into Artifact
+  Registry) → Cloud Build's notice on the `cloud-builds` topic wakes the reg service, which deploys it via
+  the `CloudRunBackend` (the 30-second build poll is the fallback). Since 2026-11-25; before that, approval
+  committed to `agent-directory` and a GitHub Action built to Docker Hub, which the ENGR cluster still uses.
+  Setup: `deployment/scripts/gcp_cloud_build_setup.sh`. Full trace + acceptance test: [IMPLEMENTATION_CLOUDRUN_BACKEND.md](IMPLEMENTATION_CLOUDRUN_BACKEND.md).
 - **Reach Cloud SQL directly:** `gcloud components install cloud-sql-proxy` then
   `gcloud sql connect agenticnetwork-db --user=regsvc --database=registration` (password is in the
   `registration-db-dsn` secret).
 
+**Automatic image builds.** `deployment/cloudbuild-ci.yaml` builds the `chat-app`, `registration` and
+`ads` images in parallel (~5 minutes) and pushes each as `:<short sha>` and `:latest` to Artifact
+Registry; it does not deploy. To run it on every merge to `main`, someone with admin rights on the
+`washu-dev` GitHub org installs the **Google Cloud Build** GitHub App for `AgenticNetwork` and connects
+the repository in the Cloud console (Cloud Build → Triggers → Connect repository, **global** region: a
+regional build was refused in this project), then:
+
+```bash
+gcloud builds triggers create github --project=di2-agenticweb --name=infra-images-main \
+  --repo-owner=washu-dev --repo-name=AgenticNetwork --branch-pattern='^main$' \
+  --build-config=deployment/cloudbuild-ci.yaml \
+  --service-account=projects/di2-agenticweb/serviceAccounts/267355023116-compute@developer.gserviceaccount.com
+```
+
+Deploy by the commit's tag, `registration` first. Until the trigger exists, run the same build by hand:
+`gcloud builds submit --config=deployment/cloudbuild-ci.yaml --substitutions=SHORT_SHA=$(git rev-parse --short HEAD) .`
+
+**Monitoring (2026-11-25).** Alert policies email the team's channel: server errors from `chat-app` or
+`registration`; requests rejected by Cloud Run (429); the agent directory unreachable from the chat app
+(log metric `chat_app_directory_unavailable`); a failed agent build, deploy, upload or recovery
+(`registration_agent_pipeline_errors`); the `ads` VM not running; and the chat app on its fallback LLM
+(`chat_app_llm_failover`). No uptime check probes the chat app: one every few minutes would keep its
+scale-to-zero instance awake (about $50 a month). Add one if the chat app runs with min-instances 1.
+
+**Backups.** Cloud SQL: daily (7 kept) plus 7 days of point-in-time recovery. The `ads` VM disk, which
+holds the agent directory: snapshot schedule `ads-daily` (09:00 UTC, 7 days). Artifact Registry
+`agenticnetwork`: cleanup deletes a version only when it is older than 30 days *and* not among its
+image's 10 most recent; `latest` and `vertex` tags are kept.
+
 **Operational gotchas** (learned the hard way — see MIGRATION.md / IMPLEMENTATION Step 9 for detail):
-- The build poll waits for the image tagged with the approval's commit SHA (the row's `build_commit`); an
-  approved agent stuck in `building` means that tag was never pushed (the workflow lacks it, or the build
-  failed). Only a row approved before the service recorded commits uses the old **freshness guard**, which
+- On Cloud Build, the row's `build_commit` holds the build id (which also tags the image); a failed build
+  marks the agent `failed`. On the GitHub path it is the approval's commit SHA; an approved agent stuck in
+  `building` there means that tag was never pushed (the workflow lacks it, or the build failed). Only a row approved before the service recorded commits uses the old **freshness guard**, which
   ignores a `:latest` older than the agent's `updated_at`.
 - An **`update_updated_at` trigger** force-sets `updated_at=now()`, so you can't backdate a row; to force a
   redeploy, set `status`/`image_ref` directly and restart (recovery deploys it).

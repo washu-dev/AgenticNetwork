@@ -134,7 +134,10 @@ order at the end.
 
 ## Phase 2: Fix the bugs found in the Nov 16 testing
 
-- [ ] **Agent 404s.** Switch the `CloudRunBackend` to deploy agents with `ingress=all`
+- [x] **Done 2026-11-25** (commit `4308b23`). New agents deploy with `ingress=all`, IAM-only.
+      `agent-echo-test` switched by hand (`disaster` already was). Checked live: a request with no
+      token gets 403, and a chat turn through the echo agent gets its reply (it got 404 before).
+      **Agent 404s.** Switch the `CloudRunBackend` to deploy agents with `ingress=all`
       (`registration_service/backend.py`: the `"internal-only"` deploy spec and
       `INGRESS_TRAFFIC_INTERNAL_ONLY`; `registration_service/tests/test_cloudrun_backend.py` asserts
       the old value). Keep `--no-allow-unauthenticated`. Update already-deployed agents with
@@ -142,7 +145,18 @@ order at the end.
       without a token gets 403. Re-run the load test with the driver's strict check: echoed text
       returned and `call_agent` completed. Update the deploy text in `DEPLOY_YOUR_OWN.md` step 13
       and its 404 troubleshooting row.
-- [ ] **Build custom agents with Cloud Build** (Phase 0 decision). Code in `registration_service`:
+- [ ] **Code done and deployed; waiting on the project Owner.** Built 2026-11-25 (commit `18e5ead`,
+      `registration_service/gcp_build.py`, 10 tests); deployed to `registration` with
+      `AGENT_BUILDER=cloudbuild`, `AGENT_CODE_BUCKET=di2-agenticweb-agent-code`,
+      `CLOUD_BUILD_SERVICE_ACCOUNT=agent-builder@…` and `IMAGE_REGISTRY` = the Artifact Registry repo.
+      Created: the versioned bucket, `agent-builder@`, `build-notifier@` (`run.invoker` on registration),
+      topic `cloud-builds` and push subscription `registration-build-events`. **Uploads are saved and
+      restored from the bucket** (checked live: Loop Check's upload is in `uploads/`). Approval
+      still fails: Cloud Build answers 403 until the Owner grants `cloudbuild.builds.editor` to
+      `registration-service@` and `logging.logWriter` (project) plus `artifactregistry.writer` (repo
+      `agenticnetwork`) to `agent-builder@`. `deployment/scripts/gcp_cloud_build_setup.sh` has all
+      three. Then re-approve Loop Check.
+      **Build custom agents with Cloud Build** (Phase 0 decision). Code in `registration_service`:
       - On approval with `SPAWN_BACKEND=cloudrun`, assemble the same build context the GitHub commit
         carries today (`builder.generate_dockerfile`, the card, the `build_manifest` `agent.json`, the
         uploaded code, the `agent_skeleton` runtime). Upload it as a tarball to a **versioned** Cloud
@@ -166,21 +180,35 @@ order at the end.
         directory record) through the registration API.
       - Docs: `DEPLOY_YOUR_OWN.md` step 13 (drop the GitHub repo, Docker Hub and public-image requirements
         for Cloud Run), `REGISTRATION_SERVICE.md`, `gcp/README.md` "Dev workflow".
-- [ ] **Directory CPU cost.** Every listing launches `dirctl` once per agent (about 0.45 CPU-s per
+- [x] **Listing cache done 2026-11-25** (`chat_app/directory_cache.py`, commit `bf8360f`;
+      `CHAT_APP_DIRECTORY_CACHE_SECONDS=10` on `chat-app`). The network directory client is still open.
+      **Directory CPU cost.** Every listing launches `dirctl` once per agent (about 0.45 CPU-s per
       listing with 2 agents, growing with directory size). Add the proposed ~10 s cache for the chat
       app's listing with one fetch in flight (`RESULTS.md` §11). Longer term, replace the `dirctl`
       subprocess with a network/gRPC client (`MIGRATION.md` hardening backlog).
-- [ ] **Scale-out settings.** Chat app runs `max-instances=1`, `concurrency=80`. Set `--concurrency`
+- [x] **Not needed at this size (load test 2026-11-25).** With the listing cache, one instance served
+      204 turns/min at 20 users with no 429s, CPU p99 ≤ 17%, Cloud SQL ≤ 9 connections
+      (`benchmarks/RESULTS.md` §13). Kept at max 1. More instances would add redundancy, not
+      capacity; revisit if a capacity target well above ~150 active people is set (Phase 0). Checked
+      first: conversations and pending confirmations live in Postgres (the planner reloads a
+      conversation on another instance); only the admin stats and bug-report trace log are per-instance.
+      **Scale-out settings.** Chat app runs `max-instances=1`, `concurrency=80`. Set `--concurrency`
       near the measured per-instance limit (~10) so Cloud Run scales before an instance saturates, and
       raise `--max-instances`. First confirm nothing per-user is held only in memory (e.g. the
       in-process `_request_log` used for bug-report traces). `registration` stays a singleton
       (`min=max=1`).
-- [ ] **Cloud SQL size.** `db-f1-micro` has a low connection cap, and each chat-app instance opens up
+- [x] **Not needed while max-instances is 1** (≤ 9 connections under load; `db-f1-micro` allows about 25).
+      **Cloud SQL size.** `db-f1-micro` has a low connection cap, and each chat-app instance opens up
       to ~10 connections. Move to a tier that fits `max-instances × 10` plus registration.
-- [ ] **Scale-to-zero agents.** Add on-demand agents to `CHAT_APP_HEALTH_PROBE_SKIP_AGENTS`, or replace that
+- [x] **Done 2026-11-25** (commit `280e313`, `chat_app.server.probe_targets`). The health loop
+      skips `*.run.app` agents unless `CHAT_APP_HEALTH_PROBE_RUN_APP` is set; the old skip list was removed
+      from `chat-app`.
+      **Scale-to-zero agents.** Add on-demand agents to `CHAT_APP_HEALTH_PROBE_SKIP_AGENTS`, or replace that
       list with an `on_demand` card marker (`IMPLEMENTATION_CLOUDRUN_BACKEND.md` follow-ups). Otherwise the
       per-minute health probe keeps every agent warm and billing.
-- [ ] Re-run `benchmarks/cloudrun_load.py` at the Phase 0 capacity target with 0 Cloud Run 429s.
+- [x] Load test re-run 2026-11-25 at 1/5/10/20 users: 97–100% OK, 0 Cloud Run 429s, p95 ≈ 11 s.
+      No capacity target was set in Phase 0, so 20 users (about 200 turns/min) stands in for it.
+      Re-run `benchmarks/cloudrun_load.py` at the Phase 0 capacity target with 0 Cloud Run 429s.
 
 **Done when:** the load test passes at the target with real agent calls succeeding.
 
@@ -188,14 +216,33 @@ order at the end.
 
 Decided 2026-11-25: the LLM stays on the ENGR cluster for now. This phase makes that path dependable.
 
-- [ ] Put the relay's autossh under systemd so it survives a VM reboot, and restrict `tcp:8100` to the
-      connector range (`MIGRATION.md` "Validation status" lists both as remaining hardening).
-- [ ] **Keep the relay pointed at the right node.** The relay tunnels to a fixed host (`h100-2405:8100`).
-      The vLLM Slurm job is time-limited and can land on a different node each run, which silently
-      breaks the relay. Either pin the job to that node, or have the relay's target updated each time
-      the job starts. Record which.
-- [ ] Keep the Vertex fallback configured (`PLANNER_LLM_FALLBACK_*`) and grant the chat app's SA
-      `roles/aiplatform.user`. Alert when the chat app is running on the fallback, so a dead vLLM job is noticed.
+- [x] **Already true (checked 2026-11-25).** The relay's autossh runs as `vllm-tunnel.service`, enabled with
+      `Restart=always`, so it survives a reboot. `tcp:8100` is open only to the connector range from
+      outside the VM's subnet (`allow-vllm-relay-from-connector`), plus other VMs on the VPC through
+      `default-allow-internal`; nothing opens it to the internet.
+- [x] **Installed on `vllm-relay` 2026-11-25** (old unit kept at `/root/vllm-tunnel.service.bak-20261125`).
+      Checked against the real cluster: it logged in, ran `squeue`, found no `agenticnetwork-vllm` job
+      running, and retries every minute; it connects by itself once a job runs.
+      **Keep the relay pointed at the right node.** Found 2026-11-25:
+      the vLLM job has `--time=12:00:00`, so it ends after 12 hours and a resubmitted job can land on
+      any GPU node, while the relay forwarded to `h100-2405` only (its log shows `Connection refused`
+      since 2026-11-16). `deployment/relay/` looks the node up with `squeue` on the ENGR login host
+      each time the tunnel starts, and a 2-minute health check restarts the tunnel when vLLM stops
+      answering. Tested locally against fake `ssh`/`curl`/`systemctl`; install on the VM with
+      `deployment/relay/install.sh` (it runs `squeue` as the ENGR account the tunnel already logs in as).
+- [x] **Decided 2026-11-25: as on ENGR today.** The team resubmits `start_vllm.sbatch` the way it already
+      does for the cluster deployment; nothing new on the GCP side. The difference on GCP: between jobs the
+      chat app stays up on Vertex instead of going down with the cluster deployment.
+      **Keep a vLLM job running.** The relay follows the job but doesn't start it. Someone has to submit
+      `start_vllm.sbatch` every 12 hours, or the cluster side needs a longer time limit or an automatic
+      resubmission (for example `scrontab`, if ENGR allows it). Decide who owns this. Until then, when
+      the vLLM job is up, switch `chat-app` back to vLLM primary with Vertex as the fallback (it runs on
+      Vertex primary since 2026-11-16).
+- [x] **Fallback alert created 2026-11-25.** Log metric `chat_app_llm_failover` (the planner's
+      `planner_llm_failover` line) and alert policy "Chat app is using the fallback LLM", which includes a
+      runbook note. Notifies an email channel (`m.tahir (WashU email)`, added 2026-11-25). While Vertex is
+      the primary the alert stays quiet; it matters once vLLM is the primary again. The chat app's SA already has Vertex access (Editor);
+      `aiplatform.user` is needed only for the dedicated SA in Phase 4.
 - [ ] Decide what the agents use. The registration service copies `OPENAI_BASE_URL`, `OPENAI_API_KEY`
       and `AGENT_MODEL` into every agent **as plain env vars**, readable by anyone who can view the service.
       Agents on the relay need the connector (`VPC_CONNECTOR` on `registration`, plus
@@ -208,27 +255,43 @@ outage raises an alert while chat keeps working on Vertex.
 
 ## Phase 4: Security and IAM hardening
 
-- [ ] **Dedicated chat-app service account.** It currently runs as the default Compute SA
-      (`267355023116-compute@`, Editor). Create `chat-app@` with only `cloudsql.client`,
-      `aiplatform.user`, `secretAccessor` on its own secrets and `vpcaccess.user`. Redeploy as that account and set
-      `CHAT_APP_INVOKER_SA` on `registration` to it. **Then re-grant `run.invoker` on every existing
-      agent to the new SA**, because only new deploys get it automatically.
-- [ ] **`/register/*` pass-through.** The chat app forwards to `REGISTRATION_SERVICE_URL` without a
-      Google ID token, so on GCP it cannot reach the IAM-private registration service
-      (`DEPLOY_YOUR_OWN.md` step 10). Public users register through the chat app, so this must attach an ID
-      token (audience = the registration `run.app` URL) and forward the trusted identity header. Then
-      grant the chat-app SA `run.invoker` on `registration`.
-- [ ] Secrets: confirm every key is in Secret Manager with per-secret grants. This covers the
-      `CREDENTIALS_ENCRYPTION_KEY`, DB DSN, `GITHUB_TOKEN`, LLM key, `GITHUB_ISSUES_TOKEN` and
-      `GITHUB_ISSUES_REPO` (a private repo), and the **Google OAuth client** ID/secret for the `/auth/google`
-      connect flow. Never rotate `credentials-encryption-key` without re-encrypting stored credentials.
-- [ ] Remove `github-token` from `registration` once Cloud Build handles GCP builds. It is only used to
-      commit build contexts, and on GCP it is expired anyway (401 on 2026-11-25). The ENGR cluster still needs
-      a working token until it is retired: fine-grained, `agent-directory` only, with a rotation date.
-- [ ] Planner `policy_mode`: set a non-permissive mode for a shared deployment
-      (`DOWNSTREAM_CONSIDERATIONS.md` #2, planner bullet).
-- [ ] `ADMIN_EMAILS` on both services: the real admin list.
-- [ ] Cloud Armor / ingress: the services stay `--no-allow-unauthenticated`; the org blocks `allUsers`.
+- [ ] **Dedicated chat-app service account: prepared, waiting on the Owner.** Created 2026-11-25:
+      `chat-app@`, with `secretAccessor` on `registration-db-dsn`, `credentials-encryption-key` and
+      `vllm-api-key`, and `run.invoker` on `registration`, `disaster` and `agent-echo-test`. Still needed,
+      project-level (Owner): `roles/cloudsql.client` and `roles/aiplatform.user` for it. Then, in this order:
+      `gcloud run services update registration --update-env-vars=CHAT_APP_INVOKER_SA=chat-app@di2-agenticweb.iam.gserviceaccount.com`,
+      `gcloud run services update chat-app --service-account=chat-app@di2-agenticweb.iam.gserviceaccount.com`,
+      and grant it `run.invoker` on any agent deployed since. Check `/ready` and a chat turn through an agent.
+- [x] **`/register/*` pass-through fixed 2026-11-25** (commits `b0a6416` and `6980889`, the
+      second for `X-Serverless-Authorization`). It attaches an ID token for `*.run.app` and no longer forwards the
+      caller's credentials. `REGISTRATION_SERVICE_URL` is set on `chat-app`, and the Compute SA has `run.invoker`
+      on `registration`. Checked live: `/register/agents` through the chat app lists the registered agents.
+- [x] **`disaster` runs as `agent-runtime@`** (2026-11-25), from an Artifact Registry copy of its image
+      (`agenticnetwork-disaster:vertex`; Cloud Run could not create a revision from the Docker Hub one).
+      Still answers through the chat app, on Vertex.
+- [x] **`default-allow-rdp` deleted** (2026-11-25): RDP open to `0.0.0.0/0`, with no Windows VMs.
+- [x] **`ADMIN_EMAILS`** set on `chat-app` to match `registration` (two admins).
+- [x] **`PLANNER_POLICY_MODE=strict`** on `chat-app`: a call to a write skill needs the user's confirmation.
+      No GCP agent has write skills yet. **The no-skill gap is fixed** (commit `6b3490f`, deployed): a call
+      that names no skill now needs confirmation when the agent advertises a skill whose id or tag names a
+      side effect (`email/send`, `code/bug_fix`); read-only agents are unchanged (checked live with
+      `disaster` and the echo agent). The card converter also guessed writes from a skill's
+      name and description, which gated 7% of disaster-agent turns in the Locust load test; fixed
+      (commit `cc97409`, deployed): ids, tags and explicit `read`/`write` tags only. Re-run: 0 of 80.
+- [x] **`GITHUB_TOKEN` and `GITHUB_REPO` removed from `registration`** (Cloud Build path). The
+      `github-token` secret is still in Secret Manager; delete it once the cluster no longer needs this copy.
+- [ ] **Secrets still missing on `chat-app`**, each needing a credential from a person:
+      - Google OAuth client ID/secret for the `/auth/google` "connect your Google account" flow (used
+        by the email agent, Phase 5): an OAuth client in this project, redirect URI on the front door's hostname.
+      - `GITHUB_ISSUES_TOKEN` and `GITHUB_ISSUES_REPO` (a private repo) for the "Report a bug" form; it
+        answers 502 without them.
+- [ ] **VMs run as the default Compute SA** (`ads`, `vllm-relay`), with narrow access scopes (storage read,
+      logging, monitoring, Pub/Sub). Lower risk than Cloud Run. A dedicated VM account needs
+      `logging.logWriter` and `monitoring.metricWriter` (Owner), and changing it stops the VM, which takes the
+      directory down for a minute.
+- [ ] Agent builds are set to run as `agent-builder@` and wait on its Phase 2 grants (or switch them to the
+      default Compute SA as a stopgap, which has Editor).
+- [x] Cloud Armor / ingress: the services stay `--no-allow-unauthenticated`; the org blocks `allUsers`.
 
 **Done when:** no runtime identity holds Editor, and no secret is a plain env var except the agent LLM
 variables you chose to accept in Phase 3.
@@ -270,23 +333,32 @@ chat app. Agents must **not** self-publish/unpublish tied to process lifetime on
 
 ## Phase 6: CI/CD, reproducibility, operations
 
-- [ ] CI builds and pushes `chat-app`, `registration` and `ads` images to Artifact Registry on merge to
-      `main`, tagged with the commit SHA (`deployment/cloudbuild.yaml` or GitHub Actions + WIF).
-- [ ] Deploy by **digest or SHA tag**, not `:latest`. Any config-only update today re-pulls `:latest`
-      (`DEPLOYED_COMPONENTS.md` "Cost / pause").
-- [ ] Encode the rollout order: **`registration` before `chat-app`** (`README.md` "Dev workflow").
-- [ ] Optional but recommended: capture the infrastructure as code (Terraform), or at least a single
-      script, so the project can be rebuilt. `DEPLOY_YOUR_OWN.md` has never been run end to end on a fresh project.
-- [ ] **Backups:** Cloud SQL automated backups + point-in-time recovery. A snapshot schedule on the
-      `ads` VM disk (`/var/lib/ads`, which holds the directory). Note: the encryption key secret is required to read
-      restored credentials.
-- [ ] **Monitoring and alerts:** uptime checks on chat-app `/health` and `/ready`. Alerts on 5xx and
-      Cloud Run 429s, the ADS VM being down, Cloud SQL CPU/connections, an LLM failover spike, and
-      registration build-poll failures (an agent stuck in `building`). Add the front-door token refresh after Phase 7.
-- [ ] Billing budget alerts (Phase 0). Every service has `--max-instances` set.
-- [ ] Update the runbooks (`README.md`, `DEPLOYED_COMPONENTS.md`, `AGENTS.md` Tier E) to the new state.
+- [ ] **CI builds: config ready, trigger needs a GitHub org admin.** `deployment/cloudbuild-ci.yaml` builds
+      `chat-app`, `registration` and `ads` in parallel to Artifact Registry as `:<short sha>` and `:latest`
+      (run by hand 2026-11-25: 5m23s, success). A trigger on merges to `main` needs the Google Cloud Build
+      GitHub App installed on `washu-dev` and the repo connected (global region); the command is in
+      `gcp/README.md` "Automatic image builds".
+- [x] **Deploy by commit tag, not `:latest`** — every deploy since 2026-11-25 uses `:<short sha>`
+      (`gcloud run services update <svc> --image=…:<sha>`).
+- [x] **Rollout order** (`registration` before `chat-app`) is in `gcp/README.md` "Dev workflow" and in the
+      CI config's header.
+- [ ] Optional: infrastructure as code (Terraform), or one script, so the project can be rebuilt.
+      `DEPLOY_YOUR_OWN.md` plus `gcp_iam_step7.sh` and `gcp_cloud_build_setup.sh` are the closest today.
+- [x] **Backups (2026-11-25).** Cloud SQL daily backups and point-in-time recovery (Phase 1). `ads` disk:
+      snapshot schedule `ads-daily` (09:00 UTC, 7 days) plus a manual `ads-manual-20261125`. Restoring
+      stored credentials needs the `credentials-encryption-key` secret.
+- [x] **Artifact Registry cleanup policy (2026-11-25):** delete a version only when older than 30 days and
+      not among its image's 10 most recent; keep `latest` and `vertex` tags.
+- [x] **Alerts (2026-11-25), emailing `m.tahir (WashU email)`:** server errors (`chat-app`, `registration`);
+      Cloud Run 429s on `chat-app`; directory unreachable (new `directory_unavailable` log line, commit
+      `4cbd026`); agent build/deploy/upload/recovery failures; `ads` VM not running; chat app on the
+      fallback LLM (Phase 3). No uptime check on the chat app on purpose: it would keep the scale-to-zero
+      instance awake. Revisit with min-instances 1 at launch, and add the front-door token refresh in Phase 7.
+- [ ] **Billing budget alerts** need Billing Account Costs Manager on the billing account (not the project).
+- [x] Runbooks updated as each phase landed (`gcp/README.md`, `DEPLOYED_COMPONENTS.md`, this checklist).
 
-**Done when:** a merge to `main` produces a deployable image without anyone's laptop, and someone gets paged if prod goes down.
+**Done when:** a merge to `main` produces a deployable image without anyone's laptop (needs the trigger),
+and someone gets an email if prod goes down (done).
 
 ## Phase 7: Public front door (Option A; `IMPLEMENTATION_CLOUDRUN_BACKEND.md` Step 10)
 

@@ -11,7 +11,7 @@ import re
 import time as _time
 from pathlib import Path
 from typing import Any, Sequence
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 from uuid import uuid4
 
 import httpx
@@ -20,7 +20,9 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingRes
 from pydantic import BaseModel, Field
 
 from agentnet.a2a.client import A2AClient
+from agentnet.a2a.transport import CloudRunIdTokenAuth
 from agentnet.directory.card_oasf import load_agent_card
+from agentnet.directory import DirectoryUnavailable
 from agentnet.directory.client import DirectoryClient
 from agentnet.identity import identity_from_headers, is_admin, without_identity_headers
 from chat_app import github_issues
@@ -31,6 +33,7 @@ from chat_app.credentials_router import (
     router as credentials_router,
 )
 from chat_app.env import allow_anon, setting, upload_dir
+from chat_app.directory_cache import CachedDirectory
 from chat_app.planner.config import PlannerConfig, load_config
 from chat_app.planner.llm_client import LLMClient, OpenAIToolLoopClient
 from chat_app.planner.memory_store import MemoryStore
@@ -57,9 +60,16 @@ _HOP_BY_HOP_HEADERS = frozenset({
 # headers, and the encoding and length of a body httpx has already decoded.
 _UNFORWARDED_RESPONSE_HEADERS = _HOP_BY_HOP_HEADERS | {"content-encoding", "content-length"}
 # Request headers it does not copy: hop-by-hop headers, the host, the length of the
-# body it re-sends (httpx sets its own), and the browser's Accept-Encoding, so httpx
-# asks only for encodings it decodes.
-_UNFORWARDED_REQUEST_HEADERS = _HOP_BY_HOP_HEADERS | {"host", "content-length", "accept-encoding"}
+# body it re-sends (httpx sets its own), the browser's Accept-Encoding, so httpx
+# asks only for encodings it decodes, and the caller's credentials for this app (a
+# front door's or the gcloud proxy's ID token), which are not credentials for the
+# registration service: the pass-through authenticates to it as itself
+# (CloudRunIdTokenAuth). Cloud Run checks X-Serverless-Authorization instead of
+# Authorization when present, and hands this app that header with the signature
+# removed, so forwarding it gets a 401 from the registration service.
+_UNFORWARDED_REQUEST_HEADERS = _HOP_BY_HOP_HEADERS | {
+    "host", "content-length", "accept-encoding", "authorization", "x-serverless-authorization",
+}
 
 
 def _truncate(text: str | None, limit: int = _MAX_FIELD_LEN) -> str:
@@ -162,6 +172,27 @@ class IssueRequest(BaseModel):
     agent_id: str | None = None
 
 
+def probe_targets(agents: Sequence[Any], skip: set[str], *, probe_run_app: bool = False) -> list[Any]:
+    """The agents the health loop probes: those with an endpoint, not listed in
+    ``skip`` (CHAT_APP_HEALTH_PROBE_SKIP_AGENTS) and, unless ``probe_run_app``
+    (CHAT_APP_HEALTH_PROBE_RUN_APP), not on Cloud Run (``*.run.app``).
+
+    Cloud Run agents scale to zero; a probe every minute would keep each one warm
+    and billing. Their liveness is the registration service's job (it checks them
+    through the Cloud Run Admin API, which wakes nothing), so the chat app leaves
+    them alone and the admin health page shows them as unknown.
+    """
+    out = []
+    for agent in agents:
+        if not agent.endpoint or agent.agent_id in skip:
+            continue
+        host = (urlsplit(agent.endpoint).hostname or "").lower()
+        if not probe_run_app and host.endswith(".run.app"):
+            continue
+        out.append(agent)
+    return out
+
+
 def create_app(
     *,
     config: PlannerConfig | None = None,
@@ -176,6 +207,12 @@ def create_app(
         fake_ads=cfg.fake_ads,
         ads_url=cfg.ads_server_addr,
     )
+    # Cache the full directory listing for a few seconds (off unless set): each
+    # listing launches dirctl once per agent, which bounded one Cloud Run instance
+    # at ~50 turns/min. See chat_app/directory_cache.py.
+    cache_seconds = float(setting("CHAT_APP_DIRECTORY_CACHE_SECONDS", "0") or 0)
+    if cache_seconds > 0:
+        directory = CachedDirectory(directory, cache_seconds)
     a2a = a2a_client or A2AClient()
     store = state_store or MemoryStore()
     if llm_client is None:
@@ -221,7 +258,10 @@ def create_app(
 
     # Client for the /register/* pass-through; the lifespan closes it on shutdown.
     _reg_base = os.getenv("REGISTRATION_SERVICE_URL", "http://localhost:8091")
-    _reg_client = httpx.AsyncClient(base_url=_reg_base, timeout=30.0)
+    # On Cloud Run the registration service is IAM-private: the client attaches an ID
+    # token minted for this app's service account to *.run.app (a no-op elsewhere),
+    # so that account needs run.invoker on the registration service.
+    _reg_client = httpx.AsyncClient(base_url=_reg_base, timeout=30.0, auth=CloudRunIdTokenAuth())
 
     @contextlib.asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -683,22 +723,26 @@ def create_app(
 
     async def _health_probe_loop() -> None:
         # On-demand (scale-to-zero) agents must be excluded from probing: a probe
-        # HTTP-hits the agent's card URL, which cold-starts a min=0 Cloud Run agent
-        # and keeps it warm — defeating scale-to-zero. Skip by agent_id via
-        # CHAT_APP_HEALTH_PROBE_SKIP_AGENTS (comma-separated).
+        # HTTP-hits the agent's card URL with an ID token, which cold-starts a min=0
+        # Cloud Run agent and keeps it warm — defeating scale-to-zero. See
+        # probe_targets for what is skipped.
         skip = {s.strip() for s in setting("CHAT_APP_HEALTH_PROBE_SKIP_AGENTS", "").split(",") if s.strip()}
+        probe_run_app = (setting("CHAT_APP_HEALTH_PROBE_RUN_APP", "") or "").lower() in ("1", "true", "yes")
         while True:
             try:
                 agents = await asyncio.to_thread(directory.search_agents)
                 tasks = [
                     _probe_agent(a.agent_id, a.endpoint)
-                    for a in agents
-                    if a.endpoint and a.agent_id not in skip
+                    for a in probe_targets(agents, skip, probe_run_app=probe_run_app)
                 ]
                 if tasks:
                     await asyncio.gather(*tasks, return_exceptions=True)
-            except Exception:
-                pass
+            except DirectoryUnavailable as exc:
+                # Logged once a minute while it lasts; the "Agent directory unreachable"
+                # alert (log metric chat_app_directory_unavailable) keys on this line.
+                logger.warning("directory_unavailable error=%s", str(exc)[:300])
+            except Exception as exc:
+                logger.warning("health_probe_loop_error error=%s", str(exc)[:300])
             await asyncio.sleep(60)
 
     @app.get("/admin/agents/health")

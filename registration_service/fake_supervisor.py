@@ -34,6 +34,9 @@ class FakeSupervisor:
         await _set_status(agent_id, "live", endpoint_url=endpoint_url, ads_cid="fake-cid")
         logger.info("fake_supervisor spawn agent_id=%s port=%d", agent_id, port)
 
+    async def check_builds_now(self) -> None:
+        return None
+
     async def stop_and_unpublish(self, agent_id: str) -> bool:
         """Like Supervisor.stop_and_unpublish; the (fake) card is always removed."""
         pool = await get_pool()

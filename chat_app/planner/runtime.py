@@ -644,7 +644,7 @@ class PlannerRuntime:
             )
             return obs, payload
 
-        decision = self._evaluate_policy(canonical_hint, capability)
+        decision = self._evaluate_policy(canonical_hint, capability, agent)
         if decision.status == PolicyDecisionStatus.requires_confirmation:
             pending = {
                 "skill": canonical_hint,
@@ -686,9 +686,10 @@ class PlannerRuntime:
                     "task_input": task_input,
                 },
             }
+            action = f"This action ({canonical_hint})" if canonical_hint else f"This request to {agent.name}"
             terminal_payload = {
                 "text": (
-                    f"This action ({canonical_hint}) needs your confirmation. "
+                    f"{action} needs your confirmation. "
                     f"Reply 'yes' to proceed, 'no' to cancel."
                 ),
                 "pending_confirmation": pending,
@@ -925,7 +926,8 @@ class PlannerRuntime:
                 llm_model=self.config.llm_model,
             )
         agent = DiscoveredAgent.model_validate(agent_data)
-        skill = str(pending.get("skill") or "")
+        # None when the confirmed call named no skill: the agent chooses, as it would have.
+        skill = pending.get("skill") or None
         task_input = dict(pending.get("task_input") or {})
 
         # P4c: apply the same least-privilege scoping on the post-confirmation path.
@@ -952,7 +954,11 @@ class PlannerRuntime:
             result = await self._send_task(agent, request)
         self.store.save_context(context)
 
-        text = _last_text(result) or f"{skill} completed."
+        # Keyed like an unconfirmed call: what the agent chose when no skill was named.
+        record_skill = (
+            skill or _chosen_skill_from_result(result, requested_skill=None) or "agent/autonomous"
+        )
+        text = _last_text(result) or f"{skill or 'The request'} completed."
         if context.conversation_history is not None:
             context.conversation_history.append(f"assistant: {text}")
             context.updated_at = utc_now()
@@ -976,9 +982,9 @@ class PlannerRuntime:
                 }
             ],
             selected_agents=[
-                {"skill": skill, "agent_id": agent.agent_id, "task_id": result.task_id}
+                {"skill": record_skill, "agent_id": agent.agent_id, "task_id": result.task_id}
             ],
-            structured_outputs=({skill: result.structured_output} if result.structured_output else {}),
+            structured_outputs=({record_skill: result.structured_output} if result.structured_output else {}),
             llm_model=self.config.llm_model,
         )
 
@@ -1445,7 +1451,12 @@ class PlannerRuntime:
             conversation_history=[f"user: {text}"],
         )
 
-    def _evaluate_policy(self, skill: str | None, capability: AgentCapability | None) -> PolicyDecision:
+    def _evaluate_policy(
+        self,
+        skill: str | None,
+        capability: AgentCapability | None,
+        agent: DiscoveredAgent | None = None,
+    ) -> PolicyDecision:
         if self.config.policy_mode in {"permissive", "off", "disabled"}:
             return PolicyDecision(
                 status=PolicyDecisionStatus.allowed,
@@ -1453,6 +1464,19 @@ class PlannerRuntime:
                 confirmation_status=ConfirmationStatus.not_required,
             )
         if not skill or capability is None:
+            # No skill named (or none the agent advertises): the agent picks the
+            # operation itself. If it can take a write action, confirm first;
+            # otherwise a model could skip confirmation by leaving the skill out.
+            writes = _agent_write_skills(agent) if agent is not None else []
+            if writes:
+                return PolicyDecision(
+                    status=PolicyDecisionStatus.requires_confirmation,
+                    reason=(
+                        f"The request names no specific skill, and {agent.name} can take actions "
+                        f"with side effects ({', '.join(writes[:3])}); it requires confirmation."
+                    ),
+                    confirmation_status=ConfirmationStatus.pending,
+                )
             return PolicyDecision(
                 status=PolicyDecisionStatus.allowed,
                 reason="No definite write skill was requested; external agent may choose the operation.",
@@ -1770,6 +1794,21 @@ def _last_text(result: A2ATaskResult) -> str:
             if part.kind == "text" and part.text:
                 return part.text
     return result.error or ""
+
+
+def _agent_write_skills(agent: DiscoveredAgent) -> list[str]:
+    """The skills an agent advertises whose id or tag names a side effect
+    (_is_write_skill: send, create, update, delete, write, ...).
+
+    Ids and tags only, like the card converter's per-skill check
+    (agentnet/directory/card_oasf._skill_policy). Unlike that check it does not honour an
+    explicit "read" tag: one write-capable skill is enough when the model names none."""
+    out: list[str] = []
+    for cap in agent.skills:
+        tags = list(cap.skill_tags) + list(cap.custom_skill_tags)
+        out.extend(t for t in tags if _is_write_skill(t))
+    # Skill ids ("email/send") before loose tags ("gmail"), for a readable reason.
+    return sorted(dict.fromkeys(out), key=lambda t: "/" not in t)
 
 
 def _is_write_skill(skill: str) -> bool:
