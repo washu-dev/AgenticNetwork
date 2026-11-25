@@ -60,11 +60,14 @@ _HOP_BY_HOP_HEADERS = frozenset({
 _UNFORWARDED_RESPONSE_HEADERS = _HOP_BY_HOP_HEADERS | {"content-encoding", "content-length"}
 # Request headers it does not copy: hop-by-hop headers, the host, the length of the
 # body it re-sends (httpx sets its own), the browser's Accept-Encoding, so httpx
-# asks only for encodings it decodes, and Authorization: a caller's credential for
-# this app (e.g. a front door's ID token) is not one for the registration service,
-# which the pass-through authenticates to as itself (CloudRunIdTokenAuth).
+# asks only for encodings it decodes, and the caller's credentials for this app (a
+# front door's or the gcloud proxy's ID token), which are not credentials for the
+# registration service: the pass-through authenticates to it as itself
+# (CloudRunIdTokenAuth). Cloud Run checks X-Serverless-Authorization instead of
+# Authorization when present, and hands this app that header with the signature
+# removed, so forwarding it gets a 401 from the registration service.
 _UNFORWARDED_REQUEST_HEADERS = _HOP_BY_HOP_HEADERS | {
-    "host", "content-length", "accept-encoding", "authorization",
+    "host", "content-length", "accept-encoding", "authorization", "x-serverless-authorization",
 }
 
 

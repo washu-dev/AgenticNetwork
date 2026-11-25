@@ -426,7 +426,9 @@ class _RecordingRegistration(http.server.BaseHTTPRequestHandler):
 
     def _reply(self) -> None:
         type(self).seen.append((self.command, self.path, self.headers.get("mail")))
-        type(self).authorization.append(self.headers.get("Authorization"))
+        type(self).authorization.append(
+            self.headers.get("Authorization") or self.headers.get("X-Serverless-Authorization")
+        )
         type(self).identity_headers.append([
             (name.lower(), value) for name, value in self.headers.items()
             if name.lower().replace("_", "-") in ("mail", "eppn", "remote-user")
@@ -1070,7 +1072,11 @@ def test_register_proxy_never_forwards_the_callers_authorization(monkeypatch) ->
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client:
                 resp = await client.post(
                     "/register/agents", content=b"{}",
-                    headers={"mail": "bob@example.com", "Authorization": "Bearer front-door-token"},
+                    headers={
+                        "mail": "bob@example.com",
+                        "Authorization": "Bearer front-door-token",
+                        "X-Serverless-Authorization": "Bearer proxy-token-without-signature",
+                    },
                 )
                 assert resp.status_code == 200, resp.text
 
